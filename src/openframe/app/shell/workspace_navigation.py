@@ -38,7 +38,12 @@ class WorkspaceNavigation(QFrame):
             "model",
         )
 
-    def _select(self, key: str) -> None:
+    def set_current_section(self, key: str, *, emit: bool = False) -> None:
+        if key not in self._buttons:
+            raise ValueError(f"Unknown workspace section: {key}")
         self._buttons[key].setChecked(True)
-        self.current_changed.emit(key)
+        if emit:
+            self.current_changed.emit(key)
 
+    def _select(self, key: str) -> None:
+        self.set_current_section(key, emit=True)

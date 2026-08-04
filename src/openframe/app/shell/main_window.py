@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from openframe.app.shell.analysis_results_sidebar import AnalysisResultsSidebar
 from openframe.app.shell.app_header import AppHeader
+from openframe.app.shell.start_workspace import StartWorkspace
 from openframe.app.shell.workspace_navigation import WorkspaceNavigation
 from openframe.core.domain import (
     AnalysisKind,
@@ -45,6 +46,8 @@ class MainWindow(QMainWindow):
         self._model_load_thread: ModelLoadThread | None = None
         self._analysis_run_thread: AnalysisRunThread | None = None
         self._current_model_source: Path | None = None
+        self._resume_section = "model"
+        self._has_active_workspace = False
         self.setWindowTitle("OpenFrame Studio")
         self.resize(1440, 860)
         self.setMinimumSize(980, 620)
@@ -57,6 +60,7 @@ class MainWindow(QMainWindow):
 
         self.header = AppHeader()
         self.navigation = WorkspaceNavigation()
+        self.start_workspace = StartWorkspace()
         self.model_sidebar = ModelSidebar()
         self.viewport = ModelViewport()
         self.analysis_sidebar = AnalysisResultsSidebar()
@@ -79,9 +83,10 @@ class MainWindow(QMainWindow):
 
         self.workspace_stack = QStackedWidget()
         self.workspace_stack.setObjectName("workspaceStack")
+        self.workspace_stack.addWidget(self.start_workspace)
         self.workspace_stack.addWidget(self.workspace)
         self.workspace_stack.addWidget(self.results_workspace)
-        self.workspace_stack.setCurrentWidget(self.workspace)
+        self.workspace_stack.setCurrentWidget(self.start_workspace)
 
         root_layout.addWidget(self.header)
         root_layout.addWidget(self.navigation)
@@ -90,6 +95,7 @@ class MainWindow(QMainWindow):
 
         self._build_status_bar()
         self._connect_actions()
+        self._show_start_workspace()
 
     def _build_status_bar(self) -> None:
         status = QStatusBar(self)
@@ -99,6 +105,18 @@ class MainWindow(QMainWindow):
     def _connect_actions(self) -> None:
         self.header.upload_requested.connect(self._choose_model_file)
         self.header.run_requested.connect(self._run_analysis)
+        self.header.home_requested.connect(self._show_start_workspace)
+        self.start_workspace.import_opensees_requested.connect(self._start_import_workspace)
+        self.start_workspace.new_model_requested.connect(
+            lambda: self._show_pending_workflow("New Model")
+        )
+        self.start_workspace.template_requested.connect(
+            lambda: self._show_pending_workflow("Template Browser")
+        )
+        self.start_workspace.open_project_requested.connect(
+            lambda: self._show_pending_workflow("Open Project")
+        )
+        self.start_workspace.resume_workspace_requested.connect(self._resume_workspace)
         self.navigation.current_changed.connect(self._change_workspace_section)
         self.analysis_settings.analysis_kind_changed.connect(self._set_analysis_kind)
         self.viewport.unit_system_changed.connect(self._set_unit_system)
@@ -109,6 +127,42 @@ class MainWindow(QMainWindow):
         self.model_inspector.set_unit_system(unit_system)
         self.results_workspace.set_unit_system(unit_system)
         self.statusBar().showMessage(f"Model units changed | {unit_system.label}")
+
+    def _show_start_workspace(self) -> None:
+        if self.workspace_stack.currentWidget() is not self.start_workspace:
+            self._resume_section = self.navigation.current_section()
+        self.workspace_stack.setCurrentWidget(self.start_workspace)
+        self.navigation.hide()
+        self.header.set_welcome_mode(True)
+        self.statusBar().showMessage("Choose how to start a project")
+
+    def _show_pending_workflow(self, workflow: str) -> None:
+        self.statusBar().showMessage(f"{workflow} interface is ready for feature connection")
+
+    def _start_import_workspace(self) -> None:
+        self._has_active_workspace = True
+        self.start_workspace.set_current_session(
+            "OpenSeesPy Import", "Waiting for a .py source file"
+        )
+        self._show_model_workspace()
+        self.statusBar().showMessage(
+            "OpenSeesPy import workspace | Select UPLOAD .PY to choose a model"
+        )
+
+    def _show_model_workspace(self) -> None:
+        self._resume_section = "model"
+        self.navigation.set_current_section("model")
+        self.navigation.show()
+        self.header.set_welcome_mode(False)
+        self.workspace_stack.setCurrentWidget(self.workspace)
+
+    def _resume_workspace(self) -> None:
+        if not self._has_active_workspace:
+            return
+        self.navigation.show()
+        self.header.set_welcome_mode(False)
+        self.navigation.set_current_section(self._resume_section)
+        self._change_workspace_section(self._resume_section)
 
     def _choose_model_file(self) -> None:
         source, _ = QFileDialog.getOpenFileName(
@@ -138,12 +192,15 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _model_loaded(self, model: object, source: str) -> None:
+        self._has_active_workspace = True
         self._current_model_source = Path(source)
         self.model_sidebar.set_source_file(source)
         self.model_sidebar.set_model(model)
         self.viewport.set_model(model)
         self.model_inspector.set_model(model)
         self.results_workspace.set_model(model)
+        self.start_workspace.set_current_session(Path(source).name, "Imported OpenSeesPy")
+        self._show_model_workspace()
         self.statusBar().showMessage(
             f"Model loaded · Nodes {len(model.nodes)} · Elements {len(model.elements)}"
         )

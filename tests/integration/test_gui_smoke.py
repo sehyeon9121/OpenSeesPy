@@ -17,6 +17,22 @@ def test_main_window_can_be_constructed() -> None:
     assert window.windowTitle() == "OpenFrame Studio"
     assert window.view is window.viewport.view
     assert window.navigation.current_section() == "model"
+    assert window.workspace_stack.currentWidget() is window.start_workspace
+    assert window.navigation.isHidden()
+    assert window.header.home_button.isHidden()
+    assert window.start_workspace.resume_button.isHidden()
+    assert window.start_workspace.import_button.text() == "START"
+
+    window.start_workspace.import_button.click()
+    assert window.workspace_stack.currentWidget() is window.workspace
+    assert window._current_model_source is None
+    assert not window.header.upload_button.isHidden()
+
+    window.header.home_button.click()
+    assert window.workspace_stack.currentWidget() is window.start_workspace
+    assert not window.start_workspace.resume_button.isHidden()
+    window.start_workspace.resume_button.click()
+    assert window.workspace_stack.currentWidget() is window.workspace
 
     window.navigation._buttons["results"].click()
     assert window.navigation.current_section() == "results"

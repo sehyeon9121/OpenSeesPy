@@ -26,6 +26,9 @@ class ElementResult:
     length: float = 0.0
     #: Distributed load (wx, wy) along the member's own axes, zero when none applies.
     uniform_load: tuple[float, float] = (0.0, 0.0)
+    #: Bending stiffness EI, needed to rebuild the sag between the two ends. Zero when
+    #: the element's section properties could not be read.
+    flexural_rigidity: float = 0.0
 
 
 @dataclass(slots=True)

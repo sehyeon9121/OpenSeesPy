@@ -26,6 +26,12 @@ class ModelCommandCollector:
         self._patch("fix", self._wrap_fix)
         self._patch("load", self._wrap_load)
 
+    def restore(self) -> None:
+        """Put the real OpenSees commands back once the script has finished."""
+        for name, original in self._originals.items():
+            setattr(ops, name, original)
+        self._originals.clear()
+
     def to_payload(self) -> dict[str, Any]:
         self._merge_runtime_state()
         return {

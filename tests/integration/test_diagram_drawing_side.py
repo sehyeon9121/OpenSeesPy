@@ -78,6 +78,31 @@ def test_compression_is_drawn_inside_the_frame_on_both_columns() -> None:
         )
 
 
+def test_member_carrying_no_axial_force_gets_no_sign_or_label() -> None:
+    """Regression: 2e-12 of solver noise on the beam used to print a stray '+'.
+
+    The beam of the textbook frame carries no horizontal thrust (only a vertical
+    roller at B), so its true axial force is zero; OpenSees reports it as ~1e-12.
+    """
+    outlines = _outline_points(DiagramKind.AXIAL)
+    assert 3 in outlines  # the beam still has a (flat) diagram outline
+
+    QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=20).load(SOURCE)
+    result = OpenSeesProcessRunner(timeout_seconds=20).run(AnalysisRequest(source_path=SOURCE))
+    scene = QGraphicsScene()
+    FrameDiagramRenderer().render(scene, model, result, DiagramKind.AXIAL, 50, "kN")
+
+    beam_markers = [
+        item
+        for item in scene.items()
+        if isinstance(item.data(0), tuple)
+        and item.data(0)[0] in ("result_diagram_sign", "result_diagram_label")
+        and item.data(0)[1] == 3
+    ]
+    assert beam_markers == []
+
+
 def test_sagging_beam_moment_is_drawn_below_the_beam() -> None:
     outlines = _outline_points(DiagramKind.MOMENT)
 

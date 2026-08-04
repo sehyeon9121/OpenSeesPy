@@ -62,6 +62,20 @@ def test_solver_noise_is_reported_as_zero() -> None:
     assert noisy.fy == 50.0
 
 
+def test_moment_noise_is_zeroed_even_when_no_real_moment_reaction_exists() -> None:
+    """Regression: a pin+roller frame has no real Mz anywhere, so judging noise
+    against other Mz values compares noise to noise and lets it through."""
+    model = _model()
+    result = _result()
+    result.node_results[1] = NodeResult(node_tag=1, reaction=(-35.0, 30.0, 1.1e-12))
+    result.node_results[2] = NodeResult(node_tag=2, reaction=(0.0, 50.0, -2.3e-12))
+
+    reactions = support_reactions(model, result)
+
+    assert all(reaction.mz == 0.0 for reaction in reactions)
+    assert all(not reaction.has_moment for reaction in reactions)
+
+
 def test_resultant_sums_reactions_for_an_equilibrium_check() -> None:
     total_x, total_y = reaction_resultant(support_reactions(_model(), _result()))
 

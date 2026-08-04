@@ -72,7 +72,7 @@ class DiagramPlot(QWidget):
         # unreadable, so only the ends and the peak between them are named.
         labelled_indexes = self._labelled_indexes(values)
         point_labels = [
-            self._point_label(value) if index in labelled_indexes else ""
+            self._point_label(value, max_abs) if index in labelled_indexes else ""
             for index, value in enumerate(values)
         ]
         widest_point_label = max(
@@ -167,8 +167,11 @@ class DiagramPlot(QWidget):
 
         painter.end()
 
-    def _point_label(self, value: float) -> str:
-        label = f"{value:.3g}"
+    def _point_label(self, value: float, peak: float) -> str:
+        # An end that carries nothing comes back as solver noise such as -8.5e-14;
+        # printed verbatim it reads as a defect rather than as zero.
+        shown = 0.0 if abs(value) <= peak * 1.0e-9 else value
+        label = f"{shown:.3g}"
         return f"{label} {self._unit}" if self._unit else label
 
     @staticmethod

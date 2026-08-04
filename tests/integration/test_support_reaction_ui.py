@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from openframe.core.domain import AnalysisRequest, AnalysisStatus
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
+from openframe.features.results.reactions import support_reactions
 from openframe.infrastructure.opensees.model_importer import OpenSeesModelImporter
 from openframe.infrastructure.opensees.runner import OpenSeesProcessRunner
 
@@ -35,6 +36,20 @@ def _reaction_items(workspace: ResultsWorkspace) -> list:
         for item in workspace.viewport.scene.items()
         if isinstance(item.data(0), tuple) and item.data(0)[0] == "result_reaction"
     ]
+
+
+def test_pin_and_roller_supports_show_no_moment_reaction() -> None:
+    """Regression: neither support here restrains rotation, so the true Mz is zero
+    everywhere; solver noise on the order of 1e-12 used to be reported and drawn."""
+    QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=20).load(SOURCE)
+    result = OpenSeesProcessRunner(timeout_seconds=20).run(AnalysisRequest(source_path=SOURCE))
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+
+    reactions = support_reactions(model, result)
+
+    assert len(reactions) == 2
+    assert all(not reaction.has_moment for reaction in reactions)
 
 
 def test_reaction_arrows_are_drawn_at_both_supports() -> None:

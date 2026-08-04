@@ -1,9 +1,12 @@
-"""Displacement vector drawn from a node's original position to its deformed one."""
+"""Marker and value shown at a node's displaced position.
 
-import math
+The connector back to the undeformed node is a plain scene-space line drawn by the
+viewport, so it lines up with the deformed shape at any zoom. Only this marker keeps a
+fixed pixel size, the way node labels elsewhere in the application do.
+"""
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
 from openframe.core.domain import DEFAULT_UNIT_SYSTEM, UnitSystem
@@ -14,16 +17,9 @@ PEAK_COLOR = "#e5484d"
 
 
 class NodeDisplacementItem(QGraphicsItem):
-    """Arrow from the undeformed node to where the analysis moved it.
-
-    The item is positioned at the undeformed node in scene coordinates, while the
-    arrow itself is expressed in screen pixels so it stays readable at any zoom.
-    """
-
     def __init__(
         self,
         displacement: NodalDisplacement,
-        screen_offset: QPointF,
         *,
         is_peak: bool = False,
         show_label: bool = True,
@@ -31,9 +27,10 @@ class NodeDisplacementItem(QGraphicsItem):
     ) -> None:
         super().__init__()
         self.displacement = displacement
-        self._offset = screen_offset
         self._is_peak = is_peak
         self._show_label = show_label
+        self._font = QFont("Malgun Gothic", 8)
+        self._font.setBold(is_peak)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
@@ -49,11 +46,12 @@ class NodeDisplacementItem(QGraphicsItem):
             f"UY={item.uy:.6g} {unit_system.length} | "
             f"|U|={item.magnitude:.6g} {unit_system.length}"
         )
+        self._label = f"{item.magnitude:.4g} {unit_system.length}"
         self.update()
 
     def boundingRect(self) -> QRectF:
-        reach = max(abs(self._offset.x()), abs(self._offset.y())) + 130.0
-        return QRectF(-reach, -reach, 2 * reach, 2 * reach)
+        width = QFontMetricsF(self._font).horizontalAdvance(self._label) + 20.0
+        return QRectF(-8.0, -20.0, width, 32.0)
 
     def paint(
         self,
@@ -64,47 +62,14 @@ class NodeDisplacementItem(QGraphicsItem):
         del option, widget
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         color = QColor(PEAK_COLOR if self._is_peak else VECTOR_COLOR)
-        pen = QPen(color, 2.6 if self._is_peak else 1.8)
-        pen.setCosmetic(True)
-        painter.setPen(pen)
+
+        radius = 4.0 if self._is_peak else 3.0
+        painter.setPen(QPen(color, 1.4))
         painter.setBrush(color)
-
-        tip = self._offset
-        length = math.hypot(tip.x(), tip.y())
-        if length < 1.0e-9:
-            return
-        painter.drawLine(QPointF(0.0, 0.0), tip)
-
-        direction_x = tip.x() / length
-        direction_y = tip.y() / length
-        head_length = min(11.0, length)
-        head_width = head_length * 0.45
-        arrow_head = QPainterPath()
-        arrow_head.moveTo(tip)
-        arrow_head.lineTo(
-            QPointF(
-                tip.x() - direction_x * head_length - direction_y * head_width,
-                tip.y() - direction_y * head_length + direction_x * head_width,
-            )
-        )
-        arrow_head.lineTo(
-            QPointF(
-                tip.x() - direction_x * head_length + direction_y * head_width,
-                tip.y() - direction_y * head_length - direction_x * head_width,
-            )
-        )
-        arrow_head.closeSubpath()
-        painter.drawPath(arrow_head)
+        painter.drawEllipse(QPointF(0.0, 0.0), radius, radius)
 
         if not self._show_label:
             return
-        painter.save()
         painter.setPen(color)
-        font = QFont("Malgun Gothic", 8)
-        font.setBold(self._is_peak)
-        painter.setFont(font)
-        painter.drawText(
-            tip + QPointF(7.0, -5.0),
-            f"{self.displacement.magnitude:.4g} {self.unit_system.length}",
-        )
-        painter.restore()
+        painter.setFont(self._font)
+        painter.drawText(QPointF(radius + 4.0, -radius - 2.0), self._label)

@@ -15,16 +15,23 @@ QFrame#appHeader {
     background: #ffffff;
     border-bottom: 1px solid #d8dde4;
 }
-QLabel#brandMark {
+QPushButton#brandMark {
     min-width: 30px;
     min-height: 30px;
     max-width: 30px;
     max-height: 30px;
+    border: 0;
     border-radius: 6px;
     background: #174ea6;
     color: #ffffff;
     font-weight: 700;
-    qproperty-alignment: AlignCenter;
+    padding: 0;
+}
+QPushButton#brandMark:hover {
+    background: #123f89;
+}
+QPushButton#brandMark:pressed {
+    background: #0f3574;
 }
 QLabel#brandName {
     font-size: 12pt;
@@ -36,11 +43,31 @@ QLabel#readyBadge {
     font-size: 8pt;
     padding-left: 8px;
 }
+QLabel#welcomeHeaderLabel {
+    color: #6f7f93;
+    font-size: 7pt;
+    font-weight: 600;
+    padding-left: 8px;
+}
 QPushButton#uploadButton, QPushButton#runButton {
     min-height: 30px;
     border-radius: 4px;
     padding: 0 12px;
     font-weight: 600;
+}
+QPushButton#homeButton {
+    min-height: 26px;
+    border: 0;
+    border-left: 1px solid #d8dde4;
+    padding: 0 9px;
+    color: #607188;
+    background: transparent;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QPushButton#homeButton:hover {
+    color: #174ea6;
+    background: #f5f8fc;
 }
 QPushButton#uploadButton {
     background: #ffffff;
@@ -76,6 +103,129 @@ QFrame#workspaceNavigation QToolButton:hover {
 QFrame#workspaceNavigation QToolButton:checked {
     color: #174ea6;
     border-bottom-color: #174ea6;
+}
+QFrame#startWorkspace {
+    background: #f4f7fb;
+}
+QFrame#startHero {
+    background: #eaf1fb;
+    border: 1px solid #cfdbeb;
+    border-radius: 7px;
+}
+QLabel#startHeroEyebrow, QLabel#startSectionTitle, QLabel#startFooterTitle {
+    color: #58708f;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QLabel#startHeroTitle {
+    color: #142b49;
+    font-size: 19pt;
+    font-weight: 700;
+}
+QLabel#startHeroDescription {
+    color: #5f7187;
+    font-size: 9pt;
+}
+QLabel#startSectionHint, QLabel#startFooterText {
+    color: #8794a4;
+    font-size: 8pt;
+}
+QFrame#startPrimaryCard, QFrame#startOptionCard {
+    background: #ffffff;
+    border: 1px solid #d8e1ec;
+    border-radius: 6px;
+}
+QFrame#startPrimaryCard {
+    border: 1px solid #9ebbe3;
+}
+QLabel#startPrimaryIcon, QLabel#startOptionIcon {
+    min-width: 30px;
+    min-height: 30px;
+    max-width: 30px;
+    max-height: 30px;
+    border-radius: 5px;
+    background: #eef2f7;
+    color: #53677f;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QLabel#startPrimaryIcon {
+    background: #174ea6;
+    color: #ffffff;
+    font-size: 14pt;
+}
+QLabel#startPrimaryBadge, QLabel#startOptionBadge {
+    border-radius: 3px;
+    padding: 2px 6px;
+    background: #eef2f7;
+    color: #718196;
+    font-size: 6pt;
+    font-weight: 700;
+}
+QLabel#startPrimaryBadge {
+    background: #e7effb;
+    color: #174ea6;
+}
+QLabel#startCardTitle {
+    color: #1a304d;
+    font-size: 11pt;
+    font-weight: 700;
+}
+QLabel#startCardDescription {
+    color: #708095;
+    font-size: 8pt;
+}
+QPushButton#startPrimaryButton, QPushButton#startSecondaryButton {
+    min-height: 27px;
+    border-radius: 3px;
+    padding: 0 10px;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QPushButton#startPrimaryButton {
+    color: #ffffff;
+    background: #174ea6;
+    border: 1px solid #174ea6;
+}
+QPushButton#startPrimaryButton:hover {
+    background: #123f89;
+}
+QPushButton#startSecondaryButton {
+    color: #29415f;
+    background: #ffffff;
+    border: 1px solid #bcc9d8;
+}
+QPushButton#startSecondaryButton:hover {
+    color: #174ea6;
+    background: #f3f7fc;
+    border-color: #96add0;
+}
+QPushButton#startInlineButton {
+    min-height: 24px;
+    padding: 0 8px;
+    color: #174ea6;
+    background: #f5f8fc;
+    border: 1px solid #b8c9df;
+    border-radius: 3px;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QPushButton#startInlineButton:hover {
+    background: #e9f0fb;
+    border-color: #8facd2;
+}
+QFrame#startFooterPanel {
+    background: #ffffff;
+    border: 1px solid #dce4ed;
+    border-radius: 5px;
+}
+QFrame#startFooterDivider {
+    color: #dce4ed;
+}
+QLabel#startWorkflowSteps {
+    color: #36577f;
+    font-size: 8pt;
+    font-weight: 600;
 }
 QFrame#modelSidebar, QFrame#analysisSidebar {
     background: #f8fafc;

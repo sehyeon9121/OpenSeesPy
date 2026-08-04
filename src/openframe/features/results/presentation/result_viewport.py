@@ -1,12 +1,13 @@
 """Structural result canvas with deformation overlay controls."""
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
     QGraphicsItem,
     QGraphicsLineItem,
+    QGraphicsPathItem,
     QGraphicsView,
     QHBoxLayout,
     QLabel,
@@ -23,9 +24,22 @@ from openframe.core.domain import (
     StructuralModel,
     UnitSystem,
 )
+from openframe.features.results.deformation import (
+    largest_displacement,
+    member_deflection,
+    nodal_displacements,
+)
 from openframe.features.results.diagrams import DiagramKind
+from openframe.features.results.magnitudes import magnitude_range, member_magnitudes
 from openframe.features.results.presentation.frame_diagram_renderer import (
     FrameDiagramRenderer,
+)
+from openframe.features.results.presentation.node_displacement_item import (
+    NodeDisplacementItem,
+)
+from openframe.features.results.presentation.result_color_scale import (
+    color_for_ratio,
+    ratio_of,
 )
 from openframe.features.results.presentation.support_reaction_item import (
     SupportReactionItem,
@@ -155,6 +169,8 @@ class ResultViewport(QFrame):
             return
 
         self.scene.set_model(self._model)
+        magnitudes = self._member_magnitudes()
+        _, peak = magnitude_range(magnitudes)
         for item in self.scene.items():
             identity = item.data(0)
             if not isinstance(identity, tuple) or not identity:
@@ -163,12 +179,20 @@ class ResultViewport(QFrame):
                 item.setVisible(False)
             elif identity[0] in {"node", "element"}:
                 item.setVisible(self.show_undeformed.isChecked())
-                if force_diagram and identity[0] == "element":
+                if identity[0] == "element" and magnitudes:
+                    # Colour the member by how large the active quantity is on it, so the
+                    # legend beside the viewport reads as a real scale.
+                    ratio = ratio_of(magnitudes.get(identity[1], 0.0), peak)
+                    member_pen = QPen(color_for_ratio(ratio), 2.7)
+                    member_pen.setCosmetic(True)
+                    item.setPen(member_pen)
+                elif identity[0] == "element" and force_diagram:
                     base_pen = QPen(QColor("#26364a"), 2.7)
                     base_pen.setCosmetic(True)
                     item.setPen(base_pen)
 
         self._draw_deformed_shape()
+        self._draw_nodal_displacements()
         self._draw_support_reactions()
         diagram_offset = self._draw_force_diagram()
         x_values = [node.x for node in self._model.nodes.values()]
@@ -183,6 +207,11 @@ class ResultViewport(QFrame):
                 max(y_values) - min(y_values) + 2 * margin,
             )
 
+    def _member_magnitudes(self) -> dict[int, float]:
+        if self._model is None or self._result is None:
+            return {}
+        return member_magnitudes(self._model, self._result, self._result_type)
+
     def _draw_deformed_shape(self) -> None:
         if self._model is None or self._result is None:
             return
@@ -192,24 +221,68 @@ class ResultViewport(QFrame):
         scale = float(self.deformation_scale.value())
         pen = QPen(QColor("#e5484d"), 2.4)
         pen.setCosmetic(True)
-        for element in self._model.elements.values():
-            node_i = self._model.nodes[element.node_i]
-            node_j = self._model.nodes[element.node_j]
-            result_i = self._result.node_results.get(node_i.tag)
-            result_j = self._result.node_results.get(node_j.tag)
-            ux_i, uy_i = self._translation(result_i)
-            ux_j, uy_j = self._translation(result_j)
-            line = QGraphicsLineItem(
-                node_i.x + ux_i * scale,
-                -(node_i.y + uy_i * scale),
-                node_j.x + ux_j * scale,
-                -(node_j.y + uy_j * scale),
+        for element_tag in self._model.elements:
+            stations = member_deflection(self._model, self._result, element_tag)
+            if len(stations) < 2:
+                continue
+            # A curve through the rebuilt stations, so a member that sags between two
+            # fixed nodes is drawn sagging instead of straight.
+            path = QPainterPath()
+            path.moveTo(
+                stations[0].x + stations[0].ux * scale,
+                -(stations[0].y + stations[0].uy * scale),
             )
-            line.setPen(pen)
-            line.setZValue(8.0)
-            line.setData(0, ("result_deformation", element.tag))
-            line.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-            self.scene.addItem(line)
+            for station in stations[1:]:
+                path.lineTo(
+                    station.x + station.ux * scale,
+                    -(station.y + station.uy * scale),
+                )
+            item = QGraphicsPathItem(path)
+            item.setPen(pen)
+            item.setZValue(8.0)
+            item.setData(0, ("result_deformation", element_tag))
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+            self.scene.addItem(item)
+
+    #: Above this many moving nodes every label would overlap, so only the largest
+    #: displacement is named and the rest are read from the table or a tooltip.
+    _LABEL_ALL_LIMIT = 20
+
+    def _draw_nodal_displacements(self) -> None:
+        if self._model is None or self._result is None:
+            return
+        if self._result_type != "displacement":
+            return
+
+        displacements = nodal_displacements(self._model, self._result)
+        moving = [item for item in displacements if item.moves]
+        if not moving:
+            return
+        peak = largest_displacement(displacements)
+        label_all = len(moving) <= self._LABEL_ALL_LIMIT
+
+        scale = float(self.deformation_scale.value())
+        connector_pen = QPen(QColor("#b4530a"), 1.2, Qt.PenStyle.DashLine)
+        connector_pen.setCosmetic(True)
+
+        for item in moving:
+            displaced_x = item.x + item.ux * scale
+            displaced_y = -(item.y + item.uy * scale)
+            connector = QGraphicsLineItem(item.x, -item.y, displaced_x, displaced_y)
+            connector.setPen(connector_pen)
+            connector.setZValue(8.5)
+            connector.setData(0, ("result_displacement_vector", item.node_tag))
+            self.scene.addItem(connector)
+
+            is_peak = peak is not None and item.node_tag == peak.node_tag
+            marker = NodeDisplacementItem(
+                item,
+                is_peak=is_peak,
+                show_label=label_all or is_peak,
+                unit_system=self._unit_system,
+            )
+            marker.setPos(displaced_x, displaced_y)
+            self.scene.addItem(marker)
 
     def _draw_support_reactions(self) -> None:
         if self._model is None or self._result is None:

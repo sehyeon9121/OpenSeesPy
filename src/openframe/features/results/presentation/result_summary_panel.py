@@ -2,6 +2,7 @@
 
 import math
 from collections.abc import Sequence
+from typing import ClassVar
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -21,9 +22,16 @@ from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
     AnalysisResult,
     AnalysisStatus,
+    StructuralModel,
     UnitSystem,
 )
 from openframe.features.results.diagrams import max_abs_value, member_diagrams
+from openframe.features.results.magnitudes import (
+    DISPLACEMENT_TYPES,
+    FORCE_INDEX,
+    magnitude_range,
+    member_magnitudes,
+)
 
 
 class ResultSummaryPanel(QFrame):
@@ -34,7 +42,9 @@ class ResultSummaryPanel(QFrame):
         self.setObjectName("resultSummaryPanel")
         self.setMinimumWidth(245)
         self.setMaximumWidth(310)
+        self._model: StructuralModel | None = None
         self._result: AnalysisResult | None = None
+        self._result_type = "overview"
         self._unit_system = DEFAULT_UNIT_SYSTEM
 
         layout = QVBoxLayout(self)
@@ -70,10 +80,16 @@ class ResultSummaryPanel(QFrame):
         self.legend.setTextVisible(False)
         layout.addWidget(self.legend)
         legend_labels = QHBoxLayout()
-        legend_labels.addWidget(QLabel("MIN"))
+        self.legend_minimum = QLabel("MIN")
+        self.legend_maximum = QLabel("MAX")
+        legend_labels.addWidget(self.legend_minimum)
         legend_labels.addStretch(1)
-        legend_labels.addWidget(QLabel("MAX"))
+        legend_labels.addWidget(self.legend_maximum)
         layout.addLayout(legend_labels)
+        self.legend_caption = QLabel("Run an analysis to colour the members.")
+        self.legend_caption.setObjectName("resultDetailsText")
+        self.legend_caption.setWordWrap(True)
+        layout.addWidget(self.legend_caption)
 
         selected_title = QLabel("SELECTED ELEMENT")
         selected_title.setObjectName("resultGroupLabel")
@@ -103,6 +119,14 @@ class ResultSummaryPanel(QFrame):
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         self._unit_system = unit_system
+        self._refresh()
+
+    def set_model(self, model: StructuralModel) -> None:
+        self._model = model
+        self._refresh()
+
+    def set_result_type(self, result_type: str) -> None:
+        self._result_type = result_type
         self._refresh()
 
     def show_result(self, result: AnalysisResult) -> None:
@@ -158,6 +182,7 @@ class ResultSummaryPanel(QFrame):
             self.metric_values["moment"].setText(f"—  {unit.moment}")
             self.metric_values["shear"].setText(f"—  {unit.force}")
             self.metric_values["axial"].setText(f"—  {unit.force}")
+            self._refresh_legend()
             self._refresh_end_forces()
             return
 
@@ -196,7 +221,46 @@ class ResultSummaryPanel(QFrame):
         self.metric_values["axial"].setText(
             f"{max_abs_value(axial):.6g}  {unit.force}"
         )
+        self._refresh_legend()
         self._refresh_end_forces()
+
+    #: What the coloured members mean for each result type.
+    _LEGEND_CAPTIONS: ClassVar[dict[str, str]] = {
+        "axial": "Members coloured by peak axial force.",
+        "shear": "Members coloured by peak shear force.",
+        "moment": "Members coloured by peak bending moment.",
+        "overview": "Members coloured by nodal displacement.",
+        "deformation": "Members coloured by nodal displacement.",
+        "displacement": "Members coloured by nodal displacement.",
+    }
+
+    def _refresh_legend(self) -> None:
+        unit = self._unit_system
+        result = self._result
+        if (
+            self._model is None
+            or result is None
+            or result.status != AnalysisStatus.COMPLETED
+            or self._result_type not in self._LEGEND_CAPTIONS
+        ):
+            self.legend_minimum.setText("MIN")
+            self.legend_maximum.setText("MAX")
+            self.legend_caption.setText(
+                "Choose a force diagram or a displacement view to colour the members."
+            )
+            return
+
+        magnitudes = member_magnitudes(self._model, result, self._result_type)
+        lowest, highest = magnitude_range(magnitudes)
+        if self._result_type in FORCE_INDEX:
+            symbol = unit.moment if self._result_type == "moment" else unit.force
+        elif self._result_type in DISPLACEMENT_TYPES:
+            symbol = unit.length
+        else:
+            symbol = ""
+        self.legend_minimum.setText(f"{lowest:.4g} {symbol}")
+        self.legend_maximum.setText(f"{highest:.4g} {symbol}")
+        self.legend_caption.setText(self._LEGEND_CAPTIONS[self._result_type])
 
     def _member_selected(self) -> None:
         self._refresh_end_forces()

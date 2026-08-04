@@ -37,9 +37,12 @@ ops.node(node_b, 7.0, 0.0)
 ops.fix(node_a, 1, 1, 0)  # A: pin
 ops.fix(node_b, 0, 1, 0)  # B: vertical roller
 
-area = 0.02
+# Roughly an H-500x200 steel section. The frame is statically determinate, so the
+# section does not change any reaction or member force; it is chosen so the deflected
+# shape comes out at a believable size instead of metres.
+area = 0.0114
 elastic_modulus = 200_000_000.0
-moment_of_inertia = 8.0e-5
+moment_of_inertia = 4.78e-4
 ops.geomTransf("Linear", 1)
 ops.element(
     "elasticBeamColumn", 1, node_a, node_d, area, elastic_modulus, moment_of_inertia, 1

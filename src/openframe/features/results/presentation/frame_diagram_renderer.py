@@ -34,6 +34,11 @@ PLOT_SIDE = {
     DiagramKind.MOMENT: 1.0,
 }
 
+# Solver noise (e.g. 2e-12 on a member that carries no axial force) is relative to
+# whatever the largest value in the diagram is, so an absolute cutoff either misses it
+# on a small model or hides real values on a very large one.
+_RELATIVE_NOISE_TOLERANCE = 1.0e-9
+
 
 def _sign_runs(diagram: MemberDiagram) -> list[tuple[int, int]]:
     """Index ranges over which the diagram keeps one sign."""
@@ -184,8 +189,8 @@ class FrameDiagramRenderer:
             connector.setData(0, ("result_diagram_connector", element_tag))
             scene.addItem(connector)
 
-        self._draw_signs(scene, element_tag, diagram, base_points, diagram_points)
-        self._draw_values(scene, element_tag, diagram, diagram_points, unit)
+        self._draw_signs(scene, element_tag, diagram, base_points, diagram_points, maximum)
+        self._draw_values(scene, element_tag, diagram, diagram_points, unit, maximum)
 
     def _draw_signs(
         self,
@@ -194,13 +199,15 @@ class FrameDiagramRenderer:
         diagram: MemberDiagram,
         base_points: list[QPointF],
         diagram_points: list[QPointF],
+        maximum: float,
     ) -> None:
         # One marker per stretch of constant sign; a sampled member has many points and
         # marking every segment would bury the diagram under symbols.
+        noise_floor = maximum * _RELATIVE_NOISE_TOLERANCE
         for start, end in _sign_runs(diagram):
             middle = (start + end) // 2
             value = diagram.points[middle].value
-            if abs(value) <= 1.0e-12:
+            if abs(value) <= noise_floor:
                 continue
             position = self._interpolate(base_points[middle], diagram_points[middle], 0.58)
             self._add_text(
@@ -219,6 +226,7 @@ class FrameDiagramRenderer:
         diagram: MemberDiagram,
         diagram_points: list[QPointF],
         unit: str,
+        maximum: float,
     ) -> None:
         first = diagram.points[0]
         last = diagram.points[-1]
@@ -238,8 +246,9 @@ class FrameDiagramRenderer:
         if peak is not None:
             labelled.append((diagram.points[peak].value, diagram_points[peak]))
 
+        noise_floor = maximum * _RELATIVE_NOISE_TOLERANCE
         for value, position in labelled:
-            if abs(value) <= 1.0e-12:
+            if abs(value) <= noise_floor:
                 continue
             self._add_text(
                 scene,

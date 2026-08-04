@@ -93,6 +93,7 @@ class OpenSeesProcessRunner:
                 local_forces=tuple(float(value) for value in item.get("local_forces", [])),
                 length=float(item.get("length", 0.0)),
                 uniform_load=_uniform_load(item.get("uniform_load", ())),
+                flexural_rigidity=float(item.get("flexural_rigidity", 0.0)),
             )
             for item in payload.get("element_results", [])
         }

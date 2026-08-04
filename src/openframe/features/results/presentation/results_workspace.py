@@ -69,6 +69,7 @@ class ResultsWorkspace(QFrame):
         self.clear_result()
         self.viewport.set_model(model)
         self.data_panel.set_model(model)
+        self.summary.set_model(model)
 
     def show_result(self, result: AnalysisResult) -> None:
         self.viewport.show_result(result)
@@ -92,3 +93,4 @@ class ResultsWorkspace(QFrame):
     def _set_result_type(self, result_type: str) -> None:
         self.viewport.set_result_type(result_type)
         self.data_panel.set_result_type(result_type)
+        self.summary.set_result_type(result_type)

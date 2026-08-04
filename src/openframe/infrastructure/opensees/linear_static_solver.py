@@ -7,6 +7,7 @@ from typing import Any
 import openseespy.opensees as ops
 
 from openframe.infrastructure.opensees.element_load_collector import ElementLoadCollector
+from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
 from openframe.infrastructure.opensees.script_execution import run_model_script
 
 
@@ -41,11 +42,16 @@ def run_linear_static_analysis(source: Path) -> dict[str, Any]:
     patterns are applied exactly once, by the single static step below.
     """
     load_collector = ElementLoadCollector()
+    # The section properties are only knowable from the element() call itself, and the
+    # deflected shape between two nodes cannot be rebuilt without EI.
+    property_collector = ModelCommandCollector()
     load_collector.install()
+    property_collector.install()
     try:
         run_model_script(source)
     finally:
         load_collector.restore()
+        property_collector.restore()
 
     node_tags = [int(tag) for tag in ops.getNodeTags()]
     element_tags = [int(tag) for tag in ops.getEleTags()]
@@ -82,11 +88,21 @@ def run_linear_static_analysis(source: Path) -> dict[str, Any]:
                 "local_forces": _local_forces(tag),
                 "length": _element_length(tag),
                 "uniform_load": list(load_collector.uniform_loads.get(tag, (0.0, 0.0))),
+                "flexural_rigidity": _flexural_rigidity(property_collector, tag),
             }
             for tag in element_tags
         ],
         "messages": _load_warnings(load_collector, element_tags),
     }
+
+
+def _flexural_rigidity(collector: ModelCommandCollector, element_tag: int) -> float:
+    """Return EI, or 0.0 for elements whose section properties are not known."""
+    properties = collector.elements.get(element_tag, {}).get("properties", {})
+    try:
+        return float(properties["E"]) * float(properties["I"])
+    except (KeyError, TypeError, ValueError):
+        return 0.0
 
 
 def _load_warnings(collector: ElementLoadCollector, element_tags: list[int]) -> list[str]:

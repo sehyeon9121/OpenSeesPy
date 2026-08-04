@@ -51,11 +51,15 @@ def support_reactions(
         values = (*node_result.reaction, 0.0, 0.0, 0.0)
         raw.append((node_tag, float(values[0]), float(values[1]), float(values[2])))
 
-    force_scale = max(
-        (max(abs(fx), abs(fy)) for _, fx, fy, _ in raw),
+    # A single scale for both quantities: a structure with only pins and rollers has no
+    # real moment reaction anywhere, so judging Mz noise against other Mz values alone
+    # would compare noise to noise and let it through. Forces and moments are different
+    # units, but both come out of the same linear solve, so the larger of the two is a
+    # reasonable stand-in for "how big are real numbers in this result".
+    scale = max(
+        (max(abs(fx), abs(fy), abs(mz)) for _, fx, fy, mz in raw),
         default=0.0,
     )
-    moment_scale = max((abs(mz) for _, _, _, mz in raw), default=0.0)
 
     reactions: list[SupportReaction] = []
     for node_tag, fx, fy, mz in raw:
@@ -65,9 +69,9 @@ def support_reactions(
                 node_tag=node_tag,
                 x=node.x,
                 y=node.y,
-                fx=_denoise(fx, force_scale),
-                fy=_denoise(fy, force_scale),
-                mz=_denoise(mz, moment_scale),
+                fx=_denoise(fx, scale),
+                fy=_denoise(fy, scale),
+                mz=_denoise(mz, scale),
             )
         )
     return tuple(reactions)
