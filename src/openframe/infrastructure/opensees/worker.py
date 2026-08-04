@@ -2,18 +2,19 @@
 
 import argparse
 import json
-import runpy
 import traceback
 from pathlib import Path
 
 from openframe.infrastructure.opensees.linear_static_solver import run_linear_static_analysis
 from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
+from openframe.infrastructure.opensees.script_execution import run_model_script
 
 
 def collect_model(source: Path) -> dict[str, object]:
+    """Read the model out of ``source``. Importing a file never solves it."""
     collector = ModelCommandCollector()
     collector.install()
-    runpy.run_path(str(source), run_name="__main__")
+    run_model_script(source)
     return collector.to_payload()
 
 

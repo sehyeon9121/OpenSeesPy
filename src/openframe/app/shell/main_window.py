@@ -201,6 +201,8 @@ class MainWindow(QMainWindow):
 
         request = AnalysisRequest(source_path=self._current_model_source, kind=kind)
 
+        # The previous run's numbers must not linger next to a fresh one.
+        self.results_workspace.clear_result()
         self.header.set_busy(True, "RUNNING ANALYSIS")
         self.statusBar().showMessage(f"Running analysis · {kind.value}")
         thread = AnalysisRunThread(self._run_analysis_service, request)

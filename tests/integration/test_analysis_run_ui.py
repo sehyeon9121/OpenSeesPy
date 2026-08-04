@@ -15,7 +15,9 @@ from openframe.features.model.application.open_model import OpenModelService
 from openframe.infrastructure.opensees.model_importer import OpenSeesModelImporter
 from openframe.infrastructure.opensees.runner import OpenSeesProcessRunner
 
-EXAMPLE_MODEL = Path(__file__).parents[2] / "examples" / "portal_frame_2d.py"
+EXAMPLES = Path(__file__).parents[2] / "examples"
+EXAMPLE_MODEL = EXAMPLES / "portal_frame_2d.py"
+SECOND_MODEL = EXAMPLES / "simply_supported_beam_2d.py"
 
 
 def _run_thread_to_completion(thread) -> None:
@@ -82,6 +84,52 @@ def test_run_button_flow_populates_results_workspace() -> None:
     assert diagram_labels
     assert window.results_workspace.viewport.mode_badge.text() == "BENDING MOMENT (M)"
 
+    window.close()
+
+
+def test_loading_a_second_model_clears_results_and_allows_a_new_run() -> None:
+    application = QApplication.instance() or QApplication([])
+
+    model_service = OpenModelService(OpenSeesModelImporter(timeout_seconds=10))
+    runner = OpenSeesProcessRunner(timeout_seconds=15)
+    analysis_service = RunAnalysisService(
+        {AnalysisKind.LINEAR_STATIC: LinearStaticAnalysis(runner)}
+    )
+    window = MainWindow(open_model_service=model_service, run_analysis_service=analysis_service)
+    workspace = window.results_workspace
+
+    window._start_model_load(EXAMPLE_MODEL)
+    _run_thread_to_completion(window._model_load_thread)
+    application.processEvents()
+    window._run_analysis()
+    _run_thread_to_completion(window._analysis_run_thread)
+    application.processEvents()
+    assert workspace.summary.status_badge.text() == "COMPLETED"
+
+    window._start_model_load(SECOND_MODEL)
+    _run_thread_to_completion(window._model_load_thread)
+    application.processEvents()
+
+    # The previous run's numbers must not survive next to a different model.
+    assert workspace.summary.status_badge.text() == "WAITING"
+    assert workspace.summary.member_selector.count() == 0
+    assert workspace.data_panel.member_selector.count() == 0
+    assert workspace.data_panel.result_table.rowCount() == 0
+    assert not [
+        item
+        for item in workspace.viewport.scene.items()
+        if isinstance(item.data(0), tuple) and item.data(0)[0] == "result_deformation"
+    ]
+
+    window._run_analysis()
+    thread = window._analysis_run_thread
+    assert thread is not None
+    _run_thread_to_completion(thread)
+    application.processEvents()
+
+    assert workspace.summary.status_badge.text() == "COMPLETED"
+    assert workspace.data_panel.result_table.rowCount() == 3
+    assert workspace.summary.member_selector.count() == 2
     window.close()
 
 

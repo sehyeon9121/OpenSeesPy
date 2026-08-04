@@ -1,6 +1,7 @@
 """Result maxima, legend and selected-member local forces."""
 
 import math
+from collections.abc import Sequence
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -106,12 +107,21 @@ class ResultSummaryPanel(QFrame):
 
     def show_result(self, result: AnalysisResult) -> None:
         self._result = result
+        self._fill_member_selector(sorted(result.element_results))
+        self._refresh()
+
+    def clear_result(self) -> None:
+        """Drop the summarised result so a new model never shows the previous one."""
+        self._result = None
+        self._fill_member_selector(())
+        self._refresh()
+
+    def _fill_member_selector(self, element_tags: Sequence[int]) -> None:
         self.member_selector.blockSignals(True)
         self.member_selector.clear()
-        for element_tag in sorted(result.element_results):
+        for element_tag in element_tags:
             self.member_selector.addItem(f"Element {element_tag}", element_tag)
         self.member_selector.blockSignals(False)
-        self._refresh()
 
     def select_member(self, element_tag: int) -> None:
         index = self.member_selector.findData(element_tag)

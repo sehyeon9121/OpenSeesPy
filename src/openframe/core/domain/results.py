@@ -22,6 +22,10 @@ class NodeResult:
 class ElementResult:
     element_tag: int
     local_forces: tuple[float, ...] = ()
+    #: Member length, needed to evaluate internal forces between the two ends.
+    length: float = 0.0
+    #: Distributed load (wx, wy) along the member's own axes, zero when none applies.
+    uniform_load: tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass(slots=True)

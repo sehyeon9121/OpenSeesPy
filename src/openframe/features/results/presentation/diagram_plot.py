@@ -68,7 +68,13 @@ class DiagramPlot(QWidget):
 
         font_metrics = painter.fontMetrics()
         label_height = float(font_metrics.height() + 2)
-        point_labels = [self._point_label(value) for value in values]
+        # A sampled member carries many points; labelling each one makes the plot
+        # unreadable, so only the ends and the peak between them are named.
+        labelled_indexes = self._labelled_indexes(values)
+        point_labels = [
+            self._point_label(value) if index in labelled_indexes else ""
+            for index, value in enumerate(values)
+        ]
         widest_point_label = max(
             (font_metrics.horizontalAdvance(label) for label in point_labels),
             default=0,
@@ -148,6 +154,8 @@ class DiagramPlot(QWidget):
 
         painter.setPen(QColor("#1f2937"))
         for point, label in zip(points, point_labels, strict=True):
+            if not label:
+                continue
             x, y = to_screen(point.position, point.value)
             label_width = float(font_metrics.horizontalAdvance(label) + 8)
             offset = -(label_height + 4.0) if point.value >= 0 else 4.0
@@ -162,3 +170,15 @@ class DiagramPlot(QWidget):
     def _point_label(self, value: float) -> str:
         label = f"{value:.3g}"
         return f"{label} {self._unit}" if self._unit else label
+
+    @staticmethod
+    def _labelled_indexes(values: list[float]) -> set[int]:
+        """Both ends, plus the largest interior value when it exceeds them."""
+        if len(values) <= 2:
+            return set(range(len(values)))
+        indexes = {0, len(values) - 1}
+        interior = range(1, len(values) - 1)
+        peak = max(interior, key=lambda index: abs(values[index]))
+        if abs(values[peak]) > max(abs(values[0]), abs(values[-1])) * (1.0 + 1.0e-9):
+            indexes.add(peak)
+        return indexes

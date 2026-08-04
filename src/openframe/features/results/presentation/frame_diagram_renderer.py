@@ -35,6 +35,32 @@ PLOT_SIDE = {
 }
 
 
+def _sign_runs(diagram: MemberDiagram) -> list[tuple[int, int]]:
+    """Index ranges over which the diagram keeps one sign."""
+    runs: list[tuple[int, int]] = []
+    start = 0
+    for index in range(1, len(diagram.points)):
+        previous = diagram.points[index - 1].value
+        current = diagram.points[index].value
+        if previous * current < 0.0:
+            runs.append((start, index - 1))
+            start = index
+    runs.append((start, len(diagram.points) - 1))
+    return runs
+
+
+def _interior_peak_index(diagram: MemberDiagram) -> int | None:
+    """Index of the largest value strictly inside the member, if it beats both ends."""
+    if len(diagram.points) <= 2:
+        return None
+    end_peak = max(abs(diagram.points[0].value), abs(diagram.points[-1].value))
+    interior = range(1, len(diagram.points) - 1)
+    candidate = max(interior, key=lambda index: abs(diagram.points[index].value))
+    if abs(diagram.points[candidate].value) <= end_peak * (1.0 + 1.0e-9):
+        return None
+    return candidate
+
+
 class FrameDiagramRenderer:
     def render(
         self,
@@ -169,30 +195,22 @@ class FrameDiagramRenderer:
         base_points: list[QPointF],
         diagram_points: list[QPointF],
     ) -> None:
-        for index in range(len(diagram.points) - 1):
-            first = diagram.points[index]
-            second = diagram.points[index + 1]
-            if first.value * second.value < 0.0:
-                fractions = (0.25, 0.75)
-            else:
-                fractions = (0.5,)
-            for fraction in fractions:
-                value = first.value + (second.value - first.value) * fraction
-                if abs(value) <= 1.0e-12:
-                    continue
-                base = self._interpolate(base_points[index], base_points[index + 1], fraction)
-                curve = self._interpolate(
-                    diagram_points[index], diagram_points[index + 1], fraction
-                )
-                position = self._interpolate(base, curve, 0.58)
-                self._add_text(
-                    scene,
-                    "+" if value > 0.0 else "−",
-                    position,
-                    QColor("#2c1d43"),
-                    10,
-                    ("result_diagram_sign", element_tag),
-                )
+        # One marker per stretch of constant sign; a sampled member has many points and
+        # marking every segment would bury the diagram under symbols.
+        for start, end in _sign_runs(diagram):
+            middle = (start + end) // 2
+            value = diagram.points[middle].value
+            if abs(value) <= 1.0e-12:
+                continue
+            position = self._interpolate(base_points[middle], diagram_points[middle], 0.58)
+            self._add_text(
+                scene,
+                "+" if value > 0.0 else "−",
+                position,
+                QColor("#2c1d43"),
+                10,
+                ("result_diagram_sign", element_tag),
+            )
 
     def _draw_values(
         self,
@@ -205,10 +223,22 @@ class FrameDiagramRenderer:
         first = diagram.points[0]
         last = diagram.points[-1]
         if math.isclose(first.value, last.value, rel_tol=1.0e-6, abs_tol=1.0e-9):
-            positions = ((first.value, self._interpolate(diagram_points[0], diagram_points[-1], 0.5)),)
+            labelled = [
+                (first.value, self._interpolate(diagram_points[0], diagram_points[-1], 0.5))
+            ]
         else:
-            positions = ((first.value, diagram_points[0]), (last.value, diagram_points[-1]))
-        for value, position in positions:
+            labelled = [
+                (first.value, diagram_points[0]),
+                (last.value, diagram_points[-1]),
+            ]
+
+        # On a sampled member the peak sits between the ends, and it is the number the
+        # engineer is looking for, so label it as well.
+        peak = _interior_peak_index(diagram)
+        if peak is not None:
+            labelled.append((diagram.points[peak].value, diagram_points[peak]))
+
+        for value, position in labelled:
             if abs(value) <= 1.0e-12:
                 continue
             self._add_text(

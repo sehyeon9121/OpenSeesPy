@@ -65,12 +65,21 @@ class ResultsWorkspace(QFrame):
         self._set_result_type("overview")
 
     def set_model(self, model: StructuralModel) -> None:
+        # A different model invalidates whatever the previous run produced.
+        self.clear_result()
         self.viewport.set_model(model)
+        self.data_panel.set_model(model)
 
     def show_result(self, result: AnalysisResult) -> None:
         self.viewport.show_result(result)
         self.data_panel.show_result(result)
         self.summary.show_result(result)
+
+    def clear_result(self) -> None:
+        """Return the workspace to its waiting state, keeping the drawn model."""
+        self.viewport.clear_result()
+        self.data_panel.clear_result()
+        self.summary.clear_result()
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         self.viewport.set_unit_system(unit_system)

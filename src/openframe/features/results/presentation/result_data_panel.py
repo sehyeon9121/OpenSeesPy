@@ -1,5 +1,7 @@
 """Graph, table and detail views for the active result quantity."""
 
+from collections.abc import Sequence
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -14,9 +16,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from openframe.core.domain import DEFAULT_UNIT_SYSTEM, AnalysisResult, UnitSystem
+from openframe.core.domain import (
+    DEFAULT_UNIT_SYSTEM,
+    AnalysisResult,
+    StructuralModel,
+    UnitSystem,
+)
 from openframe.features.results.diagrams import member_diagrams
 from openframe.features.results.presentation.diagram_plot import DiagramPlot
+from openframe.features.results.reactions import support_reactions
 
 
 class ResultDataPanel(QFrame):
@@ -25,6 +33,7 @@ class ResultDataPanel(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("resultDataPanel")
+        self._model: StructuralModel | None = None
         self._result: AnalysisResult | None = None
         self._result_type = "overview"
         self._unit_system = DEFAULT_UNIT_SYSTEM
@@ -101,18 +110,31 @@ class ResultDataPanel(QFrame):
         button.setToolTip(tooltip)
         return button
 
+    def set_model(self, model: StructuralModel) -> None:
+        self._model = model
+        self._refresh()
+
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         self._unit_system = unit_system
         self._refresh()
 
     def show_result(self, result: AnalysisResult) -> None:
         self._result = result
+        self._fill_member_selector(sorted(result.element_results))
+        self._refresh()
+
+    def clear_result(self) -> None:
+        """Drop the tabulated result so a new model never shows the previous one."""
+        self._result = None
+        self._fill_member_selector(())
+        self._refresh()
+
+    def _fill_member_selector(self, element_tags: Sequence[int]) -> None:
         self.member_selector.blockSignals(True)
         self.member_selector.clear()
-        for element_tag in sorted(result.element_results):
+        for element_tag in element_tags:
             self.member_selector.addItem(f"Element {element_tag}", element_tag)
         self.member_selector.blockSignals(False)
-        self._refresh()
 
     def set_result_type(self, result_type: str) -> None:
         self._result_type = result_type
@@ -142,7 +164,10 @@ class ResultDataPanel(QFrame):
             "shear": "SHEAR FORCE (V)",
             "moment": "BENDING MOMENT (M)",
         }
-        self.quantity_label.setText(names[diagram_key])
+        # The graph always plots a member force, but the header names what the table shows.
+        self.quantity_label.setText(
+            "SUPPORT REACTIONS" if self._result_type == "reaction" else names[diagram_key]
+        )
 
         diagram = None
         element_tag = self.member_selector.currentData()
@@ -185,6 +210,32 @@ class ResultDataPanel(QFrame):
                 values = (*element.local_forces, 0.0, 0.0, 0.0)
                 for column, value in enumerate(
                     (element.element_tag, values[0], values[1], values[2])
+                ):
+                    self.result_table.setItem(
+                        row,
+                        column,
+                        QTableWidgetItem(str(value) if column == 0 else f"{value:.6g}"),
+                    )
+            return
+
+        if self._result_type == "reaction":
+            self.result_table.setHorizontalHeaderLabels(
+                (
+                    "NODE",
+                    f"RX ({unit.force})",
+                    f"RY ({unit.force})",
+                    f"MZ ({unit.moment})",
+                )
+            )
+            reactions = (
+                ()
+                if result is None or self._model is None
+                else support_reactions(self._model, result)
+            )
+            self.result_table.setRowCount(len(reactions))
+            for row, reaction in enumerate(reactions):
+                for column, value in enumerate(
+                    (reaction.node_tag, reaction.fx, reaction.fy, reaction.mz)
                 ):
                     self.result_table.setItem(
                         row,

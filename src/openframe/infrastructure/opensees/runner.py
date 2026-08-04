@@ -17,6 +17,11 @@ from openframe.core.domain import (
 )
 
 
+def _uniform_load(values: Any) -> tuple[float, float]:
+    padded = (*values, 0.0, 0.0)
+    return float(padded[0]), float(padded[1])
+
+
 class OpenSeesProcessRunner:
     def __init__(self, timeout_seconds: float = 30.0) -> None:
         self._timeout_seconds = timeout_seconds
@@ -86,6 +91,8 @@ class OpenSeesProcessRunner:
             int(item["element_tag"]): ElementResult(
                 element_tag=int(item["element_tag"]),
                 local_forces=tuple(float(value) for value in item.get("local_forces", [])),
+                length=float(item.get("length", 0.0)),
+                uniform_load=_uniform_load(item.get("uniform_load", ())),
             )
             for item in payload.get("element_results", [])
         }
@@ -93,4 +100,5 @@ class OpenSeesProcessRunner:
             status=AnalysisStatus.COMPLETED,
             node_results=node_results,
             element_results=element_results,
+            messages=[str(message) for message in payload.get("messages", [])],
         )

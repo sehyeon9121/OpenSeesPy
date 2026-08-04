@@ -27,6 +27,10 @@ from openframe.features.results.diagrams import DiagramKind
 from openframe.features.results.presentation.frame_diagram_renderer import (
     FrameDiagramRenderer,
 )
+from openframe.features.results.presentation.support_reaction_item import (
+    SupportReactionItem,
+)
+from openframe.features.results.reactions import support_reactions
 from openframe.features.viewport.scene import StructuralScene
 
 RESULT_TYPE_NAMES = {
@@ -115,6 +119,12 @@ class ResultViewport(QFrame):
         self._redraw()
         self.fit_model()
 
+    def clear_result(self) -> None:
+        """Drop the drawn result so a new model never shows the previous one."""
+        self._result = None
+        self._redraw()
+        self.fit_model()
+
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         self._unit_system = unit_system
         self.scene.set_unit_system(unit_system)
@@ -159,6 +169,7 @@ class ResultViewport(QFrame):
                     item.setPen(base_pen)
 
         self._draw_deformed_shape()
+        self._draw_support_reactions()
         diagram_offset = self._draw_force_diagram()
         x_values = [node.x for node in self._model.nodes.values()]
         y_values = [-node.y for node in self._model.nodes.values()]
@@ -199,6 +210,19 @@ class ResultViewport(QFrame):
             line.setData(0, ("result_deformation", element.tag))
             line.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             self.scene.addItem(line)
+
+    def _draw_support_reactions(self) -> None:
+        if self._model is None or self._result is None:
+            return
+        if self._result_type not in {"overview", "reaction"}:
+            return
+
+        for reaction in support_reactions(self._model, self._result):
+            if not (reaction.has_force or reaction.has_moment):
+                continue
+            item = SupportReactionItem(reaction, self._unit_system)
+            item.setPos(reaction.x, -reaction.y)
+            self.scene.addItem(item)
 
     def _draw_force_diagram(self) -> float:
         if self._model is None or self._result is None:

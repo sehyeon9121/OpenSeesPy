@@ -61,6 +61,29 @@ def test_portal_frame_columns_report_axial_not_shear() -> None:
     assert abs(sum(column_shears)) == pytest.approx(20.0, abs=1e-6)
 
 
+def test_uniformly_loaded_beam_reports_the_span_moment_not_zero() -> None:
+    """A single-element UDL span: both end moments are zero, the midspan is wL^2/8."""
+    result = _run(EXAMPLES / "udl_beam_2d.py")
+
+    # Reactions carry the whole 40 kN load, 20 kN at each support.
+    assert result.node_results[1].reaction[1] == pytest.approx(20.0, abs=1e-6)
+    assert result.node_results[2].reaction[1] == pytest.approx(20.0, abs=1e-6)
+
+    element = result.element_results[1]
+    assert element.length == pytest.approx(4.0)
+    assert element.uniform_load == pytest.approx((0.0, -10.0))
+
+    _, shear_diagram, moment_diagram = member_diagrams(element)
+    moments = _values(moment_diagram)
+    shears = _values(shear_diagram)
+
+    assert moments[0] == pytest.approx(0.0, abs=1e-6)
+    assert moments[-1] == pytest.approx(0.0, abs=1e-6)
+    assert max(moments) == pytest.approx(20.0, abs=1e-6)  # wL^2/8
+    assert shears[0] == pytest.approx(20.0, abs=1e-6)
+    assert shears[-1] == pytest.approx(-20.0, abs=1e-6)
+
+
 def test_textbook_portal_matches_shown_support_reactions() -> None:
     result = _run(EXAMPLES / "portal_frame_textbook_2d.py")
 
