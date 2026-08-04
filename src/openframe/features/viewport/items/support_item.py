@@ -25,6 +25,7 @@ class SupportItem(QGraphicsItem):
         super().__init__()
         self.kind = kind
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
         self.setZValue(-2.0)
         self.setData(0, ("support", node_tag))

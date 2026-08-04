@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -28,6 +29,7 @@ from openframe.features.analysis.presentation.analysis_run_thread import Analysi
 from openframe.features.model.application.open_model import OpenModelService
 from openframe.features.model.presentation.model_load_thread import ModelLoadThread
 from openframe.features.model.presentation.model_sidebar import ModelSidebar
+from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 from openframe.features.viewport.presentation.model_viewport import ModelViewport
 
 
@@ -59,7 +61,8 @@ class MainWindow(QMainWindow):
         self.viewport = ModelViewport()
         self.analysis_sidebar = AnalysisResultsSidebar()
         self.analysis_settings = self.analysis_sidebar.settings
-        self.results_panel = self.analysis_sidebar.results
+        self.model_inspector = self.analysis_sidebar.inspector
+        self.results_workspace = ResultsWorkspace()
         self.view = self.viewport.view
         self.scene = self.viewport.scene
 
@@ -74,9 +77,15 @@ class MainWindow(QMainWindow):
         self.workspace.setStretchFactor(2, 0)
         self.workspace.setSizes((255, 850, 300))
 
+        self.workspace_stack = QStackedWidget()
+        self.workspace_stack.setObjectName("workspaceStack")
+        self.workspace_stack.addWidget(self.workspace)
+        self.workspace_stack.addWidget(self.results_workspace)
+        self.workspace_stack.setCurrentWidget(self.workspace)
+
         root_layout.addWidget(self.header)
         root_layout.addWidget(self.navigation)
-        root_layout.addWidget(self.workspace, 1)
+        root_layout.addWidget(self.workspace_stack, 1)
         self.setCentralWidget(root)
 
         self._build_status_bar()
@@ -93,9 +102,12 @@ class MainWindow(QMainWindow):
         self.navigation.current_changed.connect(self._change_workspace_section)
         self.analysis_settings.analysis_kind_changed.connect(self._set_analysis_kind)
         self.viewport.unit_system_changed.connect(self._set_unit_system)
+        self.viewport.entity_selected.connect(self._entity_selected_from_viewport)
+        self.model_sidebar.entity_selected.connect(self._entity_selected_from_tree)
 
     def _set_unit_system(self, unit_system: UnitSystem) -> None:
-        self.results_panel.set_unit_system(unit_system)
+        self.model_inspector.set_unit_system(unit_system)
+        self.results_workspace.set_unit_system(unit_system)
         self.statusBar().showMessage(f"Model units changed | {unit_system.label}")
 
     def _choose_model_file(self) -> None:
@@ -130,6 +142,8 @@ class MainWindow(QMainWindow):
         self.model_sidebar.set_source_file(source)
         self.model_sidebar.set_model(model)
         self.viewport.set_model(model)
+        self.model_inspector.set_model(model)
+        self.results_workspace.set_model(model)
         self.statusBar().showMessage(
             f"Model loaded · Nodes {len(model.nodes)} · Elements {len(model.elements)}"
         )
@@ -152,11 +166,15 @@ class MainWindow(QMainWindow):
             "results": "Analysis results",
             "viewport": "Viewport focus",
         }
+        if section == "results":
+            self.workspace_stack.setCurrentWidget(self.results_workspace)
+            self.statusBar().showMessage("Results workspace | Ready")
+            return
+
+        self.workspace_stack.setCurrentWidget(self.workspace)
         focus_viewport = section == "viewport"
         self.model_sidebar.setVisible(not focus_viewport)
         self.analysis_sidebar.setVisible(not focus_viewport)
-        if section == "results":
-            self.results_panel.result_tabs.setFocus()
         self.statusBar().showMessage(f"{labels[section]} · Ready")
 
     def _set_analysis_kind(self, kind: AnalysisKind) -> None:
@@ -165,6 +183,7 @@ class MainWindow(QMainWindow):
             AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
             AnalysisKind.TIME_HISTORY: "Time History",
         }
+        self.results_workspace.set_analysis_kind(kind)
         self.statusBar().showMessage(f"Analysis type · {names[kind]}")
 
     def _run_analysis(self) -> None:
@@ -191,7 +210,7 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _analysis_completed(self, result: AnalysisResult) -> None:
-        self.results_panel.show_result(result)
+        self.results_workspace.show_result(result)
         if result.status == AnalysisStatus.COMPLETED:
             self.statusBar().showMessage(
                 f"Analysis completed · Nodes {len(result.node_results)}"
@@ -202,6 +221,14 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self, "해석 실행 실패", "\n".join(result.messages) or "알 수 없는 해석 오류"
             )
+
+    def _entity_selected_from_viewport(self, kind: str, tag: int) -> None:
+        self.model_sidebar.select_entity(kind, tag)
+        self.model_inspector.select_entity(kind, tag)
+
+    def _entity_selected_from_tree(self, kind: str, tag: int) -> None:
+        self.viewport.select_entity(kind, tag)
+        self.model_inspector.select_entity(kind, tag)
 
     def _analysis_run_finished(self) -> None:
         self.header.set_busy(False)

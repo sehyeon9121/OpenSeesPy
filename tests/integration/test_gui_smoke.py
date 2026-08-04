@@ -17,6 +17,20 @@ def test_main_window_can_be_constructed() -> None:
     assert window.windowTitle() == "OpenFrame Studio"
     assert window.view is window.viewport.view
     assert window.navigation.current_section() == "model"
+
+    window.navigation._buttons["results"].click()
+    assert window.navigation.current_section() == "results"
+    assert window.workspace_stack.currentWidget() is window.results_workspace
+    assert set(window.results_workspace.result_types.buttons) == {
+        "overview",
+        "deformation",
+        "displacement",
+        "reaction",
+        "axial",
+        "shear",
+        "moment",
+        "tables",
+    }
     assert window.analysis_settings.analysis_type.currentText() == "Linear Static"
     assert window.header.run_button.text() == "▶  RUN ANALYSIS"
 

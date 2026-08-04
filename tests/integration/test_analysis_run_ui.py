@@ -25,7 +25,7 @@ def _run_thread_to_completion(thread) -> None:
     loop.exec()
 
 
-def test_run_button_flow_populates_results_panel() -> None:
+def test_run_button_flow_populates_results_workspace() -> None:
     application = QApplication.instance() or QApplication([])
 
     model_service = OpenModelService(OpenSeesModelImporter(timeout_seconds=10))
@@ -47,26 +47,40 @@ def test_run_button_flow_populates_results_panel() -> None:
     application.processEvents()
 
     assert window._analysis_run_thread is None
-    assert window.results_panel.status_badge.text() == "COMPLETED"
-    assert window.results_panel.displacement_table.rowCount() == 4
+    assert window.results_workspace.summary.status_badge.text() == "COMPLETED"
+    assert window.results_workspace.data_panel.result_table.rowCount() == 4
+    assert window.results_workspace.summary.member_selector.count() == 3
 
     node_column_values = {
-        window.results_panel.displacement_table.item(row, 0).text()
-        for row in range(window.results_panel.displacement_table.rowCount())
+        window.results_workspace.data_panel.result_table.item(row, 0).text()
+        for row in range(window.results_workspace.data_panel.result_table.rowCount())
     }
     assert node_column_values == {"1", "2", "3", "4"}
 
     for key in ("axial", "shear", "moment"):
-        text = window.results_panel.result_values[key].text()
+        text = window.results_workspace.summary.metric_values[key].text()
         assert not text.startswith("—"), f"{key} value was left as the placeholder: {text}"
 
-    assert window.results_panel.member_selector.count() == 3
-    selected_tag = window.results_panel.member_selector.currentData()
+    selected_tag = window.results_workspace.data_panel.member_selector.currentData()
     assert selected_tag in {1, 2, 3}
-    for key in ("axial", "shear", "moment"):
-        plot = window.results_panel.diagram_plots[key]
-        assert plot._diagram is not None
-        assert plot._diagram.element_tag == selected_tag
+    plot = window.results_workspace.data_panel.diagram_plot
+    assert plot._diagram is not None
+    assert plot._diagram.element_tag == selected_tag
+
+    window.results_workspace.result_types.select_result_type("moment")
+    diagram_items = [
+        item
+        for item in window.results_workspace.viewport.scene.items()
+        if isinstance(item.data(0), tuple) and item.data(0)[0] == "result_diagram"
+    ]
+    diagram_labels = [
+        item
+        for item in window.results_workspace.viewport.scene.items()
+        if isinstance(item.data(0), tuple) and item.data(0)[0] == "result_diagram_label"
+    ]
+    assert len(diagram_items) == 3
+    assert diagram_labels
+    assert window.results_workspace.viewport.mode_badge.text() == "BENDING MOMENT (M)"
 
     window.close()
 

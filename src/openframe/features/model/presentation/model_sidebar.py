@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -25,11 +26,14 @@ SUPPORT_NAMES = {
 
 
 class ModelSidebar(QFrame):
+    entity_selected = Signal(str, int)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("modelSidebar")
         self.setMinimumWidth(230)
         self.setMaximumWidth(310)
+        self._tree_items: dict[tuple[str, int], QTreeWidgetItem] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -78,6 +82,7 @@ class ModelSidebar(QFrame):
         self.tree = QTreeWidget()
         self.tree.setObjectName("modelTree")
         self.tree.setHeaderHidden(True)
+        self.tree.currentItemChanged.connect(self._tree_selection_changed)
         self._show_empty_tree()
         layout.addWidget(self.tree, 1)
 
@@ -101,16 +106,20 @@ class ModelSidebar(QFrame):
         self.summary_values["supports"].setText(str(len(model.boundaries)))
 
         self.tree.clear()
+        self._tree_items.clear()
         nodes_item = QTreeWidgetItem(self.tree, [f"NODES  ({len(model.nodes)})"])
         for node in model.nodes.values():
-            QTreeWidgetItem(nodes_item, [f"Node {node.tag}   ({node.x:g}, {node.y:g})"])
+            item = QTreeWidgetItem(
+                nodes_item, [f"Node {node.tag}   ({node.x:g}, {node.y:g})"]
+            )
+            self._register_item(item, "node", node.tag)
 
         elements_item = QTreeWidgetItem(
             self.tree,
             [f"ELEMENTS  ({len(model.elements)})"],
         )
         for element in model.elements.values():
-            QTreeWidgetItem(
+            item = QTreeWidgetItem(
                 elements_item,
                 [
                     (
@@ -119,6 +128,7 @@ class ModelSidebar(QFrame):
                     )
                 ],
             )
+            self._register_item(item, "element", element.tag)
 
         supports_item = QTreeWidgetItem(
             self.tree,
@@ -126,7 +136,7 @@ class ModelSidebar(QFrame):
         )
         for boundary in model.boundaries:
             restraint_text = "".join("1" if value else "0" for value in boundary.restraints)
-            QTreeWidgetItem(
+            item = QTreeWidgetItem(
                 supports_item,
                 [
                     (
@@ -135,6 +145,7 @@ class ModelSidebar(QFrame):
                     )
                 ],
             )
+            self._register_item(item, "support", boundary.node_tag)
 
         loads_item = QTreeWidgetItem(
             self.tree,
@@ -142,9 +153,36 @@ class ModelSidebar(QFrame):
         )
         for load in model.nodal_loads:
             values = ", ".join(f"{value:g}" for value in load.values)
-            QTreeWidgetItem(loads_item, [f"Node {load.node_tag}   ({values})"])
+            item = QTreeWidgetItem(loads_item, [f"Node {load.node_tag}   ({values})"])
+            self._register_item(item, "load", load.node_tag)
 
         self.tree.expandToDepth(0)
+
+    def select_entity(self, kind: str, tag: int) -> None:
+        item = self._tree_items.get((kind, tag))
+        if item is None or item is self.tree.currentItem():
+            return
+        self.tree.blockSignals(True)
+        self.tree.setCurrentItem(item)
+        self.tree.scrollToItem(item)
+        self.tree.blockSignals(False)
+
+    def _register_item(self, item: QTreeWidgetItem, kind: str, tag: int) -> None:
+        identity = (kind, tag)
+        item.setData(0, Qt.ItemDataRole.UserRole, identity)
+        self._tree_items[identity] = item
+
+    def _tree_selection_changed(
+        self,
+        current: QTreeWidgetItem | None,
+        previous: QTreeWidgetItem | None,
+    ) -> None:
+        del previous
+        if current is None:
+            return
+        identity = current.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(identity, tuple) and len(identity) == 2:
+            self.entity_selected.emit(str(identity[0]), int(identity[1]))
 
     def _section_label(self, text: str) -> QLabel:
         label = QLabel(text)

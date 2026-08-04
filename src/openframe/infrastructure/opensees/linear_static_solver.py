@@ -7,6 +7,18 @@ from typing import Any
 import openseespy.opensees as ops
 
 
+def _local_forces(element_tag: int) -> list[float]:
+    """Return end forces along the member's own axes.
+
+    ``eleForce`` reports forces in global coordinates, which swaps N and V on any
+    member that is not horizontal, so the local-axis response is used instead.
+    Elements that do not implement it report no end forces rather than global ones
+    being silently misread as local.
+    """
+    response = ops.eleResponse(element_tag, "localForce")
+    return [float(value) for value in response]
+
+
 def run_linear_static_analysis(source: Path) -> dict[str, Any]:
     """Build the model by executing ``source``, solve it, and return raw results."""
     runpy.run_path(str(source), run_name="__main__")
@@ -37,7 +49,7 @@ def run_linear_static_analysis(source: Path) -> dict[str, Any]:
         "element_results": [
             {
                 "element_tag": tag,
-                "local_forces": [float(value) for value in ops.eleForce(tag)],
+                "local_forces": _local_forces(tag),
             }
             for tag in element_tags
         ],

@@ -87,11 +87,38 @@ class ModelCommandCollector:
                     "node_i": int(arguments[0]),
                     "node_j": int(arguments[1]),
                     "element_type": str(element_type),
-                    "properties": {},
+                    "properties": self._element_properties(element_type, arguments),
                 }
             return result
 
         return wrapped
+
+    @staticmethod
+    def _element_properties(
+        element_type: str,
+        arguments: tuple[Any, ...],
+    ) -> dict[str, float | str]:
+        properties: dict[str, float | str] = {}
+        element_name = element_type.lower()
+        if element_name == "elasticbeamcolumn" and len(arguments) >= 6:
+            properties.update(
+                {
+                    "A": float(arguments[2]),
+                    "E": float(arguments[3]),
+                    "I": float(arguments[4]),
+                    "transf_tag": str(arguments[5]),
+                }
+            )
+        elif element_name in {"truss", "trusssection", "corottruss"} and len(
+            arguments
+        ) >= 4:
+            properties.update(
+                {
+                    "A": float(arguments[2]),
+                    "material_tag": str(arguments[3]),
+                }
+            )
+        return properties
 
     def _wrap_fix(self, original: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped(node_tag: int, *restraints: Any, **kwargs: Any) -> Any:

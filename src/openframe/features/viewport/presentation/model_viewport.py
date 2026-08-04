@@ -30,6 +30,7 @@ from openframe.features.viewport.scene import StructuralScene
 
 class ModelViewport(QFrame):
     unit_system_changed = Signal(object)
+    entity_selected = Signal(str, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -68,6 +69,7 @@ class ModelViewport(QFrame):
         layout.addWidget(canvas_header)
 
         self.scene = StructuralScene(self)
+        self.scene.selectionChanged.connect(self._scene_selection_changed)
         self.view = QGraphicsView(self.scene)
         self.view.setObjectName("structuralView")
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -174,6 +176,31 @@ class ModelViewport(QFrame):
         if item_kind == "node":
             labels_visible = visible and self.filter_options["node_label"].isChecked()
             self._set_item_kind_visible("node_label", labels_visible)
+
+    def select_entity(self, kind: str, tag: int) -> None:
+        target = None
+        self.scene.blockSignals(True)
+        self.scene.clearSelection()
+        for item in self.scene.items():
+            if item.data(0) == (kind, tag):
+                item.setSelected(True)
+                target = item
+                break
+        self.scene.blockSignals(False)
+        if target is not None:
+            self.view.ensureVisible(target)
+
+    def _scene_selection_changed(self) -> None:
+        selected_items = self.scene.selectedItems()
+        if not selected_items:
+            return
+        identity = selected_items[0].data(0)
+        if isinstance(identity, tuple) and len(identity) == 2:
+            try:
+                tag = int(identity[1])
+            except (TypeError, ValueError):
+                return
+            self.entity_selected.emit(str(identity[0]), tag)
 
     def _change_unit_system(self, index: int) -> None:
         del index

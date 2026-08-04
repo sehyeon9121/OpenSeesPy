@@ -3,7 +3,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
 from openframe.app.shell.main_window import MainWindow
@@ -51,13 +51,37 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     window.viewport.force_unit_selector.setCurrentIndex(force_index)
     assert window.viewport.unit_system.force == "N"
     assert window.viewport.unit_system.length == "m"
-    assert window.results_panel.displacement_table.horizontalHeaderItem(1).text() == "UX (m)"
+    assert (
+        window.results_workspace.data_panel.result_table.horizontalHeaderItem(1).text()
+        == "UX (m)"
+    )
 
     window.viewport.length_unit_selector.setCurrentIndex(length_index)
     assert window.viewport.unit_system.key == "n_mm"
     assert "Fx=20 N" in load_items[0].toolTip()
     assert "kN" not in load_items[0].toolTip()
-    assert window.results_panel.displacement_table.horizontalHeaderItem(1).text() == "UX (mm)"
+    assert (
+        window.results_workspace.data_panel.result_table.horizontalHeaderItem(1).text()
+        == "UX (mm)"
+    )
+
+    element_tree_item = window.model_sidebar._tree_items[("element", 3)]
+    window.model_sidebar.tree.setCurrentItem(element_tree_item)
+    application.processEvents()
+    assert window.model_inspector.selection_identity == ("element", 3)
+    assert any(item.data(0) == ("element", 3) for item in window.scene.selectedItems())
+    property_values = [value.text() for _, _, value in window.model_inspector.property_cards]
+    assert any("N/mm²" in value for value in property_values)
+    readiness_status, _ = window.model_inspector.readiness_rows["displacement"]
+    assert readiness_status.text() == "READY"
+
+    window.scene.clearSelection()
+    load_items[0].setSelected(True)
+    application.processEvents()
+    assert window.model_inspector.selection_identity == ("load", 4)
+    assert window.model_sidebar.tree.currentItem().data(
+        0, Qt.ItemDataRole.UserRole
+    ) == ("load", 4)
 
     window.viewport.filter_options["load"].setChecked(False)
     assert all(not item.isVisible() for item in load_items)

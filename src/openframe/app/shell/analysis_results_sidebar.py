@@ -1,11 +1,13 @@
-"""Shell container that composes ANALYSIS settings and RESULTS panels."""
+"""Shell container for analysis settings and contextual model inspection."""
 
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
 from openframe.features.analysis.presentation.analysis_settings_panel import (
     AnalysisSettingsPanel,
 )
-from openframe.features.results.presentation.results_panel import ResultsPanel
+from openframe.features.model.presentation.model_inspector_panel import (
+    ModelInspectorPanel,
+)
 
 
 class AnalysisResultsSidebar(QFrame):
@@ -18,7 +20,6 @@ class AnalysisResultsSidebar(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self.settings = AnalysisSettingsPanel()
-        self.results = ResultsPanel()
+        self.inspector = ModelInspectorPanel()
         layout.addWidget(self.settings)
-        layout.addWidget(self.results, 1)
-
+        layout.addWidget(self.inspector, 1)

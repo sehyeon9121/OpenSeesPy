@@ -6,10 +6,14 @@ from openframe.core.domain import ElementResult
 from openframe.features.results.diagrams import axial, moment, shear
 from openframe.features.results.diagrams.base import MemberDiagram
 
-# 2D elasticBeamColumn local forces from OpenSeesPy's eleForce(): (N_i, V_i, M_i, N_j, V_j, M_j).
-# With no interior span load, N and V at the two ends are an equal-and-opposite nodal
-# equilibrium pair, so the j-end value is negated to read as one continuous internal force.
-# M is already continuous as returned (verified against a hand-calculated cantilever).
+# 2D beam-column end forces along the member's local axes:
+# (N_i, V_i, M_i, N_j, V_j, M_j). These are the forces the element exerts on its nodes,
+# so they must be converted to internal forces read continuously from end i to end j.
+# Verified against textbook cases (cantilever with tip load; simply supported beam with a
+# central point load, where M = PL/4 sagging and V = +P/2 then -P/2):
+#   axial   N = -N_i = +N_j   (tension positive)
+#   shear   V = +V_i = -V_j
+#   moment  M = -M_i = +M_j   (sagging positive)
 _LOCAL_FORCE_COUNT = 6
 
 
@@ -21,9 +25,9 @@ def member_diagrams(element: ElementResult) -> tuple[MemberDiagram, MemberDiagra
         )
     axial_i, shear_i, moment_i, axial_j, shear_j, moment_j = forces
     return (
-        axial.from_end_forces(element.element_tag, axial_i, -axial_j),
+        axial.from_end_forces(element.element_tag, -axial_i, axial_j),
         shear.from_end_forces(element.element_tag, shear_i, -shear_j),
-        moment.from_end_forces(element.element_tag, moment_i, moment_j),
+        moment.from_end_forces(element.element_tag, -moment_i, moment_j),
     )
 
 

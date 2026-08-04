@@ -21,6 +21,7 @@ class NodalLoadItem(QGraphicsItem):
         self.fy = float(padded_values[1])
         self.mz = float(padded_values[2])
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
         self.setAcceptHoverEvents(True)
         self.setZValue(5.0)

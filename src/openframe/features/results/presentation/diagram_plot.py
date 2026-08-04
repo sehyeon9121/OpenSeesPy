@@ -1,32 +1,59 @@
 """Scale-independent value-vs-position line plot for one member force diagram."""
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPaintEvent, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPaintEvent, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from openframe.features.results.diagrams.base import MemberDiagram
 
 
 class DiagramPlot(QWidget):
+    _MIN_ZOOM = 0.25
+    _MAX_ZOOM = 8.0
+    _ZOOM_STEP = 1.25
+    _AUTO_FIT_PADDING = 1.45
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("diagramPlot")
         self.setMinimumHeight(130)
         self._diagram: MemberDiagram | None = None
         self._unit: str = ""
+        self._zoom_factor = 1.0
 
     def set_diagram(self, diagram: MemberDiagram | None, unit: str = "") -> None:
+        changed = diagram != self._diagram or unit != self._unit
         self._diagram = diagram
         self._unit = unit
+        if changed:
+            self._zoom_factor = 1.0
         self.update()
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt override
+    def zoom_in(self) -> None:
+        self._set_zoom(self._zoom_factor * self._ZOOM_STEP)
+
+    def zoom_out(self) -> None:
+        self._set_zoom(self._zoom_factor / self._ZOOM_STEP)
+
+    def fit_to_view(self) -> None:
+        self._set_zoom(1.0)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if event.angleDelta().y() > 0:
+            self.zoom_in()
+        elif event.angleDelta().y() < 0:
+            self.zoom_out()
+        event.accept()
+
+    def _set_zoom(self, zoom_factor: float) -> None:
+        self._zoom_factor = max(self._MIN_ZOOM, min(self._MAX_ZOOM, zoom_factor))
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.fillRect(self.rect(), QColor("#ffffff"))
-
-        plot_rect = QRectF(self.rect()).adjusted(28.0, 10.0, -10.0, -10.0)
 
         if self._diagram is None or len(self._diagram.points) < 2:
             painter.setPen(QColor("#9aa7b8"))
@@ -37,23 +64,57 @@ class DiagramPlot(QWidget):
         points = self._diagram.points
         values = [point.value for point in points]
         max_abs = max((abs(value) for value in values), default=0.0) or 1.0
+        display_limit = max_abs * self._AUTO_FIT_PADDING / self._zoom_factor
+
+        font_metrics = painter.fontMetrics()
+        label_height = float(font_metrics.height() + 2)
+        point_labels = [self._point_label(value) for value in values]
+        widest_point_label = max(
+            (font_metrics.horizontalAdvance(label) for label in point_labels),
+            default=0,
+        )
+        axis_labels = (f"{display_limit:.3g}", f"{-display_limit:.3g}")
+        axis_label_width = max(font_metrics.horizontalAdvance(label) for label in axis_labels)
+        endpoint_margin = widest_point_label / 2.0 + 8.0
+        left_margin = max(axis_label_width + 14.0, endpoint_margin)
+        right_margin = endpoint_margin
+        vertical_margin = label_height + 8.0
+        plot_rect = QRectF(self.rect()).adjusted(
+            left_margin,
+            vertical_margin,
+            -right_margin,
+            -vertical_margin,
+        )
+        if plot_rect.width() <= 1.0 or plot_rect.height() <= 1.0:
+            painter.end()
+            return
+
         baseline_y = plot_rect.center().y()
+        min_position = min(point.position for point in points)
+        max_position = max(point.position for point in points)
+        position_span = max_position - min_position or 1.0
 
         def to_screen(position: float, value: float) -> tuple[float, float]:
-            x = plot_rect.left() + position * plot_rect.width()
-            y = baseline_y - (value / max_abs) * (plot_rect.height() / 2.0)
+            relative_position = (position - min_position) / position_span
+            x = plot_rect.left() + relative_position * plot_rect.width()
+            y = baseline_y - (value / display_limit) * (plot_rect.height() / 2.0)
             return x, y
 
         painter.setPen(QColor("#7b8a9e"))
         painter.drawText(
-            QRectF(0.0, plot_rect.top() - 8.0, 26.0, 16.0),
+            QRectF(4.0, plot_rect.top() - label_height / 2.0, left_margin - 10.0, label_height),
             Qt.AlignmentFlag.AlignRight,
-            f"{max_abs:.3g}",
+            axis_labels[0],
         )
         painter.drawText(
-            QRectF(0.0, plot_rect.bottom() - 8.0, 26.0, 16.0),
+            QRectF(
+                4.0,
+                plot_rect.bottom() - label_height / 2.0,
+                left_margin - 10.0,
+                label_height,
+            ),
             Qt.AlignmentFlag.AlignRight,
-            f"{-max_abs:.3g}",
+            axis_labels[1],
         )
 
         painter.setPen(QPen(QColor("#c7d2e0"), 1.0))
@@ -86,16 +147,18 @@ class DiagramPlot(QWidget):
         painter.drawPath(line_path)
 
         painter.setPen(QColor("#1f2937"))
-        for point in points:
+        for point, label in zip(points, point_labels, strict=True):
             x, y = to_screen(point.position, point.value)
-            label = f"{point.value:.3g}"
-            if self._unit:
-                label = f"{label} {self._unit}"
-            offset = -18.0 if point.value >= 0 else 4.0
+            label_width = float(font_metrics.horizontalAdvance(label) + 8)
+            offset = -(label_height + 4.0) if point.value >= 0 else 4.0
             painter.drawText(
-                QRectF(x - 40.0, y + offset, 80.0, 14.0),
+                QRectF(x - label_width / 2.0, y + offset, label_width, label_height),
                 Qt.AlignmentFlag.AlignCenter,
                 label,
             )
 
         painter.end()
+
+    def _point_label(self, value: float) -> str:
+        label = f"{value:.3g}"
+        return f"{label} {self._unit}" if self._unit else label
