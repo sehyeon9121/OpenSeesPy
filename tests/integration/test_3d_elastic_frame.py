@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import openseespy.opensees as ops
 import pytest
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -68,6 +69,10 @@ def test_3d_viewport_switches_between_iso_and_orthographic_views() -> None:
     application.processEvents()
 
     assert not viewport.view_selector.isHidden()
+    assert viewport.canvas_stack.currentWidget() is viewport.quick3d_view
+    assert viewport.quick3d_view.quick_widget.status() == QQuickWidget.Status.Ready
+    assert len(viewport.quick3d_view.bridge.nodes) == 2
+    assert len(viewport.quick3d_view.bridge.members) == 1
     assert viewport.view_selector.currentData() == "iso"
     assert viewport.scene.projection == "iso"
     assert any(item.data(0) == ("axis", "Z") for item in viewport.scene.items())
@@ -87,9 +92,12 @@ def test_middle_mouse_drag_orbits_the_3d_model() -> None:
     viewport.show()
     viewport.set_model(model)
     application.processEvents()
-    initial_angles = viewport.scene.camera_angles
+    root = viewport.quick3d_view.quick_widget.rootObject()
+    assert root is not None
+    initial_yaw = float(root.property("cameraYaw"))
+    initial_pitch = float(root.property("cameraPitch"))
 
-    target = viewport.view.viewport()
+    target = viewport.quick3d_view.quick_widget
     QTest.mousePress(
         target,
         Qt.MouseButton.MiddleButton,
@@ -105,8 +113,10 @@ def test_middle_mouse_drag_orbits_the_3d_model() -> None:
     )
     application.processEvents()
 
-    assert viewport.scene.projection == "free"
-    assert viewport.scene.camera_angles != initial_angles
+    assert (
+        float(root.property("cameraYaw")),
+        float(root.property("cameraPitch")),
+    ) != (initial_yaw, initial_pitch)
     assert viewport.view_selector.currentData() == "free"
     viewport.close()
 
@@ -121,9 +131,10 @@ def test_shift_middle_mouse_drag_pans_even_after_fit() -> None:
     viewport.fit_model()
     application.processEvents()
 
-    target = viewport.view.viewport()
-    viewport_center = target.rect().center()
-    center_before = viewport.view.mapToScene(viewport_center)
+    target = viewport.quick3d_view.quick_widget
+    root = target.rootObject()
+    assert root is not None
+    pan_before = (float(root.property("panX")), float(root.property("panY")))
     QTest.mousePress(
         target,
         Qt.MouseButton.MiddleButton,
@@ -138,7 +149,7 @@ def test_shift_middle_mouse_drag_pans_even_after_fit() -> None:
         QPoint(350, 280),
     )
     application.processEvents()
-    center_after = viewport.view.mapToScene(viewport_center)
+    pan_after = (float(root.property("panX")), float(root.property("panY")))
 
-    assert center_after != center_before
+    assert pan_after != pan_before
     viewport.close()

@@ -26,6 +26,9 @@ openframe = "openframe.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+openframe = ["features/viewport/presentation/qml/*.qml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
@@ -33,4 +36,3 @@ pythonpath = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-

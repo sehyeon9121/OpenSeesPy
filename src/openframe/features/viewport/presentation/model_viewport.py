@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +26,7 @@ from openframe.core.domain import (
     StructuralModel,
     UnitSystem,
 )
+from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
 from openframe.features.viewport.presentation.structural_graphics_view import (
     StructuralGraphicsView,
 )
@@ -93,7 +95,11 @@ class ModelViewport(QFrame):
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        layout.addWidget(self.view, 1)
+        self.quick3d_view = Quick3DViewport(self)
+        self.canvas_stack = QStackedWidget()
+        self.canvas_stack.addWidget(self.view)
+        self.canvas_stack.addWidget(self.quick3d_view)
+        layout.addWidget(self.canvas_stack, 1)
 
         controls = QFrame()
         controls.setObjectName("displayControls")
@@ -144,13 +150,14 @@ class ModelViewport(QFrame):
         controls_layout.addWidget(self.length_unit_selector)
         layout.addWidget(controls)
 
-        zoom_in.clicked.connect(lambda: self.view.scale(1.2, 1.2))
-        zoom_out.clicked.connect(lambda: self.view.scale(1 / 1.2, 1 / 1.2))
+        zoom_in.clicked.connect(lambda: self._zoom(1.2))
+        zoom_out.clicked.connect(lambda: self._zoom(1 / 1.2))
         fit.clicked.connect(self.fit_model)
         self.force_unit_selector.currentIndexChanged.connect(self._change_unit_system)
         self.length_unit_selector.currentIndexChanged.connect(self._change_unit_system)
         self.view_selector.currentIndexChanged.connect(self._change_projection)
         self.view.orbit_dragged.connect(self._orbit_view)
+        self.quick3d_view.camera_mode_changed.connect(self._quick_camera_mode_changed)
         self._show_sample_beam()
 
     @property
@@ -158,6 +165,15 @@ class ModelViewport(QFrame):
         return self._unit_system
 
     def fit_model(self) -> None:
+        if self.canvas_stack.currentWidget() is self.quick3d_view:
+            preset = self.view_selector.currentData()
+            if preset not in {"iso", "xy", "xz", "yz"}:
+                preset = "iso"
+                self.view_selector.blockSignals(True)
+                self.view_selector.setCurrentIndex(self.view_selector.findData(preset))
+                self.view_selector.blockSignals(False)
+            self.quick3d_view.set_camera_preset(str(preset))
+            return
         self.view.fit_content()
 
     def show_uploaded_file(self) -> None:
@@ -175,6 +191,11 @@ class ModelViewport(QFrame):
         self.view_selector.blockSignals(False)
         self.scene.set_projection(projection)
         self.scene.set_model(model)
+        if model.ndm == 3:
+            self.quick3d_view.set_model(model)
+            self.canvas_stack.setCurrentWidget(self.quick3d_view)
+        else:
+            self.canvas_stack.setCurrentWidget(self.view)
         for item_kind, option in self.filter_options.items():
             self._set_item_kind_visible(item_kind, option.isChecked())
         self.mode_label.setText("MODEL LOADED")
@@ -201,12 +222,28 @@ class ModelViewport(QFrame):
         projection = self.view_selector.currentData()
         if projection is None or projection == "free":
             return
+        if self.canvas_stack.currentWidget() is self.quick3d_view:
+            self.quick3d_view.set_camera_preset(str(projection))
         self.scene.set_projection(str(projection))
         for item_kind, option in self.filter_options.items():
             self._set_item_kind_visible(item_kind, option.isChecked())
         if self.scene.items():
             self._update_content_rect()
             self.fit_model()
+
+    def _quick_camera_mode_changed(self, mode: str) -> None:
+        index = self.view_selector.findData(mode)
+        if index < 0:
+            return
+        self.view_selector.blockSignals(True)
+        self.view_selector.setCurrentIndex(index)
+        self.view_selector.blockSignals(False)
+
+    def _zoom(self, factor: float) -> None:
+        if self.canvas_stack.currentWidget() is self.quick3d_view:
+            self.quick3d_view.zoom(1.0 / factor)
+        else:
+            self.view.scale(factor, factor)
 
     def _update_content_rect(self) -> None:
         if self._model is None or not self._model.nodes:
@@ -284,6 +321,7 @@ class ModelViewport(QFrame):
 
     def _show_sample_beam(self) -> None:
         self.view_selector.hide()
+        self.canvas_stack.setCurrentWidget(self.view)
         model = StructuralModel(
             nodes={1: Node(1, -6.0, 0.0), 2: Node(2, 6.0, 0.0)},
             elements={1: Element(1, 1, 2, "elasticBeamColumn")},
