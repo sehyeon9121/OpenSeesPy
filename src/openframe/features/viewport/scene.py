@@ -24,6 +24,58 @@ class StructuralScene(QGraphicsScene):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._unit_system = DEFAULT_UNIT_SYSTEM
+        self._model: StructuralModel | None = None
+        self._projection = "xy"
+        self._yaw_degrees = 0.0
+        self._elevation_degrees = -90.0
+
+    @property
+    def projection(self) -> str:
+        return self._projection
+
+    @property
+    def camera_angles(self) -> tuple[float, float]:
+        return self._yaw_degrees, self._elevation_degrees
+
+    def set_projection(self, projection: str) -> None:
+        if projection not in {"iso", "xy", "xz", "yz"}:
+            raise ValueError(f"Unknown projection: {projection}")
+        self._projection = projection
+        self._yaw_degrees, self._elevation_degrees = {
+            "iso": (45.0, 30.0),
+            "xy": (0.0, -90.0),
+            "xz": (0.0, 0.0),
+            "yz": (-90.0, 0.0),
+        }[projection]
+        if self._model is not None:
+            self.set_model(self._model)
+
+    def orbit(self, delta_x: float, delta_y: float, *, redraw: bool = True) -> None:
+        """Rotate the orthographic camera from a middle-mouse drag."""
+        self._yaw_degrees = (self._yaw_degrees + delta_x * 0.45) % 360.0
+        self._elevation_degrees = max(
+            -89.0,
+            min(89.0, self._elevation_degrees - delta_y * 0.35),
+        )
+        self._projection = "free"
+        if redraw and self._model is not None:
+            self.set_model(self._model)
+
+    def project_coordinates(self, x: float, y: float, z: float = 0.0) -> QPointF:
+        """Project a model-space point onto the existing 2D graphics scene."""
+        yaw = math.radians(self._yaw_degrees)
+        elevation = math.radians(self._elevation_degrees)
+        cosine_yaw = math.cos(yaw)
+        sine_yaw = math.sin(yaw)
+        sine_elevation = math.sin(elevation)
+        cosine_elevation = math.cos(elevation)
+        screen_x = x * cosine_yaw - y * sine_yaw
+        screen_y = (
+            x * sine_yaw * sine_elevation
+            + y * cosine_yaw * sine_elevation
+            - z * cosine_elevation
+        )
+        return QPointF(screen_x, screen_y)
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         self._unit_system = unit_system
@@ -57,6 +109,7 @@ class StructuralScene(QGraphicsScene):
             row += 1
 
     def set_model(self, model: StructuralModel) -> None:
+        self._model = model
         self.clear()
         pen = QPen(QColor("#174ea6"), 3.0)
         pen.setCosmetic(True)
@@ -64,14 +117,16 @@ class StructuralScene(QGraphicsScene):
         for element in model.elements.values():
             node_i = model.nodes[element.node_i]
             node_j = model.nodes[element.node_j]
-            item = QGraphicsLineItem(node_i.x, -node_i.y, node_j.x, -node_j.y)
+            start = self.project_coordinates(node_i.x, node_i.y, node_i.z)
+            end = self.project_coordinates(node_j.x, node_j.y, node_j.z)
+            item = QGraphicsLineItem(start.x(), start.y(), end.x(), end.y())
             item.setPen(pen)
             item.setData(0, ("element", element.tag))
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             self.addItem(item)
 
         for node in model.nodes.values():
-            point = QPointF(node.x, -node.y)
+            point = self.project_coordinates(node.x, node.y, node.z)
             item = QGraphicsEllipseItem(-5.0, -5.0, 10.0, 10.0)
             node_pen = QPen(QColor("#174ea6"), 2.5)
             node_pen.setCosmetic(True)
@@ -96,7 +151,7 @@ class StructuralScene(QGraphicsScene):
                 kind=boundary.support_kind,
                 restraints=boundary.restraints,
             )
-            support.setPos(node.x, -node.y)
+            support.setPos(self.project_coordinates(node.x, node.y, node.z))
             self.addItem(support)
 
         loads_by_node: dict[int, list[float]] = {}
@@ -110,12 +165,28 @@ class StructuralScene(QGraphicsScene):
             node = model.nodes.get(node_tag)
             if node is None:
                 continue
-            load_item = NodalLoadItem(
-                node_tag=node_tag,
-                values=tuple(values),
-                unit_system=self._unit_system,
-            )
-            load_item.setPos(node.x, -node.y)
+            point = self.project_coordinates(node.x, node.y, node.z)
+            if model.ndm == 3:
+                load_item = QGraphicsEllipseItem(-5.0, -5.0, 10.0, 10.0)
+                load_item.setPen(QPen(QColor("#c9343b"), 2.0))
+                load_item.setBrush(QColor("#e5484d"))
+                load_item.setFlag(
+                    QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True
+                )
+                load_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+                load_item.setData(0, ("load", node_tag))
+                names = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
+                components = ", ".join(
+                    f"{name}={value:g}" for name, value in zip(names, values, strict=False)
+                )
+                load_item.setToolTip(f"Node {node_tag} | {components}")
+            else:
+                load_item = NodalLoadItem(
+                    node_tag=node_tag,
+                    values=tuple(values),
+                    unit_system=self._unit_system,
+                )
+            load_item.setPos(point)
             self.addItem(load_item)
 
         for load in model.element_loads:
@@ -128,8 +199,37 @@ class StructuralScene(QGraphicsScene):
                 continue
             load_item = UniformElementLoadItem(
                 load=load,
-                start=QPointF(node_i.x, -node_i.y),
-                end=QPointF(node_j.x, -node_j.y),
+                start=self.project_coordinates(node_i.x, node_i.y, node_i.z),
+                end=self.project_coordinates(node_j.x, node_j.y, node_j.z),
                 unit_system=self._unit_system,
             )
             self.addItem(load_item)
+
+        if model.ndm == 3:
+            self._draw_axes(model)
+
+    def _draw_axes(self, model: StructuralModel) -> None:
+        if not model.nodes:
+            return
+        coordinates = [
+            component
+            for node in model.nodes.values()
+            for component in (node.x, node.y, node.z)
+        ]
+        axis_length = max((max(coordinates) - min(coordinates)) * 0.2, 1.0)
+        origin = self.project_coordinates(0.0, 0.0, 0.0)
+        axes = (
+            ("X", self.project_coordinates(axis_length, 0.0, 0.0), QColor("#d33f49")),
+            ("Y", self.project_coordinates(0.0, axis_length, 0.0), QColor("#238636")),
+            ("Z", self.project_coordinates(0.0, 0.0, axis_length), QColor("#2468b4")),
+        )
+        for name, endpoint, color in axes:
+            pen = QPen(color, 2.0)
+            pen.setCosmetic(True)
+            line = self.addLine(origin.x(), origin.y(), endpoint.x(), endpoint.y(), pen)
+            line.setData(0, ("axis", name))
+            label = self.addText(name)
+            label.setDefaultTextColor(color)
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+            label.setPos(endpoint)
+            label.setData(0, ("axis", name))

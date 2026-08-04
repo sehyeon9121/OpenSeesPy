@@ -171,7 +171,11 @@ class ResultDataPanel(QFrame):
 
         diagram = None
         element_tag = self.member_selector.currentData()
-        if self._result is not None and element_tag is not None:
+        if (
+            self._result is not None
+            and element_tag is not None
+            and (self._model is None or self._model.ndm == 2)
+        ):
             element = self._result.element_results.get(element_tag)
             if element is not None:
                 try:
@@ -198,7 +202,37 @@ class ResultDataPanel(QFrame):
     def _refresh_table(self) -> None:
         unit = self._unit_system
         result = self._result
+        is_3d = self._model is not None and self._model.ndm == 3
         if self._result_type in {"axial", "shear", "moment"}:
+            if is_3d:
+                self.result_table.setColumnCount(7)
+                self.result_table.setHorizontalHeaderLabels(
+                    (
+                        "ELEMENT",
+                        f"N-i ({unit.force})",
+                        f"Vy-i ({unit.force})",
+                        f"Vz-i ({unit.force})",
+                        f"T-i ({unit.moment})",
+                        f"My-i ({unit.moment})",
+                        f"Mz-i ({unit.moment})",
+                    )
+                )
+                elements = [] if result is None else sorted(
+                    result.element_results.values(), key=lambda item: item.element_tag
+                )
+                self.result_table.setRowCount(len(elements))
+                for row, element in enumerate(elements):
+                    values = (*element.local_forces, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                    for column, value in enumerate((element.element_tag, *values[:6])):
+                        self.result_table.setItem(
+                            row,
+                            column,
+                            QTableWidgetItem(
+                                str(value) if column == 0 else f"{value:.6g}"
+                            ),
+                        )
+                return
+            self.result_table.setColumnCount(4)
             self.result_table.setHorizontalHeaderLabels(
                 ("ELEMENT", f"N-i ({unit.force})", f"V-i ({unit.force})", f"M-i ({unit.moment})")
             )
@@ -219,6 +253,40 @@ class ResultDataPanel(QFrame):
             return
 
         if self._result_type == "reaction":
+            if is_3d:
+                self.result_table.setColumnCount(7)
+                self.result_table.setHorizontalHeaderLabels(
+                    (
+                        "NODE",
+                        f"RX ({unit.force})",
+                        f"RY ({unit.force})",
+                        f"RZ ({unit.force})",
+                        f"MX ({unit.moment})",
+                        f"MY ({unit.moment})",
+                        f"MZ ({unit.moment})",
+                    )
+                )
+                node_tags = sorted(
+                    boundary.node_tag for boundary in self._model.boundaries
+                )
+                self.result_table.setRowCount(len(node_tags))
+                for row, node_tag in enumerate(node_tags):
+                    node_result = None if result is None else result.node_results.get(node_tag)
+                    values = (
+                        (0.0,) * 6
+                        if node_result is None
+                        else (*node_result.reaction, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)[:6]
+                    )
+                    for column, value in enumerate((node_tag, *values)):
+                        self.result_table.setItem(
+                            row,
+                            column,
+                            QTableWidgetItem(
+                                str(value) if column == 0 else f"{value:.6g}"
+                            ),
+                        )
+                return
+            self.result_table.setColumnCount(4)
             self.result_table.setHorizontalHeaderLabels(
                 (
                     "NODE",
@@ -244,6 +312,36 @@ class ResultDataPanel(QFrame):
                     )
             return
 
+        if is_3d:
+            self.result_table.setColumnCount(7)
+            self.result_table.setHorizontalHeaderLabels(
+                (
+                    "NODE",
+                    f"UX ({unit.length})",
+                    f"UY ({unit.length})",
+                    f"UZ ({unit.length})",
+                    "RX (rad)",
+                    "RY (rad)",
+                    "RZ (rad)",
+                )
+            )
+            nodes = [] if result is None else sorted(
+                result.node_results.values(), key=lambda item: item.node_tag
+            )
+            self.result_table.setRowCount(len(nodes))
+            for row, node in enumerate(nodes):
+                values = (*node.displacement, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                for column, value in enumerate((node.node_tag, *values[:6])):
+                    self.result_table.setItem(
+                        row,
+                        column,
+                        QTableWidgetItem(
+                            str(value) if column == 0 else f"{value:.6g}"
+                        ),
+                    )
+            return
+
+        self.result_table.setColumnCount(4)
         self.result_table.setHorizontalHeaderLabels(
             (
                 "NODE",

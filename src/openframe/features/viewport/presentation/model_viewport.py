@@ -1,6 +1,6 @@
 """Central structural canvas and compact display controls."""
 
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,6 +25,9 @@ from openframe.core.domain import (
     StructuralModel,
     UnitSystem,
 )
+from openframe.features.viewport.presentation.structural_graphics_view import (
+    StructuralGraphicsView,
+)
 from openframe.features.viewport.scene import StructuralScene
 
 
@@ -37,6 +40,7 @@ class ModelViewport(QFrame):
         self.setObjectName("modelViewport")
         self._unit_system = DEFAULT_UNIT_SYSTEM
         self._sample_load_text = None
+        self._model: StructuralModel | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -57,6 +61,20 @@ class ModelViewport(QFrame):
         support_legend.setToolTip("고정지점, 회전지점(힌지), 이동지점(롤러) 기호")
         header_layout.addWidget(support_legend)
         header_layout.addStretch(1)
+        self.view_selector = QComboBox()
+        self.view_selector.setObjectName("projectionSelector")
+        self.view_selector.addItem("ISO", "iso")
+        self.view_selector.addItem("XY", "xy")
+        self.view_selector.addItem("XZ", "xz")
+        self.view_selector.addItem("YZ", "yz")
+        self.view_selector.addItem("FREE", "free")
+        self.view_selector.setToolTip("3D model projection")
+        self.view_selector.setMaximumWidth(72)
+        self.orbit_hint = QLabel("MMB ORBIT · SHIFT+MMB PAN · WHEEL ZOOM")
+        self.orbit_hint.setObjectName("supportLegend")
+        self.orbit_hint.hide()
+        header_layout.addWidget(self.orbit_hint)
+        header_layout.addWidget(self.view_selector)
         zoom_out = QPushButton("−")
         zoom_out.setObjectName("canvasToolButton")
         zoom_in = QPushButton("+")
@@ -70,7 +88,7 @@ class ModelViewport(QFrame):
 
         self.scene = StructuralScene(self)
         self.scene.selectionChanged.connect(self._scene_selection_changed)
-        self.view = QGraphicsView(self.scene)
+        self.view = StructuralGraphicsView(self.scene)
         self.view.setObjectName("structuralView")
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -131,6 +149,8 @@ class ModelViewport(QFrame):
         fit.clicked.connect(self.fit_model)
         self.force_unit_selector.currentIndexChanged.connect(self._change_unit_system)
         self.length_unit_selector.currentIndexChanged.connect(self._change_unit_system)
+        self.view_selector.currentIndexChanged.connect(self._change_projection)
+        self.view.orbit_dragged.connect(self._orbit_view)
         self._show_sample_beam()
 
     @property
@@ -138,33 +158,76 @@ class ModelViewport(QFrame):
         return self._unit_system
 
     def fit_model(self) -> None:
-        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.view.fit_content()
 
     def show_uploaded_file(self) -> None:
         self.mode_label.setText("MODEL LOADED")
 
     def set_model(self, model: StructuralModel) -> None:
+        self._model = model
         self._sample_load_text = None
+        projection = "iso" if model.ndm == 3 else "xy"
+        self.view_selector.blockSignals(True)
+        self.view_selector.setCurrentIndex(self.view_selector.findData(projection))
+        self.view_selector.setVisible(model.ndm == 3)
+        self.orbit_hint.setVisible(model.ndm == 3)
+        self.view.set_orbit_enabled(model.ndm == 3)
+        self.view_selector.blockSignals(False)
+        self.scene.set_projection(projection)
         self.scene.set_model(model)
         for item_kind, option in self.filter_options.items():
             self._set_item_kind_visible(item_kind, option.isChecked())
         self.mode_label.setText("MODEL LOADED")
         if not model.nodes:
-            self.scene.setSceneRect(-8.0, -5.0, 16.0, 9.0)
+            self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))
             return
 
-        x_values = [node.x for node in model.nodes.values()]
-        screen_y_values = [-node.y for node in model.nodes.values()]
-        x_span = max(x_values) - min(x_values)
-        y_span = max(screen_y_values) - min(screen_y_values)
-        margin = max(x_span, y_span, 1.0) * 0.18
-        self.scene.setSceneRect(
-            min(x_values) - margin,
-            min(screen_y_values) - margin,
-            x_span + 2 * margin,
-            y_span + 2 * margin,
-        )
+        self._update_content_rect()
         self.fit_model()
+
+    def _orbit_view(self, delta_x: float, delta_y: float) -> None:
+        if self._model is None or self._model.ndm != 3:
+            return
+        self.scene.orbit(delta_x, delta_y)
+        self.view_selector.blockSignals(True)
+        self.view_selector.setCurrentIndex(self.view_selector.findData("free"))
+        self.view_selector.blockSignals(False)
+        for item_kind, option in self.filter_options.items():
+            self._set_item_kind_visible(item_kind, option.isChecked())
+        self._update_content_rect()
+
+    def _change_projection(self, index: int) -> None:
+        del index
+        projection = self.view_selector.currentData()
+        if projection is None or projection == "free":
+            return
+        self.scene.set_projection(str(projection))
+        for item_kind, option in self.filter_options.items():
+            self._set_item_kind_visible(item_kind, option.isChecked())
+        if self.scene.items():
+            self._update_content_rect()
+            self.fit_model()
+
+    def _update_content_rect(self) -> None:
+        if self._model is None or not self._model.nodes:
+            return
+        points = [
+            self.scene.project_coordinates(node.x, node.y, node.z)
+            for node in self._model.nodes.values()
+        ]
+        x_values = [point.x() for point in points]
+        y_values = [point.y() for point in points]
+        x_span = max(x_values) - min(x_values)
+        y_span = max(y_values) - min(y_values)
+        margin = max(x_span, y_span, 1.0) * 0.18
+        self.view.set_content_scene_rect(
+            QRectF(
+                min(x_values) - margin,
+                min(y_values) - margin,
+                x_span + 2 * margin,
+                y_span + 2 * margin,
+            )
+        )
 
     def _set_item_kind_visible(self, item_kind: str, visible: bool) -> None:
         if item_kind == "node_label":
@@ -220,6 +283,7 @@ class ModelViewport(QFrame):
         self.unit_system_changed.emit(unit_system)
 
     def _show_sample_beam(self) -> None:
+        self.view_selector.hide()
         model = StructuralModel(
             nodes={1: Node(1, -6.0, 0.0), 2: Node(2, 6.0, 0.0)},
             elements={1: Element(1, 1, 2, "elasticBeamColumn")},
@@ -239,4 +303,4 @@ class ModelViewport(QFrame):
         for item in (load_line, load_arrow, load_text):
             item.setData(0, ("load", "sample"))
         self._sample_load_text = load_text
-        self.scene.setSceneRect(-8.0, -5.0, 16.0, 9.0)
+        self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))

@@ -1,9 +1,10 @@
 """Structural result canvas with deformation overlay controls."""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QGraphicsItem,
     QGraphicsLineItem,
@@ -45,6 +46,9 @@ from openframe.features.results.presentation.support_reaction_item import (
     SupportReactionItem,
 )
 from openframe.features.results.reactions import support_reactions
+from openframe.features.viewport.presentation.structural_graphics_view import (
+    StructuralGraphicsView,
+)
 from openframe.features.viewport.scene import StructuralScene
 
 RESULT_TYPE_NAMES = {
@@ -81,6 +85,19 @@ class ResultViewport(QFrame):
         self.mode_badge.setObjectName("resultModeBadge")
         header_layout.addWidget(self.mode_badge)
         header_layout.addStretch(1)
+        self.view_selector = QComboBox()
+        self.view_selector.addItem("ISO", "iso")
+        self.view_selector.addItem("XY", "xy")
+        self.view_selector.addItem("XZ", "xz")
+        self.view_selector.addItem("YZ", "yz")
+        self.view_selector.addItem("FREE", "free")
+        self.view_selector.setMaximumWidth(72)
+        self.view_selector.setToolTip(
+            "Middle-drag: orbit · Shift+middle-drag: pan · Wheel: zoom"
+        )
+        self.view_selector.currentIndexChanged.connect(self._projection_changed)
+        self.view_selector.hide()
+        header_layout.addWidget(self.view_selector)
         zoom_out = self._tool_button("−")
         zoom_in = self._tool_button("+")
         fit = self._tool_button("FIT")
@@ -90,7 +107,7 @@ class ResultViewport(QFrame):
         layout.addWidget(canvas_header)
 
         self.scene = StructuralScene(self)
-        self.view = QGraphicsView(self.scene)
+        self.view = StructuralGraphicsView(self.scene)
         self.view.setObjectName("resultGraphicsView")
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -122,9 +139,17 @@ class ResultViewport(QFrame):
         zoom_in.clicked.connect(lambda: self.view.scale(1.2, 1.2))
         zoom_out.clicked.connect(lambda: self.view.scale(1 / 1.2, 1 / 1.2))
         fit.clicked.connect(self.fit_model)
+        self.view.orbit_dragged.connect(self._orbit_view)
 
     def set_model(self, model: StructuralModel) -> None:
         self._model = model
+        projection = "iso" if model.ndm == 3 else "xy"
+        self.view_selector.blockSignals(True)
+        self.view_selector.setCurrentIndex(self.view_selector.findData(projection))
+        self.view_selector.setVisible(model.ndm == 3)
+        self.view.set_orbit_enabled(model.ndm == 3)
+        self.view_selector.blockSignals(False)
+        self.scene.set_projection(projection)
         self._redraw()
         self.fit_model()
 
@@ -153,7 +178,24 @@ class ResultViewport(QFrame):
     def fit_model(self) -> None:
         if not self.scene.items():
             return
-        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.view.fit_content()
+
+    def _projection_changed(self, index: int) -> None:
+        del index
+        projection = self.view_selector.currentData()
+        if projection is not None and projection != "free":
+            self.scene.set_projection(str(projection))
+            self._redraw()
+            self.fit_model()
+
+    def _orbit_view(self, delta_x: float, delta_y: float) -> None:
+        if self._model is None or self._model.ndm != 3:
+            return
+        self.scene.orbit(delta_x, delta_y, redraw=False)
+        self.view_selector.blockSignals(True)
+        self.view_selector.setCurrentIndex(self.view_selector.findData("free"))
+        self.view_selector.blockSignals(False)
+        self._redraw()
 
     def _redraw(self) -> None:
         force_diagram = self._result_type in {"axial", "shear", "moment"}
@@ -165,7 +207,7 @@ class ResultViewport(QFrame):
         )
         if self._model is None:
             self.scene.clear()
-            self.scene.setSceneRect(-8.0, -5.0, 16.0, 9.0)
+            self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))
             return
 
         self.scene.set_model(self._model)
@@ -199,20 +241,28 @@ class ResultViewport(QFrame):
         self._draw_nodal_displacements()
         self._draw_support_reactions()
         diagram_offset = self._draw_force_diagram()
-        x_values = [node.x for node in self._model.nodes.values()]
-        y_values = [-node.y for node in self._model.nodes.values()]
+        points = [
+            self.scene.project_coordinates(node.x, node.y, node.z)
+            for node in self._model.nodes.values()
+        ]
+        x_values = [point.x() for point in points]
+        y_values = [point.y() for point in points]
         if x_values and y_values:
             span = max(max(x_values) - min(x_values), max(y_values) - min(y_values), 1.0)
             margin = max(span * 0.2, diagram_offset * 1.35)
-            self.scene.setSceneRect(
-                min(x_values) - margin,
-                min(y_values) - margin,
-                max(x_values) - min(x_values) + 2 * margin,
-                max(y_values) - min(y_values) + 2 * margin,
+            self.view.set_content_scene_rect(
+                QRectF(
+                    min(x_values) - margin,
+                    min(y_values) - margin,
+                    max(x_values) - min(x_values) + 2 * margin,
+                    max(y_values) - min(y_values) + 2 * margin,
+                )
             )
 
     def _member_magnitudes(self) -> dict[int, float]:
         if self._model is None or self._result is None:
+            return {}
+        if self._model.ndm == 3 and self._result_type in {"axial", "shear", "moment"}:
             return {}
         return member_magnitudes(self._model, self._result, self._result_type)
 
@@ -225,6 +275,32 @@ class ResultViewport(QFrame):
         scale = float(self.deformation_scale.value())
         pen = QPen(QColor("#e5484d"), 2.4)
         pen.setCosmetic(True)
+        if self._model.ndm == 3:
+            for element in self._model.elements.values():
+                node_i = self._model.nodes[element.node_i]
+                node_j = self._model.nodes[element.node_j]
+                result_i = self._result.node_results.get(element.node_i)
+                result_j = self._result.node_results.get(element.node_j)
+                displacement_i = (0.0,) * 6 if result_i is None else result_i.displacement
+                displacement_j = (0.0,) * 6 if result_j is None else result_j.displacement
+                values_i = (*displacement_i, 0.0, 0.0, 0.0)
+                values_j = (*displacement_j, 0.0, 0.0, 0.0)
+                start = self.scene.project_coordinates(
+                    node_i.x + values_i[0] * scale,
+                    node_i.y + values_i[1] * scale,
+                    node_i.z + values_i[2] * scale,
+                )
+                end = self.scene.project_coordinates(
+                    node_j.x + values_j[0] * scale,
+                    node_j.y + values_j[1] * scale,
+                    node_j.z + values_j[2] * scale,
+                )
+                item = QGraphicsLineItem(start.x(), start.y(), end.x(), end.y())
+                item.setPen(pen)
+                item.setZValue(8.0)
+                item.setData(0, ("result_deformation", element.tag))
+                self.scene.addItem(item)
+            return
         for element_tag in self._model.elements:
             stations = member_deflection(self._model, self._result, element_tag)
             if len(stations) < 2:
@@ -254,6 +330,8 @@ class ResultViewport(QFrame):
 
     def _draw_nodal_displacements(self) -> None:
         if self._model is None or self._result is None:
+            return
+        if self._model.ndm == 3:
             return
         if self._result_type != "displacement":
             return
@@ -291,6 +369,8 @@ class ResultViewport(QFrame):
     def _draw_support_reactions(self) -> None:
         if self._model is None or self._result is None:
             return
+        if self._model.ndm == 3:
+            return
         if self._result_type not in {"overview", "reaction"}:
             return
 
@@ -303,6 +383,8 @@ class ResultViewport(QFrame):
 
     def _draw_force_diagram(self) -> float:
         if self._model is None or self._result is None:
+            return 0.0
+        if self._model.ndm == 3:
             return 0.0
         kinds = {
             "axial": DiagramKind.AXIAL,

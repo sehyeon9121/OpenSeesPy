@@ -26,6 +26,24 @@ def member_magnitudes(
     An empty mapping means the active result type has nothing to colour by.
     """
     if result_type in FORCE_INDEX:
+        if model.ndm == 3:
+            magnitudes_3d: dict[int, float] = {}
+            for element in result.element_results.values():
+                values = (*element.local_forces, *((0.0,) * 12))[:12]
+                if result_type == "axial":
+                    value = max(abs(values[0]), abs(values[6]))
+                elif result_type == "shear":
+                    value = max(
+                        math.hypot(values[1], values[2]),
+                        math.hypot(values[7], values[8]),
+                    )
+                else:
+                    value = max(
+                        math.hypot(values[4], values[5]),
+                        math.hypot(values[10], values[11]),
+                    )
+                magnitudes_3d[element.element_tag] = value
+            return _denoise(magnitudes_3d)
         index = FORCE_INDEX[result_type]
         magnitudes: dict[int, float] = {}
         for element in result.element_results.values():
@@ -42,8 +60,8 @@ def member_magnitudes(
         return _denoise(
             {
                 element.tag: max(
-                    _displacement(result, element.node_i),
-                    _displacement(result, element.node_j),
+                    _displacement(result, element.node_i, model.ndm),
+                    _displacement(result, element.node_j, model.ndm),
                 )
                 for element in model.elements.values()
             }
@@ -68,9 +86,11 @@ def _denoise(magnitudes: dict[int, float]) -> dict[int, float]:
     }
 
 
-def _displacement(result: AnalysisResult, node_tag: int) -> float:
+def _displacement(result: AnalysisResult, node_tag: int, ndm: int = 2) -> float:
     node_result = result.node_results.get(node_tag)
     if node_result is None:
         return 0.0
     values = (*node_result.displacement, 0.0, 0.0)
+    if ndm == 3:
+        return math.hypot(float(values[0]), float(values[1]), float(values[2]))
     return math.hypot(float(values[0]), float(values[1]))

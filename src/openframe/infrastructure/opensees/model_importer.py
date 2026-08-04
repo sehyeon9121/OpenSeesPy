@@ -85,6 +85,7 @@ class OpenSeesModelImporter:
                 tag=int(item["tag"]),
                 x=float(item["x"]),
                 y=float(item["y"]),
+                z=float(item.get("z", 0.0)),
                 ndf=int(item.get("ndf", payload.get("ndf", 3))),
             )
             for item in payload.get("nodes", [])

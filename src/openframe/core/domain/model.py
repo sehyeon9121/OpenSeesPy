@@ -17,6 +17,7 @@ class Node:
     tag: int
     x: float
     y: float
+    z: float = 0.0
     ndf: int = 3
 
 
@@ -36,6 +37,13 @@ class BoundaryCondition:
 
     @property
     def support_kind(self) -> SupportKind:
+        if len(self.restraints) >= 6:
+            normalized_3d = tuple(self.restraints[:6])
+            if normalized_3d == (True, True, True, True, True, True):
+                return SupportKind.FIXED
+            if normalized_3d == (True, True, True, False, False, False):
+                return SupportKind.PINNED
+            return SupportKind.CUSTOM
         normalized = tuple(self.restraints[:3])
         if normalized == (True, True, True):
             return SupportKind.FIXED
@@ -77,8 +85,8 @@ class StructuralModel:
     def validate(self) -> list[str]:
         """Return validation errors without depending on a GUI dialog."""
         errors: list[str] = []
-        if self.ndm != 2:
-            errors.append("현재 버전은 ndm=2 모델만 지원합니다.")
+        if self.ndm not in {2, 3}:
+            errors.append(f"지원하지 않는 모델 차원입니다: ndm={self.ndm}.")
         for element in self.elements.values():
             if element.node_i not in self.nodes or element.node_j not in self.nodes:
                 errors.append(f"부재 {element.tag}가 존재하지 않는 절점을 참조합니다.")

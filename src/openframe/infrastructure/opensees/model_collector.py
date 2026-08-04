@@ -10,7 +10,7 @@ from openframe.infrastructure.opensees.script_execution import AnalysisStageTrac
 
 
 class ModelCommandCollector:
-    """Record the initial 2D node, element, support and nodal-load commands."""
+    """Record initial 2D/3D nodes, elements, supports and loads."""
 
     def __init__(self) -> None:
         self.ndm = 2
@@ -95,6 +95,7 @@ class ModelCommandCollector:
                     "tag": int(tag),
                     "x": float(coordinates[0]),
                     "y": float(coordinates[1]),
+                    "z": float(coordinates[2]) if len(coordinates) >= 3 else 0.0,
                     "ndf": self.ndf,
                 }
             return result
@@ -116,14 +117,26 @@ class ModelCommandCollector:
 
         return wrapped
 
-    @staticmethod
     def _element_properties(
+        self,
         element_type: str,
         arguments: tuple[Any, ...],
     ) -> dict[str, float | str]:
         properties: dict[str, float | str] = {}
         element_name = element_type.lower()
-        if element_name == "elasticbeamcolumn" and len(arguments) >= 6:
+        if element_name == "elasticbeamcolumn" and self.ndm == 3 and len(arguments) >= 9:
+            properties.update(
+                {
+                    "A": float(arguments[2]),
+                    "E": float(arguments[3]),
+                    "G": float(arguments[4]),
+                    "J": float(arguments[5]),
+                    "Iy": float(arguments[6]),
+                    "Iz": float(arguments[7]),
+                    "transf_tag": str(arguments[8]),
+                }
+            )
+        elif element_name == "elasticbeamcolumn" and len(arguments) >= 6:
             properties.update(
                 {
                     "A": float(arguments[2]),
@@ -181,6 +194,7 @@ class ModelCommandCollector:
                     "tag": tag,
                     "x": float(coordinates[0]),
                     "y": float(coordinates[1]),
+                    "z": float(coordinates[2]) if len(coordinates) >= 3 else 0.0,
                     "ndf": self.ndf,
                 }
 

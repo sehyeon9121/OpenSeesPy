@@ -228,26 +228,40 @@ class ModelInspectorPanel(QFrame):
         )
         loads = [item for item in self._model.nodal_loads if item.node_tag == tag]
         support = SUPPORT_LABELS[boundary.support_kind] if boundary else "Free"
-        values = [0.0, 0.0, 0.0]
+        values = [0.0] * max(self._model.ndf, 3)
         for load in loads:
-            for index, value in enumerate(load.values[:3]):
+            for index, value in enumerate(load.values[: len(values)]):
                 values[index] += value
         self.entity_badge.setText("NODE")
         self.entity_title.setText(f"Node {tag}")
-        self.entity_visual.setText(f"UX   ● {tag}   UY     RZ")
+        dof_text = "UX  UY  UZ  RX  RY  RZ" if self._model.ndm == 3 else "UX  UY  RZ"
+        self.entity_visual.setText(f"● {tag}   {dof_text}")
         self.entity_description.setText(
             "Coordinate, degrees of freedom, support and resultant nodal load."
         )
-        self._set_properties(
-            [
-                ("X", f"{node.x:g} {unit.length}"),
-                ("Y", f"{node.y:g} {unit.length}"),
-                ("DOF", f"{node.ndf} (UX, UY, RZ)"),
-                ("SUPPORT", support),
-                ("Fx / Fy", f"{values[0]:g} / {values[1]:g} {unit.force}"),
-                ("Mz", f"{values[2]:g} {unit.moment}"),
-            ]
-        )
+        properties = [
+            ("X", f"{node.x:g} {unit.length}"),
+            ("Y", f"{node.y:g} {unit.length}"),
+        ]
+        if self._model.ndm == 3:
+            properties.extend(
+                [
+                    ("Z", f"{node.z:g} {unit.length}"),
+                    ("DOF", f"{node.ndf} (3 translations + 3 rotations)"),
+                    ("SUPPORT", support),
+                    ("Fx / Fy / Fz", " / ".join(f"{value:g}" for value in values[:3]) + f" {unit.force}"),
+                ]
+            )
+        else:
+            properties.extend(
+                [
+                    ("DOF", f"{node.ndf} (UX, UY, RZ)"),
+                    ("SUPPORT", support),
+                    ("Fx / Fy", f"{values[0]:g} / {values[1]:g} {unit.force}"),
+                    ("Mz", f"{values[2]:g} {unit.moment}"),
+                ]
+            )
+        self._set_properties(properties)
         self.advanced_text.setText(
             "Restraints: "
             + (
@@ -264,27 +278,44 @@ class ModelInspectorPanel(QFrame):
             return
         node_i = self._model.nodes[element.node_i]
         node_j = self._model.nodes[element.node_j]
-        length = math.hypot(node_j.x - node_i.x, node_j.y - node_i.y)
+        length = math.sqrt(
+            (node_j.x - node_i.x) ** 2
+            + (node_j.y - node_i.y) ** 2
+            + (node_j.z - node_i.z) ** 2
+        )
         unit = self._unit_system
         area = self._number_property(element.properties, "A")
         elastic_modulus = self._number_property(element.properties, "E")
         inertia = self._number_property(element.properties, "I")
+        inertia_y = self._number_property(element.properties, "Iy")
+        inertia_z = self._number_property(element.properties, "Iz")
         self.entity_badge.setText("ELEMENT")
         self.entity_title.setText(f"Element {tag}")
         self.entity_visual.setText(
             f"● Node {element.node_i}   ━━━━━   Node {element.node_j} ●"
         )
         self.entity_description.setText(element.element_type)
-        self._set_properties(
-            [
-                ("LENGTH", f"{length:.5g} {unit.length}"),
-                ("NODES", f"{element.node_i}  →  {element.node_j}"),
-                ("E", self._property_text(elastic_modulus, f"{unit.force}/{unit.length}²")),
-                ("A", self._property_text(area, f"{unit.length}²")),
-                ("I", self._property_text(inertia, f"{unit.length}⁴")),
-                ("TRANSFORM", str(element.properties.get("transf_tag", "Not detected"))),
-            ]
-        )
+        properties = [
+            ("LENGTH", f"{length:.5g} {unit.length}"),
+            ("NODES", f"{element.node_i}  →  {element.node_j}"),
+            ("E", self._property_text(elastic_modulus, f"{unit.force}/{unit.length}²")),
+            ("A", self._property_text(area, f"{unit.length}²")),
+        ]
+        if self._model.ndm == 3:
+            properties.extend(
+                [
+                    ("Iy", self._property_text(inertia_y, f"{unit.length}⁴")),
+                    ("Iz", self._property_text(inertia_z, f"{unit.length}⁴")),
+                ]
+            )
+        else:
+            properties.extend(
+                [
+                    ("I", self._property_text(inertia, f"{unit.length}⁴")),
+                    ("TRANSFORM", str(element.properties.get("transf_tag", "Not detected"))),
+                ]
+            )
+        self._set_properties(properties)
         derived = []
         if elastic_modulus is not None and area is not None:
             derived.append(f"EA = {elastic_modulus * area:.6g} {unit.force}")
@@ -292,6 +323,17 @@ class ModelInspectorPanel(QFrame):
             derived.append(
                 f"EI = {elastic_modulus * inertia:.6g} {unit.force}·{unit.length}²"
             )
+        for axis, axis_inertia in (("y", inertia_y), ("z", inertia_z)):
+            if elastic_modulus is not None and axis_inertia is not None:
+                derived.append(
+                    f"EI{axis} = {elastic_modulus * axis_inertia:.6g} "
+                    f"{unit.force}·{unit.length}²"
+                )
+        if self._model.ndm == 3:
+            shear_modulus = self._number_property(element.properties, "G")
+            torsion = self._number_property(element.properties, "J")
+            if shear_modulus is not None and torsion is not None:
+                derived.append(f"GJ = {shear_modulus * torsion:.6g} {unit.force}·{unit.length}²")
         self.advanced_text.setText(
             "   |   ".join(derived) if derived else "No derived stiffness is available."
         )
@@ -303,7 +345,11 @@ class ModelInspectorPanel(QFrame):
         )
         if boundary is None:
             return
-        restraint_names = ("UX", "UY", "RZ")
+        restraint_names = (
+            ("UX", "UY", "UZ", "RX", "RY", "RZ")
+            if self._model.ndm == 3
+            else ("UX", "UY", "RZ")
+        )
         self.entity_badge.setText("SUPPORT")
         self.entity_title.setText(f"Node {tag} · {SUPPORT_LABELS[boundary.support_kind]}")
         self.entity_visual.setText("━━━  ●  ┻┻┻")
@@ -324,24 +370,37 @@ class ModelInspectorPanel(QFrame):
         assert self._model is not None
         unit = self._unit_system
         loads = [item for item in self._model.nodal_loads if item.node_tag == tag]
-        values = [0.0, 0.0, 0.0]
+        values = [0.0] * max(self._model.ndf, 3)
         for load in loads:
-            for index, value in enumerate(load.values[:3]):
+            for index, value in enumerate(load.values[: len(values)]):
                 values[index] += value
         self.entity_badge.setText("LOAD")
         self.entity_title.setText(f"Nodal Load · Node {tag}")
-        self.entity_visual.setText("→  Fx      ↓  Fy      ↻  Mz")
+        self.entity_visual.setText(
+            "Fx  Fy  Fz  Mx  My  Mz"
+            if self._model.ndm == 3
+            else "→  Fx      ↓  Fy      ↻  Mz"
+        )
         self.entity_description.setText(
             "Component loads are displayed separately in the structural viewport."
         )
-        self._set_properties(
-            [
+        if self._model.ndm == 3:
+            names = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
+            properties = [
+                (
+                    name,
+                    f"{values[index]:g} {unit.force if index < 3 else unit.moment}",
+                )
+                for index, name in enumerate(names)
+            ]
+        else:
+            properties = [
                 ("Fx", f"{values[0]:g} {unit.force}"),
                 ("Fy", f"{values[1]:g} {unit.force}"),
                 ("Mz", f"{values[2]:g} {unit.moment}"),
                 ("PATTERN", str(loads[0].pattern_tag or "Imported") if loads else "None"),
             ]
-        )
+        self._set_properties(properties)
         self.advanced_text.setText(f"{len(loads)} load command(s) aggregated at Node {tag}.")
 
     def _show_element_load(self, tag: int) -> None:
@@ -450,7 +509,12 @@ class ModelInspectorPanel(QFrame):
         missing: list[str] = []
         for element in model.elements.values():
             if element.element_type.lower() == "elasticbeamcolumn":
-                absent = [key for key in ("E", "A", "I") if key not in element.properties]
+                required = (
+                    ("E", "A", "G", "J", "Iy", "Iz")
+                    if model.ndm == 3
+                    else ("E", "A", "I")
+                )
+                absent = [key for key in required if key not in element.properties]
                 if absent:
                     missing.append(f"Element {element.tag} ({'/'.join(absent)})")
             elif element.element_type.lower() in {"truss", "corottruss"}:

@@ -123,6 +123,7 @@ class ResultSummaryPanel(QFrame):
 
     def set_model(self, model: StructuralModel) -> None:
         self._model = model
+        self.system_value.setText(f"LOCAL {model.ndm}D")
         self._refresh()
 
     def set_result_type(self, result_type: str) -> None:
@@ -192,6 +193,11 @@ class ResultSummaryPanel(QFrame):
                 math.hypot(
                     node.displacement[0] if len(node.displacement) > 0 else 0.0,
                     node.displacement[1] if len(node.displacement) > 1 else 0.0,
+                    node.displacement[2]
+                    if self._model is not None
+                    and self._model.ndm == 3
+                    and len(node.displacement) > 2
+                    else 0.0,
                 )
                 for node in result.node_results.values()
             ),
@@ -200,27 +206,43 @@ class ResultSummaryPanel(QFrame):
         axial = []
         shear = []
         moment = []
-        for element in result.element_results.values():
-            try:
-                diagrams = member_diagrams(element)
-            except ValueError:
-                continue
-            axial.append(diagrams[0])
-            shear.append(diagrams[1])
-            moment.append(diagrams[2])
+        if self._model is None or self._model.ndm == 2:
+            for element in result.element_results.values():
+                try:
+                    diagrams = member_diagrams(element)
+                except ValueError:
+                    continue
+                axial.append(diagrams[0])
+                shear.append(diagrams[1])
+                moment.append(diagrams[2])
 
         self.metric_values["displacement"].setText(
             f"{max_displacement:.6g}  {unit.length}"
         )
-        self.metric_values["moment"].setText(
-            f"{max_abs_value(moment):.6g}  {unit.moment}"
-        )
-        self.metric_values["shear"].setText(
-            f"{max_abs_value(shear):.6g}  {unit.force}"
-        )
-        self.metric_values["axial"].setText(
-            f"{max_abs_value(axial):.6g}  {unit.force}"
-        )
+        if self._model is not None and self._model.ndm == 3:
+            force_maxima = {
+                kind: max(member_magnitudes(self._model, result, kind).values(), default=0.0)
+                for kind in ("moment", "shear", "axial")
+            }
+            self.metric_values["moment"].setText(
+                f"{force_maxima['moment']:.6g}  {unit.moment}"
+            )
+            self.metric_values["shear"].setText(
+                f"{force_maxima['shear']:.6g}  {unit.force}"
+            )
+            self.metric_values["axial"].setText(
+                f"{force_maxima['axial']:.6g}  {unit.force}"
+            )
+        else:
+            self.metric_values["moment"].setText(
+                f"{max_abs_value(moment):.6g}  {unit.moment}"
+            )
+            self.metric_values["shear"].setText(
+                f"{max_abs_value(shear):.6g}  {unit.force}"
+            )
+            self.metric_values["axial"].setText(
+                f"{max_abs_value(axial):.6g}  {unit.force}"
+            )
         self._refresh_legend()
         self._refresh_end_forces()
 
@@ -269,20 +291,46 @@ class ResultSummaryPanel(QFrame):
             self.member_changed.emit(int(element_tag))
 
     def _refresh_end_forces(self) -> None:
+        is_3d = self._model is not None and self._model.ndm == 3
+        if is_3d:
+            self.end_force_table.setColumnCount(7)
+            self.end_force_table.setHorizontalHeaderLabels(
+                (
+                    "END",
+                    f"N ({self._unit_system.force})",
+                    f"Vy ({self._unit_system.force})",
+                    f"Vz ({self._unit_system.force})",
+                    f"T ({self._unit_system.moment})",
+                    f"My ({self._unit_system.moment})",
+                    f"Mz ({self._unit_system.moment})",
+                )
+            )
+        else:
+            self.end_force_table.setColumnCount(4)
+            self.end_force_table.setHorizontalHeaderLabels(
+                (
+                    "END",
+                    f"N ({self._unit_system.force})",
+                    f"V ({self._unit_system.force})",
+                    f"M ({self._unit_system.moment})",
+                )
+            )
         for row in range(2):
             self.end_force_table.setItem(row, 0, QTableWidgetItem("i" if row == 0 else "j"))
-            for column in range(1, 4):
+            for column in range(1, self.end_force_table.columnCount()):
                 self.end_force_table.setItem(row, column, QTableWidgetItem("—"))
 
         if self._result is None:
             return
         element_tag = self.member_selector.currentData()
         element = self._result.element_results.get(element_tag)
-        if element is None or len(element.local_forces) < 6:
+        required = 12 if is_3d else 6
+        if element is None or len(element.local_forces) < required:
             return
         values = element.local_forces
-        for row, offset in ((0, 0), (1, 3)):
-            for column in range(3):
+        width = 6 if is_3d else 3
+        for row, offset in ((0, 0), (1, width)):
+            for column in range(width):
                 self.end_force_table.setItem(
                     row,
                     column + 1,

@@ -32,7 +32,8 @@ def _element_length(element_tag: int) -> float:
     end = ops.nodeCoord(int(nodes[1]))
     if len(start) < 2 or len(end) < 2:
         return 0.0
-    return math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
+    deltas = [float(b) - float(a) for a, b in zip(start, end, strict=False)]
+    return math.sqrt(sum(value * value for value in deltas))
 
 
 def run_linear_static_analysis(source: Path) -> dict[str, Any]:
@@ -100,7 +101,8 @@ def _flexural_rigidity(collector: ModelCommandCollector, element_tag: int) -> fl
     """Return EI, or 0.0 for elements whose section properties are not known."""
     properties = collector.elements.get(element_tag, {}).get("properties", {})
     try:
-        return float(properties["E"]) * float(properties["I"])
+        inertia = properties.get("I", properties.get("Iz"))
+        return float(properties["E"]) * float(inertia)
     except (KeyError, TypeError, ValueError):
         return 0.0
 

@@ -89,9 +89,9 @@ class ModelSidebar(QFrame):
         footer = QHBoxLayout()
         footer.addWidget(QLabel("●  Model workspace"))
         footer.addStretch(1)
-        dimension = QLabel("2D")
-        dimension.setObjectName("smallBadge")
-        footer.addWidget(dimension)
+        self.dimension_badge = QLabel("2D")
+        self.dimension_badge.setObjectName("smallBadge")
+        footer.addWidget(self.dimension_badge)
         layout.addLayout(footer)
 
     def set_source_file(self, source: str) -> None:
@@ -104,14 +104,18 @@ class ModelSidebar(QFrame):
         self.summary_values["nodes"].setText(str(len(model.nodes)))
         self.summary_values["elements"].setText(str(len(model.elements)))
         self.summary_values["supports"].setText(str(len(model.boundaries)))
+        self.dimension_badge.setText(f"{model.ndm}D")
 
         self.tree.clear()
         self._tree_items.clear()
         nodes_item = QTreeWidgetItem(self.tree, [f"NODES  ({len(model.nodes)})"])
         for node in model.nodes.values():
-            item = QTreeWidgetItem(
-                nodes_item, [f"Node {node.tag}   ({node.x:g}, {node.y:g})"]
+            coordinates = (
+                f"{node.x:g}, {node.y:g}, {node.z:g}"
+                if model.ndm == 3
+                else f"{node.x:g}, {node.y:g}"
             )
+            item = QTreeWidgetItem(nodes_item, [f"Node {node.tag}   ({coordinates})"])
             self._register_item(item, "node", node.tag)
 
         elements_item = QTreeWidgetItem(
