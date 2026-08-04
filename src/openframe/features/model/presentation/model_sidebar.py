@@ -149,12 +149,24 @@ class ModelSidebar(QFrame):
 
         loads_item = QTreeWidgetItem(
             self.tree,
-            [f"LOADS  ({len(model.nodal_loads)})"],
+            [f"LOADS  ({len(model.nodal_loads) + len(model.element_loads)})"],
         )
         for load in model.nodal_loads:
             values = ", ".join(f"{value:g}" for value in load.values)
             item = QTreeWidgetItem(loads_item, [f"Node {load.node_tag}   ({values})"])
             self._register_item(item, "load", load.node_tag)
+
+        for load in model.element_loads:
+            item = QTreeWidgetItem(
+                loads_item,
+                [
+                    (
+                        f"Element {load.element_tag}   Uniform"
+                        f"   (Wx={load.wx:g}, Wy={load.wy:g})"
+                    )
+                ],
+            )
+            self._register_item(item, "element_load", load.element_tag)
 
         self.tree.expandToDepth(0)
 

@@ -175,7 +175,11 @@ class ResultViewport(QFrame):
             identity = item.data(0)
             if not isinstance(identity, tuple) or not identity:
                 continue
-            if identity[0] in {"load", "node_label"}:
+            if identity[0] in {
+                "load",
+                "element_load",
+                "node_label",
+            }:
                 item.setVisible(False)
             elif identity[0] in {"node", "element"}:
                 item.setVisible(self.show_undeformed.isChecked())

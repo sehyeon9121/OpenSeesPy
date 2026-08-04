@@ -32,7 +32,7 @@ class ElementLoadCollector:
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             result = original(*args, **kwargs)
             try:
-                self._record(args)
+                self.record(args)
             except (ValueError, IndexError, TypeError):
                 # A load we cannot parse must never break the analysis itself.
                 pass
@@ -45,7 +45,8 @@ class ElementLoadCollector:
             ops.eleLoad = self._original
             self._original = None
 
-    def _record(self, args: tuple[Any, ...]) -> None:
+    def record(self, args: tuple[Any, ...]) -> None:
+        """Record one raw ``ops.eleLoad`` argument tuple."""
         tags = _element_tags(args)
         if not tags:
             return

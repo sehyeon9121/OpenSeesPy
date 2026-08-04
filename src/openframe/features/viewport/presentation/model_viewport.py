@@ -171,7 +171,12 @@ class ModelViewport(QFrame):
             visible = visible and self.filter_options["node"].isChecked()
         for item in self.scene.items():
             identity = item.data(0)
-            if isinstance(identity, tuple) and identity and identity[0] == item_kind:
+            visible_kinds = (
+                {"load", "element_load"}
+                if item_kind == "load"
+                else {item_kind}
+            )
+            if isinstance(identity, tuple) and identity and identity[0] in visible_kinds:
                 item.setVisible(visible)
         if item_kind == "node":
             labels_visible = visible and self.filter_options["node_label"].isChecked()

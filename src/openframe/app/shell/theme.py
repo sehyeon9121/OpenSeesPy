@@ -45,7 +45,7 @@ QLabel#readyBadge {
 }
 QLabel#welcomeHeaderLabel {
     color: #6f7f93;
-    font-size: 7pt;
+    font-size: 9pt;
     font-weight: 600;
     padding-left: 8px;
 }
@@ -106,6 +106,78 @@ QFrame#workspaceNavigation QToolButton:checked {
 }
 QFrame#startWorkspace {
     background: #f4f7fb;
+}
+QFrame#analysisProgressRunning, QFrame#analysisProgressComplete,
+QFrame#analysisProgressFailed {
+    background: #ffffff;
+    border-bottom: 1px solid #d8e1ec;
+}
+QFrame#analysisProgressRunning { background: #f3f7fd; }
+QFrame#analysisProgressComplete { background: #edf8f1; }
+QFrame#analysisProgressFailed { background: #fff2f2; }
+QLabel#analysisProgressBadge {
+    border-radius: 3px;
+    padding: 3px 7px;
+    color: #174ea6;
+    background: #dfeafb;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QFrame#analysisProgressComplete QLabel#analysisProgressBadge {
+    color: #247044;
+    background: #d8efdf;
+}
+QFrame#analysisProgressFailed QLabel#analysisProgressBadge {
+    color: #a43139;
+    background: #f8dfe1;
+}
+QLabel#analysisProgressTitle {
+    color: #233a57;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QLabel#analysisProgressDetail {
+    color: #748397;
+    font-size: 7pt;
+}
+QProgressBar#analysisProgressBar {
+    min-height: 17px;
+    max-height: 17px;
+    color: #41536a;
+    background: #dfe6ef;
+    border: 0;
+    border-radius: 3px;
+    text-align: center;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QProgressBar#analysisProgressBar::chunk {
+    border-radius: 3px;
+    background: #3973c6;
+}
+QFrame#analysisProgressComplete QProgressBar#analysisProgressBar::chunk {
+    background: #3d9b61;
+}
+QFrame#analysisProgressFailed QProgressBar#analysisProgressBar::chunk {
+    background: #cf5158;
+}
+QPushButton#analysisProgressAction, QPushButton#analysisProgressDismiss {
+    min-height: 27px;
+    border-radius: 3px;
+    padding: 0 9px;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QPushButton#analysisProgressAction {
+    color: #ffffff;
+    background: #2f8552;
+    border: 1px solid #2f8552;
+}
+QPushButton#analysisProgressAction:hover { background: #276f45; }
+QPushButton#analysisProgressDismiss {
+    color: #607087;
+    background: transparent;
+    border: 1px solid #bdc8d6;
 }
 QFrame#startHero {
     background: #eaf1fb;
@@ -226,6 +298,116 @@ QLabel#startWorkflowSteps {
     color: #36577f;
     font-size: 8pt;
     font-weight: 600;
+}
+/* Large-format home workspace. These rules intentionally override the legacy
+   start-card sizes above while keeping their shared colors and hover states. */
+QFrame#startWorkspace { background: #f5f7fb; }
+QLabel#startPageTitle {
+    color: #10284b;
+    font-size: 23pt;
+    font-weight: 700;
+}
+QLabel#startPageDescription {
+    color: #66778d;
+    font-size: 10pt;
+}
+QLabel#startColumnTitle {
+    color: #172f51;
+    font-size: 13pt;
+    font-weight: 700;
+}
+QLabel#startSectionHint, QLabel#startFooterText {
+    color: #748397;
+    font-size: 9pt;
+}
+QLabel#startFooterTitle {
+    color: #58708f;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QFrame#startActionPanel, QFrame#startSessionPanel, QFrame#startWorkflowPanel {
+    background: #ffffff;
+    border: 1px solid #d5deea;
+    border-radius: 7px;
+}
+QFrame#startContinueColumn { background: transparent; }
+QLabel#startPrimaryIcon, QLabel#startOptionIcon {
+    min-width: 42px;
+    min-height: 42px;
+    max-width: 42px;
+    max-height: 42px;
+    font-size: 10pt;
+}
+QLabel#startPrimaryIcon { font-size: 17pt; }
+QLabel#startCardTitle { font-size: 12pt; }
+QLabel#startCardDescription { font-size: 9pt; }
+QPushButton#startPrimaryButton, QPushButton#startSecondaryButton {
+    min-width: 82px;
+    min-height: 36px;
+    border-radius: 4px;
+    padding: 0 12px;
+    font-size: 9pt;
+}
+QLabel#startSessionName {
+    color: #132a49;
+    font-size: 18pt;
+    font-weight: 700;
+}
+QPushButton#startResumeButton {
+    min-height: 40px;
+    padding: 0 18px;
+    color: #ffffff;
+    background: #174ea6;
+    border: 1px solid #174ea6;
+    border-radius: 4px;
+    font-size: 9pt;
+    font-weight: 700;
+}
+QPushButton#startResumeButton:hover { background: #123f89; }
+QFrame#startSessionRow {
+    background: #f8fafd;
+    border: 1px solid #dce4ef;
+    border-radius: 5px;
+}
+QLabel#startSessionRowName {
+    color: #152d4d;
+    font-size: 11pt;
+    font-weight: 700;
+}
+QLabel#startSessionRowDetail {
+    color: #748397;
+    font-size: 8pt;
+}
+QPushButton#startSessionReturnButton {
+    min-width: 78px;
+    min-height: 34px;
+    padding: 0 10px;
+    color: #174ea6;
+    background: #ffffff;
+    border: 1px solid #aebfda;
+    border-radius: 4px;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QPushButton#startSessionReturnButton:hover {
+    color: #ffffff;
+    background: #174ea6;
+    border-color: #174ea6;
+}
+QFrame#startWorkflowStep {
+    background: #f6f8fc;
+    border: 1px solid #dde5ef;
+    border-radius: 5px;
+}
+QLabel#startStepNumber {
+    color: #174ea6;
+    font-size: 13pt;
+    font-weight: 700;
+}
+QLabel#startStepName {
+    color: #344a66;
+    font-size: 9pt;
+    font-weight: 700;
 }
 QFrame#modelSidebar, QFrame#analysisSidebar {
     background: #f8fafc;

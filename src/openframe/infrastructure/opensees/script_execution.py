@@ -70,37 +70,65 @@ _STAND_INS: dict[str, Callable[..., Any]] = {
 }
 
 
+class AnalysisStageTracker:
+    """Records whether the script has reached its analysis stage.
+
+    Many scripts call ``wipe()`` again at the very end to free memory, after the model
+    is already built and (suppressed) analysis commands have run. A collector watching
+    this flag can tell that cleanup call apart from a genuine "start the model over"
+    wipe that happens while nodes and elements are still being defined.
+    """
+
+    def __init__(self) -> None:
+        self.started = False
+
+
 class AnalysisStageSuppressor:
     """Swap the analysis-stage OpenSees commands for inert stand-ins."""
 
     def __init__(self) -> None:
         self._originals: dict[str, Callable[..., Any]] = {}
 
-    def install(self) -> None:
+    def install(self, tracker: AnalysisStageTracker | None = None) -> None:
         for name in SUPPRESSED_COMMANDS:
             original = getattr(ops, name, None)
             if original is None or name in self._originals:
                 continue
             self._originals[name] = original
-            setattr(ops, name, _STAND_INS.get(name, _inert))
+            setattr(ops, name, self._tracked(_STAND_INS.get(name, _inert), tracker))
 
     def restore(self) -> None:
         for name, original in self._originals.items():
             setattr(ops, name, original)
         self._originals.clear()
 
+    @staticmethod
+    def _tracked(
+        stand_in: Callable[..., Any], tracker: AnalysisStageTracker | None
+    ) -> Callable[..., Any]:
+        if tracker is None:
+            return stand_in
+
+        def wrapped(*arguments: Any, **keywords: Any) -> Any:
+            tracker.started = True
+            return stand_in(*arguments, **keywords)
+
+        return wrapped
+
 
 @contextmanager
-def analysis_stage_suppressed() -> Iterator[None]:
+def analysis_stage_suppressed(
+    tracker: AnalysisStageTracker | None = None,
+) -> Iterator[None]:
     suppressor = AnalysisStageSuppressor()
-    suppressor.install()
+    suppressor.install(tracker)
     try:
         yield
     finally:
         suppressor.restore()
 
 
-def run_model_script(source: Path) -> None:
+def run_model_script(source: Path, tracker: AnalysisStageTracker | None = None) -> None:
     """Build the model described by ``source`` without solving it."""
-    with analysis_stage_suppressed():
+    with analysis_stage_suppressed(tracker):
         runpy.run_path(str(source), run_name="__main__")

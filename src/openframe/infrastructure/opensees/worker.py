@@ -7,14 +7,18 @@ from pathlib import Path
 
 from openframe.infrastructure.opensees.linear_static_solver import run_linear_static_analysis
 from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
-from openframe.infrastructure.opensees.script_execution import run_model_script
+from openframe.infrastructure.opensees.script_execution import (
+    AnalysisStageTracker,
+    run_model_script,
+)
 
 
 def collect_model(source: Path) -> dict[str, object]:
     """Read the model out of ``source``. Importing a file never solves it."""
+    tracker = AnalysisStageTracker()
     collector = ModelCommandCollector()
-    collector.install()
-    run_model_script(source)
+    collector.install(tracker)
+    run_model_script(source, tracker)
     return collector.to_payload()
 
 

@@ -8,6 +8,7 @@ from openframe.core.domain.model import (
     Node,
     StructuralModel,
     SupportKind,
+    UniformElementLoad,
 )
 from openframe.core.domain.results import (
     AnalysisResult,
@@ -38,5 +39,6 @@ __all__ = [
     "NodeResult",
     "StructuralModel",
     "SupportKind",
+    "UniformElementLoad",
     "UnitSystem",
 ]

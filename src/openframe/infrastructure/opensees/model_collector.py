@@ -5,6 +5,9 @@ from typing import Any
 
 import openseespy.opensees as ops
 
+from openframe.infrastructure.opensees.element_load_collector import ElementLoadCollector
+from openframe.infrastructure.opensees.script_execution import AnalysisStageTracker
+
 
 class ModelCommandCollector:
     """Record the initial 2D node, element, support and nodal-load commands."""
@@ -16,15 +19,19 @@ class ModelCommandCollector:
         self.elements: dict[int, dict[str, Any]] = {}
         self.boundaries: dict[int, tuple[bool, ...]] = {}
         self.loads: list[dict[str, Any]] = []
+        self.element_loads = ElementLoadCollector()
         self._originals: dict[str, Callable[..., Any]] = {}
+        self._tracker: AnalysisStageTracker | None = None
 
-    def install(self) -> None:
+    def install(self, tracker: AnalysisStageTracker | None = None) -> None:
+        self._tracker = tracker
         self._patch("wipe", self._wrap_wipe)
         self._patch("model", self._wrap_model)
         self._patch("node", self._wrap_node)
         self._patch("element", self._wrap_element)
         self._patch("fix", self._wrap_fix)
         self._patch("load", self._wrap_load)
+        self._patch("eleLoad", self._wrap_ele_load)
 
     def restore(self) -> None:
         """Put the real OpenSees commands back once the script has finished."""
@@ -44,6 +51,10 @@ class ModelCommandCollector:
                 for tag, restraints in sorted(self.boundaries.items())
             ],
             "nodal_loads": self.loads,
+            "element_loads": [
+                {"element_tag": tag, "wx": values[0], "wy": values[1]}
+                for tag, values in sorted(self.element_loads.uniform_loads.items())
+            ],
             "metadata": {"source": "openseespy-worker"},
         }
 
@@ -54,10 +65,16 @@ class ModelCommandCollector:
 
     def _wrap_wipe(self, original: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped(*args: Any, **kwargs: Any) -> Any:
-            self.nodes.clear()
-            self.elements.clear()
-            self.boundaries.clear()
-            self.loads.clear()
+            # Once the script has touched its analysis stage, the model is presumably
+            # finished and a further wipe() is end-of-script cleanup, not a request to
+            # discard everything collected so far.
+            if self._tracker is None or not self._tracker.started:
+                self.nodes.clear()
+                self.elements.clear()
+                self.boundaries.clear()
+                self.loads.clear()
+                self.element_loads.uniform_loads.clear()
+                self.element_loads.unsupported.clear()
             return original(*args, **kwargs)
 
         return wrapped
@@ -140,6 +157,17 @@ class ModelCommandCollector:
             self.loads.append(
                 {"node_tag": int(node_tag), "values": [float(value) for value in values]}
             )
+            return result
+
+        return wrapped
+
+    def _wrap_ele_load(self, original: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            result = original(*args, **kwargs)
+            try:
+                self.element_loads.record(args)
+            except (ValueError, IndexError, TypeError):
+                pass
             return result
 
         return wrapped

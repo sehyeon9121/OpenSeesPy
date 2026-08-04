@@ -15,6 +15,9 @@ from openframe.core.domain import DEFAULT_UNIT_SYSTEM, StructuralModel, UnitSyst
 from openframe.features.viewport.items.nodal_load_item import NodalLoadItem
 from openframe.features.viewport.items.node_label_item import NodeLabelItem
 from openframe.features.viewport.items.support_item import SupportItem
+from openframe.features.viewport.items.uniform_element_load_item import (
+    UniformElementLoadItem,
+)
 
 
 class StructuralScene(QGraphicsScene):
@@ -25,7 +28,7 @@ class StructuralScene(QGraphicsScene):
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         self._unit_system = unit_system
         for item in self.items():
-            if isinstance(item, NodalLoadItem):
+            if isinstance(item, (NodalLoadItem, UniformElementLoadItem)):
                 item.set_unit_system(unit_system)
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
@@ -113,4 +116,20 @@ class StructuralScene(QGraphicsScene):
                 unit_system=self._unit_system,
             )
             load_item.setPos(node.x, -node.y)
+            self.addItem(load_item)
+
+        for load in model.element_loads:
+            element = model.elements.get(load.element_tag)
+            if element is None:
+                continue
+            node_i = model.nodes.get(element.node_i)
+            node_j = model.nodes.get(element.node_j)
+            if node_i is None or node_j is None:
+                continue
+            load_item = UniformElementLoadItem(
+                load=load,
+                start=QPointF(node_i.x, -node_i.y),
+                end=QPointF(node_j.x, -node_j.y),
+                unit_system=self._unit_system,
+            )
             self.addItem(load_item)

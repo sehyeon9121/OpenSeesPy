@@ -84,6 +84,7 @@ class ModelInspectorPanel(QFrame):
             "element": self._show_element,
             "support": self._show_support,
             "load": self._show_load,
+            "element_load": self._show_element_load,
         }
         handler = handlers.get(kind)
         if handler is None:
@@ -342,6 +343,30 @@ class ModelInspectorPanel(QFrame):
             ]
         )
         self.advanced_text.setText(f"{len(loads)} load command(s) aggregated at Node {tag}.")
+
+    def _show_element_load(self, tag: int) -> None:
+        assert self._model is not None
+        unit = self._unit_system
+        loads = [item for item in self._model.element_loads if item.element_tag == tag]
+        wx = sum(load.wx for load in loads)
+        wy = sum(load.wy for load in loads)
+        load_unit = f"{unit.force}/{unit.length}"
+        self.entity_badge.setText("ELEMENT LOAD")
+        self.entity_title.setText(f"Uniform Load · Element {tag}")
+        self.entity_visual.setText("↓↓↓↓↓  beamUniform  ↓↓↓↓↓")
+        self.entity_description.setText(
+            "Uniformly distributed load components in the member local axes."
+        )
+        self._set_properties(
+            [
+                ("Wx (LOCAL)", f"{wx:g} {load_unit}"),
+                ("Wy (LOCAL)", f"{wy:g} {load_unit}"),
+                ("PATTERN", str(loads[0].pattern_tag or "Imported") if loads else "None"),
+            ]
+        )
+        self.advanced_text.setText(
+            f"{len(loads)} beamUniform command(s) aggregated on Element {tag}."
+        )
 
     def _set_properties(self, properties: list[tuple[str, str]]) -> None:
         for index, (card, name, value) in enumerate(self.property_cards):

@@ -55,6 +55,14 @@ class NodalLoad:
     pattern_tag: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class UniformElementLoad:
+    element_tag: int
+    wx: float = 0.0
+    wy: float = 0.0
+    pattern_tag: int | None = None
+
+
 @dataclass(slots=True)
 class StructuralModel:
     ndm: int = 2
@@ -63,6 +71,7 @@ class StructuralModel:
     elements: dict[int, Element] = field(default_factory=dict)
     boundaries: list[BoundaryCondition] = field(default_factory=list)
     nodal_loads: list[NodalLoad] = field(default_factory=list)
+    element_loads: list[UniformElementLoad] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> list[str]:

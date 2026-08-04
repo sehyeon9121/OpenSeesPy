@@ -14,6 +14,7 @@ from openframe.core.domain import (
     NodalLoad,
     Node,
     StructuralModel,
+    UniformElementLoad,
 )
 from openframe.core.errors import ModelImportError
 from openframe.features.model.importers.python_source import inspect_python_source
@@ -104,6 +105,14 @@ class OpenSeesModelImporter:
             )
             for item in payload.get("nodal_loads", [])
         ]
+        element_loads = [
+            UniformElementLoad(
+                element_tag=int(item["element_tag"]),
+                wx=float(item.get("wx", 0.0)),
+                wy=float(item.get("wy", 0.0)),
+            )
+            for item in payload.get("element_loads", [])
+        ]
         return StructuralModel(
             ndm=int(payload.get("ndm", 2)),
             ndf=int(payload.get("ndf", 3)),
@@ -111,6 +120,6 @@ class OpenSeesModelImporter:
             elements=elements,
             boundaries=boundaries,
             nodal_loads=loads,
+            element_loads=element_loads,
             metadata=dict(payload.get("metadata", {})),
         )
-

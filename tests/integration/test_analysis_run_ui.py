@@ -45,6 +45,10 @@ def test_run_button_flow_populates_results_workspace() -> None:
     window._run_analysis()
     thread = window._analysis_run_thread
     assert thread is not None
+    assert not window.analysis_progress.isHidden()
+    assert window.analysis_progress.state_badge.text() == "RUNNING"
+    assert window.analysis_progress.progress.maximum() == 0
+    assert window.analysis_progress.view_results_button.isHidden()
     _run_thread_to_completion(thread)
     application.processEvents()
 
@@ -52,6 +56,14 @@ def test_run_button_flow_populates_results_workspace() -> None:
     assert window.results_workspace.summary.status_badge.text() == "COMPLETED"
     assert window.results_workspace.data_panel.result_table.rowCount() == 4
     assert window.results_workspace.summary.member_selector.count() == 3
+    assert window.analysis_progress.state_badge.text() == "COMPLETED"
+    assert window.analysis_progress.progress.value() == 100
+    assert not window.analysis_progress.view_results_button.isHidden()
+
+    window.analysis_progress.view_results_button.click()
+    assert window.workspace_stack.currentWidget() is window.results_workspace
+    assert window.navigation.current_section() == "results"
+    assert window.analysis_progress.isHidden()
 
     node_column_values = {
         window.results_workspace.data_panel.result_table.item(row, 0).text()

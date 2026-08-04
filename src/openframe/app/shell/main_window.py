@@ -1,5 +1,6 @@
 """Stitch-inspired structural analysis application shell."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from openframe.app.shell.analysis_progress_banner import AnalysisProgressBanner
 from openframe.app.shell.analysis_results_sidebar import AnalysisResultsSidebar
 from openframe.app.shell.app_header import AppHeader
 from openframe.app.shell.start_workspace import StartWorkspace
@@ -23,6 +25,7 @@ from openframe.core.domain import (
     AnalysisRequest,
     AnalysisResult,
     AnalysisStatus,
+    StructuralModel,
     UnitSystem,
 )
 from openframe.features.analysis.application.run_analysis import RunAnalysisService
@@ -32,6 +35,16 @@ from openframe.features.model.presentation.model_load_thread import ModelLoadThr
 from openframe.features.model.presentation.model_sidebar import ModelSidebar
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 from openframe.features.viewport.presentation.model_viewport import ModelViewport
+
+
+@dataclass(slots=True)
+class _WorkspaceSession:
+    key: str
+    title: str
+    source_path: Path
+    model: StructuralModel
+    result: AnalysisResult | None = None
+    section: str = "model"
 
 
 class MainWindow(QMainWindow):
@@ -48,6 +61,8 @@ class MainWindow(QMainWindow):
         self._current_model_source: Path | None = None
         self._resume_section = "model"
         self._has_active_workspace = False
+        self._workspace_sessions: dict[str, _WorkspaceSession] = {}
+        self._current_session_key: str | None = None
         self.setWindowTitle("OpenFrame Studio")
         self.resize(1440, 860)
         self.setMinimumSize(980, 620)
@@ -60,6 +75,7 @@ class MainWindow(QMainWindow):
 
         self.header = AppHeader()
         self.navigation = WorkspaceNavigation()
+        self.analysis_progress = AnalysisProgressBanner()
         self.start_workspace = StartWorkspace()
         self.model_sidebar = ModelSidebar()
         self.viewport = ModelViewport()
@@ -90,6 +106,7 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(self.header)
         root_layout.addWidget(self.navigation)
+        root_layout.addWidget(self.analysis_progress)
         root_layout.addWidget(self.workspace_stack, 1)
         self.setCentralWidget(root)
 
@@ -117,6 +134,8 @@ class MainWindow(QMainWindow):
             lambda: self._show_pending_workflow("Open Project")
         )
         self.start_workspace.resume_workspace_requested.connect(self._resume_workspace)
+        self.start_workspace.session_requested.connect(self._activate_workspace_session)
+        self.analysis_progress.view_results_requested.connect(self._open_results_workspace)
         self.navigation.current_changed.connect(self._change_workspace_section)
         self.analysis_settings.analysis_kind_changed.connect(self._set_analysis_kind)
         self.viewport.unit_system_changed.connect(self._set_unit_system)
@@ -131,6 +150,8 @@ class MainWindow(QMainWindow):
     def _show_start_workspace(self) -> None:
         if self.workspace_stack.currentWidget() is not self.start_workspace:
             self._resume_section = self.navigation.current_section()
+            self._store_current_session_section(self._resume_section)
+        self._refresh_start_sessions()
         self.workspace_stack.setCurrentWidget(self.start_workspace)
         self.navigation.hide()
         self.header.set_welcome_mode(True)
@@ -141,9 +162,12 @@ class MainWindow(QMainWindow):
 
     def _start_import_workspace(self) -> None:
         self._has_active_workspace = True
-        self.start_workspace.set_current_session(
-            "OpenSeesPy Import", "Waiting for a .py source file"
-        )
+        if self._workspace_sessions:
+            self._refresh_start_sessions()
+        else:
+            self.start_workspace.set_current_session(
+                "OpenSeesPy Import", "Waiting for a .py source file"
+            )
         self._show_model_workspace()
         self.statusBar().showMessage(
             "OpenSeesPy import workspace | Select UPLOAD .PY to choose a model"
@@ -164,6 +188,12 @@ class MainWindow(QMainWindow):
         self.navigation.set_current_section(self._resume_section)
         self._change_workspace_section(self._resume_section)
 
+    def _open_results_workspace(self) -> None:
+        self.analysis_progress.hide()
+        self.navigation.show()
+        self.header.set_welcome_mode(False)
+        self.navigation.set_current_section("results", emit=True)
+
     def _choose_model_file(self) -> None:
         source, _ = QFileDialog.getOpenFileName(
             self,
@@ -182,6 +212,7 @@ class MainWindow(QMainWindow):
         if self._model_load_thread and self._model_load_thread.isRunning():
             return
 
+        self.analysis_progress.reset()
         self.header.set_busy(True)
         self.statusBar().showMessage(f"Reading model · {source.name}")
         thread = ModelLoadThread(self._open_model_service, source)
@@ -193,13 +224,25 @@ class MainWindow(QMainWindow):
 
     def _model_loaded(self, model: object, source: str) -> None:
         self._has_active_workspace = True
-        self._current_model_source = Path(source)
+        source_path = Path(source).resolve()
+        self._current_model_source = source_path
         self.model_sidebar.set_source_file(source)
         self.model_sidebar.set_model(model)
         self.viewport.set_model(model)
         self.model_inspector.set_model(model)
         self.results_workspace.set_model(model)
-        self.start_workspace.set_current_session(Path(source).name, "Imported OpenSeesPy")
+        self.results_workspace.clear_result()
+        key = str(source_path)
+        self._remember_session(
+            _WorkspaceSession(
+                key=key,
+                title=source_path.name,
+                source_path=source_path,
+                model=model,
+            )
+        )
+        self._current_session_key = key
+        self._refresh_start_sessions()
         self._show_model_workspace()
         self.statusBar().showMessage(
             f"Model loaded · Nodes {len(model.nodes)} · Elements {len(model.elements)}"
@@ -217,6 +260,7 @@ class MainWindow(QMainWindow):
             thread.deleteLater()
 
     def _change_workspace_section(self, section: str) -> None:
+        self._store_current_session_section(section)
         labels = {
             "model": "Model workspace",
             "analysis": "Analysis configuration",
@@ -260,6 +304,12 @@ class MainWindow(QMainWindow):
 
         # The previous run's numbers must not linger next to a fresh one.
         self.results_workspace.clear_result()
+        analysis_name = {
+            AnalysisKind.LINEAR_STATIC: "Linear Static",
+            AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
+            AnalysisKind.TIME_HISTORY: "Time History",
+        }[kind]
+        self.analysis_progress.show_running(analysis_name)
         self.header.set_busy(True, "RUNNING ANALYSIS")
         self.statusBar().showMessage(f"Running analysis · {kind.value}")
         thread = AnalysisRunThread(self._run_analysis_service, request)
@@ -270,12 +320,22 @@ class MainWindow(QMainWindow):
 
     def _analysis_completed(self, result: AnalysisResult) -> None:
         self.results_workspace.show_result(result)
+        if self._current_session_key in self._workspace_sessions:
+            self._workspace_sessions[self._current_session_key].result = result
+            self._refresh_start_sessions()
         if result.status == AnalysisStatus.COMPLETED:
+            self.analysis_progress.show_completed(
+                f"Results are ready for {len(result.node_results)} nodes and "
+                f"{len(result.element_results)} elements."
+            )
             self.statusBar().showMessage(
                 f"Analysis completed · Nodes {len(result.node_results)}"
                 f" · Elements {len(result.element_results)}"
             )
         else:
+            self.analysis_progress.show_failed(
+                " ".join(result.messages) or "The solver returned an unknown error."
+            )
             self.statusBar().showMessage("Analysis failed")
             QMessageBox.critical(
                 self, "해석 실행 실패", "\n".join(result.messages) or "알 수 없는 해석 오류"
@@ -295,3 +355,56 @@ class MainWindow(QMainWindow):
         self._analysis_run_thread = None
         if thread is not None:
             thread.deleteLater()
+
+    def _remember_session(self, session: _WorkspaceSession) -> None:
+        self._workspace_sessions.pop(session.key, None)
+        self._workspace_sessions[session.key] = session
+        while len(self._workspace_sessions) > 4:
+            oldest_key = next(iter(self._workspace_sessions))
+            del self._workspace_sessions[oldest_key]
+
+    def _store_current_session_section(self, section: str) -> None:
+        if self._current_session_key in self._workspace_sessions:
+            self._workspace_sessions[self._current_session_key].section = section
+
+    def _refresh_start_sessions(self) -> None:
+        sessions = [
+            (
+                session.key,
+                session.title,
+                f"{session.title} · OpenSeesPy · {session.source_path.parent}",
+            )
+            for session in reversed(self._workspace_sessions.values())
+        ]
+        if sessions:
+            self.start_workspace.set_sessions(sessions, self._current_session_key)
+
+    def _activate_workspace_session(self, key: str) -> None:
+        session = self._workspace_sessions.get(key)
+        if session is None:
+            return
+
+        self._store_current_session_section(self.navigation.current_section())
+        self._workspace_sessions.pop(key)
+        self._workspace_sessions[key] = session
+        self._current_session_key = key
+        self._current_model_source = session.source_path
+        self._has_active_workspace = True
+
+        self.model_sidebar.set_source_file(str(session.source_path))
+        self.model_sidebar.set_model(session.model)
+        self.viewport.set_model(session.model)
+        self.model_inspector.set_model(session.model)
+        self.results_workspace.set_model(session.model)
+        self.results_workspace.clear_result()
+        if session.result is not None:
+            self.results_workspace.show_result(session.result)
+
+        self.analysis_progress.reset()
+        self._resume_section = session.section
+        self.navigation.show()
+        self.header.set_welcome_mode(False)
+        self.navigation.set_current_section(session.section)
+        self._change_workspace_section(session.section)
+        self._refresh_start_sessions()
+        self.statusBar().showMessage(f"Workspace restored | {session.title}")
