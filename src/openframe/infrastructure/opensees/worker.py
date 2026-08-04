@@ -5,10 +5,13 @@ import json
 import traceback
 from pathlib import Path
 
+import openseespy.opensees as ops
+
 from openframe.infrastructure.opensees.linear_static_solver import run_linear_static_analysis
 from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
 from openframe.infrastructure.opensees.script_execution import (
     AnalysisStageTracker,
+    run_model_definition_only,
     run_model_script,
 )
 
@@ -18,8 +21,15 @@ def collect_model(source: Path) -> dict[str, object]:
     tracker = AnalysisStageTracker()
     collector = ModelCommandCollector()
     collector.install(tracker)
-    run_model_script(source, tracker)
-    return collector.to_payload()
+    try:
+        run_model_script(source, tracker)
+        if not collector.nodes or not collector.elements:
+            tracker.started = False
+            ops.wipe()
+            run_model_definition_only(source)
+        return collector.to_payload()
+    finally:
+        collector.restore()
 
 
 def main() -> int:

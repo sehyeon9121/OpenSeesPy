@@ -5,6 +5,7 @@ OpenSees worker process under infrastructure/opensees.
 """
 
 import ast
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,7 +18,7 @@ class SourceInspection:
 
 
 def inspect_python_source(path: Path) -> SourceInspection:
-    source = path.read_text(encoding="utf-8")
+    source = read_python_source(path)
     try:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError as error:
@@ -35,3 +36,17 @@ def inspect_python_source(path: Path) -> SourceInspection:
     )
     return SourceInspection(path, imports_openseespy)
 
+
+def read_python_source(path: Path) -> str:
+    """Read UTF, encoding-cookie, and common legacy Korean Python sources."""
+    try:
+        with tokenize.open(path) as source_file:
+            return source_file.read()
+    except (SyntaxError, UnicodeDecodeError):
+        raw_source = path.read_bytes()
+        for encoding in ("utf-8-sig", "cp949", "euc-kr"):
+            try:
+                return raw_source.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        raise

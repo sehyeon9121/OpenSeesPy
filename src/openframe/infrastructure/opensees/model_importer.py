@@ -29,9 +29,6 @@ class OpenSeesModelImporter:
         inspection = inspect_python_source(source)
         if inspection.syntax_errors:
             raise ModelImportError("Python 구문 오류: " + "; ".join(inspection.syntax_errors))
-        if not inspection.imports_openseespy:
-            raise ModelImportError("OpenSeesPy를 불러오는 코드가 확인되지 않았습니다.")
-
         with tempfile.TemporaryDirectory(prefix="openframe-model-") as temporary_directory:
             output = Path(temporary_directory) / "model.json"
             command = [
@@ -69,7 +66,18 @@ class OpenSeesModelImporter:
             if not payload.get("ok"):
                 raise ModelImportError(str(payload.get("error", "알 수 없는 모델 실행 오류")))
 
-        return self._to_domain_model(payload["model"])
+        model = self._to_domain_model(payload["model"])
+        if not model.nodes or not model.elements:
+            import_hint = (
+                " 선택한 파일에서 OpenSeesPy import가 직접 확인되지 않아 "
+                "같은 폴더의 보조 모듈까지 실행해 확인했습니다."
+                if not inspection.imports_openseespy
+                else ""
+            )
+            raise ModelImportError(
+                "읽을 수 있는 OpenSees 절점과 요소가 생성되지 않았습니다." + import_hint
+            )
+        return model
 
     def _to_domain_model(self, payload: dict[str, Any]) -> StructuralModel:
         nodes = {

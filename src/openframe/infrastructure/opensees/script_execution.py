@@ -9,13 +9,16 @@ the script contributes the model, supports and loads while the application stays
 in charge of when and how the structure is solved.
 """
 
-import runpy
+import ast
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import openseespy.opensees as ops
+
+from openframe.features.model.importers.python_source import read_python_source
 
 #: Analysis-stage commands the application owns. A script may still call them; the
 #: call is recorded by OpenSees as a no-op instead of solving the structure.
@@ -129,6 +132,134 @@ def analysis_stage_suppressed(
 
 
 def run_model_script(source: Path, tracker: AnalysisStageTracker | None = None) -> None:
-    """Build the model described by ``source`` without solving it."""
-    with analysis_stage_suppressed(tracker):
-        runpy.run_path(str(source), run_name="__main__")
+    """Build the model described by ``source`` without solving it.
+
+    Full engineering scripts often validate recorder or ground-motion files before
+    creating the OpenSees model. If that surrounding workflow fails, retry only the
+    model-building portion instead of rejecting an otherwise readable structure.
+    """
+    effective_tracker = tracker or AnalysisStageTracker()
+    with analysis_stage_suppressed(effective_tracker):
+        try:
+            _execute_source(source)
+        except Exception as original_error:  # noqa: BLE001 - retry a safe model slice.
+            if effective_tracker.started:
+                # The model and loads are already complete. Errors in recorders,
+                # dynamic inputs, or result-printing code do not invalidate import.
+                return
+            try:
+                ops.wipe()
+                run_model_definition_only(source)
+            except Exception:  # noqa: BLE001 - preserve the user's original failure.
+                raise original_error
+
+
+def run_model_definition_only(source: Path) -> None:
+    """Execute the model-building slice of a full analysis script.
+
+    This fallback keeps imports and simple parameter assignments, starts at the last
+    ``wipe()`` before ``model()``, and stops at the first analysis-stage command.
+    """
+    source_text = read_python_source(source)
+    tree = ast.parse(source_text, filename=str(source))
+    body = _model_body(tree)
+    model_index = next(
+        (index for index, statement in enumerate(body) if _calls_command(statement, {"model"})),
+        None,
+    )
+    if model_index is None:
+        raise RuntimeError("No ops.model() command was found.")
+
+    start_index = model_index
+    for index in range(model_index, -1, -1):
+        if _calls_command(body[index], {"wipe"}):
+            start_index = index
+            break
+
+    stop_index = len(body)
+    for index in range(start_index + 1, len(body)):
+        if _calls_command(body[index], set(SUPPRESSED_COMMANDS)):
+            stop_index = index
+            break
+
+    module_prelude = [
+        statement
+        for statement in tree.body
+        if isinstance(
+            statement,
+            (
+                ast.Import,
+                ast.ImportFrom,
+                ast.Assign,
+                ast.AnnAssign,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+            ),
+        )
+    ]
+    local_parameters = [
+        statement
+        for statement in body[:start_index]
+        if isinstance(statement, (ast.Assign, ast.AnnAssign))
+    ]
+    fallback_tree = ast.Module(
+        body=[*module_prelude, *local_parameters, *body[start_index:stop_index]],
+        type_ignores=[],
+    )
+    ast.fix_missing_locations(fallback_tree)
+    namespace = {
+        "__file__": str(source),
+        "__name__": "__openframe_model_import__",
+        "__package__": None,
+    }
+    exec(compile(fallback_tree, str(source), "exec"), namespace)  # noqa: S102
+
+
+def _model_body(tree: ast.Module) -> list[ast.stmt]:
+    top_level_commands = [
+        statement
+        for statement in tree.body
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    ]
+    if any(_calls_command(statement, {"model"}) for statement in top_level_commands):
+        return tree.body
+    for statement in ast.walk(tree):
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            _calls_command(child, {"model"}) for child in statement.body
+        ):
+            return statement.body
+    raise RuntimeError("No function containing ops.model() was found.")
+
+
+def _calls_command(statement: ast.AST, command_names: set[str]) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in command_names
+            or isinstance(node.func, ast.Name)
+            and node.func.id in command_names
+        )
+        for node in ast.walk(statement)
+    )
+
+
+def _execute_source(source: Path) -> None:
+    """Execute a Python model with tolerant source decoding and local imports."""
+    source_text = read_python_source(source)
+    namespace = {
+        "__file__": str(source),
+        "__name__": "__main__",
+        "__package__": None,
+        "__cached__": None,
+    }
+    source_directory = str(source.parent)
+    inserted_path = not sys.path or sys.path[0] != source_directory
+    if inserted_path:
+        sys.path.insert(0, source_directory)
+    try:
+        exec(compile(source_text, str(source), "exec"), namespace)  # noqa: S102
+    finally:
+        if inserted_path:
+            sys.path.remove(source_directory)
