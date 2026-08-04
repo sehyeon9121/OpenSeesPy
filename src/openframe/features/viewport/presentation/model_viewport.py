@@ -1,0 +1,153 @@
+"""Central structural canvas and compact display controls."""
+
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QFrame,
+    QGraphicsItem,
+    QGraphicsView,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
+
+from openframe.core.domain import Element, Node, StructuralModel
+from openframe.features.viewport.scene import StructuralScene
+
+
+class ModelViewport(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("modelViewport")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        canvas_header = QFrame()
+        canvas_header.setObjectName("canvasHeader")
+        header_layout = QHBoxLayout(canvas_header)
+        header_layout.setContentsMargins(12, 7, 9, 7)
+        title = QLabel("STRUCTURAL WORKSPACE")
+        title.setObjectName("sectionLabel")
+        self.mode_label = QLabel("SAMPLE PREVIEW")
+        self.mode_label.setObjectName("smallBadge")
+        header_layout.addWidget(title)
+        header_layout.addWidget(self.mode_label)
+        support_legend = QLabel("지점  ▰ 고정   △ 회전   △○ 이동")
+        support_legend.setObjectName("supportLegend")
+        support_legend.setToolTip("고정지점, 회전지점(힌지), 이동지점(롤러) 기호")
+        header_layout.addWidget(support_legend)
+        header_layout.addStretch(1)
+        zoom_out = QPushButton("−")
+        zoom_out.setObjectName("canvasToolButton")
+        zoom_in = QPushButton("+")
+        zoom_in.setObjectName("canvasToolButton")
+        fit = QPushButton("FIT")
+        fit.setObjectName("canvasToolButton")
+        header_layout.addWidget(zoom_out)
+        header_layout.addWidget(zoom_in)
+        header_layout.addWidget(fit)
+        layout.addWidget(canvas_header)
+
+        self.scene = StructuralScene(self)
+        self.view = QGraphicsView(self.scene)
+        self.view.setObjectName("structuralView")
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        layout.addWidget(self.view, 1)
+
+        controls = QFrame()
+        controls.setObjectName("displayControls")
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(10, 6, 10, 6)
+        controls_layout.setSpacing(10)
+        controls_layout.addWidget(QLabel("DISPLAY FILTERS"))
+        self.filter_options: dict[str, QCheckBox] = {}
+        for text, item_kind in (
+            ("Nodes", "node"),
+            ("Elements", "element"),
+            ("Supports", "support"),
+            ("Loads", "load"),
+        ):
+            option = QCheckBox(text)
+            option.setChecked(True)
+            option.toggled.connect(
+                lambda visible, kind=item_kind: self._set_item_kind_visible(kind, visible)
+            )
+            self.filter_options[item_kind] = option
+            controls_layout.addWidget(option)
+        controls_layout.addStretch(1)
+        deformation = QCheckBox("DEFORMATION")
+        controls_layout.addWidget(deformation)
+        self.scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self.scale_slider.setRange(1, 100)
+        self.scale_slider.setValue(30)
+        self.scale_slider.setMaximumWidth(120)
+        controls_layout.addWidget(self.scale_slider)
+        layout.addWidget(controls)
+
+        zoom_in.clicked.connect(lambda: self.view.scale(1.2, 1.2))
+        zoom_out.clicked.connect(lambda: self.view.scale(1 / 1.2, 1 / 1.2))
+        fit.clicked.connect(self.fit_model)
+        self._show_sample_beam()
+
+    def fit_model(self) -> None:
+        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def show_uploaded_file(self) -> None:
+        self.mode_label.setText("MODEL LOADED")
+
+    def set_model(self, model: StructuralModel) -> None:
+        self.scene.set_model(model)
+        for item_kind, option in self.filter_options.items():
+            self._set_item_kind_visible(item_kind, option.isChecked())
+        self.mode_label.setText("MODEL LOADED")
+        if not model.nodes:
+            self.scene.setSceneRect(-8.0, -5.0, 16.0, 9.0)
+            return
+
+        x_values = [node.x for node in model.nodes.values()]
+        screen_y_values = [-node.y for node in model.nodes.values()]
+        x_span = max(x_values) - min(x_values)
+        y_span = max(screen_y_values) - min(screen_y_values)
+        margin = max(x_span, y_span, 1.0) * 0.18
+        self.scene.setSceneRect(
+            min(x_values) - margin,
+            min(screen_y_values) - margin,
+            x_span + 2 * margin,
+            y_span + 2 * margin,
+        )
+        self.fit_model()
+
+    def _set_item_kind_visible(self, item_kind: str, visible: bool) -> None:
+        for item in self.scene.items():
+            identity = item.data(0)
+            if isinstance(identity, tuple) and identity and identity[0] == item_kind:
+                item.setVisible(visible)
+
+    def _show_sample_beam(self) -> None:
+        model = StructuralModel(
+            nodes={1: Node(1, -6.0, 0.0), 2: Node(2, 6.0, 0.0)},
+            elements={1: Element(1, 1, 2, "elasticBeamColumn")},
+            metadata={"display": "sample"},
+        )
+        self.scene.set_model(model)
+        load_pen = QPen(QColor("#e5484d"), 0.10)
+        load_line = self.scene.addLine(0.0, -3.0, 0.0, -0.35, load_pen)
+        arrow = QPolygonF(
+            [QPointF(-0.20, -0.62), QPointF(0.20, -0.62), QPointF(0.0, -0.20)]
+        )
+        load_arrow = self.scene.addPolygon(arrow, load_pen, QColor("#e5484d"))
+        load_text = self.scene.addText("10 kN")
+        load_text.setDefaultTextColor(QColor("#d43e44"))
+        load_text.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        load_text.setPos(0.35, -2.7)
+        for item in (load_line, load_arrow, load_text):
+            item.setData(0, ("load", "sample"))
+        self.scene.setSceneRect(-8.0, -5.0, 16.0, 9.0)

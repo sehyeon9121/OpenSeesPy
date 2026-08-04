@@ -1,0 +1,33 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "OpenFrame: 테스트",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "pytest",
+        "-q",
+        "--basetemp=.pytest_tmp"
+      ],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "OpenFrame: 코드 검사",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "ruff",
+        "check",
+        "src",
+        "tests"
+      ],
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}
+

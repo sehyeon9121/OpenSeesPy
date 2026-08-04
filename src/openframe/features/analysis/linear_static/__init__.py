@@ -1,0 +1,2 @@
+"""Linear static analysis implementation."""
+
