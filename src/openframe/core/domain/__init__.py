@@ -15,8 +15,17 @@ from openframe.core.domain.results import (
     ElementResult,
     NodeResult,
 )
+from openframe.core.domain.units import (
+    DEFAULT_UNIT_SYSTEM,
+    FORCE_UNITS,
+    LENGTH_UNITS,
+    UnitSystem,
+)
 
 __all__ = [
+    "DEFAULT_UNIT_SYSTEM",
+    "FORCE_UNITS",
+    "LENGTH_UNITS",
     "AnalysisKind",
     "AnalysisRequest",
     "AnalysisResult",
@@ -29,4 +38,5 @@ __all__ = [
     "NodeResult",
     "StructuralModel",
     "SupportKind",
+    "UnitSystem",
 ]

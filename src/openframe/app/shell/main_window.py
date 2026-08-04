@@ -16,7 +16,13 @@ from PySide6.QtWidgets import (
 from openframe.app.shell.analysis_results_sidebar import AnalysisResultsSidebar
 from openframe.app.shell.app_header import AppHeader
 from openframe.app.shell.workspace_navigation import WorkspaceNavigation
-from openframe.core.domain import AnalysisKind, AnalysisRequest, AnalysisResult, AnalysisStatus
+from openframe.core.domain import (
+    AnalysisKind,
+    AnalysisRequest,
+    AnalysisResult,
+    AnalysisStatus,
+    UnitSystem,
+)
 from openframe.features.analysis.application.run_analysis import RunAnalysisService
 from openframe.features.analysis.presentation.analysis_run_thread import AnalysisRunThread
 from openframe.features.model.application.open_model import OpenModelService
@@ -86,6 +92,11 @@ class MainWindow(QMainWindow):
         self.header.run_requested.connect(self._run_analysis)
         self.navigation.current_changed.connect(self._change_workspace_section)
         self.analysis_settings.analysis_kind_changed.connect(self._set_analysis_kind)
+        self.viewport.unit_system_changed.connect(self._set_unit_system)
+
+    def _set_unit_system(self, unit_system: UnitSystem) -> None:
+        self.results_panel.set_unit_system(unit_system)
+        self.statusBar().showMessage(f"Model units changed | {unit_system.label}")
 
     def _choose_model_file(self) -> None:
         source, _ = QFileDialog.getOpenFileName(

@@ -1,9 +1,10 @@
 """Central structural canvas and compact display controls."""
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QGraphicsItem,
     QGraphicsView,
@@ -15,14 +16,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from openframe.core.domain import Element, Node, StructuralModel
+from openframe.core.domain import (
+    DEFAULT_UNIT_SYSTEM,
+    FORCE_UNITS,
+    LENGTH_UNITS,
+    Element,
+    Node,
+    StructuralModel,
+    UnitSystem,
+)
 from openframe.features.viewport.scene import StructuralScene
 
 
 class ModelViewport(QFrame):
+    unit_system_changed = Signal(object)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("modelViewport")
+        self._unit_system = DEFAULT_UNIT_SYSTEM
+        self._sample_load_text = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -91,12 +104,36 @@ class ModelViewport(QFrame):
         self.scale_slider.setValue(30)
         self.scale_slider.setMaximumWidth(120)
         controls_layout.addWidget(self.scale_slider)
+        controls_layout.addWidget(QLabel("FORCE"))
+        self.force_unit_selector = QComboBox()
+        self.force_unit_selector.setObjectName("forceUnitSelector")
+        self.force_unit_selector.setMaximumWidth(64)
+        self.force_unit_selector.setToolTip(
+            "Declare the force unit used by the OpenSees model."
+        )
+        self.force_unit_selector.addItems(FORCE_UNITS)
+        controls_layout.addWidget(self.force_unit_selector)
+        controls_layout.addWidget(QLabel("LENGTH"))
+        self.length_unit_selector = QComboBox()
+        self.length_unit_selector.setObjectName("lengthUnitSelector")
+        self.length_unit_selector.setMaximumWidth(64)
+        self.length_unit_selector.setToolTip(
+            "Declare the length unit used by the OpenSees model."
+        )
+        self.length_unit_selector.addItems(LENGTH_UNITS)
+        controls_layout.addWidget(self.length_unit_selector)
         layout.addWidget(controls)
 
         zoom_in.clicked.connect(lambda: self.view.scale(1.2, 1.2))
         zoom_out.clicked.connect(lambda: self.view.scale(1 / 1.2, 1 / 1.2))
         fit.clicked.connect(self.fit_model)
+        self.force_unit_selector.currentIndexChanged.connect(self._change_unit_system)
+        self.length_unit_selector.currentIndexChanged.connect(self._change_unit_system)
         self._show_sample_beam()
+
+    @property
+    def unit_system(self) -> UnitSystem:
+        return self._unit_system
 
     def fit_model(self) -> None:
         self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
@@ -105,6 +142,7 @@ class ModelViewport(QFrame):
         self.mode_label.setText("MODEL LOADED")
 
     def set_model(self, model: StructuralModel) -> None:
+        self._sample_load_text = None
         self.scene.set_model(model)
         for item_kind, option in self.filter_options.items():
             self._set_item_kind_visible(item_kind, option.isChecked())
@@ -137,6 +175,18 @@ class ModelViewport(QFrame):
             labels_visible = visible and self.filter_options["node_label"].isChecked()
             self._set_item_kind_visible("node_label", labels_visible)
 
+    def _change_unit_system(self, index: int) -> None:
+        del index
+        unit_system = UnitSystem(
+            force=self.force_unit_selector.currentText(),
+            length=self.length_unit_selector.currentText(),
+        )
+        self._unit_system = unit_system
+        self.scene.set_unit_system(unit_system)
+        if self._sample_load_text is not None:
+            self._sample_load_text.setPlainText(f"10 {unit_system.force}")
+        self.unit_system_changed.emit(unit_system)
+
     def _show_sample_beam(self) -> None:
         model = StructuralModel(
             nodes={1: Node(1, -6.0, 0.0), 2: Node(2, 6.0, 0.0)},
@@ -150,10 +200,11 @@ class ModelViewport(QFrame):
             [QPointF(-0.20, -0.62), QPointF(0.20, -0.62), QPointF(0.0, -0.20)]
         )
         load_arrow = self.scene.addPolygon(arrow, load_pen, QColor("#e5484d"))
-        load_text = self.scene.addText("10 kN")
+        load_text = self.scene.addText(f"10 {self._unit_system.force}")
         load_text.setDefaultTextColor(QColor("#d43e44"))
         load_text.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         load_text.setPos(0.35, -2.7)
         for item in (load_line, load_arrow, load_text):
             item.setData(0, ("load", "sample"))
+        self._sample_load_text = load_text
         self.scene.setSceneRect(-8.0, -5.0, 16.0, 9.0)

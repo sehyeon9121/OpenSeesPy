@@ -2,7 +2,7 @@
 
 import math
 
-from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtCore import QObject, QPointF, QRectF
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
@@ -11,13 +11,23 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
 )
 
-from openframe.core.domain import StructuralModel
+from openframe.core.domain import DEFAULT_UNIT_SYSTEM, StructuralModel, UnitSystem
 from openframe.features.viewport.items.nodal_load_item import NodalLoadItem
 from openframe.features.viewport.items.node_label_item import NodeLabelItem
 from openframe.features.viewport.items.support_item import SupportItem
 
 
 class StructuralScene(QGraphicsScene):
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._unit_system = DEFAULT_UNIT_SYSTEM
+
+    def set_unit_system(self, unit_system: UnitSystem) -> None:
+        self._unit_system = unit_system
+        for item in self.items():
+            if isinstance(item, NodalLoadItem):
+                item.set_unit_system(unit_system)
+
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         painter.fillRect(rect, QColor("#fbfcfe"))
         minor_pen = QPen(QColor("#e9eef5"), 0.0)
@@ -97,6 +107,10 @@ class StructuralScene(QGraphicsScene):
             node = model.nodes.get(node_tag)
             if node is None:
                 continue
-            load_item = NodalLoadItem(node_tag=node_tag, values=tuple(values))
+            load_item = NodalLoadItem(
+                node_tag=node_tag,
+                values=tuple(values),
+                unit_system=self._unit_system,
+            )
             load_item.setPos(node.x, -node.y)
             self.addItem(load_item)

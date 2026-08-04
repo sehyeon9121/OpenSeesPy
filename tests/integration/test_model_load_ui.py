@@ -44,6 +44,20 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     assert "Fx=20" in load_items[0].toolTip()
     assert "Fy=-30" in load_items[0].toolTip()
     assert "|F|" not in load_items[0].toolTip()
+    assert "kN" in load_items[0].toolTip()
+
+    force_index = window.viewport.force_unit_selector.findText("N")
+    length_index = window.viewport.length_unit_selector.findText("mm")
+    window.viewport.force_unit_selector.setCurrentIndex(force_index)
+    assert window.viewport.unit_system.force == "N"
+    assert window.viewport.unit_system.length == "m"
+    assert window.results_panel.displacement_table.horizontalHeaderItem(1).text() == "UX (m)"
+
+    window.viewport.length_unit_selector.setCurrentIndex(length_index)
+    assert window.viewport.unit_system.key == "n_mm"
+    assert "Fx=20 N" in load_items[0].toolTip()
+    assert "kN" not in load_items[0].toolTip()
+    assert window.results_panel.displacement_table.horizontalHeaderItem(1).text() == "UX (mm)"
 
     window.viewport.filter_options["load"].setChecked(False)
     assert all(not item.isVisible() for item in load_items)

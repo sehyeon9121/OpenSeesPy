@@ -8,7 +8,7 @@ from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
 from openframe.app.shell.main_window import MainWindow
-from openframe.core.domain import AnalysisKind, AnalysisStatus
+from openframe.core.domain import AnalysisKind
 from openframe.features.analysis.application.run_analysis import RunAnalysisService
 from openframe.features.analysis.linear_static.module import LinearStaticAnalysis
 from openframe.features.model.application.open_model import OpenModelService
@@ -55,6 +55,18 @@ def test_run_button_flow_populates_results_panel() -> None:
         for row in range(window.results_panel.displacement_table.rowCount())
     }
     assert node_column_values == {"1", "2", "3", "4"}
+
+    for key in ("axial", "shear", "moment"):
+        text = window.results_panel.result_values[key].text()
+        assert not text.startswith("—"), f"{key} value was left as the placeholder: {text}"
+
+    assert window.results_panel.member_selector.count() == 3
+    selected_tag = window.results_panel.member_selector.currentData()
+    assert selected_tag in {1, 2, 3}
+    for key in ("axial", "shear", "moment"):
+        plot = window.results_panel.diagram_plots[key]
+        assert plot._diagram is not None
+        assert plot._diagram.element_tag == selected_tag
 
     window.close()
 

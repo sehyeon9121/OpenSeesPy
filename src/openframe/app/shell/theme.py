@@ -177,6 +177,13 @@ QFrame#displayControls {
     border-top: 1px solid #dce3eb;
 }
 QFrame#displayControls QLabel { color: #748295; font-size: 8pt; }
+QComboBox#forceUnitSelector, QComboBox#lengthUnitSelector {
+    min-height: 24px;
+    max-height: 24px;
+    padding: 0 6px;
+    color: #415269;
+    font-size: 8pt;
+}
 QCheckBox { color: #57677a; font-size: 8pt; spacing: 4px; }
 QSlider::groove:horizontal { height: 3px; background: #dce3eb; }
 QSlider::handle:horizontal {
