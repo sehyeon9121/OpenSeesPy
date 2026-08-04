@@ -71,6 +71,7 @@ class ModelViewport(QFrame):
         self.filter_options: dict[str, QCheckBox] = {}
         for text, item_kind in (
             ("Nodes", "node"),
+            ("Node IDs", "node_label"),
             ("Elements", "element"),
             ("Supports", "support"),
             ("Loads", "load"),
@@ -126,10 +127,15 @@ class ModelViewport(QFrame):
         self.fit_model()
 
     def _set_item_kind_visible(self, item_kind: str, visible: bool) -> None:
+        if item_kind == "node_label":
+            visible = visible and self.filter_options["node"].isChecked()
         for item in self.scene.items():
             identity = item.data(0)
             if isinstance(identity, tuple) and identity and identity[0] == item_kind:
                 item.setVisible(visible)
+        if item_kind == "node":
+            labels_visible = visible and self.filter_options["node_label"].isChecked()
+            self._set_item_kind_visible("node_label", labels_visible)
 
     def _show_sample_beam(self) -> None:
         model = StructuralModel(

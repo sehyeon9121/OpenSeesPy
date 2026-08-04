@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from openframe.core.domain import StructuralModel
 from openframe.features.viewport.items.nodal_load_item import NodalLoadItem
+from openframe.features.viewport.items.node_label_item import NodeLabelItem
 from openframe.features.viewport.items.support_item import SupportItem
 
 
@@ -68,6 +69,10 @@ class StructuralScene(QGraphicsScene):
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
             self.addItem(item)
+
+            label = NodeLabelItem(node.tag)
+            label.setPos(point)
+            self.addItem(label)
 
         for boundary in model.boundaries:
             node = model.nodes.get(boundary.node_tag)

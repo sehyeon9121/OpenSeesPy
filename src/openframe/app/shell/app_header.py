@@ -34,7 +34,7 @@ class AppHeader(QFrame):
         layout.addWidget(self.upload_button)
         layout.addWidget(self.run_button)
 
-    def set_busy(self, busy: bool) -> None:
-        self.status_label.setText("●  READING MODEL" if busy else "●  READY")
+    def set_busy(self, busy: bool, label: str = "READING MODEL") -> None:
+        self.status_label.setText(f"●  {label}" if busy else "●  READY")
         self.upload_button.setDisabled(busy)
         self.run_button.setDisabled(busy)

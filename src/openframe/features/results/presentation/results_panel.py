@@ -5,10 +5,13 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from openframe.core.domain import AnalysisResult, AnalysisStatus
 
 
 class ResultsPanel(QFrame):
@@ -26,9 +29,9 @@ class ResultsPanel(QFrame):
         result_header_layout.setContentsMargins(14, 9, 14, 9)
         result_header_layout.addWidget(QLabel("ANALYSIS RESULTS"))
         result_header_layout.addStretch(1)
-        waiting = QLabel("WAITING")
-        waiting.setObjectName("waitingBadge")
-        result_header_layout.addWidget(waiting)
+        self.status_badge = QLabel("WAITING")
+        self.status_badge.setObjectName("waitingBadge")
+        result_header_layout.addWidget(self.status_badge)
         layout.addWidget(result_header)
 
         result_content = QFrame()
@@ -69,4 +72,18 @@ class ResultsPanel(QFrame):
         indexes = {"moment": 0, "shear": 1, "axial": 2}
         if key in indexes:
             self.result_tabs.setCurrentIndex(indexes[key])
+
+    def show_result(self, result: AnalysisResult) -> None:
+        self.status_badge.setText(
+            "COMPLETED" if result.status == AnalysisStatus.COMPLETED else "FAILED"
+        )
+
+        nodes = sorted(result.node_results.values(), key=lambda item: item.node_tag)
+        self.displacement_table.setRowCount(len(nodes))
+        for row, node in enumerate(nodes):
+            ux = node.displacement[0] if len(node.displacement) > 0 else 0.0
+            uy = node.displacement[1] if len(node.displacement) > 1 else 0.0
+            self.displacement_table.setItem(row, 0, QTableWidgetItem(str(node.node_tag)))
+            self.displacement_table.setItem(row, 1, QTableWidgetItem(f"{ux:.6g}"))
+            self.displacement_table.setItem(row, 2, QTableWidgetItem(f"{uy:.6g}"))
 

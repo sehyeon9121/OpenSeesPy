@@ -39,7 +39,7 @@ class AnalysisSettingsPanel(QFrame):
         layout.addWidget(settings)
 
     def selected_analysis_kind(self) -> AnalysisKind:
-        return self.analysis_type.currentData()
+        return AnalysisKind(self.analysis_type.currentData())
 
     def _emit_analysis_kind(self) -> None:
         self.analysis_kind_changed.emit(self.selected_analysis_kind())

@@ -32,7 +32,7 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     assert window.model_sidebar.summary_values["nodes"].text() == "4"
     assert window.model_sidebar.summary_values["elements"].text() == "3"
     assert window.model_sidebar.summary_values["supports"].text() == "2"
-    assert len(window.scene.items()) == 10
+    assert len(window.scene.items()) == 14
     assert window.viewport.mode_label.text() == "MODEL LOADED"
 
     load_items = [
@@ -49,5 +49,23 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     assert all(not item.isVisible() for item in load_items)
     window.viewport.filter_options["load"].setChecked(True)
     assert all(item.isVisible() for item in load_items)
+
+    node_label_items = [
+        item
+        for item in window.scene.items()
+        if isinstance(item.data(0), tuple) and item.data(0)[0] == "node_label"
+    ]
+    assert len(node_label_items) == 4
+    assert all(item.isVisible() for item in node_label_items)
+
+    window.viewport.filter_options["node_label"].setChecked(False)
+    assert all(not item.isVisible() for item in node_label_items)
+    window.viewport.filter_options["node_label"].setChecked(True)
+    assert all(item.isVisible() for item in node_label_items)
+
+    window.viewport.filter_options["node"].setChecked(False)
+    assert all(not item.isVisible() for item in node_label_items)
+    window.viewport.filter_options["node"].setChecked(True)
+    assert all(item.isVisible() for item in node_label_items)
 
     window.close()

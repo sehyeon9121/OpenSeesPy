@@ -6,6 +6,7 @@ import runpy
 import traceback
 from pathlib import Path
 
+from openframe.infrastructure.opensees.linear_static_solver import run_linear_static_analysis
 from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
 
 
@@ -20,10 +21,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--mode", choices=("model", "analysis"), default="model")
     arguments = parser.parse_args()
 
     try:
-        payload: dict[str, object] = {"ok": True, "model": collect_model(arguments.source)}
+        if arguments.mode == "model":
+            payload: dict[str, object] = {"ok": True, "model": collect_model(arguments.source)}
+        else:
+            payload = {"ok": True, "results": run_linear_static_analysis(arguments.source)}
         exit_code = 0
     except BaseException as error:  # noqa: BLE001 - user-script failures become JSON data.
         payload = {

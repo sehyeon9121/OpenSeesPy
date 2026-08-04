@@ -1,8 +1,96 @@
 """GUI-side controller for the isolated OpenSees worker process."""
 
-from openframe.core.domain import AnalysisRequest, AnalysisResult
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from openframe.core.domain import (
+    AnalysisRequest,
+    AnalysisResult,
+    AnalysisStatus,
+    ElementResult,
+    NodeResult,
+)
 
 
 class OpenSeesProcessRunner:
+    def __init__(self, timeout_seconds: float = 30.0) -> None:
+        self._timeout_seconds = timeout_seconds
+
     def run(self, request: AnalysisRequest) -> AnalysisResult:
-        raise NotImplementedError("worker 프로세스와 JSON 통신을 연결한 뒤 구현합니다.")
+        source = request.source_path.resolve()
+
+        with tempfile.TemporaryDirectory(prefix="openframe-analysis-") as temporary_directory:
+            output = Path(temporary_directory) / "results.json"
+            command = [
+                sys.executable,
+                "-m",
+                "openframe.infrastructure.opensees.worker",
+                "--source",
+                str(source),
+                "--output",
+                str(output),
+                "--mode",
+                "analysis",
+            ]
+            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=source.parent,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self._timeout_seconds,
+                    creationflags=creation_flags,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return AnalysisResult(
+                    status=AnalysisStatus.FAILED,
+                    messages=[f"해석이 {self._timeout_seconds:g}초 제한을 초과했습니다."],
+                )
+
+            if not output.exists():
+                detail = completed.stderr.strip() or completed.stdout.strip()
+                return AnalysisResult(
+                    status=AnalysisStatus.FAILED,
+                    messages=[f"해석 worker가 결과를 만들지 못했습니다. {detail}"],
+                )
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        if not payload.get("ok"):
+            return AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=[str(payload.get("error", "알 수 없는 해석 오류"))],
+            )
+
+        return self._to_domain_result(payload["results"])
+
+    def _to_domain_result(self, payload: dict[str, Any]) -> AnalysisResult:
+        node_results = {
+            int(item["node_tag"]): NodeResult(
+                node_tag=int(item["node_tag"]),
+                displacement=tuple(float(value) for value in item.get("displacement", [])),
+                reaction=tuple(float(value) for value in item.get("reaction", [])),
+            )
+            for item in payload.get("node_results", [])
+        }
+        element_results = {
+            int(item["element_tag"]): ElementResult(
+                element_tag=int(item["element_tag"]),
+                local_forces=tuple(float(value) for value in item.get("local_forces", [])),
+            )
+            for item in payload.get("element_results", [])
+        }
+        return AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            node_results=node_results,
+            element_results=element_results,
+        )

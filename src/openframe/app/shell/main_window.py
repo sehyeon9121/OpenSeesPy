@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
 from openframe.app.shell.analysis_results_sidebar import AnalysisResultsSidebar
 from openframe.app.shell.app_header import AppHeader
 from openframe.app.shell.workspace_navigation import WorkspaceNavigation
-from openframe.core.domain import AnalysisKind
+from openframe.core.domain import AnalysisKind, AnalysisRequest, AnalysisResult, AnalysisStatus
+from openframe.features.analysis.application.run_analysis import RunAnalysisService
+from openframe.features.analysis.presentation.analysis_run_thread import AnalysisRunThread
 from openframe.features.model.application.open_model import OpenModelService
 from openframe.features.model.presentation.model_load_thread import ModelLoadThread
 from openframe.features.model.presentation.model_sidebar import ModelSidebar
@@ -24,10 +26,17 @@ from openframe.features.viewport.presentation.model_viewport import ModelViewpor
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, open_model_service: OpenModelService | None = None) -> None:
+    def __init__(
+        self,
+        open_model_service: OpenModelService | None = None,
+        run_analysis_service: RunAnalysisService | None = None,
+    ) -> None:
         super().__init__()
         self._open_model_service = open_model_service
+        self._run_analysis_service = run_analysis_service
         self._model_load_thread: ModelLoadThread | None = None
+        self._analysis_run_thread: AnalysisRunThread | None = None
+        self._current_model_source: Path | None = None
         self.setWindowTitle("OpenFrame Studio")
         self.resize(1440, 860)
         self.setMinimumSize(980, 620)
@@ -74,7 +83,7 @@ class MainWindow(QMainWindow):
 
     def _connect_actions(self) -> None:
         self.header.upload_requested.connect(self._choose_model_file)
-        self.header.run_requested.connect(self._show_run_status)
+        self.header.run_requested.connect(self._run_analysis)
         self.navigation.current_changed.connect(self._change_workspace_section)
         self.analysis_settings.analysis_kind_changed.connect(self._set_analysis_kind)
 
@@ -106,6 +115,7 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _model_loaded(self, model: object, source: str) -> None:
+        self._current_model_source = Path(source)
         self.model_sidebar.set_source_file(source)
         self.model_sidebar.set_model(model)
         self.viewport.set_model(model)
@@ -146,7 +156,45 @@ class MainWindow(QMainWindow):
         }
         self.statusBar().showMessage(f"Analysis type · {names[kind]}")
 
-    def _show_run_status(self) -> None:
+    def _run_analysis(self) -> None:
         kind = self.analysis_settings.selected_analysis_kind()
         self._set_analysis_kind(kind)
-        self.statusBar().showMessage(f"{self.statusBar().currentMessage()} · 실행 기능 연결 예정")
+
+        if self._run_analysis_service is None:
+            QMessageBox.critical(self, "해석 실행", "해석 실행 서비스가 없습니다.")
+            return
+        if self._current_model_source is None:
+            QMessageBox.warning(self, "해석 실행", "먼저 모델 파일을 불러오세요.")
+            return
+        if self._analysis_run_thread and self._analysis_run_thread.isRunning():
+            return
+
+        request = AnalysisRequest(source_path=self._current_model_source, kind=kind)
+
+        self.header.set_busy(True, "RUNNING ANALYSIS")
+        self.statusBar().showMessage(f"Running analysis · {kind.value}")
+        thread = AnalysisRunThread(self._run_analysis_service, request)
+        thread.completed.connect(self._analysis_completed)
+        thread.finished.connect(self._analysis_run_finished)
+        self._analysis_run_thread = thread
+        thread.start()
+
+    def _analysis_completed(self, result: AnalysisResult) -> None:
+        self.results_panel.show_result(result)
+        if result.status == AnalysisStatus.COMPLETED:
+            self.statusBar().showMessage(
+                f"Analysis completed · Nodes {len(result.node_results)}"
+                f" · Elements {len(result.element_results)}"
+            )
+        else:
+            self.statusBar().showMessage("Analysis failed")
+            QMessageBox.critical(
+                self, "해석 실행 실패", "\n".join(result.messages) or "알 수 없는 해석 오류"
+            )
+
+    def _analysis_run_finished(self) -> None:
+        self.header.set_busy(False)
+        thread = self._analysis_run_thread
+        self._analysis_run_thread = None
+        if thread is not None:
+            thread.deleteLater()
