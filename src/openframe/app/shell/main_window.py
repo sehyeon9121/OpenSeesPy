@@ -6,8 +6,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
-    QHBoxLayout,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QSplitter,
@@ -20,7 +18,7 @@ from PySide6.QtWidgets import (
 from openframe.app.shell.analysis_progress_banner import AnalysisProgressBanner
 from openframe.app.shell.analysis_results_sidebar import AnalysisResultsSidebar
 from openframe.app.shell.app_header import AppHeader
-from openframe.app.shell.modeling_workflow import ModelingWorkflowBar
+from openframe.app.shell.direct_model_workspace import DirectModelWorkspace
 from openframe.app.shell.start_workspace import StartWorkspace
 from openframe.app.shell.workspace_navigation import WorkspaceNavigation
 from openframe.core.domain import (
@@ -81,6 +79,7 @@ class MainWindow(QMainWindow):
         self.navigation = WorkspaceNavigation()
         self.analysis_progress = AnalysisProgressBanner(self)
         self.start_workspace = StartWorkspace()
+        self.direct_model_workspace = DirectModelWorkspace()
         self.model_sidebar = ModelSidebar()
         self.viewport = ModelViewport()
         self.analysis_sidebar = AnalysisResultsSidebar()
@@ -90,42 +89,28 @@ class MainWindow(QMainWindow):
         self.view = self.viewport.view
         self.scene = self.viewport.scene
 
-        self.workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.workspace_splitter.setObjectName("workspaceSplitter")
-        self.workspace_splitter.setChildrenCollapsible(False)
-        self.workspace_splitter.addWidget(self.model_sidebar)
-        self.workspace_splitter.addWidget(self.viewport)
-        self.workspace_splitter.addWidget(self.analysis_sidebar)
-        self.workspace_splitter.setStretchFactor(0, 0)
-        self.workspace_splitter.setStretchFactor(1, 1)
-        self.workspace_splitter.setStretchFactor(2, 0)
-        self.workspace_splitter.setSizes((255, 850, 300))
-
-        self.modeling_workflow = ModelingWorkflowBar()
-        self.workspace = QWidget()
-        self.workspace.setObjectName("modelingWorkspace")
-        modeling_layout = QVBoxLayout(self.workspace)
-        modeling_layout.setContentsMargins(0, 0, 0, 0)
-        modeling_layout.setSpacing(0)
-        modeling_layout.addWidget(self.modeling_workflow)
-        modeling_layout.addWidget(self.workspace_splitter, 1)
+        self.workspace = QSplitter(Qt.Orientation.Horizontal)
+        self.workspace.setObjectName("workspaceSplitter")
+        self.workspace.setChildrenCollapsible(False)
+        self.workspace.addWidget(self.model_sidebar)
+        self.workspace.addWidget(self.viewport)
+        self.workspace.addWidget(self.analysis_sidebar)
+        self.workspace.setStretchFactor(0, 0)
+        self.workspace.setStretchFactor(1, 1)
+        self.workspace.setStretchFactor(2, 0)
+        self.workspace.setSizes((255, 850, 300))
 
         self.workspace_stack = QStackedWidget()
         self.workspace_stack.setObjectName("workspaceStack")
         self.workspace_stack.addWidget(self.start_workspace)
+        self.workspace_stack.addWidget(self.direct_model_workspace)
         self.workspace_stack.addWidget(self.workspace)
         self.workspace_stack.addWidget(self.results_workspace)
         self.workspace_stack.setCurrentWidget(self.start_workspace)
 
         root_layout.addWidget(self.header)
-        workspace_shell = QWidget()
-        workspace_shell.setObjectName("workspaceShell")
-        workspace_shell_layout = QHBoxLayout(workspace_shell)
-        workspace_shell_layout.setContentsMargins(0, 0, 0, 0)
-        workspace_shell_layout.setSpacing(0)
-        workspace_shell_layout.addWidget(self.navigation)
-        workspace_shell_layout.addWidget(self.workspace_stack, 1)
-        root_layout.addWidget(workspace_shell, 1)
+        root_layout.addWidget(self.navigation)
+        root_layout.addWidget(self.workspace_stack, 1)
         self.setCentralWidget(root)
 
         self._build_status_bar()
@@ -134,25 +119,16 @@ class MainWindow(QMainWindow):
 
     def _build_status_bar(self) -> None:
         status = QStatusBar(self)
-        status.showMessage("준비됨")
-        self.status_model = QLabel("● 모델 대기")
-        self.status_model.setObjectName("statusModel")
-        self.status_counts = QLabel("절점 0  |  요소 0")
-        self.status_units = QLabel("2D · NDF 3  |  kN, m")
-        status.addPermanentWidget(self.status_model)
-        status.addPermanentWidget(self.status_counts)
-        status.addPermanentWidget(self.status_units)
+        status.showMessage("Ready · Sample preview · Units: kN, m")
         self.setStatusBar(status)
 
     def _connect_actions(self) -> None:
         self.header.upload_requested.connect(self._choose_model_file)
         self.header.run_requested.connect(self._run_analysis)
-        self.header.export_requested.connect(
-            lambda: self._show_pending_workflow("OpenSeesPy 코드 내보내기")
-        )
         self.header.home_requested.connect(self._show_start_workspace)
         self.start_workspace.import_opensees_requested.connect(self._start_import_workspace)
         self.start_workspace.new_model_requested.connect(self._start_new_model_workspace)
+        self.direct_model_workspace.back_requested.connect(self._show_start_workspace)
         self.start_workspace.template_requested.connect(
             lambda: self._show_pending_workflow("Template Browser")
         )
@@ -166,29 +142,11 @@ class MainWindow(QMainWindow):
         self.viewport.unit_system_changed.connect(self._set_unit_system)
         self.viewport.entity_selected.connect(self._entity_selected_from_viewport)
         self.model_sidebar.entity_selected.connect(self._entity_selected_from_tree)
-        self.modeling_workflow.step_selected.connect(self._select_modeling_step)
-        self.analysis_settings.hide()
-
-    def _select_modeling_step(self, step: str) -> None:
-        """Expose the authoring order now; feature editors are connected later."""
-        navigation_sections = {"loads": "loads", "analysis": "analysis"}
-        section = navigation_sections.get(step, "model")
-        self.navigation.set_current_section(section)
-        self._change_workspace_section(section)
-        step_names = {
-            key: label for key, label, _tooltip in self.modeling_workflow.STEPS
-        }
-        self.statusBar().showMessage(
-            f"{step_names[step]} 단계 · 편집 기능은 다음 구현 단계에서 연결됩니다"
-        )
 
     def _set_unit_system(self, unit_system: UnitSystem) -> None:
         self.model_inspector.set_unit_system(unit_system)
         self.results_workspace.set_unit_system(unit_system)
         self.statusBar().showMessage(f"Model units changed | {unit_system.label}")
-        self.status_units.setText(f"{self.viewport._model.ndm if self.viewport._model else 2}D · "
-                                  f"NDF {self.viewport._model.ndf if self.viewport._model else 3}"
-                                  f"  |  {unit_system.label}")
 
     def _show_start_workspace(self) -> None:
         if self.workspace_stack.currentWidget() is not self.start_workspace:
@@ -211,7 +169,6 @@ class MainWindow(QMainWindow):
             self.start_workspace.set_current_session(
                 "OpenSeesPy Import", "Waiting for a .py source file"
             )
-        self.modeling_workflow.set_current_step("geometry")
         self._show_model_workspace()
         self.statusBar().showMessage(
             "OpenSeesPy import workspace | Select UPLOAD .PY to choose a model"
@@ -219,13 +176,13 @@ class MainWindow(QMainWindow):
 
     def _start_new_model_workspace(self) -> None:
         """Open the authoring shell at its first prerequisite step."""
-        self._has_active_workspace = True
         self._current_model_source = None
-        self.header.set_project_title("새 구조 모델")
-        self.modeling_workflow.set_current_step("setup")
-        self._show_model_workspace()
+        self.navigation.hide()
+        self.header.set_welcome_mode(True)
+        self.direct_model_workspace.set_current_step("setup")
+        self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
         self.statusBar().showMessage(
-            "기본 설정 단계 · 모델 차원, 자유도와 단위 설정 기능을 연결할 예정입니다"
+            "New 2D Model · 기본 설정부터 새 모델을 작성합니다"
         )
 
     def _show_model_workspace(self) -> None:
@@ -234,11 +191,6 @@ class MainWindow(QMainWindow):
         self.navigation.show()
         self.header.set_welcome_mode(False)
         self.workspace_stack.setCurrentWidget(self.workspace)
-        self.model_sidebar.show()
-        self.analysis_sidebar.show()
-        self.analysis_settings.hide()
-        self.model_inspector.show()
-        self.viewport.set_code_panel_visible(False)
 
     def _resume_workspace(self) -> None:
         if not self._has_active_workspace:
@@ -299,14 +251,6 @@ class MainWindow(QMainWindow):
         self.model_inspector.set_model(model)
         self.results_workspace.set_model(model)
         self.results_workspace.clear_result()
-        self.header.set_project_title(source_path.stem)
-        self.modeling_workflow.set_current_step("geometry")
-        self.status_model.setText("● 모델 유효")
-        self.status_model.setObjectName("statusModelReady")
-        self.status_model.style().unpolish(self.status_model)
-        self.status_model.style().polish(self.status_model)
-        self.status_counts.setText(f"절점 {len(model.nodes)}  |  요소 {len(model.elements)}")
-        self.status_units.setText(f"{model.ndm}D · NDF {model.ndf}  |  {self.viewport.unit_system.label}")
         key = str(source_path)
         self._remember_session(
             _WorkspaceSession(
@@ -338,10 +282,8 @@ class MainWindow(QMainWindow):
         self._store_current_session_section(section)
         labels = {
             "model": "Model workspace",
-            "loads": "Load assignment workspace",
             "analysis": "Analysis configuration",
             "results": "Analysis results",
-            "code": "OpenSeesPy code workspace",
             "viewport": "Viewport focus",
         }
         if section == "results":
@@ -351,11 +293,8 @@ class MainWindow(QMainWindow):
 
         self.workspace_stack.setCurrentWidget(self.workspace)
         focus_viewport = section == "viewport"
-        self.model_sidebar.setVisible(section in {"model", "loads"})
+        self.model_sidebar.setVisible(not focus_viewport)
         self.analysis_sidebar.setVisible(not focus_viewport)
-        self.analysis_settings.setVisible(section == "analysis")
-        self.model_inspector.setVisible(section != "analysis")
-        self.viewport.set_code_panel_visible(section == "code")
         self.statusBar().showMessage(f"{labels[section]} · Ready")
 
     def _set_analysis_kind(self, kind: AnalysisKind) -> None:

@@ -1,0 +1,1 @@
+"""Material database adapters."""

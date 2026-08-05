@@ -10,12 +10,9 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
-    QPlainTextEdit,
     QPushButton,
     QSlider,
-    QSplitter,
     QStackedWidget,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -55,9 +52,9 @@ class ModelViewport(QFrame):
         canvas_header.setObjectName("canvasHeader")
         header_layout = QHBoxLayout(canvas_header)
         header_layout.setContentsMargins(12, 7, 9, 7)
-        title = QLabel("모델링 캔버스")
+        title = QLabel("STRUCTURAL WORKSPACE")
         title.setObjectName("sectionLabel")
-        self.mode_label = QLabel("미리보기")
+        self.mode_label = QLabel("SAMPLE PREVIEW")
         self.mode_label.setObjectName("smallBadge")
         header_layout.addWidget(title)
         header_layout.addWidget(self.mode_label)
@@ -91,37 +88,6 @@ class ModelViewport(QFrame):
         header_layout.addWidget(fit)
         layout.addWidget(canvas_header)
 
-        modeling_tools = QFrame()
-        modeling_tools.setObjectName("modelingToolbar")
-        tools_layout = QHBoxLayout(modeling_tools)
-        tools_layout.setContentsMargins(9, 6, 9, 6)
-        tools_layout.setSpacing(5)
-        self.modeling_tool_buttons: dict[str, QToolButton] = {}
-        for key, text, tooltip in (
-            ("select", "↖  선택", "객체 선택"),
-            ("node", "●  절점", "절점 작성 · 추후 구현"),
-            ("member", "╱  부재", "프레임 부재 작성 · 추후 구현"),
-            ("support", "△  지점", "경계조건 배치 · 추후 구현"),
-            ("load", "↓  하중", "하중 배치 · 추후 구현"),
-        ):
-            button = QToolButton()
-            button.setObjectName("modelingToolButton")
-            button.setText(text)
-            button.setToolTip(tooltip)
-            button.setCheckable(True)
-            button.setChecked(key == "select")
-            if key != "select":
-                button.setDisabled(True)
-            self.modeling_tool_buttons[key] = button
-            tools_layout.addWidget(button)
-        tools_layout.addStretch(1)
-        self.code_toggle = QToolButton()
-        self.code_toggle.setObjectName("codeToggleButton")
-        self.code_toggle.setText("</>  코드")
-        self.code_toggle.setCheckable(True)
-        tools_layout.addWidget(self.code_toggle)
-        layout.addWidget(modeling_tools)
-
         self.scene = StructuralScene(self)
         self.scene.selectionChanged.connect(self._scene_selection_changed)
         self.view = StructuralGraphicsView(self.scene)
@@ -133,39 +99,7 @@ class ModelViewport(QFrame):
         self.canvas_stack = QStackedWidget()
         self.canvas_stack.addWidget(self.view)
         self.canvas_stack.addWidget(self.quick3d_view)
-        self.code_preview = QFrame()
-        self.code_preview.setObjectName("codePreviewPanel")
-        code_layout = QVBoxLayout(self.code_preview)
-        code_layout.setContentsMargins(0, 0, 0, 0)
-        code_layout.setSpacing(0)
-        code_header = QFrame()
-        code_header.setObjectName("codePreviewHeader")
-        code_header_layout = QHBoxLayout(code_header)
-        code_header_layout.setContentsMargins(10, 5, 10, 5)
-        code_header_layout.addWidget(QLabel("OpenSeesPy 코드 미리보기"))
-        code_header_layout.addStretch(1)
-        code_state = QLabel("모델에서 자동 생성 · 읽기 전용")
-        code_state.setObjectName("secondaryText")
-        code_header_layout.addWidget(code_state)
-        self.code_editor = QPlainTextEdit()
-        self.code_editor.setObjectName("codePreviewEditor")
-        self.code_editor.setReadOnly(True)
-        self.code_editor.setPlainText(
-            "# 직접 모델링 데이터에서 OpenSeesPy 코드가 생성됩니다.\n"
-            "# 코드 생성기는 다음 구현 단계에서 연결합니다."
-        )
-        code_layout.addWidget(code_header)
-        code_layout.addWidget(self.code_editor, 1)
-
-        self.canvas_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.canvas_splitter.setObjectName("canvasSplitter")
-        self.canvas_splitter.setChildrenCollapsible(False)
-        self.canvas_splitter.addWidget(self.canvas_stack)
-        self.canvas_splitter.addWidget(self.code_preview)
-        self.canvas_splitter.setStretchFactor(0, 1)
-        self.canvas_splitter.setStretchFactor(1, 0)
-        self.canvas_splitter.setSizes((600, 145))
-        layout.addWidget(self.canvas_splitter, 1)
+        layout.addWidget(self.canvas_stack, 1)
 
         controls = QFrame()
         controls.setObjectName("displayControls")
@@ -246,14 +180,7 @@ class ModelViewport(QFrame):
         self.view_selector.currentIndexChanged.connect(self._change_projection)
         self.view.orbit_dragged.connect(self._orbit_view)
         self.quick3d_view.camera_mode_changed.connect(self._quick_camera_mode_changed)
-        self.code_toggle.toggled.connect(self.set_code_panel_visible)
         self._show_sample_beam()
-
-    def set_code_panel_visible(self, visible: bool) -> None:
-        self.code_preview.setVisible(visible)
-        self.code_toggle.blockSignals(True)
-        self.code_toggle.setChecked(visible)
-        self.code_toggle.blockSignals(False)
 
     @property
     def unit_system(self) -> UnitSystem:

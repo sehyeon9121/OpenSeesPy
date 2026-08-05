@@ -15,8 +15,6 @@ class ModelingWorkflowBar(QFrame):
         ("sections", "단면", "단면 형상과 강성"),
         ("geometry", "구조 모델", "절점과 구조 요소"),
         ("supports", "지점", "경계조건과 구속"),
-        ("loads", "하중", "하중 케이스와 하중 배치"),
-        ("analysis", "해석", "모델 검증과 해석 실행"),
     )
 
     def __init__(self, parent: QWidget | None = None) -> None:

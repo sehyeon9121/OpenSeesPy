@@ -162,3 +162,51 @@ def test_picked_node_is_highlighted_and_clears_when_leaving_displacement_mode() 
     assert all(node["color"] != "#00e5ff" for node in viewport.quick3d_view.bridge.nodes)
 
     viewport.close()
+
+
+def test_view_selector_and_zoom_buttons_actually_move_the_3d_camera() -> None:
+    """Regression test: view_selector (ISO/XY/XZ/YZ) and the +/-/FIT buttons used to
+    look connected but never moved the Quick3D camera, because
+    QMetaObject.invokeMethod(root, "setPreset"/"zoomBy", Q_ARG(...)) silently returns
+    False for these plain QML JS functions. Calling them directly as attributes is
+    what actually works."""
+    application = _application()
+    model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
+    result = OpenSeesProcessRunner(timeout_seconds=20).run(
+        AnalysisRequest(source_path=EXAMPLE_MODEL)
+    )
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+
+    viewport = ResultViewport()
+    viewport.set_model(model)
+    viewport.show_result(result)
+    application.processEvents()
+
+    root = viewport.quick3d_view.quick_widget.rootObject()
+    assert (root.property("cameraYaw"), root.property("cameraPitch")) == (45.0, -25.0)
+
+    viewport.view_selector.setCurrentIndex(viewport.view_selector.findData("xy"))
+    application.processEvents()
+    assert (root.property("cameraYaw"), root.property("cameraPitch")) == (0.0, -89.0)
+
+    viewport.view_selector.setCurrentIndex(viewport.view_selector.findData("xz"))
+    application.processEvents()
+    assert (root.property("cameraYaw"), root.property("cameraPitch")) == (0.0, 0.0)
+
+    distance_before = root.property("cameraDistance")
+    viewport._zoom(1.2)
+    application.processEvents()
+    assert root.property("cameraDistance") < distance_before
+
+    distance_before_out = root.property("cameraDistance")
+    viewport._zoom(1.0 / 1.2)
+    application.processEvents()
+    assert root.property("cameraDistance") > distance_before_out
+
+    viewport.view_selector.setCurrentIndex(viewport.view_selector.findData("yz"))
+    application.processEvents()
+    viewport.fit_model()
+    application.processEvents()
+    assert (root.property("cameraYaw"), root.property("cameraPitch")) == (90.0, 0.0)
+
+    viewport.close()

@@ -11,6 +11,13 @@ from openframe.core.domain.model import (
     SupportKind,
     UniformElementLoad,
 )
+from openframe.core.domain.materials import (
+    MaterialDefinition,
+    MaterialFamily,
+    MaterialSource,
+    ShearDeformationSettings,
+    ShearModulusMode,
+)
 from openframe.core.domain.results import (
     AnalysisResult,
     AnalysisStatus,
@@ -36,10 +43,15 @@ __all__ = [
     "Element",
     "ElementResult",
     "LoadCaseKind",
+    "MaterialDefinition",
+    "MaterialFamily",
+    "MaterialSource",
     "NodalLoad",
     "Node",
     "NodeResult",
     "StructuralModel",
+    "ShearDeformationSettings",
+    "ShearModulusMode",
     "SupportKind",
     "UniformElementLoad",
     "UnitSystem",

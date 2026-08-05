@@ -9,8 +9,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
-    QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -48,27 +46,8 @@ class ModelSidebar(QFrame):
         self._tree_items: dict[tuple[str, int], QTreeWidgetItem] = {}
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(9)
-
-        explorer_header = QHBoxLayout()
-        explorer_title = QLabel("모델 탐색기")
-        explorer_title.setObjectName("panelTitle")
-        add_button = QPushButton("+")
-        add_button.setObjectName("sidebarToolButton")
-        add_button.setToolTip("새 모델 객체 · 직접 모델링 기능 연결 예정")
-        add_button.setDisabled(True)
-        explorer_header.addWidget(explorer_title)
-        explorer_header.addStretch(1)
-        explorer_header.addWidget(add_button)
-        layout.addLayout(explorer_header)
-
-        self.search_input = QLineEdit()
-        self.search_input.setObjectName("modelSearch")
-        self.search_input.setPlaceholderText("절점, 부재, 하중 검색")
-        self.search_input.setClearButtonEnabled(True)
-        self.search_input.textChanged.connect(self._filter_tree)
-        layout.addWidget(self.search_input)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
 
         layout.addWidget(self._section_label("ACTIVE FILE"))
         file_card = QFrame()
@@ -254,21 +233,6 @@ class ModelSidebar(QFrame):
         identity = current.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(identity, tuple) and len(identity) == 2:
             self.entity_selected.emit(str(identity[0]), int(identity[1]))
-
-    def _filter_tree(self, query: str) -> None:
-        normalized = query.strip().casefold()
-        for index in range(self.tree.topLevelItemCount()):
-            parent = self.tree.topLevelItem(index)
-            parent_match = normalized in parent.text(0).casefold()
-            visible_children = 0
-            for child_index in range(parent.childCount()):
-                child = parent.child(child_index)
-                visible = not normalized or parent_match or normalized in child.text(0).casefold()
-                child.setHidden(not visible)
-                visible_children += int(visible)
-            parent.setHidden(bool(normalized) and not parent_match and visible_children == 0)
-            if normalized and visible_children:
-                parent.setExpanded(True)
 
     def _section_label(self, text: str) -> QLabel:
         label = QLabel(text)

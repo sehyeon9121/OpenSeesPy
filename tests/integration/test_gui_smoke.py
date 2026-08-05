@@ -27,24 +27,6 @@ def test_main_window_can_be_constructed() -> None:
     assert window.workspace_stack.currentWidget() is window.workspace
     assert window._current_model_source is None
     assert not window.header.upload_button.isHidden()
-    assert tuple(window.modeling_workflow._buttons) == (
-        "setup",
-        "materials",
-        "sections",
-        "geometry",
-        "supports",
-        "loads",
-        "analysis",
-    )
-    assert window.modeling_workflow.current_step() == "geometry"
-
-    window.modeling_workflow._buttons["materials"].click()
-    assert window.modeling_workflow.current_step() == "materials"
-    assert window.navigation.current_section() == "model"
-
-    window.navigation._buttons["code"].click()
-    assert not window.viewport.code_preview.isHidden()
-    assert window.viewport.code_editor.isReadOnly()
 
     window.header.home_button.click()
     assert window.workspace_stack.currentWidget() is window.start_workspace
@@ -78,9 +60,19 @@ def test_new_model_opens_at_basic_setup_step() -> None:
     assert application is QApplication.instance()
     window.start_workspace.new_model_button.click()
 
-    assert window.workspace_stack.currentWidget() is window.workspace
-    assert window.modeling_workflow.current_step() == "setup"
-    assert window.header.project_label.text() == "새 구조 모델"
+    direct = window.direct_model_workspace
+    assert window.workspace_stack.currentWidget() is direct
+    assert direct.workflow.current_step() == "setup"
+    assert direct.stage_stack.currentWidget() is direct.setup_page
+    assert window.navigation.isHidden()
     assert window._current_model_source is None
+
+    direct.setup_page.dimension.setCurrentIndex(1)
+    assert "'-ndm', 3" in direct.setup_page.command_preview.text()
+    assert "'-ndf', 6" in direct.setup_page.command_preview.text()
+
+    direct.setup_page.continue_button.click()
+    assert direct.workflow.current_step() == "materials"
+    assert direct.stage_stack.currentWidget() is direct.materials_page
 
     window.close()

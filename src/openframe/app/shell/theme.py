@@ -751,9 +751,16 @@ QStatusBar {
     font-size: 8pt;
 }
 
-/* Modeling workspace shell */
-QWidget#workspaceShell { background: #edf1f5; }
-QWidget#modelingWorkspace { background: #ffffff; }
+/* Independent direct-model authoring workspace */
+QFrame#directModelWorkspace { background: #f5f7fa; }
+QFrame#directModelCommandBar {
+    background: #ffffff; border-bottom: 1px solid #d8e0e9;
+}
+QPushButton#directModelBackButton {
+    min-height: 28px; padding: 0 9px; border: 0; background: transparent;
+    color: #586b82; font-weight: 600;
+}
+QPushButton#directModelBackButton:hover { color: #174ea6; background: #eaf0f8; }
 QFrame#modelingWorkflow {
     min-height: 45px; max-height: 45px;
     background: #ffffff;
@@ -779,84 +786,52 @@ QToolButton#workflowStep:checked {
     color: #174ea6; background: #e7effa;
     border-color: #bfd0e7;
 }
-QFrame#workspaceNavigation {
-    min-width: 72px;
-    max-width: 72px;
-    background: #f7f9fc;
-    border: 0;
-    border-right: 1px solid #d5dde7;
+QFrame#modelSetupPage, QFrame#workflowPlaceholderPage {
+    background: #f5f7fa;
 }
-QFrame#workspaceNavigation QToolButton {
-    min-width: 56px;
-    max-width: 56px;
-    min-height: 52px;
-    max-height: 52px;
-    padding: 3px;
-    background: transparent;
-    border: 0;
-    border-left: 3px solid transparent;
-    border-radius: 3px;
-    color: #69798c;
-    font-size: 8pt;
-    font-weight: 600;
+QLabel#setupEyebrow {
+    color: #174ea6; font-size: 8pt; font-weight: 700;
 }
-QFrame#workspaceNavigation QToolButton:hover {
-    color: #174ea6;
-    background: #edf3fb;
+QLabel#setupTitle {
+    color: #142b49; font-size: 19pt; font-weight: 700;
 }
-QFrame#workspaceNavigation QToolButton:checked {
-    color: #174ea6;
-    background: #e5eefb;
-    border-left-color: #174ea6;
+QLabel#setupDescription {
+    color: #68798d; font-size: 9pt;
 }
-QLabel#headerDivider { color: #c4ccd6; padding: 0 3px; }
-QLabel#projectName { color: #2b3d53; font-size: 9pt; font-weight: 600; }
-QPushButton#headerToolButton {
-    min-width: 30px; max-width: 30px; min-height: 28px;
-    padding: 0; border: 1px solid #cbd4df; border-radius: 3px;
-    background: #ffffff; color: #52647a;
+QFrame#setupFormPanel, QFrame#setupSummaryPanel {
+    background: #ffffff; border: 1px solid #d8e1eb; border-radius: 6px;
 }
-QPushButton#exportButton {
-    min-height: 30px; padding: 0 11px; border-radius: 4px;
-    border: 1px solid #bdc8d5; background: #ffffff; color: #2d4059;
-    font-weight: 600;
+QLabel#setupSectionTitle {
+    color: #213953; font-size: 10pt; font-weight: 700;
 }
-QPushButton#exportButton:hover { background: #f3f6fa; border-color: #95a9c2; }
-QLabel#panelTitle { color: #233954; font-size: 10pt; font-weight: 700; }
-QPushButton#sidebarToolButton {
-    min-width: 26px; max-width: 26px; min-height: 24px; max-height: 24px;
-    border: 1px solid #cbd5e1; border-radius: 3px; background: #ffffff;
+QLabel#setupSectionHint, QLabel#setupSummaryHint {
+    color: #8290a0; font-size: 8pt;
 }
-QLineEdit#modelSearch {
-    min-height: 30px; padding: 0 8px; background: #ffffff;
-    border: 1px solid #cfd8e3; border-radius: 3px; color: #32465f;
+QFrame#setupDivider { color: #e1e7ee; }
+QFrame#setupSummaryRow {
+    background: #f7f9fc; border: 1px solid #e0e6ed; border-radius: 3px;
 }
-QFrame#modelingToolbar {
-    background: #ffffff;
-    border-bottom: 1px solid #d8e0e9;
+QLabel#setupSummaryName { color: #718096; font-size: 8pt; }
+QLabel#setupSummaryValue { color: #233b58; font-size: 8pt; font-weight: 700; }
+QLabel#setupCodeLabel {
+    color: #65758a; font-size: 8pt; font-weight: 700; padding-top: 6px;
 }
-QToolButton#modelingToolButton, QToolButton#codeToggleButton {
-    min-height: 29px; padding: 0 9px; border: 1px solid transparent;
-    border-radius: 3px; background: transparent; color: #506278;
-    font-size: 8pt; font-weight: 600;
+QLabel#setupCommandPreview {
+    color: #24476d; background: #eef3f9; border-left: 3px solid #174ea6;
+    padding: 10px; font-family: "Consolas"; font-size: 9pt;
 }
-QToolButton#modelingToolButton:hover, QToolButton#codeToggleButton:hover {
-    background: #f0f4f9; border-color: #d1dbe6;
+QLabel#setupNextHint {
+    color: #60758e; background: #f6f8fb; padding: 10px;
 }
-QToolButton#modelingToolButton:checked, QToolButton#codeToggleButton:checked {
-    color: #174ea6; background: #e6eef9; border-color: #b7cbe6;
+QPushButton#setupContinueButton {
+    min-height: 36px; padding: 0 16px; color: #ffffff; background: #174ea6;
+    border: 1px solid #174ea6; border-radius: 4px; font-weight: 700;
 }
-QToolButton#modelingToolButton:disabled { color: #9ba7b4; }
-QFrame#codePreviewPanel { background: #ffffff; border-top: 1px solid #ccd6e2; }
-QFrame#codePreviewHeader { background: #f5f7fa; border-bottom: 1px solid #dce3eb; }
-QFrame#codePreviewHeader QLabel { color: #40536a; font-size: 8pt; font-weight: 600; }
-QPlainTextEdit#codePreviewEditor {
-    border: 0; background: #fbfcfe; color: #314861;
-    font-family: "Consolas"; font-size: 8pt; padding: 6px;
+QPushButton#setupContinueButton:hover { background: #123f89; }
+QLabel#workflowPlaceholderState {
+    color: #6e7f92; background: #ffffff; border: 1px dashed #bac7d5;
+    border-radius: 5px; padding: 20px;
 }
-QSplitter#canvasSplitter::handle { background: #ccd6e2; height: 1px; }
-QLabel#statusModel { color: #7a8796; padding: 0 8px; }
-QLabel#statusModelReady { color: #28724a; padding: 0 8px; font-weight: 600; }
 """
 
 

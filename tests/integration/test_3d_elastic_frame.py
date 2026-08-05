@@ -81,6 +81,23 @@ def test_3d_viewport_switches_between_iso_and_orthographic_views() -> None:
     application.processEvents()
     assert viewport.scene.projection == "xz"
     assert any(item.data(0) == ("element", 1) for item in viewport.scene.items())
+
+    # Regression check: the QML camera itself (not just the 2D scene mirror of it)
+    # must actually move. QMetaObject.invokeMethod(root, "setPreset", ...) used to
+    # silently return False for this plain QML JS function, leaving the 3D camera
+    # stuck on ISO no matter what was picked - only the unrelated 2D scene handled
+    # above ever changed.
+    root = viewport.quick3d_view.quick_widget.rootObject()
+    assert (root.property("cameraYaw"), root.property("cameraPitch")) == (0.0, 0.0)
+
+    viewport.view_selector.setCurrentIndex(viewport.view_selector.findData("iso"))
+    application.processEvents()
+    assert (root.property("cameraYaw"), root.property("cameraPitch")) == (45.0, -25.0)
+
+    distance_before = root.property("cameraDistance")
+    viewport.quick3d_view.zoom(1.5)
+    application.processEvents()
+    assert root.property("cameraDistance") != distance_before
     viewport.close()
 
 

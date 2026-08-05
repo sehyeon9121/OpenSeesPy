@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import Q_ARG, QMetaObject, QPoint, Qt, QUrl, Signal
+from PySide6.QtCore import QPoint, Qt, QUrl, Signal
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
@@ -80,9 +80,12 @@ class Quick3DViewport(QFrame):
             return
         root = self.quick_widget.rootObject()
         if root is not None:
-            QMetaObject.invokeMethod(root, "setPreset", Q_ARG(str, preset))
+            # QMetaObject.invokeMethod(root, "setPreset", Q_ARG(str, preset)) silently
+            # fails (returns False) for this plain, untyped QML JS function - calling
+            # it directly as an attribute is what PySide6 actually resolves reliably.
+            root.setPreset(preset)
 
     def zoom(self, factor: float) -> None:
         root = self.quick_widget.rootObject()
         if root is not None:
-            QMetaObject.invokeMethod(root, "zoomBy", Q_ARG(float, factor))
+            root.zoomBy(factor)
