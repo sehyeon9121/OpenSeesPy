@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSizePolicy,
     QSlider,
     QStackedWidget,
     QToolTip,
@@ -26,6 +25,7 @@ from PySide6.QtWidgets import (
 from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
     AnalysisResult,
+    LoadDisplacementPoint,
     NodeResult,
     StructuralModel,
     UnitSystem,
@@ -559,3 +559,9 @@ class ResultViewport(QFrame):
         button = QPushButton(text)
         button.setObjectName("resultCanvasButton")
         return button
+
+    @staticmethod
+    def _stat_label() -> QLabel:
+        label = QLabel("")
+        label.setObjectName("resultPushoverStat")
+        return label

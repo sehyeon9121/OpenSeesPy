@@ -414,6 +414,24 @@ QFrame#panelHeader, QFrame#canvasHeader {
 }
 QFrame#panelHeader QLabel { font-size: 8pt; font-weight: 600; color: #415269; }
 QFrame#rightSection { background: #ffffff; border-bottom: 1px solid #dce3eb; }
+QPushButton#nonlinearSettingsButton, QPushButton#filterSettingsButton {
+    min-height: 28px;
+    padding: 0 8px;
+    color: #174ea6;
+    background: #eaf0f8;
+    border: 1px solid #b7cbe9;
+    border-radius: 3px;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QPushButton#nonlinearSettingsButton:hover, QPushButton#filterSettingsButton:hover {
+    background: #dbe7f6;
+}
+QLabel#nonlinearSettingsSummary {
+    color: #68778a;
+    font-size: 7pt;
+    padding-top: 3px;
+}
 QComboBox {
     min-height: 29px;
     background: #ffffff;
@@ -614,6 +632,9 @@ QToolButton#resultGraphToolButton:hover {
 }
 QGraphicsView#resultGraphicsView { background: #fbfcfe; border: 0; }
 QLabel#resultScaleValue { color: #174ea6; font-weight: 700; min-width: 30px; }
+QLabel#resultPushoverStat { color: #40536b; font-size: 8pt; font-weight: 600; }
+QLabel#resultPushoverStat[status="ok"] { color: #1a7f37; }
+QLabel#resultPushoverStat[status="warning"] { color: #b93815; }
 QFrame#resultDataPanel {
     background: #ffffff;
     border-top: 1px solid #cfd8e3;

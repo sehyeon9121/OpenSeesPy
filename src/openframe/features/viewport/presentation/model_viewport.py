@@ -1,17 +1,18 @@
 """Central structural canvas and compact display controls."""
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QGraphicsItem,
     QGraphicsView,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSlider,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -108,12 +109,15 @@ class ModelViewport(QFrame):
         controls_layout.setSpacing(10)
         controls_layout.addWidget(QLabel("DISPLAY FILTERS"))
         self.filter_options: dict[str, QCheckBox] = {}
+        # Node/Node ID/Element visibility and the unit system are what nearly every
+        # session touches, so they stay one click away in the bar itself. Supports,
+        # loads and the load-view/case filters are used far less often, and packing
+        # all eight controls into one row is what was causing labels and combos to
+        # get clipped - those move into a dialog (opened on demand) instead.
         for text, item_kind in (
             ("Nodes", "node"),
             ("Node IDs", "node_label"),
             ("Elements", "element"),
-            ("Supports", "support"),
-            ("Loads", "load"),
         ):
             option = QCheckBox(text)
             option.setChecked(True)
@@ -122,38 +126,11 @@ class ModelViewport(QFrame):
             )
             self.filter_options[item_kind] = option
             controls_layout.addWidget(option)
-        controls_layout.addWidget(QLabel("LOAD VIEW"))
-        self.load_view_selector = QComboBox()
-        self.load_view_selector.setObjectName("loadViewSelector")
-        self.load_view_selector.addItem("NODAL", "nodal")
-        self.load_view_selector.addItem("DISTRIBUTED", "element")
-        self.load_view_selector.addItem("ALL", "all")
-        self.load_view_selector.setMaximumWidth(112)
-        self.load_view_selector.setToolTip("Choose which load category is displayed")
-        controls_layout.addWidget(self.load_view_selector)
-        controls_layout.addWidget(QLabel("LOAD CASE"))
-        self.load_case_selector = QComboBox()
-        self.load_case_selector.setObjectName("loadCaseSelector")
-        self.load_case_selector.addItem("ALL CASES", "all")
-        self.load_case_selector.setMaximumWidth(128)
-        self.load_case_selector.setToolTip("고정하중, 활하중 등 하중 케이스별로 표시")
-        controls_layout.addWidget(self.load_case_selector)
-        self.load_case_legend = QLabel(
-            '<span style="color:#2563eb">● DL</span>  '
-            '<span style="color:#16a34a">● LL</span>  '
-            '<span style="color:#f97316">● EQ</span>  '
-            '<span style="color:#e5484d">● ?</span>'
-        )
-        self.load_case_legend.setToolTip("DL 고정하중 · LL 활하중 · EQ 지진하중 · ? 미분류 하중")
-        controls_layout.addWidget(self.load_case_legend)
         controls_layout.addStretch(1)
-        deformation = QCheckBox("DEFORMATION")
-        controls_layout.addWidget(deformation)
-        self.scale_slider = QSlider(Qt.Orientation.Horizontal)
-        self.scale_slider.setRange(1, 100)
-        self.scale_slider.setValue(30)
-        self.scale_slider.setMaximumWidth(120)
-        controls_layout.addWidget(self.scale_slider)
+        self.open_filter_settings_button = QPushButton("FILTER SETTINGS…")
+        self.open_filter_settings_button.setObjectName("filterSettingsButton")
+        self.open_filter_settings_button.clicked.connect(self._open_filter_settings)
+        controls_layout.addWidget(self.open_filter_settings_button)
         controls_layout.addWidget(QLabel("FORCE"))
         self.force_unit_selector = QComboBox()
         self.force_unit_selector.setObjectName("forceUnitSelector")
@@ -170,6 +147,8 @@ class ModelViewport(QFrame):
         controls_layout.addWidget(self.length_unit_selector)
         layout.addWidget(controls)
 
+        self._build_filter_settings_dialog()
+
         zoom_in.clicked.connect(lambda: self._zoom(1.2))
         zoom_out.clicked.connect(lambda: self._zoom(1 / 1.2))
         fit.clicked.connect(self.fit_model)
@@ -181,6 +160,78 @@ class ModelViewport(QFrame):
         self.view.orbit_dragged.connect(self._orbit_view)
         self.quick3d_view.camera_mode_changed.connect(self._quick_camera_mode_changed)
         self._show_sample_beam()
+
+    def _build_filter_settings_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setObjectName("filterSettingsDialog")
+        dialog.setWindowTitle("Display Filter Settings")
+        dialog.setMinimumWidth(280)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(18, 16, 18, 16)
+        dialog_layout.setSpacing(9)
+
+        for text, item_kind in (("Supports", "support"), ("Loads", "load")):
+            option = QCheckBox(text)
+            option.setChecked(True)
+            option.toggled.connect(
+                lambda visible, kind=item_kind: self._set_item_kind_visible(kind, visible)
+            )
+            self.filter_options[item_kind] = option
+            dialog_layout.addWidget(option)
+
+        dialog_layout.addWidget(self._field_label("LOAD VIEW"))
+        self.load_view_selector = QComboBox()
+        self.load_view_selector.setObjectName("loadViewSelector")
+        self.load_view_selector.addItem("NODAL", "nodal")
+        self.load_view_selector.addItem("DISTRIBUTED", "element")
+        self.load_view_selector.addItem("ALL", "all")
+        self.load_view_selector.setToolTip("Choose which load category is displayed")
+        dialog_layout.addWidget(self.load_view_selector)
+
+        dialog_layout.addWidget(self._field_label("LOAD CASE"))
+        self.load_case_selector = QComboBox()
+        self.load_case_selector.setObjectName("loadCaseSelector")
+        self.load_case_selector.addItem("ALL CASES", "all")
+        self.load_case_selector.setToolTip("고정하중, 활하중 등 하중 케이스별로 표시")
+        dialog_layout.addWidget(self.load_case_selector)
+        self.load_case_legend = QLabel(
+            '<span style="color:#2563eb">● DL</span>  '
+            '<span style="color:#16a34a">● LL</span>  '
+            '<span style="color:#f97316">● EQ</span>  '
+            '<span style="color:#e5484d">● ?</span>'
+        )
+        self.load_case_legend.setToolTip("DL 고정하중 · LL 활하중 · EQ 지진하중 · ? 미분류 하중")
+        dialog_layout.addWidget(self.load_case_legend)
+
+        dialog_layout.addStretch(1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        dialog_layout.addWidget(buttons)
+
+        self._filter_settings_dialog = dialog
+
+    def _open_filter_settings(self) -> None:
+        snapshot = {
+            "support": self.filter_options["support"].isChecked(),
+            "load": self.filter_options["load"].isChecked(),
+            "load_view": self.load_view_selector.currentIndex(),
+            "load_case": self.load_case_selector.currentIndex(),
+        }
+        accepted = self._filter_settings_dialog.exec() == QDialog.DialogCode.Accepted
+        if not accepted:
+            self.filter_options["support"].setChecked(snapshot["support"])
+            self.filter_options["load"].setChecked(snapshot["load"])
+            self.load_view_selector.setCurrentIndex(int(snapshot["load_view"]))
+            self.load_case_selector.setCurrentIndex(int(snapshot["load_case"]))
+
+    @staticmethod
+    def _field_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("fieldLabel")
+        return label
 
     @property
     def unit_system(self) -> UnitSystem:

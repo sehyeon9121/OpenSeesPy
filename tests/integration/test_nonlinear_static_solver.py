@@ -99,3 +99,64 @@ def test_rejects_unknown_control_node(tmp_path: Path) -> None:
             run_nonlinear_static_analysis(source, control_node=999, control_dof=1)
     finally:
         ops.wipe()
+
+
+#: OpenSeesPy docs' nonlinearTruss example: ndf=2 (translation only, no RZ) - a
+#: control_dof of 3 doesn't exist on this model and used to crash the solver with a
+#: raw IndexError instead of a validation message.
+_TRUSS_MODEL = """
+import openseespy.opensees as ops
+ops.wipe()
+ops.model('basic', '-ndm', 2, '-ndf', 2)
+ops.node(1, 0.0, 0.0)
+ops.node(2, 72.0, 0.0)
+ops.node(3, 168.0, 0.0)
+ops.node(4, 48.0, 144.0)
+ops.fix(1, 1, 1)
+ops.fix(2, 1, 1)
+ops.fix(3, 1, 1)
+ops.uniaxialMaterial('Hardening', 1, 29000.0, 36.0, 0.0, 0.05/(1-0.05)*29000.0)
+ops.element('Truss', 1, 1, 4, 4.0, 1)
+ops.element('Truss', 2, 2, 4, 4.0, 1)
+ops.element('Truss', 3, 3, 4, 4.0, 1)
+ops.timeSeries('Linear', 1)
+ops.pattern('Plain', 1, 1)
+ops.load(4, 160.0, 0.0)
+"""
+
+
+def _write_truss_model(tmp_path: Path) -> Path:
+    source = tmp_path / "truss.py"
+    source.write_text(_TRUSS_MODEL, encoding="utf-8")
+    return source
+
+
+def test_rejects_control_dof_beyond_the_model_ndf(tmp_path: Path) -> None:
+    """control_dof=3 (RZ) doesn't exist on an ndf=2 truss model - this must be a
+    validated RuntimeError, not an IndexError out of ops.nodeReaction()."""
+    source = _write_truss_model(tmp_path)
+    try:
+        with pytest.raises(RuntimeError, match="CONTROL DOF"):
+            run_nonlinear_static_analysis(source, control_node=4, control_dof=3)
+    finally:
+        ops.wipe()
+
+
+def test_truss_pushover_reaches_full_applied_load(tmp_path: Path) -> None:
+    """At the final load step the sum of reactions must equal the fully-applied
+    Px=160 (the OpenSeesPy docs' own example plots exactly this curve)."""
+    source = _write_truss_model(tmp_path)
+    try:
+        result = run_nonlinear_static_analysis(
+            source, control_node=4, control_dof=1, num_steps=20
+        )
+    finally:
+        ops.wipe()
+
+    assert result["status"] == "completed"
+    assert result["messages"] == []
+    curve = result["load_displacement_curve"]
+    assert len(curve) == 20
+    assert curve[-1]["base_shear"] == pytest.approx(160.0, rel=1e-6)
+    displacements = [point["control_displacement"] for point in curve]
+    assert all(later > earlier for earlier, later in pairwise(displacements))

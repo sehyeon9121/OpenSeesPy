@@ -62,10 +62,26 @@ class LoadDisplacementCurveView(QWidget):
         font_metrics = painter.fontMetrics()
         label_height = float(font_metrics.height() + 2)
         y_axis_labels = [self._format(max_shear * step / _TICK_COUNT) for step in range(_TICK_COUNT + 1)]
-        left_margin = max(font_metrics.horizontalAdvance(label) for label in y_axis_labels) + 16.0
+        x_axis_labels = [self._format(max_disp * step / _TICK_COUNT) for step in range(_TICK_COUNT + 1)]
+        # left_margin has to fit three things side by side, in this order from the
+        # widget's left edge: the rotated axis-name label, a gap, then the tick-
+        # number column. Reserving enough *total* width isn't enough on its own -
+        # the number column used to still be drawn starting at x=0 regardless, so a
+        # wide enough number (e.g. "160") stretched leftward straight through the
+        # axis-name label's own column and the two overlapped.
+        axis_title_width = label_height + 4.0
+        axis_title_gap = 4.0
+        number_column_left = axis_title_width + axis_title_gap
+        number_column_width = (
+            max(font_metrics.horizontalAdvance(label) for label in y_axis_labels) + 8.0
+        )
+        left_margin = max(
+            number_column_left + number_column_width,
+            font_metrics.horizontalAdvance(x_axis_labels[0]) / 2.0 + 6.0,
+        )
         top_margin = label_height + 20.0
         bottom_margin = 2.0 * label_height + 12.0
-        right_margin = 14.0
+        right_margin = max(14.0, font_metrics.horizontalAdvance(x_axis_labels[-1]) / 2.0 + 6.0)
         plot_rect = QRectF(self.rect()).adjusted(
             left_margin, top_margin, -right_margin, -bottom_margin
         )
@@ -82,8 +98,14 @@ class LoadDisplacementCurveView(QWidget):
         title = "밑면전단력 - 변위 곡선 (Pushover Curve)"
         if self._incomplete:
             title += "  —  마지막 스텝에서 수렴 실패, 그 이전까지만 표시"
+        # A narrow viewport (or the longer "incomplete" title) can be shorter than
+        # the full title - elide it instead of letting it overflow past the widget's
+        # left/right edges, which reads as clipped/cut-off text rather than a title.
+        title = font_metrics.elidedText(
+            title, Qt.TextElideMode.ElideRight, int(self.rect().width() - 8.0)
+        )
         painter.drawText(
-            QRectF(0.0, 2.0, self.rect().width(), label_height),
+            QRectF(4.0, 2.0, self.rect().width() - 8.0, label_height),
             Qt.AlignmentFlag.AlignHCenter,
             title,
         )
@@ -102,7 +124,12 @@ class LoadDisplacementCurveView(QWidget):
             fraction = step / _TICK_COUNT
             y = plot_rect.bottom() - fraction * plot_rect.height()
             painter.drawText(
-                QRectF(0.0, y - label_height / 2.0, left_margin - 8.0, label_height),
+                QRectF(
+                    number_column_left,
+                    y - label_height / 2.0,
+                    left_margin - 8.0 - number_column_left,
+                    label_height,
+                ),
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 self._format(max_shear * fraction),
             )
@@ -123,7 +150,10 @@ class LoadDisplacementCurveView(QWidget):
             f"제어 절점 변위 [{length_unit}]",
         )
         painter.save()
-        painter.translate(12.0, plot_rect.center().y())
+        # Translating to axis_title_width (not into the number column - see
+        # number_column_left above) keeps this label in its own reserved strip,
+        # to the left of the tick numbers rather than drawn on top of them.
+        painter.translate(axis_title_width, plot_rect.center().y())
         painter.rotate(-90)
         painter.drawText(
             QRectF(-plot_rect.height() / 2.0, -label_height, plot_rect.height(), label_height),

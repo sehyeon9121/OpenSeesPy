@@ -1,13 +1,15 @@
 """Analysis type and solver settings panel."""
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QScrollArea,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -52,78 +54,132 @@ class AnalysisSettingsPanel(QFrame):
         self.solver.addItems(("BandGeneral", "UmfPack", "ProfileSPD"))
         settings_layout.addWidget(self.solver)
 
+        # Nonlinear static has seven extra fields - crammed into this narrow sidebar
+        # they either overlapped or forced a scrollbar over everything below them.
+        # They matter more than the linear settings above (they control whether the
+        # analysis converges at all), so they get their own dialog instead, opened
+        # on demand via the button below and pre-filled from the same widgets every
+        # time - nothing here is duplicated or re-created per open.
         self.nonlinear_group = QFrame()
         nonlinear_layout = QVBoxLayout(self.nonlinear_group)
-        nonlinear_layout.setContentsMargins(0, 0, 0, 0)
-        nonlinear_layout.setSpacing(7)
+        nonlinear_layout.setContentsMargins(0, 8, 0, 0)
+        nonlinear_layout.setSpacing(4)
+        self.open_nonlinear_settings_button = QPushButton("NONLINEAR SETTINGS…")
+        self.open_nonlinear_settings_button.setObjectName("nonlinearSettingsButton")
+        self.open_nonlinear_settings_button.clicked.connect(self._open_nonlinear_settings)
+        nonlinear_layout.addWidget(self.open_nonlinear_settings_button)
+        self.nonlinear_summary = QLabel()
+        self.nonlinear_summary.setObjectName("nonlinearSettingsSummary")
+        self.nonlinear_summary.setWordWrap(True)
+        nonlinear_layout.addWidget(self.nonlinear_summary)
+        settings_layout.addWidget(self.nonlinear_group)
+        settings_layout.addStretch(1)
+        layout.addWidget(settings)
 
-        nonlinear_layout.addWidget(self._field_label("CONTROL NODE"))
+        self._build_nonlinear_dialog()
+        self._update_nonlinear_visibility()
+        self._update_nonlinear_summary()
+
+    def _build_nonlinear_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setObjectName("nonlinearSettingsDialog")
+        dialog.setWindowTitle("Nonlinear Static Settings")
+        dialog.setMinimumWidth(360)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(18, 16, 18, 16)
+        dialog_layout.setSpacing(9)
+
+        dialog_layout.addWidget(self._field_label("CONTROL NODE"))
         self.control_node = QComboBox()
-        nonlinear_layout.addWidget(self.control_node)
+        dialog_layout.addWidget(self.control_node)
 
-        nonlinear_layout.addWidget(self._field_label("CONTROL DOF"))
+        dialog_layout.addWidget(self._field_label("CONTROL DOF"))
         self.control_dof = QComboBox()
-        nonlinear_layout.addWidget(self.control_dof)
+        dialog_layout.addWidget(self.control_dof)
 
-        nonlinear_layout.addWidget(self._field_label("LOAD STEPS"))
+        dialog_layout.addWidget(self._field_label("LOAD STEPS"))
         self.num_steps = QSpinBox()
         self.num_steps.setRange(1, 1000)
         self.num_steps.setValue(10)
-        nonlinear_layout.addWidget(self.num_steps)
+        dialog_layout.addWidget(self.num_steps)
 
-        nonlinear_layout.addWidget(self._field_label("TOLERANCE"))
+        dialog_layout.addWidget(self._field_label("TOLERANCE"))
         self.tolerance = QDoubleSpinBox()
         self.tolerance.setDecimals(8)
         self.tolerance.setRange(1.0e-10, 1.0)
         self.tolerance.setSingleStep(1.0e-7)
         self.tolerance.setValue(1.0e-6)
-        nonlinear_layout.addWidget(self.tolerance)
+        dialog_layout.addWidget(self.tolerance)
 
-        nonlinear_layout.addWidget(self._field_label("MAX ITERATIONS"))
+        dialog_layout.addWidget(self._field_label("MAX ITERATIONS"))
         self.max_iterations = QSpinBox()
         self.max_iterations.setRange(1, 1000)
         self.max_iterations.setValue(25)
-        nonlinear_layout.addWidget(self.max_iterations)
+        dialog_layout.addWidget(self.max_iterations)
 
-        nonlinear_layout.addWidget(self._field_label("ALGORITHM"))
+        dialog_layout.addWidget(self._field_label("ALGORITHM"))
         self.algorithm = QComboBox()
         self.algorithm.addItems(
             ("Newton", "ModifiedNewton", "KrylovNewton", "NewtonLineSearch")
         )
-        nonlinear_layout.addWidget(self.algorithm)
+        dialog_layout.addWidget(self.algorithm)
 
-        nonlinear_layout.addWidget(self._field_label("CONVERGENCE TEST"))
+        dialog_layout.addWidget(self._field_label("CONVERGENCE TEST"))
         self.test_type = QComboBox()
         self.test_type.addItems(("NormDispIncr", "EnergyIncr", "NormUnbalance"))
-        nonlinear_layout.addWidget(self.test_type)
+        dialog_layout.addWidget(self.test_type)
 
-        settings_layout.addWidget(self.nonlinear_group)
-        settings_layout.addStretch(1)
+        dialog_layout.addStretch(1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        dialog_layout.addWidget(buttons)
 
-        # The nonlinear fields push this panel's natural height well past what the
-        # sidebar has room for; without a scroll area, Qt has to shrink the layout
-        # below its rows' minimum sizes to fit, and labels/fields start overlapping
-        # instead of the rest of the sidebar (e.g. the model inspector below it)
-        # simply getting a scrollbar-bounded panel above it instead.
-        scroll_area = QScrollArea()
-        scroll_area.setObjectName("analysisSettingsScrollArea")
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Without a floor, the sidebar's layout (model inspector below has the only
-        # stretch factor) squeezes this down to a sliver - just the header, no room
-        # to actually see or use a field. This guarantees several rows stay visible
-        # before the panel starts scrolling, in both linear and nonlinear modes.
-        scroll_area.setMinimumHeight(230)
-        scroll_area.setWidget(settings)
-        layout.addWidget(scroll_area, 1)
+        for combo in (self.control_node, self.control_dof, self.algorithm, self.test_type):
+            combo.currentIndexChanged.connect(self._update_nonlinear_summary)
+        for spinner in (self.num_steps, self.tolerance, self.max_iterations):
+            spinner.valueChanged.connect(self._update_nonlinear_summary)
 
-        self._update_nonlinear_visibility()
+        self._nonlinear_dialog = dialog
+
+    def _open_nonlinear_settings(self) -> None:
+        # SAVE keeps whatever is in the fields (they're the same widgets build_options()
+        # reads from, so there's nothing extra to copy). CANCEL - including the dialog's
+        # own [x] button, which Qt already routes to reject() - must undo any edits made
+        # since opening, so a snapshot is taken up front and restored on non-acceptance.
+        snapshot = self._nonlinear_snapshot()
+        accepted = self._nonlinear_dialog.exec() == QDialog.DialogCode.Accepted
+        if not accepted:
+            self._restore_nonlinear_snapshot(snapshot)
+        self._update_nonlinear_summary()
+
+    def _nonlinear_snapshot(self) -> dict[str, int | float]:
+        return {
+            "control_node": self.control_node.currentIndex(),
+            "control_dof": self.control_dof.currentIndex(),
+            "num_steps": self.num_steps.value(),
+            "tolerance": self.tolerance.value(),
+            "max_iterations": self.max_iterations.value(),
+            "algorithm": self.algorithm.currentIndex(),
+            "test_type": self.test_type.currentIndex(),
+        }
+
+    def _restore_nonlinear_snapshot(self, snapshot: dict[str, int | float]) -> None:
+        self.control_node.setCurrentIndex(int(snapshot["control_node"]))
+        self.control_dof.setCurrentIndex(int(snapshot["control_dof"]))
+        self.num_steps.setValue(int(snapshot["num_steps"]))
+        self.tolerance.setValue(float(snapshot["tolerance"]))
+        self.max_iterations.setValue(int(snapshot["max_iterations"]))
+        self.algorithm.setCurrentIndex(int(snapshot["algorithm"]))
+        self.test_type.setCurrentIndex(int(snapshot["test_type"]))
 
     def set_model(self, model: StructuralModel | None) -> None:
         self._model = model
         self.control_node.clear()
         if model is None:
+            self._update_nonlinear_summary()
             return
         for tag, node in sorted(model.nodes.items()):
             coordinates = (
@@ -132,11 +188,44 @@ class AnalysisSettingsPanel(QFrame):
                 else f"({node.x:g}, {node.y:g})"
             )
             self.control_node.addItem(f"Node {tag} {coordinates}", tag)
+        # Node 1 (the combo's default selection) is, by convention, very often a
+        # support - pushing it produces a curve that is a flat vertical line at zero
+        # displacement forever, with no error to say why. Point at the loaded node
+        # instead, so the curve that first appears actually looks like a pushover.
+        default_node = self._default_control_node(model)
+        if default_node is not None:
+            self.control_node.setCurrentIndex(self.control_node.findData(default_node))
 
         self.control_dof.clear()
-        labels = _DOF_LABELS_3D if model.ndm == 3 else _DOF_LABELS_2D
-        for index, label in enumerate(labels, start=1):
+        full_labels = _DOF_LABELS_3D if model.ndm == 3 else _DOF_LABELS_2D
+        # Truss-only models declare fewer DOFs per node than a frame (e.g. ndf=2 in
+        # 2D: UX/UY, no RZ) - offering a DOF the model doesn't have lets the solver
+        # index past the end of OpenSeesPy's per-node result arrays and crash.
+        for index, label in enumerate(full_labels[: model.ndf], start=1):
             self.control_dof.addItem(label, index)
+        self._update_nonlinear_summary()
+
+    @staticmethod
+    def _default_control_node(model: StructuralModel) -> int | None:
+        """Prefer a loaded, movable node; fall back to any movable node; otherwise
+        leave the combo's own default (there's nothing better to suggest)."""
+        fully_fixed = {
+            boundary.node_tag
+            for boundary in model.boundaries
+            if boundary.restraints and all(boundary.restraints)
+        }
+        loaded_candidates = sorted(
+            (
+                (max((abs(value) for value in load.values), default=0.0), load.node_tag)
+                for load in model.nodal_loads
+                if load.node_tag not in fully_fixed and any(load.values)
+            ),
+            reverse=True,
+        )
+        if loaded_candidates:
+            return loaded_candidates[0][1]
+        movable_nodes = sorted(tag for tag in model.nodes if tag not in fully_fixed)
+        return movable_nodes[0] if movable_nodes else None
 
     def selected_analysis_kind(self) -> AnalysisKind:
         return AnalysisKind(self.analysis_type.currentData())
@@ -169,6 +258,15 @@ class AnalysisSettingsPanel(QFrame):
     def _update_nonlinear_visibility(self) -> None:
         self.nonlinear_group.setVisible(
             self.selected_analysis_kind() == AnalysisKind.NONLINEAR_STATIC
+        )
+
+    def _update_nonlinear_summary(self) -> None:
+        """Keep a one-line readout of the dialog's current values visible in the
+        sidebar, so checking them doesn't require reopening the dialog every time."""
+        control_node = self.control_node.currentText() or "not set"
+        self.nonlinear_summary.setText(
+            f"Control: {control_node} / {self.control_dof.currentText()}\n"
+            f"Steps: {self.num_steps.value()}  ·  Algorithm: {self.algorithm.currentText()}"
         )
 
     def _header(self, text: str) -> QFrame:

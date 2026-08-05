@@ -17,7 +17,7 @@ from openframe.features.model.presentation.model_setup_page import (
     ModelSetupPage,
     WorkflowPlaceholderPage,
 )
-from openframe.features.model.presentation.statics_problem_page import StaticsProblemPage
+from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
 
 class DirectModelWorkspace(QFrame):
@@ -60,7 +60,7 @@ class DirectModelWorkspace(QFrame):
             "단면 라이브러리",
             "단면 형상과 재료를 조합하고 구조 요소에 사용할 단면을 관리하는 영역입니다.",
         )
-        self.geometry_page = StaticsProblemPage()
+        self.geometry_page = ModelingInterfacePage()
         self.supports_page = WorkflowPlaceholderPage(
             "지점 및 구속조건",
             "작성한 구조 모델에 지점과 자유도 구속을 배치하는 영역입니다.",

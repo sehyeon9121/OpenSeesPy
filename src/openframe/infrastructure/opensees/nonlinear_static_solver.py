@@ -95,8 +95,21 @@ def run_nonlinear_static_analysis(
         raise RuntimeError(f"CONTROL NODE {control_node}가 모델에 존재하지 않습니다.")
     if num_steps <= 0:
         raise RuntimeError("LOAD STEPS는 1 이상이어야 합니다.")
+    control_node_dof_count = len(ops.nodeDisp(control_node))
+    if not 1 <= control_dof <= control_node_dof_count:
+        raise RuntimeError(
+            f"CONTROL DOF {control_dof}가 CONTROL NODE {control_node}의 자유도 범위"
+            f"(1~{control_node_dof_count})를 벗어났습니다."
+        )
 
     fixed_nodes = [int(tag) for tag in ops.getFixedNodes()]
+    # A model can, in principle, mix ndf across nodes (multiple ops.model() calls or
+    # per-node overrides), so a fixed node's reaction vector is not guaranteed to be
+    # as long as control_node's - skip any that are too short instead of indexing
+    # past the end of the array.
+    reaction_nodes = [
+        tag for tag in fixed_nodes if len(ops.nodeReaction(tag)) >= control_dof
+    ]
 
     ops.wipeAnalysis()
     ops.constraints("Plain")
@@ -121,7 +134,7 @@ def run_nonlinear_static_analysis(
         # as the resistance the structure develops, so the sign is flipped to grow
         # positive with the push instead of growing more negative.
         base_shear = -sum(
-            float(ops.nodeReaction(tag)[control_dof - 1]) for tag in fixed_nodes
+            float(ops.nodeReaction(tag)[control_dof - 1]) for tag in reaction_nodes
         )
         displacement = float(ops.nodeDisp(control_node, control_dof))
         curve.append(
