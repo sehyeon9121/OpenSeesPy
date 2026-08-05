@@ -19,6 +19,12 @@ class ElementLoadCollector:
     def __init__(self) -> None:
         # element tag -> (wx, wy) along the member's own axes.
         self.uniform_loads: dict[int, tuple[float, float]] = {}
+        # 3D form retains the second transverse component: (wx, wy, wz).
+        self.uniform_loads_3d: dict[int, tuple[float, float, float]] = {}
+        # Preserve individual OpenSees load patterns for model-browser display.
+        self.uniform_load_cases: dict[
+            tuple[int | None, int], tuple[float, float, float]
+        ] = {}
         # Elements carrying a load pattern this reconstruction cannot represent.
         self.unsupported: set[int] = set()
         self._original: Callable[..., Any] | None = None
@@ -45,7 +51,9 @@ class ElementLoadCollector:
             ops.eleLoad = self._original
             self._original = None
 
-    def record(self, args: tuple[Any, ...]) -> None:
+    def record(
+        self, args: tuple[Any, ...], ndm: int = 2, pattern_tag: int | None = None
+    ) -> None:
         """Record one raw ``ops.eleLoad`` argument tuple."""
         tags = _element_tags(args)
         if not tags:
@@ -56,12 +64,36 @@ class ElementLoadCollector:
             self.unsupported.update(tags)
             return
 
-        # 2D form is (Wy, Wx) with Wx optional; both are along the member's local axes.
+        if ndm == 3:
+            # 3D OpenSees form is (Wy, Wz, Wx), with Wx optional.
+            wy = float(values[0]) if len(values) > 0 else 0.0
+            wz = float(values[1]) if len(values) > 1 else 0.0
+            wx = float(values[2]) if len(values) > 2 else 0.0
+            for tag in tags:
+                old_x, old_y, old_z = self.uniform_loads_3d.get(tag, (0.0, 0.0, 0.0))
+                self.uniform_loads_3d[tag] = (old_x + wx, old_y + wy, old_z + wz)
+                self._record_case(pattern_tag, tag, wx, wy, wz)
+            return
+
+        # 2D form is (Wy, Wx) with Wx optional; both are along local axes.
         wy = float(values[0]) if len(values) > 0 else 0.0
         wx = float(values[1]) if len(values) > 1 else 0.0
         for tag in tags:
             previous_x, previous_y = self.uniform_loads.get(tag, (0.0, 0.0))
             self.uniform_loads[tag] = (previous_x + wx, previous_y + wy)
+            self._record_case(pattern_tag, tag, wx, wy, 0.0)
+
+    def _record_case(
+        self,
+        pattern_tag: int | None,
+        element_tag: int,
+        wx: float,
+        wy: float,
+        wz: float,
+    ) -> None:
+        key = (pattern_tag, element_tag)
+        old_x, old_y, old_z = self.uniform_load_cases.get(key, (0.0, 0.0, 0.0))
+        self.uniform_load_cases[key] = (old_x + wx, old_y + wy, old_z + wz)
 
 
 def _element_tags(args: tuple[Any, ...]) -> list[int]:

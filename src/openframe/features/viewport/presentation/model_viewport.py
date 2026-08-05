@@ -10,9 +10,12 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QSlider,
+    QSplitter,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -52,9 +55,9 @@ class ModelViewport(QFrame):
         canvas_header.setObjectName("canvasHeader")
         header_layout = QHBoxLayout(canvas_header)
         header_layout.setContentsMargins(12, 7, 9, 7)
-        title = QLabel("STRUCTURAL WORKSPACE")
+        title = QLabel("모델링 캔버스")
         title.setObjectName("sectionLabel")
-        self.mode_label = QLabel("SAMPLE PREVIEW")
+        self.mode_label = QLabel("미리보기")
         self.mode_label.setObjectName("smallBadge")
         header_layout.addWidget(title)
         header_layout.addWidget(self.mode_label)
@@ -88,6 +91,37 @@ class ModelViewport(QFrame):
         header_layout.addWidget(fit)
         layout.addWidget(canvas_header)
 
+        modeling_tools = QFrame()
+        modeling_tools.setObjectName("modelingToolbar")
+        tools_layout = QHBoxLayout(modeling_tools)
+        tools_layout.setContentsMargins(9, 6, 9, 6)
+        tools_layout.setSpacing(5)
+        self.modeling_tool_buttons: dict[str, QToolButton] = {}
+        for key, text, tooltip in (
+            ("select", "↖  선택", "객체 선택"),
+            ("node", "●  절점", "절점 작성 · 추후 구현"),
+            ("member", "╱  부재", "프레임 부재 작성 · 추후 구현"),
+            ("support", "△  지점", "경계조건 배치 · 추후 구현"),
+            ("load", "↓  하중", "하중 배치 · 추후 구현"),
+        ):
+            button = QToolButton()
+            button.setObjectName("modelingToolButton")
+            button.setText(text)
+            button.setToolTip(tooltip)
+            button.setCheckable(True)
+            button.setChecked(key == "select")
+            if key != "select":
+                button.setDisabled(True)
+            self.modeling_tool_buttons[key] = button
+            tools_layout.addWidget(button)
+        tools_layout.addStretch(1)
+        self.code_toggle = QToolButton()
+        self.code_toggle.setObjectName("codeToggleButton")
+        self.code_toggle.setText("</>  코드")
+        self.code_toggle.setCheckable(True)
+        tools_layout.addWidget(self.code_toggle)
+        layout.addWidget(modeling_tools)
+
         self.scene = StructuralScene(self)
         self.scene.selectionChanged.connect(self._scene_selection_changed)
         self.view = StructuralGraphicsView(self.scene)
@@ -99,7 +133,39 @@ class ModelViewport(QFrame):
         self.canvas_stack = QStackedWidget()
         self.canvas_stack.addWidget(self.view)
         self.canvas_stack.addWidget(self.quick3d_view)
-        layout.addWidget(self.canvas_stack, 1)
+        self.code_preview = QFrame()
+        self.code_preview.setObjectName("codePreviewPanel")
+        code_layout = QVBoxLayout(self.code_preview)
+        code_layout.setContentsMargins(0, 0, 0, 0)
+        code_layout.setSpacing(0)
+        code_header = QFrame()
+        code_header.setObjectName("codePreviewHeader")
+        code_header_layout = QHBoxLayout(code_header)
+        code_header_layout.setContentsMargins(10, 5, 10, 5)
+        code_header_layout.addWidget(QLabel("OpenSeesPy 코드 미리보기"))
+        code_header_layout.addStretch(1)
+        code_state = QLabel("모델에서 자동 생성 · 읽기 전용")
+        code_state.setObjectName("secondaryText")
+        code_header_layout.addWidget(code_state)
+        self.code_editor = QPlainTextEdit()
+        self.code_editor.setObjectName("codePreviewEditor")
+        self.code_editor.setReadOnly(True)
+        self.code_editor.setPlainText(
+            "# 직접 모델링 데이터에서 OpenSeesPy 코드가 생성됩니다.\n"
+            "# 코드 생성기는 다음 구현 단계에서 연결합니다."
+        )
+        code_layout.addWidget(code_header)
+        code_layout.addWidget(self.code_editor, 1)
+
+        self.canvas_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.canvas_splitter.setObjectName("canvasSplitter")
+        self.canvas_splitter.setChildrenCollapsible(False)
+        self.canvas_splitter.addWidget(self.canvas_stack)
+        self.canvas_splitter.addWidget(self.code_preview)
+        self.canvas_splitter.setStretchFactor(0, 1)
+        self.canvas_splitter.setStretchFactor(1, 0)
+        self.canvas_splitter.setSizes((600, 145))
+        layout.addWidget(self.canvas_splitter, 1)
 
         controls = QFrame()
         controls.setObjectName("displayControls")
@@ -122,6 +188,30 @@ class ModelViewport(QFrame):
             )
             self.filter_options[item_kind] = option
             controls_layout.addWidget(option)
+        controls_layout.addWidget(QLabel("LOAD VIEW"))
+        self.load_view_selector = QComboBox()
+        self.load_view_selector.setObjectName("loadViewSelector")
+        self.load_view_selector.addItem("NODAL", "nodal")
+        self.load_view_selector.addItem("DISTRIBUTED", "element")
+        self.load_view_selector.addItem("ALL", "all")
+        self.load_view_selector.setMaximumWidth(112)
+        self.load_view_selector.setToolTip("Choose which load category is displayed")
+        controls_layout.addWidget(self.load_view_selector)
+        controls_layout.addWidget(QLabel("LOAD CASE"))
+        self.load_case_selector = QComboBox()
+        self.load_case_selector.setObjectName("loadCaseSelector")
+        self.load_case_selector.addItem("ALL CASES", "all")
+        self.load_case_selector.setMaximumWidth(128)
+        self.load_case_selector.setToolTip("고정하중, 활하중 등 하중 케이스별로 표시")
+        controls_layout.addWidget(self.load_case_selector)
+        self.load_case_legend = QLabel(
+            '<span style="color:#2563eb">● DL</span>  '
+            '<span style="color:#16a34a">● LL</span>  '
+            '<span style="color:#f97316">● EQ</span>  '
+            '<span style="color:#e5484d">● ?</span>'
+        )
+        self.load_case_legend.setToolTip("DL 고정하중 · LL 활하중 · EQ 지진하중 · ? 미분류 하중")
+        controls_layout.addWidget(self.load_case_legend)
         controls_layout.addStretch(1)
         deformation = QCheckBox("DEFORMATION")
         controls_layout.addWidget(deformation)
@@ -134,18 +224,14 @@ class ModelViewport(QFrame):
         self.force_unit_selector = QComboBox()
         self.force_unit_selector.setObjectName("forceUnitSelector")
         self.force_unit_selector.setMaximumWidth(64)
-        self.force_unit_selector.setToolTip(
-            "Declare the force unit used by the OpenSees model."
-        )
+        self.force_unit_selector.setToolTip("Declare the force unit used by the OpenSees model.")
         self.force_unit_selector.addItems(FORCE_UNITS)
         controls_layout.addWidget(self.force_unit_selector)
         controls_layout.addWidget(QLabel("LENGTH"))
         self.length_unit_selector = QComboBox()
         self.length_unit_selector.setObjectName("lengthUnitSelector")
         self.length_unit_selector.setMaximumWidth(64)
-        self.length_unit_selector.setToolTip(
-            "Declare the length unit used by the OpenSees model."
-        )
+        self.length_unit_selector.setToolTip("Declare the length unit used by the OpenSees model.")
         self.length_unit_selector.addItems(LENGTH_UNITS)
         controls_layout.addWidget(self.length_unit_selector)
         layout.addWidget(controls)
@@ -155,10 +241,19 @@ class ModelViewport(QFrame):
         fit.clicked.connect(self.fit_model)
         self.force_unit_selector.currentIndexChanged.connect(self._change_unit_system)
         self.length_unit_selector.currentIndexChanged.connect(self._change_unit_system)
+        self.load_view_selector.currentIndexChanged.connect(self._change_load_filter)
+        self.load_case_selector.currentIndexChanged.connect(self._change_load_filter)
         self.view_selector.currentIndexChanged.connect(self._change_projection)
         self.view.orbit_dragged.connect(self._orbit_view)
         self.quick3d_view.camera_mode_changed.connect(self._quick_camera_mode_changed)
+        self.code_toggle.toggled.connect(self.set_code_panel_visible)
         self._show_sample_beam()
+
+    def set_code_panel_visible(self, visible: bool) -> None:
+        self.code_preview.setVisible(visible)
+        self.code_toggle.blockSignals(True)
+        self.code_toggle.setChecked(visible)
+        self.code_toggle.blockSignals(False)
 
     @property
     def unit_system(self) -> UnitSystem:
@@ -191,6 +286,38 @@ class ModelViewport(QFrame):
         self.view_selector.blockSignals(False)
         self.scene.set_projection(projection)
         self.scene.set_model(model)
+        case_labels = {
+            "DEAD": "DEAD (DL)",
+            "LIVE": "LIVE (LL)",
+            "SEISMIC": "SEISMIC (EQ)",
+            "WIND": "WIND (WL)",
+            "OTHER": "OTHER",
+            "UNCLASSIFIED": "UNCLASSIFIED",
+        }
+        present_cases = sorted(
+            {load.case_type.value for load in (*model.nodal_loads, *model.element_loads)}
+        )
+        self.load_case_selector.blockSignals(True)
+        self.load_case_selector.clear()
+        self.load_case_selector.addItem("ALL CASES", "all")
+        for case_type in present_cases:
+            self.load_case_selector.addItem(case_labels[case_type], case_type)
+        self.load_case_selector.setCurrentIndex(0)
+        self.load_case_selector.blockSignals(False)
+        default_load_filter = (
+            "nodal"
+            if model.nodal_loads and model.element_loads
+            else "element"
+            if model.element_loads
+            else "nodal"
+            if model.nodal_loads
+            else "all"
+        )
+        self.load_view_selector.blockSignals(True)
+        self.load_view_selector.setCurrentIndex(
+            self.load_view_selector.findData(default_load_filter)
+        )
+        self.load_view_selector.blockSignals(False)
         if model.ndm == 3:
             self.quick3d_view.set_model(model)
             self.canvas_stack.setCurrentWidget(self.quick3d_view)
@@ -198,6 +325,7 @@ class ModelViewport(QFrame):
             self.canvas_stack.setCurrentWidget(self.view)
         for item_kind, option in self.filter_options.items():
             self._set_item_kind_visible(item_kind, option.isChecked())
+        self._apply_load_filter()
         self.mode_label.setText("MODEL LOADED")
         if not model.nodes:
             self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))
@@ -267,20 +395,48 @@ class ModelViewport(QFrame):
         )
 
     def _set_item_kind_visible(self, item_kind: str, visible: bool) -> None:
+        if item_kind == "load":
+            self.quick3d_view.set_loads_visible(visible)
         if item_kind == "node_label":
             visible = visible and self.filter_options["node"].isChecked()
         for item in self.scene.items():
             identity = item.data(0)
-            visible_kinds = (
-                {"load", "element_load"}
-                if item_kind == "load"
-                else {item_kind}
-            )
+            visible_kinds = {"load", "element_load"} if item_kind == "load" else {item_kind}
             if isinstance(identity, tuple) and identity and identity[0] in visible_kinds:
                 item.setVisible(visible)
         if item_kind == "node":
             labels_visible = visible and self.filter_options["node_label"].isChecked()
             self._set_item_kind_visible("node_label", labels_visible)
+        elif item_kind == "load":
+            self._apply_load_filter()
+
+    def _change_load_filter(self, index: int) -> None:
+        del index
+        self._apply_load_filter()
+
+    def _apply_load_filter(self) -> None:
+        load_filter = str(self.load_view_selector.currentData() or "all")
+        case_filter = str(self.load_case_selector.currentData() or "all")
+        self.quick3d_view.set_load_filter(load_filter)
+        self.quick3d_view.set_load_case_filter(case_filter)
+        loads_visible = self.filter_options["load"].isChecked()
+        for item in self.scene.items():
+            identity = item.data(0)
+            if not isinstance(identity, tuple) or not identity:
+                continue
+            kind = identity[0]
+            if kind == "load":
+                item.setVisible(
+                    loads_visible
+                    and load_filter in {"all", "nodal"}
+                    and (case_filter == "all" or item.data(1) == case_filter)
+                )
+            elif kind == "element_load":
+                item.setVisible(
+                    loads_visible
+                    and load_filter in {"all", "element"}
+                    and (case_filter == "all" or item.data(1) == case_filter)
+                )
 
     def select_entity(self, kind: str, tag: int) -> None:
         target = None
@@ -330,9 +486,7 @@ class ModelViewport(QFrame):
         self.scene.set_model(model)
         load_pen = QPen(QColor("#e5484d"), 0.10)
         load_line = self.scene.addLine(0.0, -3.0, 0.0, -0.35, load_pen)
-        arrow = QPolygonF(
-            [QPointF(-0.20, -0.62), QPointF(0.20, -0.62), QPointF(0.0, -0.20)]
-        )
+        arrow = QPolygonF([QPointF(-0.20, -0.62), QPointF(0.20, -0.62), QPointF(0.0, -0.20)])
         load_arrow = self.scene.addPolygon(arrow, load_pen, QColor("#e5484d"))
         load_text = self.scene.addText(f"10 {self._unit_system.force}")
         load_text.setDefaultTextColor(QColor("#d43e44"))

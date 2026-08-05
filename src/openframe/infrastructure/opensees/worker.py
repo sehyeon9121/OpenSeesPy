@@ -2,8 +2,14 @@
 
 import argparse
 import json
+import os
 import traceback
 from pathlib import Path
+
+# Set before any user script gets a chance to `import matplotlib.pyplot`: this
+# process has no display, so an uploaded script's own plt.show() would otherwise
+# block waiting for an interactive backend instead of being a harmless no-op.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 import openseespy.opensees as ops
 

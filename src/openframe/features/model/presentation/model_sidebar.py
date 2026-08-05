@@ -3,18 +3,30 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from openframe.core.domain import StructuralModel, SupportKind
+from openframe.core.domain import LoadCaseKind, StructuralModel, SupportKind
+
+LOAD_CASE_PRESENTATION = {
+    LoadCaseKind.DEAD: ("고정하중 (DL)", "#2563eb"),
+    LoadCaseKind.LIVE: ("활하중 (LL)", "#16a34a"),
+    LoadCaseKind.SEISMIC: ("지진하중 (EQ)", "#f97316"),
+    LoadCaseKind.WIND: ("풍하중 (WL)", "#8b5cf6"),
+    LoadCaseKind.OTHER: ("기타하중", "#64748b"),
+    LoadCaseKind.UNCLASSIFIED: ("미분류 하중", "#6b7280"),
+}
 
 SUPPORT_NAMES = {
     SupportKind.FIXED: "고정지점",
@@ -36,8 +48,27 @@ class ModelSidebar(QFrame):
         self._tree_items: dict[tuple[str, int], QTreeWidgetItem] = {}
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(9)
+
+        explorer_header = QHBoxLayout()
+        explorer_title = QLabel("모델 탐색기")
+        explorer_title.setObjectName("panelTitle")
+        add_button = QPushButton("+")
+        add_button.setObjectName("sidebarToolButton")
+        add_button.setToolTip("새 모델 객체 · 직접 모델링 기능 연결 예정")
+        add_button.setDisabled(True)
+        explorer_header.addWidget(explorer_title)
+        explorer_header.addStretch(1)
+        explorer_header.addWidget(add_button)
+        layout.addLayout(explorer_header)
+
+        self.search_input = QLineEdit()
+        self.search_input.setObjectName("modelSearch")
+        self.search_input.setPlaceholderText("절점, 부재, 하중 검색")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.textChanged.connect(self._filter_tree)
+        layout.addWidget(self.search_input)
 
         layout.addWidget(self._section_label("ACTIVE FILE"))
         file_card = QFrame()
@@ -155,24 +186,48 @@ class ModelSidebar(QFrame):
             self.tree,
             [f"LOADS  ({len(model.nodal_loads) + len(model.element_loads)})"],
         )
+        case_items: dict[LoadCaseKind, QTreeWidgetItem] = {}
+
+        def case_parent(case_type: LoadCaseKind) -> QTreeWidgetItem:
+            if case_type not in case_items:
+                label, color = LOAD_CASE_PRESENTATION[case_type]
+                count = sum(load.case_type == case_type for load in model.nodal_loads) + sum(
+                    load.case_type == case_type for load in model.element_loads
+                )
+                parent = QTreeWidgetItem(loads_item, [f"{label}  ({count})"])
+                parent.setForeground(0, QBrush(QColor(color)))
+                if case_type == LoadCaseKind.UNCLASSIFIED:
+                    parent.setToolTip(
+                        0,
+                        "파일 상단에 OPENFRAME_LOAD_CASES = {1: 'DEAD', 2: 'LIVE'}를 "
+                        "추가하면 고정하중과 활하중으로 구분됩니다.",
+                    )
+                case_items[case_type] = parent
+            return case_items[case_type]
+
         for load in model.nodal_loads:
             values = ", ".join(f"{value:g}" for value in load.values)
-            item = QTreeWidgetItem(loads_item, [f"Node {load.node_tag}   ({values})"])
+            pattern = f"P{load.pattern_tag}" if load.pattern_tag is not None else "No pattern"
+            item = QTreeWidgetItem(
+                case_parent(load.case_type),
+                [f"Node {load.node_tag}   ({values})   [{pattern}]"],
+            )
             self._register_item(item, "load", load.node_tag)
 
         for load in model.element_loads:
             item = QTreeWidgetItem(
-                loads_item,
+                case_parent(load.case_type),
                 [
                     (
                         f"Element {load.element_tag}   Uniform"
-                        f"   (Wx={load.wx:g}, Wy={load.wy:g})"
+                        f"   (Wx={load.wx:g}, Wy={load.wy:g}, Wz={load.wz:g})"
+                        f"   [P{load.pattern_tag if load.pattern_tag is not None else '-'}]"
                     )
                 ],
             )
             self._register_item(item, "element_load", load.element_tag)
 
-        self.tree.expandToDepth(0)
+        self.tree.expandToDepth(1)
 
     def select_entity(self, kind: str, tag: int) -> None:
         item = self._tree_items.get((kind, tag))
@@ -199,6 +254,21 @@ class ModelSidebar(QFrame):
         identity = current.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(identity, tuple) and len(identity) == 2:
             self.entity_selected.emit(str(identity[0]), int(identity[1]))
+
+    def _filter_tree(self, query: str) -> None:
+        normalized = query.strip().casefold()
+        for index in range(self.tree.topLevelItemCount()):
+            parent = self.tree.topLevelItem(index)
+            parent_match = normalized in parent.text(0).casefold()
+            visible_children = 0
+            for child_index in range(parent.childCount()):
+                child = parent.child(child_index)
+                visible = not normalized or parent_match or normalized in child.text(0).casefold()
+                child.setHidden(not visible)
+                visible_children += int(visible)
+            parent.setHidden(bool(normalized) and not parent_match and visible_children == 0)
+            if normalized and visible_children:
+                parent.setExpanded(True)
 
     def _section_label(self, text: str) -> QLabel:
         label = QLabel(text)

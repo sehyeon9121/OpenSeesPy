@@ -11,6 +11,11 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
   "PySide6>=6.8",
   "openseespy>=3.8.0.0",
+  # Not used by openframe itself - installed so uploaded OpenSeesPy scripts that
+  # import them (a very common pattern for post-processing/plotting) can run in the
+  # worker subprocess instead of crashing on import.
+  "numpy>=1.26",
+  "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]

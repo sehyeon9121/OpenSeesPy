@@ -107,77 +107,32 @@ QFrame#workspaceNavigation QToolButton:checked {
 QFrame#startWorkspace {
     background: #f4f7fb;
 }
-QFrame#analysisProgressRunning, QFrame#analysisProgressComplete,
-QFrame#analysisProgressFailed {
+QDialog#analysisProgressDialog {
     background: #ffffff;
-    border-bottom: 1px solid #d8e1ec;
-}
-QFrame#analysisProgressRunning { background: #f3f7fd; }
-QFrame#analysisProgressComplete { background: #edf8f1; }
-QFrame#analysisProgressFailed { background: #fff2f2; }
-QLabel#analysisProgressBadge {
-    border-radius: 3px;
-    padding: 3px 7px;
-    color: #174ea6;
-    background: #dfeafb;
-    font-size: 7pt;
-    font-weight: 700;
-}
-QFrame#analysisProgressComplete QLabel#analysisProgressBadge {
-    color: #247044;
-    background: #d8efdf;
-}
-QFrame#analysisProgressFailed QLabel#analysisProgressBadge {
-    color: #a43139;
-    background: #f8dfe1;
 }
 QLabel#analysisProgressTitle {
-    color: #233a57;
-    font-size: 8pt;
+    color: #26364a;
+    font-size: 12pt;
     font-weight: 700;
 }
 QLabel#analysisProgressDetail {
-    color: #748397;
-    font-size: 7pt;
+    color: #667085;
+    background: #f5f7fc;
+    border-radius: 4px;
+    padding: 0 14px;
+    font-family: "Consolas";
+    font-size: 9pt;
 }
 QProgressBar#analysisProgressBar {
-    min-height: 17px;
-    max-height: 17px;
-    color: #41536a;
-    background: #dfe6ef;
+    min-height: 6px;
+    max-height: 6px;
+    background: #dbe7f8;
     border: 0;
     border-radius: 3px;
-    text-align: center;
-    font-size: 7pt;
-    font-weight: 700;
 }
 QProgressBar#analysisProgressBar::chunk {
     border-radius: 3px;
-    background: #3973c6;
-}
-QFrame#analysisProgressComplete QProgressBar#analysisProgressBar::chunk {
-    background: #3d9b61;
-}
-QFrame#analysisProgressFailed QProgressBar#analysisProgressBar::chunk {
-    background: #cf5158;
-}
-QPushButton#analysisProgressAction, QPushButton#analysisProgressDismiss {
-    min-height: 27px;
-    border-radius: 3px;
-    padding: 0 9px;
-    font-size: 7pt;
-    font-weight: 700;
-}
-QPushButton#analysisProgressAction {
-    color: #ffffff;
-    background: #2f8552;
-    border: 1px solid #2f8552;
-}
-QPushButton#analysisProgressAction:hover { background: #276f45; }
-QPushButton#analysisProgressDismiss {
-    color: #607087;
-    background: transparent;
-    border: 1px solid #bdc8d6;
+    background: #2f80ed;
 }
 QFrame#startHero {
     background: #eaf1fb;
@@ -795,6 +750,113 @@ QStatusBar {
     color: #6a7888;
     font-size: 8pt;
 }
+
+/* Modeling workspace shell */
+QWidget#workspaceShell { background: #edf1f5; }
+QWidget#modelingWorkspace { background: #ffffff; }
+QFrame#modelingWorkflow {
+    min-height: 45px; max-height: 45px;
+    background: #ffffff;
+    border-bottom: 1px solid #d4dde7;
+}
+QLabel#workflowTitle {
+    color: #334960; font-size: 8pt; font-weight: 700;
+    padding-right: 12px;
+}
+QLabel#workflowConnector {
+    color: #a2adba; padding: 0 2px; font-size: 11pt;
+}
+QToolButton#workflowStep {
+    min-height: 28px; padding: 0 8px;
+    border: 1px solid transparent; border-radius: 3px;
+    background: transparent; color: #69798c;
+    font-size: 8pt; font-weight: 600;
+}
+QToolButton#workflowStep:hover {
+    color: #174ea6; background: #f1f5fa;
+}
+QToolButton#workflowStep:checked {
+    color: #174ea6; background: #e7effa;
+    border-color: #bfd0e7;
+}
+QFrame#workspaceNavigation {
+    min-width: 72px;
+    max-width: 72px;
+    background: #f7f9fc;
+    border: 0;
+    border-right: 1px solid #d5dde7;
+}
+QFrame#workspaceNavigation QToolButton {
+    min-width: 56px;
+    max-width: 56px;
+    min-height: 52px;
+    max-height: 52px;
+    padding: 3px;
+    background: transparent;
+    border: 0;
+    border-left: 3px solid transparent;
+    border-radius: 3px;
+    color: #69798c;
+    font-size: 8pt;
+    font-weight: 600;
+}
+QFrame#workspaceNavigation QToolButton:hover {
+    color: #174ea6;
+    background: #edf3fb;
+}
+QFrame#workspaceNavigation QToolButton:checked {
+    color: #174ea6;
+    background: #e5eefb;
+    border-left-color: #174ea6;
+}
+QLabel#headerDivider { color: #c4ccd6; padding: 0 3px; }
+QLabel#projectName { color: #2b3d53; font-size: 9pt; font-weight: 600; }
+QPushButton#headerToolButton {
+    min-width: 30px; max-width: 30px; min-height: 28px;
+    padding: 0; border: 1px solid #cbd4df; border-radius: 3px;
+    background: #ffffff; color: #52647a;
+}
+QPushButton#exportButton {
+    min-height: 30px; padding: 0 11px; border-radius: 4px;
+    border: 1px solid #bdc8d5; background: #ffffff; color: #2d4059;
+    font-weight: 600;
+}
+QPushButton#exportButton:hover { background: #f3f6fa; border-color: #95a9c2; }
+QLabel#panelTitle { color: #233954; font-size: 10pt; font-weight: 700; }
+QPushButton#sidebarToolButton {
+    min-width: 26px; max-width: 26px; min-height: 24px; max-height: 24px;
+    border: 1px solid #cbd5e1; border-radius: 3px; background: #ffffff;
+}
+QLineEdit#modelSearch {
+    min-height: 30px; padding: 0 8px; background: #ffffff;
+    border: 1px solid #cfd8e3; border-radius: 3px; color: #32465f;
+}
+QFrame#modelingToolbar {
+    background: #ffffff;
+    border-bottom: 1px solid #d8e0e9;
+}
+QToolButton#modelingToolButton, QToolButton#codeToggleButton {
+    min-height: 29px; padding: 0 9px; border: 1px solid transparent;
+    border-radius: 3px; background: transparent; color: #506278;
+    font-size: 8pt; font-weight: 600;
+}
+QToolButton#modelingToolButton:hover, QToolButton#codeToggleButton:hover {
+    background: #f0f4f9; border-color: #d1dbe6;
+}
+QToolButton#modelingToolButton:checked, QToolButton#codeToggleButton:checked {
+    color: #174ea6; background: #e6eef9; border-color: #b7cbe6;
+}
+QToolButton#modelingToolButton:disabled { color: #9ba7b4; }
+QFrame#codePreviewPanel { background: #ffffff; border-top: 1px solid #ccd6e2; }
+QFrame#codePreviewHeader { background: #f5f7fa; border-bottom: 1px solid #dce3eb; }
+QFrame#codePreviewHeader QLabel { color: #40536a; font-size: 8pt; font-weight: 600; }
+QPlainTextEdit#codePreviewEditor {
+    border: 0; background: #fbfcfe; color: #314861;
+    font-family: "Consolas"; font-size: 8pt; padding: 6px;
+}
+QSplitter#canvasSplitter::handle { background: #ccd6e2; height: 1px; }
+QLabel#statusModel { color: #7a8796; padding: 0 8px; }
+QLabel#statusModelReady { color: #28724a; padding: 0 8px; font-weight: 600; }
 """
 
 

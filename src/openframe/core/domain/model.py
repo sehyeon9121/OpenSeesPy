@@ -12,6 +12,17 @@ class SupportKind(StrEnum):
     CUSTOM = "custom"
 
 
+class LoadCaseKind(StrEnum):
+    """Semantic load categories explicitly declared by an imported model."""
+
+    DEAD = "DEAD"
+    LIVE = "LIVE"
+    SEISMIC = "SEISMIC"
+    WIND = "WIND"
+    OTHER = "OTHER"
+    UNCLASSIFIED = "UNCLASSIFIED"
+
+
 @dataclass(frozen=True, slots=True)
 class Node:
     tag: int
@@ -61,6 +72,7 @@ class NodalLoad:
     node_tag: int
     values: tuple[float, ...]
     pattern_tag: int | None = None
+    case_type: LoadCaseKind = LoadCaseKind.UNCLASSIFIED
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +80,9 @@ class UniformElementLoad:
     element_tag: int
     wx: float = 0.0
     wy: float = 0.0
+    wz: float = 0.0
     pattern_tag: int | None = None
+    case_type: LoadCaseKind = LoadCaseKind.UNCLASSIFIED
 
 
 @dataclass(slots=True)
@@ -85,7 +99,7 @@ class StructuralModel:
     def validate(self) -> list[str]:
         """Return validation errors without depending on a GUI dialog."""
         errors: list[str] = []
-        if self.ndm not in {2, 3}:
+        if self.ndm not in {1, 2, 3}:
             errors.append(f"지원하지 않는 모델 차원입니다: ndm={self.ndm}.")
         for element in self.elements.values():
             if element.node_i not in self.nodes or element.node_j not in self.nodes:

@@ -168,7 +168,7 @@ def run_model_definition_only(source: Path) -> None:
         None,
     )
     if model_index is None:
-        raise RuntimeError("No ops.model() command was found.")
+        raise RuntimeError("ops.model() 호출을 찾을 수 없습니다.")
 
     start_index = model_index
     for index in range(model_index, -1, -1):
@@ -182,25 +182,22 @@ def run_model_definition_only(source: Path) -> None:
             stop_index = index
             break
 
+    # Imports/defs are inert until called, so they are safe to keep regardless of
+    # where they sit in the file. Assignments are not: an unbounded scan for
+    # ast.Assign here would also catch ones *after* stop_index - e.g. a script that
+    # does `eigenvalues = ops.eigen(...)` for its own reporting - and replay their
+    # (now-unsuppressed) right-hand side, defeating the whole point of stop_index.
     module_prelude = [
         statement
         for statement in tree.body
         if isinstance(
             statement,
-            (
-                ast.Import,
-                ast.ImportFrom,
-                ast.Assign,
-                ast.AnnAssign,
-                ast.FunctionDef,
-                ast.AsyncFunctionDef,
-                ast.ClassDef,
-            ),
+            (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
         )
     ]
     local_parameters = [
         statement
-        for statement in body[:start_index]
+        for statement in body[:stop_index]
         if isinstance(statement, (ast.Assign, ast.AnnAssign))
     ]
     fallback_tree = ast.Module(
@@ -229,7 +226,10 @@ def _model_body(tree: ast.Module) -> list[ast.stmt]:
             _calls_command(child, {"model"}) for child in statement.body
         ):
             return statement.body
-    raise RuntimeError("No function containing ops.model() was found.")
+    raise RuntimeError(
+        "이 파일 어디에도 ops.model() 호출이 없습니다. "
+        "OpenSeesPy 구조모델을 정의하는 파일이 아닌 것으로 보입니다."
+    )
 
 
 def _calls_command(statement: ast.AST, command_names: set[str]) -> bool:

@@ -40,6 +40,8 @@ def test_uniform_element_load_is_imported_listed_and_drawn() -> None:
     ]
     assert len(drawn_loads) == 1
     assert "Wy=-10" in drawn_loads[0].toolTip()
+    assert drawn_loads[0].load_scale == pytest.approx(1.0)
+    assert viewport.load_view_selector.currentData() == "element"
 
     viewport.filter_options["load"].setChecked(False)
     assert not drawn_loads[0].isVisible()

@@ -1,5 +1,6 @@
 """Subprocess-based OpenSeesPy source importer."""
 
+import ast
 import json
 import os
 import subprocess
@@ -11,13 +12,17 @@ from typing import Any
 from openframe.core.domain import (
     BoundaryCondition,
     Element,
+    LoadCaseKind,
     NodalLoad,
     Node,
     StructuralModel,
     UniformElementLoad,
 )
 from openframe.core.errors import ModelImportError
-from openframe.features.model.importers.python_source import inspect_python_source
+from openframe.features.model.importers.python_source import (
+    inspect_python_source,
+    read_python_source,
+)
 
 
 class OpenSeesModelImporter:
@@ -66,7 +71,9 @@ class OpenSeesModelImporter:
             if not payload.get("ok"):
                 raise ModelImportError(str(payload.get("error", "알 수 없는 모델 실행 오류")))
 
-        model = self._to_domain_model(payload["model"])
+        model_payload = payload["model"]
+        self._apply_load_case_hints(source, model_payload)
+        model = self._to_domain_model(model_payload)
         if not model.nodes or not model.elements:
             import_hint = (
                 " 선택한 파일에서 OpenSeesPy import가 직접 확인되지 않아 "
@@ -111,6 +118,8 @@ class OpenSeesModelImporter:
             NodalLoad(
                 node_tag=int(item["node_tag"]),
                 values=tuple(float(value) for value in item.get("values", [])),
+                pattern_tag=self._optional_int(item.get("pattern_tag")),
+                case_type=LoadCaseKind(str(item.get("case_type", "UNCLASSIFIED"))),
             )
             for item in payload.get("nodal_loads", [])
         ]
@@ -119,6 +128,9 @@ class OpenSeesModelImporter:
                 element_tag=int(item["element_tag"]),
                 wx=float(item.get("wx", 0.0)),
                 wy=float(item.get("wy", 0.0)),
+                wz=float(item.get("wz", 0.0)),
+                pattern_tag=self._optional_int(item.get("pattern_tag")),
+                case_type=LoadCaseKind(str(item.get("case_type", "UNCLASSIFIED"))),
             )
             for item in payload.get("element_loads", [])
         ]
@@ -132,3 +144,68 @@ class OpenSeesModelImporter:
             element_loads=element_loads,
             metadata=dict(payload.get("metadata", {})),
         )
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        return None if value is None else int(value)
+
+    @staticmethod
+    def _apply_load_case_hints(source: Path, payload: dict[str, Any]) -> None:
+        """Apply an explicit ``OPENFRAME_LOAD_CASES`` mapping from user source."""
+        hints: dict[int, LoadCaseKind] = {}
+        try:
+            source_text = read_python_source(source)
+            tree = ast.parse(source_text, filename=str(source))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            return
+        for statement in tree.body:
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            if not any(
+                isinstance(target, ast.Name) and target.id == "OPENFRAME_LOAD_CASES"
+                for target in targets
+            ):
+                continue
+            try:
+                raw_mapping = ast.literal_eval(statement.value)
+            except (ValueError, TypeError, SyntaxError):
+                continue
+            if not isinstance(raw_mapping, dict):
+                continue
+            for raw_tag, raw_kind in raw_mapping.items():
+                try:
+                    hints[int(raw_tag)] = OpenSeesModelImporter._normalize_load_case(raw_kind)
+                except (TypeError, ValueError):
+                    continue
+
+        for collection_name in ("nodal_loads", "element_loads"):
+            for load in payload.get(collection_name, []):
+                pattern_tag = load.get("pattern_tag")
+                hint = hints.get(int(pattern_tag)) if pattern_tag is not None else None
+                load["case_type"] = (hint or LoadCaseKind.UNCLASSIFIED).value
+        if hints:
+            payload.setdefault("metadata", {})["load_case_hints"] = ", ".join(
+                f"{tag}:{kind.value}" for tag, kind in sorted(hints.items())
+            )
+
+    @staticmethod
+    def _normalize_load_case(value: object) -> LoadCaseKind:
+        normalized = str(value).strip().upper().replace(" ", "_")
+        aliases = {
+            "DL": LoadCaseKind.DEAD,
+            "DEAD_LOAD": LoadCaseKind.DEAD,
+            "고정하중": LoadCaseKind.DEAD,
+            "LL": LoadCaseKind.LIVE,
+            "LIVE_LOAD": LoadCaseKind.LIVE,
+            "활하중": LoadCaseKind.LIVE,
+            "EQ": LoadCaseKind.SEISMIC,
+            "EARTHQUAKE": LoadCaseKind.SEISMIC,
+            "지진하중": LoadCaseKind.SEISMIC,
+            "WL": LoadCaseKind.WIND,
+            "WIND_LOAD": LoadCaseKind.WIND,
+            "풍하중": LoadCaseKind.WIND,
+        }
+        if normalized in aliases:
+            return aliases[normalized]
+        return LoadCaseKind(normalized)

@@ -6,7 +6,16 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
-from openframe.core.domain import DEFAULT_UNIT_SYSTEM, UniformElementLoad, UnitSystem
+from openframe.core.domain import DEFAULT_UNIT_SYSTEM, LoadCaseKind, UniformElementLoad, UnitSystem
+
+LOAD_CASE_COLORS = {
+    LoadCaseKind.DEAD: "#2563eb",
+    LoadCaseKind.LIVE: "#16a34a",
+    LoadCaseKind.SEISMIC: "#f97316",
+    LoadCaseKind.WIND: "#8b5cf6",
+    LoadCaseKind.OTHER: "#64748b",
+    LoadCaseKind.UNCLASSIFIED: "#f59e0b",
+}
 
 
 class UniformElementLoadItem(QGraphicsItem):
@@ -18,6 +27,7 @@ class UniformElementLoadItem(QGraphicsItem):
         start: QPointF,
         end: QPointF,
         unit_system: UnitSystem = DEFAULT_UNIT_SYSTEM,
+        load_scale: float = 1.0,
     ) -> None:
         super().__init__()
         self.load = load
@@ -28,7 +38,8 @@ class UniformElementLoadItem(QGraphicsItem):
         self.length = max(math.hypot(dx, dy), 1.0e-9)
         self.tangent = QPointF(dx / self.length, dy / self.length)
         self.local_y = QPointF(self.tangent.y(), -self.tangent.x())
-        self.arrow_length = max(self.length * 0.16, 0.25)
+        self.load_scale = min(1.0, max(0.45, float(load_scale)))
+        self.arrow_length = max(self.length * 0.16, 0.25) * self.load_scale
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
         self.setZValue(6.0)
@@ -39,6 +50,7 @@ class UniformElementLoadItem(QGraphicsItem):
         self.unit_system = unit_system
         load_unit = f"{unit_system.force}/{unit_system.length}"
         self.setToolTip(
+            f"{self.load.case_type.value} | Pattern {self.load.pattern_tag or '-'} | "
             f"Element {self.load.element_tag} | Uniform load | "
             f"Wx={self.load.wx:g} {load_unit} | Wy={self.load.wy:g} {load_unit}"
         )
@@ -46,9 +58,7 @@ class UniformElementLoadItem(QGraphicsItem):
 
     def boundingRect(self) -> QRectF:
         margin = self.arrow_length * 1.7
-        return QRectF(self.start, self.end).normalized().adjusted(
-            -margin, -margin, margin, margin
-        )
+        return QRectF(self.start, self.end).normalized().adjusted(-margin, -margin, margin, margin)
 
     def paint(
         self,
@@ -58,21 +68,33 @@ class UniformElementLoadItem(QGraphicsItem):
     ) -> None:
         del option, widget
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        color = QColor("#e5484d")
-        pen = QPen(color, 2.0)
-        pen.setCosmetic(True)
-        if self.isSelected():
-            pen.setColor(QColor("#a9161d"))
-            pen.setWidthF(2.8)
-        painter.setPen(pen)
-        painter.setBrush(pen.color())
-
         if abs(self.load.wy) > 1.0e-12:
+            color = (
+                "#f59e0b"
+                if self.load.case_type == LoadCaseKind.UNCLASSIFIED
+                else LOAD_CASE_COLORS[self.load.case_type]
+            )
+            self._set_component_style(painter, QColor(color))
             direction = self._scaled(self.local_y, 1.0 if self.load.wy > 0 else -1.0)
             self._draw_arrow_row(painter, direction, self.load.wy, "Wy")
         if abs(self.load.wx) > 1.0e-12:
+            color = (
+                "#8b5cf6"
+                if self.load.case_type == LoadCaseKind.UNCLASSIFIED
+                else LOAD_CASE_COLORS[self.load.case_type]
+            )
+            self._set_component_style(painter, QColor(color))
             direction = self._scaled(self.tangent, 1.0 if self.load.wx > 0 else -1.0)
             self._draw_arrow_row(painter, direction, self.load.wx, "Wx")
+
+    def _set_component_style(self, painter: QPainter, color: QColor) -> None:
+        pen = QPen(color, 2.0)
+        pen.setCosmetic(True)
+        if self.isSelected():
+            pen.setColor(color.darker(135))
+            pen.setWidthF(2.8)
+        painter.setPen(pen)
+        painter.setBrush(pen.color())
 
     def _draw_arrow_row(
         self,
@@ -93,13 +115,11 @@ class UniformElementLoadItem(QGraphicsItem):
 
         load_unit = f"{self.unit_system.force}/{self.unit_system.length}"
         label = f"{component} {magnitude:g} {load_unit}"
-        label_scene_position = tails[len(tails) // 2] - self._scaled(
-            direction, self.length * 0.035
-        )
+        label_scene_position = tails[len(tails) // 2] - self._scaled(direction, self.length * 0.035)
         label_device_position = painter.worldTransform().map(label_scene_position)
         painter.save()
         painter.resetTransform()
-        painter.setPen(QColor("#c9343b"))
+        painter.setPen(painter.pen().color())
         font = QFont("Malgun Gothic")
         font.setPixelSize(12)
         font.setBold(True)
@@ -108,9 +128,7 @@ class UniformElementLoadItem(QGraphicsItem):
         painter.drawText(label_device_position + QPointF(-label_width / 2.0, -5.0), label)
         painter.restore()
 
-    def _draw_arrow_head(
-        self, painter: QPainter, tip: QPointF, direction: QPointF
-    ) -> None:
+    def _draw_arrow_head(self, painter: QPainter, tip: QPointF, direction: QPointF) -> None:
         head_length = max(self.length * 0.022, 0.035)
         head_width = head_length * 0.48
         perpendicular = QPointF(-direction.y(), direction.x())

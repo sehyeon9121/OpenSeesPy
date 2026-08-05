@@ -7,7 +7,8 @@
       "request": "launch",
       "module": "openframe",
       "console": "integratedTerminal",
-      "justMyCode": true
+      "justMyCode": true,
+      "subProcess": false
     }
   ]
 }

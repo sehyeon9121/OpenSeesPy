@@ -1,6 +1,8 @@
 """Structural result canvas with deformation overlay controls."""
 
-from PySide6.QtCore import QRectF, Qt
+import math
+
+from PySide6.QtCore import QPoint, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -14,6 +16,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
+    QStackedWidget,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -46,6 +50,7 @@ from openframe.features.results.presentation.support_reaction_item import (
     SupportReactionItem,
 )
 from openframe.features.results.reactions import support_reactions
+from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
 from openframe.features.viewport.presentation.structural_graphics_view import (
     StructuralGraphicsView,
 )
@@ -112,7 +117,11 @@ class ResultViewport(QFrame):
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        layout.addWidget(self.view, 1)
+        self.quick3d_view = Quick3DViewport(self)
+        self.canvas_stack = QStackedWidget()
+        self.canvas_stack.addWidget(self.view)
+        self.canvas_stack.addWidget(self.quick3d_view)
+        layout.addWidget(self.canvas_stack, 1)
 
         controls = QFrame()
         controls.setObjectName("resultViewportControls")
@@ -136,10 +145,11 @@ class ResultViewport(QFrame):
         controls_layout.addWidget(self.scale_value)
         layout.addWidget(controls)
 
-        zoom_in.clicked.connect(lambda: self.view.scale(1.2, 1.2))
-        zoom_out.clicked.connect(lambda: self.view.scale(1 / 1.2, 1 / 1.2))
+        zoom_in.clicked.connect(lambda: self._zoom(1.2))
+        zoom_out.clicked.connect(lambda: self._zoom(1 / 1.2))
         fit.clicked.connect(self.fit_model)
         self.view.orbit_dragged.connect(self._orbit_view)
+        self.quick3d_view.node_picked.connect(self._show_node_displacement)
 
     def set_model(self, model: StructuralModel) -> None:
         self._model = model
@@ -150,6 +160,12 @@ class ResultViewport(QFrame):
         self.view.set_orbit_enabled(model.ndm == 3)
         self.view_selector.blockSignals(False)
         self.scene.set_projection(projection)
+        if model.ndm == 3:
+            self.quick3d_view.set_model(model)
+            self.canvas_stack.setCurrentWidget(self.quick3d_view)
+        else:
+            self.canvas_stack.setCurrentWidget(self.view)
+        self._update_picking_mode()
         self._redraw()
         self.fit_model()
 
@@ -172,18 +188,68 @@ class ResultViewport(QFrame):
     def set_result_type(self, result_type: str) -> None:
         self._result_type = result_type
         self.mode_badge.setText(RESULT_TYPE_NAMES.get(result_type, result_type.upper()))
+        self._update_picking_mode()
         self._redraw()
         self.fit_model()
 
+    def _update_picking_mode(self) -> None:
+        enabled = (
+            self._result_type == "displacement"
+            and self._model is not None
+            and self._model.ndm == 3
+        )
+        self.quick3d_view.set_picking_mode(enabled)
+        if not enabled:
+            self.quick3d_view.set_selected_node(None)
+
+    def _node_displacement_text(self, tag: int) -> str | None:
+        if self._model is None or self._result is None:
+            return None
+        node_result = self._result.node_results.get(tag)
+        if node_result is None:
+            return None
+        displacement = (*node_result.displacement, 0.0, 0.0, 0.0)
+        ux, uy, uz = displacement[0], displacement[1], displacement[2]
+        magnitude = math.sqrt(ux * ux + uy * uy + uz * uz)
+        unit = self._unit_system.length
+        return (
+            f"Node {tag} | UX={ux:.6g} {unit} | UY={uy:.6g} {unit} | "
+            f"UZ={uz:.6g} {unit} | |U|={magnitude:.6g} {unit}"
+        )
+
+    def _show_node_displacement(self, tag: int, global_x: int, global_y: int) -> None:
+        text = self._node_displacement_text(tag)
+        if text is None:
+            return
+        self.quick3d_view.set_selected_node(tag)
+        QToolTip.showText(QPoint(global_x, global_y), text, self.quick3d_view)
+
     def fit_model(self) -> None:
+        if self.canvas_stack.currentWidget() is self.quick3d_view:
+            preset = self.view_selector.currentData()
+            if preset not in {"iso", "xy", "xz", "yz"}:
+                preset = "iso"
+                self.view_selector.blockSignals(True)
+                self.view_selector.setCurrentIndex(self.view_selector.findData(preset))
+                self.view_selector.blockSignals(False)
+            self.quick3d_view.set_camera_preset(str(preset))
+            return
         if not self.scene.items():
             return
         self.view.fit_content()
+
+    def _zoom(self, factor: float) -> None:
+        if self.canvas_stack.currentWidget() is self.quick3d_view:
+            self.quick3d_view.zoom(1.0 / factor)
+        else:
+            self.view.scale(factor, factor)
 
     def _projection_changed(self, index: int) -> None:
         del index
         projection = self.view_selector.currentData()
         if projection is not None and projection != "free":
+            if self.canvas_stack.currentWidget() is self.quick3d_view:
+                self.quick3d_view.set_camera_preset(str(projection))
             self.scene.set_projection(str(projection))
             self._redraw()
             self.fit_model()
@@ -208,6 +274,10 @@ class ResultViewport(QFrame):
         if self._model is None:
             self.scene.clear()
             self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))
+            return
+
+        if self._model.ndm == 3:
+            self._redraw_3d()
             return
 
         self.scene.set_model(self._model)
@@ -259,6 +329,19 @@ class ResultViewport(QFrame):
                 )
             )
 
+    def _redraw_3d(self) -> None:
+        if self._model is None:
+            return
+        if self._result is not None:
+            self.quick3d_view.show_result(
+                self._model,
+                self._result,
+                float(self.deformation_scale.value()),
+                self.show_undeformed.isChecked(),
+            )
+        else:
+            self.quick3d_view.clear_result()
+
     def _member_magnitudes(self) -> dict[int, float]:
         if self._model is None or self._result is None:
             return {}
@@ -275,32 +358,6 @@ class ResultViewport(QFrame):
         scale = float(self.deformation_scale.value())
         pen = QPen(QColor("#e5484d"), 2.4)
         pen.setCosmetic(True)
-        if self._model.ndm == 3:
-            for element in self._model.elements.values():
-                node_i = self._model.nodes[element.node_i]
-                node_j = self._model.nodes[element.node_j]
-                result_i = self._result.node_results.get(element.node_i)
-                result_j = self._result.node_results.get(element.node_j)
-                displacement_i = (0.0,) * 6 if result_i is None else result_i.displacement
-                displacement_j = (0.0,) * 6 if result_j is None else result_j.displacement
-                values_i = (*displacement_i, 0.0, 0.0, 0.0)
-                values_j = (*displacement_j, 0.0, 0.0, 0.0)
-                start = self.scene.project_coordinates(
-                    node_i.x + values_i[0] * scale,
-                    node_i.y + values_i[1] * scale,
-                    node_i.z + values_i[2] * scale,
-                )
-                end = self.scene.project_coordinates(
-                    node_j.x + values_j[0] * scale,
-                    node_j.y + values_j[1] * scale,
-                    node_j.z + values_j[2] * scale,
-                )
-                item = QGraphicsLineItem(start.x(), start.y(), end.x(), end.y())
-                item.setPen(pen)
-                item.setZValue(8.0)
-                item.setData(0, ("result_deformation", element.tag))
-                self.scene.addItem(item)
-            return
         for element_tag in self._model.elements:
             stations = member_deflection(self._model, self._result, element_tag)
             if len(stations) < 2:

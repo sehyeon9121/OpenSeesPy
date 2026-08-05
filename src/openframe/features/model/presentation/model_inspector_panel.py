@@ -223,9 +223,7 @@ class ModelInspectorPanel(QFrame):
         if node is None:
             return
         unit = self._unit_system
-        boundary = next(
-            (item for item in self._model.boundaries if item.node_tag == tag), None
-        )
+        boundary = next((item for item in self._model.boundaries if item.node_tag == tag), None)
         loads = [item for item in self._model.nodal_loads if item.node_tag == tag]
         support = SUPPORT_LABELS[boundary.support_kind] if boundary else "Free"
         values = [0.0] * max(self._model.ndf, 3)
@@ -249,7 +247,10 @@ class ModelInspectorPanel(QFrame):
                     ("Z", f"{node.z:g} {unit.length}"),
                     ("DOF", f"{node.ndf} (3 translations + 3 rotations)"),
                     ("SUPPORT", support),
-                    ("Fx / Fy / Fz", " / ".join(f"{value:g}" for value in values[:3]) + f" {unit.force}"),
+                    (
+                        "Fx / Fy / Fz",
+                        " / ".join(f"{value:g}" for value in values[:3]) + f" {unit.force}",
+                    ),
                 ]
             )
         else:
@@ -279,9 +280,7 @@ class ModelInspectorPanel(QFrame):
         node_i = self._model.nodes[element.node_i]
         node_j = self._model.nodes[element.node_j]
         length = math.sqrt(
-            (node_j.x - node_i.x) ** 2
-            + (node_j.y - node_i.y) ** 2
-            + (node_j.z - node_i.z) ** 2
+            (node_j.x - node_i.x) ** 2 + (node_j.y - node_i.y) ** 2 + (node_j.z - node_i.z) ** 2
         )
         unit = self._unit_system
         area = self._number_property(element.properties, "A")
@@ -291,9 +290,7 @@ class ModelInspectorPanel(QFrame):
         inertia_z = self._number_property(element.properties, "Iz")
         self.entity_badge.setText("ELEMENT")
         self.entity_title.setText(f"Element {tag}")
-        self.entity_visual.setText(
-            f"● Node {element.node_i}   ━━━━━   Node {element.node_j} ●"
-        )
+        self.entity_visual.setText(f"● Node {element.node_i}   ━━━━━   Node {element.node_j} ●")
         self.entity_description.setText(element.element_type)
         properties = [
             ("LENGTH", f"{length:.5g} {unit.length}"),
@@ -320,14 +317,11 @@ class ModelInspectorPanel(QFrame):
         if elastic_modulus is not None and area is not None:
             derived.append(f"EA = {elastic_modulus * area:.6g} {unit.force}")
         if elastic_modulus is not None and inertia is not None:
-            derived.append(
-                f"EI = {elastic_modulus * inertia:.6g} {unit.force}·{unit.length}²"
-            )
+            derived.append(f"EI = {elastic_modulus * inertia:.6g} {unit.force}·{unit.length}²")
         for axis, axis_inertia in (("y", inertia_y), ("z", inertia_z)):
             if elastic_modulus is not None and axis_inertia is not None:
                 derived.append(
-                    f"EI{axis} = {elastic_modulus * axis_inertia:.6g} "
-                    f"{unit.force}·{unit.length}²"
+                    f"EI{axis} = {elastic_modulus * axis_inertia:.6g} {unit.force}·{unit.length}²"
                 )
         if self._model.ndm == 3:
             shear_modulus = self._number_property(element.properties, "G")
@@ -340,15 +334,11 @@ class ModelInspectorPanel(QFrame):
 
     def _show_support(self, tag: int) -> None:
         assert self._model is not None
-        boundary = next(
-            (item for item in self._model.boundaries if item.node_tag == tag), None
-        )
+        boundary = next((item for item in self._model.boundaries if item.node_tag == tag), None)
         if boundary is None:
             return
         restraint_names = (
-            ("UX", "UY", "UZ", "RX", "RY", "RZ")
-            if self._model.ndm == 3
-            else ("UX", "UY", "RZ")
+            ("UX", "UY", "UZ", "RX", "RY", "RZ") if self._model.ndm == 3 else ("UX", "UY", "RZ")
         )
         self.entity_badge.setText("SUPPORT")
         self.entity_title.setText(f"Node {tag} · {SUPPORT_LABELS[boundary.support_kind]}")
@@ -358,7 +348,9 @@ class ModelInspectorPanel(QFrame):
             [
                 (
                     name,
-                    "LOCKED" if index < len(boundary.restraints) and boundary.restraints[index] else "FREE",
+                    "LOCKED"
+                    if index < len(boundary.restraints) and boundary.restraints[index]
+                    else "FREE",
                 )
                 for index, name in enumerate(restraint_names)
             ]
@@ -377,13 +369,9 @@ class ModelInspectorPanel(QFrame):
         self.entity_badge.setText("LOAD")
         self.entity_title.setText(f"Nodal Load · Node {tag}")
         self.entity_visual.setText(
-            "Fx  Fy  Fz  Mx  My  Mz"
-            if self._model.ndm == 3
-            else "→  Fx      ↓  Fy      ↻  Mz"
+            "Fx  Fy  Fz  Mx  My  Mz" if self._model.ndm == 3 else "→  Fx      ↓  Fy      ↻  Mz"
         )
-        self.entity_description.setText(
-            "Component loads are displayed separately in the structural viewport."
-        )
+        self.entity_description.setText("하중 케이스 색상으로 구분되어 구조 뷰포트에 표시됩니다.")
         if self._model.ndm == 3:
             names = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
             properties = [
@@ -401,7 +389,12 @@ class ModelInspectorPanel(QFrame):
                 ("PATTERN", str(loads[0].pattern_tag or "Imported") if loads else "None"),
             ]
         self._set_properties(properties)
-        self.advanced_text.setText(f"{len(loads)} load command(s) aggregated at Node {tag}.")
+        case_summary = ", ".join(
+            sorted({f"{load.case_type.value} (Pattern {load.pattern_tag})" for load in loads})
+        )
+        self.advanced_text.setText(
+            f"{len(loads)}개 load 명령 집계 | {case_summary or 'UNCLASSIFIED'}"
+        )
 
     def _show_element_load(self, tag: int) -> None:
         assert self._model is not None
@@ -409,6 +402,7 @@ class ModelInspectorPanel(QFrame):
         loads = [item for item in self._model.element_loads if item.element_tag == tag]
         wx = sum(load.wx for load in loads)
         wy = sum(load.wy for load in loads)
+        wz = sum(load.wz for load in loads)
         load_unit = f"{unit.force}/{unit.length}"
         self.entity_badge.setText("ELEMENT LOAD")
         self.entity_title.setText(f"Uniform Load · Element {tag}")
@@ -420,11 +414,15 @@ class ModelInspectorPanel(QFrame):
             [
                 ("Wx (LOCAL)", f"{wx:g} {load_unit}"),
                 ("Wy (LOCAL)", f"{wy:g} {load_unit}"),
+                ("Wz (LOCAL)", f"{wz:g} {load_unit}"),
                 ("PATTERN", str(loads[0].pattern_tag or "Imported") if loads else "None"),
             ]
         )
         self.advanced_text.setText(
-            f"{len(loads)} beamUniform command(s) aggregated on Element {tag}."
+            f"{len(loads)}개 beamUniform 명령 집계 | "
+            + ", ".join(
+                sorted({f"{load.case_type.value} (Pattern {load.pattern_tag})" for load in loads})
+            )
         )
 
     def _set_properties(self, properties: list[tuple[str, str]]) -> None:
@@ -453,7 +451,9 @@ class ModelInspectorPanel(QFrame):
         self._set_readiness(
             *self.readiness_rows["geometry"],
             "READY" if geometry_ready else "MISSING",
-            "Nodes and elements were detected." if geometry_ready else "No structural geometry detected.",
+            "Nodes and elements were detected."
+            if geometry_ready
+            else "No structural geometry detected.",
         )
         self._set_readiness(
             *self.readiness_rows["connectivity"],
@@ -463,13 +463,17 @@ class ModelInspectorPanel(QFrame):
         self._set_readiness(
             *self.readiness_rows["boundary"],
             "READY" if boundary_ready else "MISSING",
-            "Supports were detected." if boundary_ready else "No restrained degrees of freedom detected.",
+            "Supports were detected."
+            if boundary_ready
+            else "No restrained degrees of freedom detected.",
         )
         static_ready = geometry_ready and connectivity_ready and boundary_ready
         self._set_readiness(
             *self.readiness_rows["static"],
             "READY" if static_ready else "MISSING",
-            "Static equilibrium can be evaluated." if static_ready else "Complete geometry and supports first.",
+            "Static equilibrium can be evaluated."
+            if static_ready
+            else "Complete geometry and supports first.",
         )
         displacement_ready = static_ready and not missing_stiffness
         self._set_readiness(
@@ -509,11 +513,7 @@ class ModelInspectorPanel(QFrame):
         missing: list[str] = []
         for element in model.elements.values():
             if element.element_type.lower() == "elasticbeamcolumn":
-                required = (
-                    ("E", "A", "G", "J", "Iy", "Iz")
-                    if model.ndm == 3
-                    else ("E", "A", "I")
-                )
+                required = ("E", "A", "G", "J", "Iy", "Iz") if model.ndm == 3 else ("E", "A", "I")
                 absent = [key for key in required if key not in element.properties]
                 if absent:
                     missing.append(f"Element {element.tag} ({'/'.join(absent)})")
@@ -524,9 +524,7 @@ class ModelInspectorPanel(QFrame):
         return missing
 
     @staticmethod
-    def _number_property(
-        properties: dict[str, float | str], key: str
-    ) -> float | None:
+    def _number_property(properties: dict[str, float | str], key: str) -> float | None:
         value = properties.get(key)
         try:
             return float(value) if value is not None else None

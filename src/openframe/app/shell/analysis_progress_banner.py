@@ -1,77 +1,67 @@
-"""Visible analysis lifecycle feedback shared by every workspace."""
+"""Modal analysis progress feedback shared by every workspace."""
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFrame,
-    QHBoxLayout,
+    QDialog,
     QLabel,
     QProgressBar,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 
-class AnalysisProgressBanner(QFrame):
-    """Show honest running, completed and failed states without fake percentages."""
+class AnalysisProgressBanner(QDialog):
+    """Keep the workspace covered while an analysis runs, then close automatically.
 
-    view_results_requested = Signal()
+    The historical class name is retained so callers outside the shell do not need
+    to change, although the widget is now a centered modal dialog rather than a
+    banner embedded above the workspace.
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName("analysisProgressRunning")
+        self.setObjectName("analysisProgressDialog")
+        self.setWindowTitle("Calculating results")
+        self.setWindowModality(Qt.WindowModality.WindowModal)
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        self.setFixedSize(560, 190)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 8, 16, 8)
-        layout.setSpacing(12)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
 
-        self.state_badge = QLabel("RUNNING")
-        self.state_badge.setObjectName("analysisProgressBadge")
-        layout.addWidget(self.state_badge)
-
-        copy = QVBoxLayout()
-        copy.setSpacing(1)
-        self.title = QLabel("Analysis is running")
+        self.title = QLabel("Calculating results")
         self.title.setObjectName("analysisProgressTitle")
-        self.detail = QLabel("Preparing the structural model and solver.")
-        self.detail.setObjectName("analysisProgressDetail")
-        copy.addWidget(self.title)
-        copy.addWidget(self.detail)
-        layout.addLayout(copy, 1)
+        layout.addWidget(self.title)
 
         self.progress = QProgressBar()
         self.progress.setObjectName("analysisProgressBar")
-        self.progress.setMinimumWidth(260)
-        self.progress.setMaximumWidth(430)
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
         layout.addWidget(self.progress)
 
-        self.view_results_button = QPushButton("VIEW RESULTS")
-        self.view_results_button.setObjectName("analysisProgressAction")
-        self.view_results_button.clicked.connect(self.view_results_requested)
-        layout.addWidget(self.view_results_button)
-
-        self.dismiss_button = QPushButton("CLOSE")
-        self.dismiss_button.setObjectName("analysisProgressDismiss")
-        self.dismiss_button.clicked.connect(self.hide)
-        layout.addWidget(self.dismiss_button)
-
-        self.reset()
+        self.detail = QLabel("In progress...")
+        self.detail.setObjectName("analysisProgressDetail")
+        self.detail.setMinimumHeight(48)
+        self.detail.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.detail)
 
     def reset(self) -> None:
         self.hide()
-        self.view_results_button.hide()
-        self.dismiss_button.hide()
-
-    def show_running(self, analysis_name: str) -> None:
-        self._set_state("analysisProgressRunning")
-        self.state_badge.setText("RUNNING")
-        self.title.setText(f"{analysis_name} analysis in progress")
-        self.detail.setText("Building the model and solving. Please wait for completion.")
         self.progress.setRange(0, 0)
         self.progress.setTextVisible(False)
-        self.view_results_button.hide()
-        self.dismiss_button.hide()
+        self.detail.setText("In progress...")
+
+    def show_running(self, analysis_name: str) -> None:
+        self.title.setText("Calculating results")
+        self.detail.setText(f"{analysis_name} analysis in progress...")
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
         self.show()
+        self.raise_()
+        self.activateWindow()
 
     def set_progress(self, value: int | None, stage: str) -> None:
         """Connection point for a future runner that reports real progress."""
@@ -85,34 +75,19 @@ class AnalysisProgressBanner(QFrame):
         self.progress.setTextVisible(True)
 
     def show_completed(self, detail: str) -> None:
-        self._set_state("analysisProgressComplete")
-        self.state_badge.setText("COMPLETED")
-        self.title.setText("Analysis completed successfully")
+        """Close immediately; completed results remain available in RESULTS."""
         self.detail.setText(detail)
-        self.progress.setRange(0, 100)
-        self.progress.setValue(100)
-        self.progress.setFormat("100%  COMPLETE")
-        self.progress.setTextVisible(True)
-        self.view_results_button.show()
-        self.dismiss_button.show()
-        self.show()
+        self.accept()
 
     def show_failed(self, detail: str) -> None:
-        self._set_state("analysisProgressFailed")
-        self.state_badge.setText("FAILED")
-        self.title.setText("Analysis could not be completed")
+        """Close before the caller opens the dedicated error message box."""
         self.detail.setText(detail)
-        self.progress.setRange(0, 100)
-        self.progress.setValue(100)
-        self.progress.setFormat("FAILED")
-        self.progress.setTextVisible(True)
-        self.view_results_button.hide()
-        self.dismiss_button.show()
-        self.show()
+        super().reject()
 
-    def _set_state(self, object_name: str) -> None:
-        self.setObjectName(object_name)
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self.progress.style().unpolish(self.progress)
-        self.progress.style().polish(self.progress)
+    def reject(self) -> None:
+        """Ignore user/window-manager dismissal while the solver is still active."""
+        if self.parent() is not None:
+            thread = getattr(self.parent(), "_analysis_run_thread", None)
+            if thread is not None and thread.isRunning():
+                return
+        super().reject()

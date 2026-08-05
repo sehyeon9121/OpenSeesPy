@@ -12,7 +12,10 @@ from PySide6.QtWidgets import (
 )
 
 from openframe.core.domain import DEFAULT_UNIT_SYSTEM, StructuralModel, UnitSystem
-from openframe.features.viewport.items.nodal_load_item import NodalLoadItem
+from openframe.features.viewport.items.nodal_load_item import (
+    LOAD_CASE_COLORS,
+    NodalLoadItem,
+)
 from openframe.features.viewport.items.node_label_item import NodeLabelItem
 from openframe.features.viewport.items.support_item import SupportItem
 from openframe.features.viewport.items.uniform_element_load_item import (
@@ -71,9 +74,7 @@ class StructuralScene(QGraphicsScene):
         cosine_elevation = math.cos(elevation)
         screen_x = x * cosine_yaw - y * sine_yaw
         screen_y = (
-            x * sine_yaw * sine_elevation
-            + y * cosine_yaw * sine_elevation
-            - z * cosine_elevation
+            x * sine_yaw * sine_elevation + y * cosine_yaw * sine_elevation - z * cosine_elevation
         )
         return QPointF(screen_x, screen_y)
 
@@ -154,41 +155,66 @@ class StructuralScene(QGraphicsScene):
             support.setPos(self.project_coordinates(node.x, node.y, node.z))
             self.addItem(support)
 
-        loads_by_node: dict[int, list[float]] = {}
+        loads_by_node: dict[tuple[int, object, int | None], list[float]] = {}
         for load in model.nodal_loads:
-            accumulated = loads_by_node.setdefault(load.node_tag, [0.0] * max(model.ndf, 3))
+            key = (load.node_tag, load.case_type, load.pattern_tag)
+            accumulated = loads_by_node.setdefault(key, [0.0] * max(model.ndf, 3))
             for index, value in enumerate(load.values):
                 if index < len(accumulated):
                     accumulated[index] += value
 
-        for node_tag, values in loads_by_node.items():
+        maximum_nodal_magnitude = max(
+            (
+                math.sqrt(sum(value * value for value in values[:3]))
+                for values in loads_by_node.values()
+            ),
+            default=0.0,
+        )
+
+        for (node_tag, case_type, pattern_tag), values in loads_by_node.items():
             node = model.nodes.get(node_tag)
             if node is None:
                 continue
             point = self.project_coordinates(node.x, node.y, node.z)
             if model.ndm == 3:
                 load_item = QGraphicsEllipseItem(-5.0, -5.0, 10.0, 10.0)
-                load_item.setPen(QPen(QColor("#c9343b"), 2.0))
-                load_item.setBrush(QColor("#e5484d"))
-                load_item.setFlag(
-                    QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True
-                )
+                color = QColor(LOAD_CASE_COLORS[case_type])
+                load_item.setPen(QPen(color.darker(120), 2.0))
+                load_item.setBrush(color)
+                load_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
                 load_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
                 load_item.setData(0, ("load", node_tag))
                 names = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
                 components = ", ".join(
                     f"{name}={value:g}" for name, value in zip(names, values, strict=False)
                 )
-                load_item.setToolTip(f"Node {node_tag} | {components}")
+                load_item.setToolTip(
+                    f"{case_type.value} | Pattern {pattern_tag or '-'} | "
+                    f"Node {node_tag} | {components}"
+                )
             else:
                 load_item = NodalLoadItem(
                     node_tag=node_tag,
                     values=tuple(values),
                     unit_system=self._unit_system,
+                    load_scale=self._load_scale(
+                        math.sqrt(sum(value * value for value in values[:3])),
+                        maximum_nodal_magnitude,
+                    ),
+                    case_type=case_type,
+                    pattern_tag=pattern_tag,
                 )
+            load_item.setData(1, case_type.value)
             load_item.setPos(point)
             self.addItem(load_item)
 
+        maximum_element_magnitude = max(
+            (
+                math.sqrt(load.wx * load.wx + load.wy * load.wy + load.wz * load.wz)
+                for load in model.element_loads
+            ),
+            default=0.0,
+        )
         for load in model.element_loads:
             element = model.elements.get(load.element_tag)
             if element is None:
@@ -202,19 +228,28 @@ class StructuralScene(QGraphicsScene):
                 start=self.project_coordinates(node_i.x, node_i.y, node_i.z),
                 end=self.project_coordinates(node_j.x, node_j.y, node_j.z),
                 unit_system=self._unit_system,
+                load_scale=self._load_scale(
+                    math.sqrt(load.wx * load.wx + load.wy * load.wy + load.wz * load.wz),
+                    maximum_element_magnitude,
+                ),
             )
+            load_item.setData(1, load.case_type.value)
             self.addItem(load_item)
 
         if model.ndm == 3:
             self._draw_axes(model)
 
+    @staticmethod
+    def _load_scale(magnitude: float, maximum_magnitude: float) -> float:
+        if magnitude <= 0.0 or maximum_magnitude <= 0.0:
+            return 0.45
+        return 0.45 + 0.55 * math.sqrt(min(magnitude / maximum_magnitude, 1.0))
+
     def _draw_axes(self, model: StructuralModel) -> None:
         if not model.nodes:
             return
         coordinates = [
-            component
-            for node in model.nodes.values()
-            for component in (node.x, node.y, node.z)
+            component for node in model.nodes.values() for component in (node.x, node.y, node.z)
         ]
         axis_length = max((max(coordinates) - min(coordinates)) * 0.2, 1.0)
         origin = self.project_coordinates(0.0, 0.0, 0.0)

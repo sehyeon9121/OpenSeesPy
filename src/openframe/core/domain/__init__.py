@@ -4,6 +4,7 @@ from openframe.core.domain.analysis import AnalysisKind, AnalysisRequest
 from openframe.core.domain.model import (
     BoundaryCondition,
     Element,
+    LoadCaseKind,
     NodalLoad,
     Node,
     StructuralModel,
@@ -34,6 +35,7 @@ __all__ = [
     "BoundaryCondition",
     "Element",
     "ElementResult",
+    "LoadCaseKind",
     "NodalLoad",
     "Node",
     "NodeResult",

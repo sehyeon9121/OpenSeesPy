@@ -6,6 +6,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
+    QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QSplitter,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
 from openframe.app.shell.analysis_progress_banner import AnalysisProgressBanner
 from openframe.app.shell.analysis_results_sidebar import AnalysisResultsSidebar
 from openframe.app.shell.app_header import AppHeader
+from openframe.app.shell.modeling_workflow import ModelingWorkflowBar
 from openframe.app.shell.start_workspace import StartWorkspace
 from openframe.app.shell.workspace_navigation import WorkspaceNavigation
 from openframe.core.domain import (
@@ -59,6 +62,7 @@ class MainWindow(QMainWindow):
         self._model_load_thread: ModelLoadThread | None = None
         self._analysis_run_thread: AnalysisRunThread | None = None
         self._current_model_source: Path | None = None
+        self._model_generation = 0
         self._resume_section = "model"
         self._has_active_workspace = False
         self._workspace_sessions: dict[str, _WorkspaceSession] = {}
@@ -75,7 +79,7 @@ class MainWindow(QMainWindow):
 
         self.header = AppHeader()
         self.navigation = WorkspaceNavigation()
-        self.analysis_progress = AnalysisProgressBanner()
+        self.analysis_progress = AnalysisProgressBanner(self)
         self.start_workspace = StartWorkspace()
         self.model_sidebar = ModelSidebar()
         self.viewport = ModelViewport()
@@ -86,16 +90,25 @@ class MainWindow(QMainWindow):
         self.view = self.viewport.view
         self.scene = self.viewport.scene
 
-        self.workspace = QSplitter(Qt.Orientation.Horizontal)
-        self.workspace.setObjectName("workspaceSplitter")
-        self.workspace.setChildrenCollapsible(False)
-        self.workspace.addWidget(self.model_sidebar)
-        self.workspace.addWidget(self.viewport)
-        self.workspace.addWidget(self.analysis_sidebar)
-        self.workspace.setStretchFactor(0, 0)
-        self.workspace.setStretchFactor(1, 1)
-        self.workspace.setStretchFactor(2, 0)
-        self.workspace.setSizes((255, 850, 300))
+        self.workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.workspace_splitter.setObjectName("workspaceSplitter")
+        self.workspace_splitter.setChildrenCollapsible(False)
+        self.workspace_splitter.addWidget(self.model_sidebar)
+        self.workspace_splitter.addWidget(self.viewport)
+        self.workspace_splitter.addWidget(self.analysis_sidebar)
+        self.workspace_splitter.setStretchFactor(0, 0)
+        self.workspace_splitter.setStretchFactor(1, 1)
+        self.workspace_splitter.setStretchFactor(2, 0)
+        self.workspace_splitter.setSizes((255, 850, 300))
+
+        self.modeling_workflow = ModelingWorkflowBar()
+        self.workspace = QWidget()
+        self.workspace.setObjectName("modelingWorkspace")
+        modeling_layout = QVBoxLayout(self.workspace)
+        modeling_layout.setContentsMargins(0, 0, 0, 0)
+        modeling_layout.setSpacing(0)
+        modeling_layout.addWidget(self.modeling_workflow)
+        modeling_layout.addWidget(self.workspace_splitter, 1)
 
         self.workspace_stack = QStackedWidget()
         self.workspace_stack.setObjectName("workspaceStack")
@@ -105,9 +118,14 @@ class MainWindow(QMainWindow):
         self.workspace_stack.setCurrentWidget(self.start_workspace)
 
         root_layout.addWidget(self.header)
-        root_layout.addWidget(self.navigation)
-        root_layout.addWidget(self.analysis_progress)
-        root_layout.addWidget(self.workspace_stack, 1)
+        workspace_shell = QWidget()
+        workspace_shell.setObjectName("workspaceShell")
+        workspace_shell_layout = QHBoxLayout(workspace_shell)
+        workspace_shell_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_shell_layout.setSpacing(0)
+        workspace_shell_layout.addWidget(self.navigation)
+        workspace_shell_layout.addWidget(self.workspace_stack, 1)
+        root_layout.addWidget(workspace_shell, 1)
         self.setCentralWidget(root)
 
         self._build_status_bar()
@@ -116,17 +134,25 @@ class MainWindow(QMainWindow):
 
     def _build_status_bar(self) -> None:
         status = QStatusBar(self)
-        status.showMessage("Ready · Sample preview · Units: kN, m")
+        status.showMessage("준비됨")
+        self.status_model = QLabel("● 모델 대기")
+        self.status_model.setObjectName("statusModel")
+        self.status_counts = QLabel("절점 0  |  요소 0")
+        self.status_units = QLabel("2D · NDF 3  |  kN, m")
+        status.addPermanentWidget(self.status_model)
+        status.addPermanentWidget(self.status_counts)
+        status.addPermanentWidget(self.status_units)
         self.setStatusBar(status)
 
     def _connect_actions(self) -> None:
         self.header.upload_requested.connect(self._choose_model_file)
         self.header.run_requested.connect(self._run_analysis)
+        self.header.export_requested.connect(
+            lambda: self._show_pending_workflow("OpenSeesPy 코드 내보내기")
+        )
         self.header.home_requested.connect(self._show_start_workspace)
         self.start_workspace.import_opensees_requested.connect(self._start_import_workspace)
-        self.start_workspace.new_model_requested.connect(
-            lambda: self._show_pending_workflow("New Model")
-        )
+        self.start_workspace.new_model_requested.connect(self._start_new_model_workspace)
         self.start_workspace.template_requested.connect(
             lambda: self._show_pending_workflow("Template Browser")
         )
@@ -135,17 +161,34 @@ class MainWindow(QMainWindow):
         )
         self.start_workspace.resume_workspace_requested.connect(self._resume_workspace)
         self.start_workspace.session_requested.connect(self._activate_workspace_session)
-        self.analysis_progress.view_results_requested.connect(self._open_results_workspace)
         self.navigation.current_changed.connect(self._change_workspace_section)
         self.analysis_settings.analysis_kind_changed.connect(self._set_analysis_kind)
         self.viewport.unit_system_changed.connect(self._set_unit_system)
         self.viewport.entity_selected.connect(self._entity_selected_from_viewport)
         self.model_sidebar.entity_selected.connect(self._entity_selected_from_tree)
+        self.modeling_workflow.step_selected.connect(self._select_modeling_step)
+        self.analysis_settings.hide()
+
+    def _select_modeling_step(self, step: str) -> None:
+        """Expose the authoring order now; feature editors are connected later."""
+        navigation_sections = {"loads": "loads", "analysis": "analysis"}
+        section = navigation_sections.get(step, "model")
+        self.navigation.set_current_section(section)
+        self._change_workspace_section(section)
+        step_names = {
+            key: label for key, label, _tooltip in self.modeling_workflow.STEPS
+        }
+        self.statusBar().showMessage(
+            f"{step_names[step]} 단계 · 편집 기능은 다음 구현 단계에서 연결됩니다"
+        )
 
     def _set_unit_system(self, unit_system: UnitSystem) -> None:
         self.model_inspector.set_unit_system(unit_system)
         self.results_workspace.set_unit_system(unit_system)
         self.statusBar().showMessage(f"Model units changed | {unit_system.label}")
+        self.status_units.setText(f"{self.viewport._model.ndm if self.viewport._model else 2}D · "
+                                  f"NDF {self.viewport._model.ndf if self.viewport._model else 3}"
+                                  f"  |  {unit_system.label}")
 
     def _show_start_workspace(self) -> None:
         if self.workspace_stack.currentWidget() is not self.start_workspace:
@@ -168,9 +211,21 @@ class MainWindow(QMainWindow):
             self.start_workspace.set_current_session(
                 "OpenSeesPy Import", "Waiting for a .py source file"
             )
+        self.modeling_workflow.set_current_step("geometry")
         self._show_model_workspace()
         self.statusBar().showMessage(
             "OpenSeesPy import workspace | Select UPLOAD .PY to choose a model"
+        )
+
+    def _start_new_model_workspace(self) -> None:
+        """Open the authoring shell at its first prerequisite step."""
+        self._has_active_workspace = True
+        self._current_model_source = None
+        self.header.set_project_title("새 구조 모델")
+        self.modeling_workflow.set_current_step("setup")
+        self._show_model_workspace()
+        self.statusBar().showMessage(
+            "기본 설정 단계 · 모델 차원, 자유도와 단위 설정 기능을 연결할 예정입니다"
         )
 
     def _show_model_workspace(self) -> None:
@@ -179,6 +234,11 @@ class MainWindow(QMainWindow):
         self.navigation.show()
         self.header.set_welcome_mode(False)
         self.workspace_stack.setCurrentWidget(self.workspace)
+        self.model_sidebar.show()
+        self.analysis_sidebar.show()
+        self.analysis_settings.hide()
+        self.model_inspector.show()
+        self.viewport.set_code_panel_visible(False)
 
     def _resume_workspace(self) -> None:
         if not self._has_active_workspace:
@@ -211,8 +271,15 @@ class MainWindow(QMainWindow):
             return
         if self._model_load_thread and self._model_load_thread.isRunning():
             return
+        if self._analysis_run_thread and self._analysis_run_thread.isRunning():
+            return
 
+        # Invalidate every result associated with the model currently on screen as
+        # soon as a different source starts loading. A queued completion signal from
+        # an older run must never attach itself to the incoming model.
+        self._model_generation += 1
         self.analysis_progress.reset()
+        self.results_workspace.clear_result()
         self.header.set_busy(True)
         self.statusBar().showMessage(f"Reading model · {source.name}")
         thread = ModelLoadThread(self._open_model_service, source)
@@ -232,6 +299,14 @@ class MainWindow(QMainWindow):
         self.model_inspector.set_model(model)
         self.results_workspace.set_model(model)
         self.results_workspace.clear_result()
+        self.header.set_project_title(source_path.stem)
+        self.modeling_workflow.set_current_step("geometry")
+        self.status_model.setText("● 모델 유효")
+        self.status_model.setObjectName("statusModelReady")
+        self.status_model.style().unpolish(self.status_model)
+        self.status_model.style().polish(self.status_model)
+        self.status_counts.setText(f"절점 {len(model.nodes)}  |  요소 {len(model.elements)}")
+        self.status_units.setText(f"{model.ndm}D · NDF {model.ndf}  |  {self.viewport.unit_system.label}")
         key = str(source_path)
         self._remember_session(
             _WorkspaceSession(
@@ -263,8 +338,10 @@ class MainWindow(QMainWindow):
         self._store_current_session_section(section)
         labels = {
             "model": "Model workspace",
+            "loads": "Load assignment workspace",
             "analysis": "Analysis configuration",
             "results": "Analysis results",
+            "code": "OpenSeesPy code workspace",
             "viewport": "Viewport focus",
         }
         if section == "results":
@@ -274,8 +351,11 @@ class MainWindow(QMainWindow):
 
         self.workspace_stack.setCurrentWidget(self.workspace)
         focus_viewport = section == "viewport"
-        self.model_sidebar.setVisible(not focus_viewport)
+        self.model_sidebar.setVisible(section in {"model", "loads"})
         self.analysis_sidebar.setVisible(not focus_viewport)
+        self.analysis_settings.setVisible(section == "analysis")
+        self.model_inspector.setVisible(section != "analysis")
+        self.viewport.set_code_panel_visible(section == "code")
         self.statusBar().showMessage(f"{labels[section]} · Ready")
 
     def _set_analysis_kind(self, kind: AnalysisKind) -> None:
@@ -301,6 +381,8 @@ class MainWindow(QMainWindow):
             return
 
         request = AnalysisRequest(source_path=self._current_model_source, kind=kind)
+        run_generation = self._model_generation
+        run_session_key = self._current_session_key
 
         # The previous run's numbers must not linger next to a fresh one.
         self.results_workspace.clear_result()
@@ -310,18 +392,41 @@ class MainWindow(QMainWindow):
             AnalysisKind.TIME_HISTORY: "Time History",
         }[kind]
         self.analysis_progress.show_running(analysis_name)
-        self.header.set_busy(True, "RUNNING ANALYSIS")
+        self.header.set_busy(True, None)
         self.statusBar().showMessage(f"Running analysis · {kind.value}")
         thread = AnalysisRunThread(self._run_analysis_service, request)
-        thread.completed.connect(self._analysis_completed)
+        thread.completed.connect(
+            lambda result: self._analysis_completed(
+                result,
+                run_generation=run_generation,
+                run_session_key=run_session_key,
+            )
+        )
         thread.finished.connect(self._analysis_run_finished)
         self._analysis_run_thread = thread
         thread.start()
 
-    def _analysis_completed(self, result: AnalysisResult) -> None:
+    def _analysis_completed(
+        self,
+        result: AnalysisResult,
+        *,
+        run_generation: int,
+        run_session_key: str | None,
+    ) -> None:
+        if (
+            run_generation != self._model_generation
+            or run_session_key is None
+            or run_session_key != self._current_session_key
+        ):
+            self.analysis_progress.hide()
+            self.statusBar().showMessage(
+                "Discarded an analysis result from a previously opened model"
+            )
+            return
+
         self.results_workspace.show_result(result)
-        if self._current_session_key in self._workspace_sessions:
-            self._workspace_sessions[self._current_session_key].result = result
+        if run_session_key in self._workspace_sessions:
+            self._workspace_sessions[run_session_key].result = result
             self._refresh_start_sessions()
         if result.status == AnalysisStatus.COMPLETED:
             self.analysis_progress.show_completed(
@@ -331,6 +436,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Analysis completed · Nodes {len(result.node_results)}"
                 f" · Elements {len(result.element_results)}"
+            )
+            QMessageBox.information(
+                self,
+                "해석 완료",
+                "해석이 완료되었습니다.\n\n"
+                f"절점 결과: {len(result.node_results)}개\n"
+                f"부재 결과: {len(result.element_results)}개\n\n"
+                "RESULTS 탭에서 결과를 확인할 수 있습니다.",
             )
         else:
             self.analysis_progress.show_failed(

@@ -11,7 +11,9 @@ Item {
     property real lastMouseX: 0
     property real lastMouseY: 0
     property bool panning: false
+    property bool pickingEnabled: false
     signal cameraModeChanged(string mode)
+    signal nodePicked(int tag, real screenX, real screenY)
 
     function setPreset(preset) {
         if (preset === "xy") {
@@ -41,12 +43,14 @@ Item {
     }
 
     View3D {
+        id: view3d
         anchors.fill: parent
         camera: camera
         environment: SceneEnvironment {
             backgroundMode: SceneEnvironment.Color
             clearColor: "#f4f6f8"
-            antialiasingMode: SceneEnvironment.NoAA
+            antialiasingMode: SceneEnvironment.MSAA
+            antialiasingQuality: SceneEnvironment.High
         }
 
         PerspectiveCamera {
@@ -75,31 +79,31 @@ Item {
             }
         }
 
+        // Three lights spaced 120 degrees apart in yaw (rather than one strong key
+        // light) so that orbiting the camera never turns a whole face of the model
+        // fully dark - each face is always lit by at least one of them.
         DirectionalLight {
-            eulerRotation: Qt.vector3d(-42, -35, 0)
-            brightness: 1.0
+            eulerRotation: Qt.vector3d(-35, -30, 0)
+            brightness: 0.75
+            castsShadow: false
+        }
+        DirectionalLight {
+            eulerRotation: Qt.vector3d(-35, 90, 0)
+            brightness: 0.6
+            castsShadow: false
+        }
+        DirectionalLight {
+            eulerRotation: Qt.vector3d(-35, 210, 0)
+            brightness: 0.6
             castsShadow: false
         }
 
         PrincipledMaterial {
-            id: memberMaterial
-            baseColor: "#647789"
-            metalness: 0.0
-            roughness: 0.9
-        }
-        PrincipledMaterial {
-            id: nodeMaterial
-            baseColor: "#2877b7"
-            metalness: 0.0
-            roughness: 0.9
-        }
-        PrincipledMaterial {
             id: groundMaterial
             baseColor: "#d8dee4"
             metalness: 0.0
-            roughness: 1.0
+            roughness: 0.95
         }
-
         Model {
             source: "#Cube"
             position: Qt.vector3d(
@@ -133,7 +137,14 @@ Item {
                     modelData.length / 100,
                     modelData.thickness / 100
                 )
-                materials: [memberMaterial]
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.55
+                    }
+                ]
                 castsShadows: false
                 receivesShadows: false
             }
@@ -142,14 +153,106 @@ Item {
         Repeater3D {
             model: sceneBridge.nodes
             delegate: Model {
-                source: "#Cube"
+                source: "#Sphere"
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 scale: Qt.vector3d(
                     modelData.radius * 2 / 100,
                     modelData.radius * 2 / 100,
                     modelData.radius * 2 / 100
                 )
-                materials: [nodeMaterial]
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.55
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                pickable: true
+                property int nodeTag: modelData.tag
+            }
+        }
+
+        Repeater3D {
+            model: sceneBridge.ghostMembers
+            delegate: Model {
+                source: "#Cube"
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                rotation: Qt.quaternion(
+                    modelData.qscalar,
+                    modelData.qx,
+                    modelData.qy,
+                    modelData.qz
+                )
+                scale: Qt.vector3d(
+                    modelData.thickness / 100,
+                    modelData.length / 100,
+                    modelData.thickness / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.55
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+            }
+        }
+
+        Repeater3D {
+            model: sceneBridge.ghostNodes
+            delegate: Model {
+                source: "#Sphere"
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                scale: Qt.vector3d(
+                    modelData.radius * 2 / 100,
+                    modelData.radius * 2 / 100,
+                    modelData.radius * 2 / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.55
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+            }
+        }
+
+        Repeater3D {
+            // Each load contributes two flat entries (shaft + head), positioned and
+            // rotated independently by the bridge - the same scheme members already
+            // use - so there is no parent/child offset math that could leave a gap.
+            model: sceneBridge.loadArrows
+            delegate: Model {
+                source: modelData.shape
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                rotation: Qt.quaternion(
+                    modelData.qscalar,
+                    modelData.qx,
+                    modelData.qy,
+                    modelData.qz
+                )
+                scale: Qt.vector3d(
+                    modelData.thickness / 100,
+                    modelData.length / 100,
+                    modelData.thickness / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        metalness: 0.0
+                        roughness: 0.4
+                    }
+                ]
                 castsShadows: false
                 receivesShadows: false
             }
@@ -158,7 +261,14 @@ Item {
 
     MouseArea {
         anchors.fill: parent
-        acceptedButtons: Qt.MiddleButton
+        acceptedButtons: Qt.MiddleButton | Qt.LeftButton
+        onClicked: function(mouse) {
+            if (mouse.button !== Qt.LeftButton || !root.pickingEnabled)
+                return
+            let result = view3d.pick(mouse.x, mouse.y)
+            if (result.objectHit && result.objectHit.nodeTag !== undefined)
+                root.nodePicked(result.objectHit.nodeTag, mouse.x, mouse.y)
+        }
         onPressed: function(mouse) {
             root.lastMouseX = mouse.x
             root.lastMouseY = mouse.y
