@@ -1,5 +1,6 @@
 """Free-form 2D editor for textbook statics problems."""
 
+from dataclasses import replace
 from itertools import pairwise
 
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, Signal
@@ -30,12 +31,22 @@ from openframe.core.domain import (
     UnitSystem,
 )
 from openframe.features.analysis.statics import MaterialFreeStaticsSolver, check_determinacy
+from openframe.features.model.drawing import (
+    SnapOptions,
+    SnapResult,
+    apply_ortho,
+    parse_entry,
+    resolve_snap,
+)
+from openframe.features.model.drawing.coordinates import direction_degrees, distance
 from openframe.features.results.presentation.result_viewport import ResultViewport
 
 
 class StaticsDrawingCanvas(QGraphicsView):
     model_changed = Signal()
+    draw_state_changed = Signal()
     _DRAW_SCALE = 40.0
+    _SNAP_PIXELS = 14.0
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self.scene_model = QGraphicsScene()
@@ -68,6 +79,11 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.support_restraints = (True, True, False)
         self.pending_nodal_load = (0.0, -10.0, 0.0)
         self.pending_uniform_load = (0.0, -10.0)
+        self.snap_options = SnapOptions()
+        self.ortho = False
+        self.ortho_increment = 45.0
+        self._chain: list[int] = []
+        self._snap: SnapResult | None = None
         self._undo_stack: list[dict[str, object]] = []
         self._redo_stack: list[dict[str, object]] = []
         self._history_group_depth = 0
@@ -78,12 +94,105 @@ class StaticsDrawingCanvas(QGraphicsView):
         self._member_start = None
         self._preview_point = None
         self._preview_midpoint = None
+        self._chain.clear()
+        self._snap = None
         self.setDragMode(
             QGraphicsView.DragMode.ScrollHandDrag
             if mode == "select"
             else QGraphicsView.DragMode.NoDrag
         )
         self._redraw()
+        self.draw_state_changed.emit()
+
+    # --- free-form drawing -------------------------------------------------
+
+    @property
+    def is_drawing(self) -> bool:
+        return bool(self._chain)
+
+    @property
+    def chain_anchor(self) -> tuple[float, float] | None:
+        """Model-space point the next member starts from, if a chain is open."""
+        node = self.nodes.get(self._chain[-1]) if self._chain else None
+        return None if node is None else (node.x, node.y)
+
+    @property
+    def snap_label(self) -> str:
+        return self._snap.label if self._snap is not None else ""
+
+    def pending_length_and_angle(self) -> tuple[float, float] | None:
+        """Length and angle of the member currently being rubber-banded."""
+        anchor = self.chain_anchor
+        if anchor is None or self._snap is None:
+            return None
+        return (
+            distance(anchor, self._snap.point),
+            direction_degrees(anchor, self._snap.point),
+        )
+
+    def snap_at(self, x: float, y: float) -> SnapResult:
+        options = replace(self.snap_options, grid=max(0.0, self.grid))
+        return resolve_snap(self.nodes, self.elements, (x, y), self._tolerance(), options)
+
+    def place_point(self, x: float, y: float, snap: SnapResult | None = None) -> int:
+        """Add the next point of the drawing chain, connecting it to the previous one.
+
+        A single click is one undo step even though it may create both a node and a
+        member, so the history group wraps the whole placement.
+        """
+        self.begin_history_group()
+        try:
+            tag = self._node_for_point(x, y, snap)
+            if self._chain and self._chain[-1] != tag:
+                self.add_member(self._chain[-1], tag)
+            if not self._chain or self._chain[-1] != tag:
+                self._chain.append(tag)
+        finally:
+            self.end_history_group()
+        self._preview_point = None
+        self._changed()
+        self.draw_state_changed.emit()
+        return tag
+
+    def commit_entry(self, text: str) -> bool:
+        """Place a point from a typed entry such as ``5<30``, ``@3,4`` or ``3,4``."""
+        anchor = self.chain_anchor or (0.0, 0.0)
+        heading = None
+        if self._snap is not None and self.chain_anchor is not None:
+            heading = direction_degrees(anchor, self._snap.point)
+        point = parse_entry(text, anchor, heading)
+        if point is None:
+            return False
+        self.place_point(*point)
+        return True
+
+    def end_chain(self) -> None:
+        if not self._chain and self._preview_point is None:
+            return
+        self._chain.clear()
+        self._preview_point = None
+        self._redraw()
+        self.draw_state_changed.emit()
+
+    def _node_for_point(
+        self, x: float, y: float, snap: SnapResult | None
+    ) -> int:
+        if snap is not None and snap.node_tag is not None:
+            return snap.node_tag
+        if snap is not None and snap.element_tag is not None and snap.position is not None:
+            return self.add_member_station_node(snap.element_tag, snap.position)
+        return self.add_node(x, y)
+
+    def _tolerance(self) -> float:
+        """Snap radius in model units, held constant in pixels while zooming."""
+        zoom = abs(self.transform().m11()) or 1.0
+        return self._SNAP_PIXELS / (self._DRAW_SCALE * zoom)
+
+    def _model_point(self, scene_point: QPointF) -> tuple[float, float]:
+        return (scene_point.x() / self._DRAW_SCALE, -scene_point.y() / self._DRAW_SCALE)
+
+    def _scene_point(self, x: float, y: float) -> QPointF:
+        return QPointF(x * self._DRAW_SCALE, -y * self._DRAW_SCALE)
 
     def select_all(self) -> None:
         self.selected_nodes = set(self.nodes)
@@ -338,7 +447,7 @@ class StaticsDrawingCanvas(QGraphicsView):
                     )
         model = StructuralModel(
             nodes=dict(self.nodes),
-            elements=analysis_elements,
+            elements=self._apply_hinge_releases(analysis_elements),
             boundaries=list(self.boundaries.values()),
             nodal_loads=list(self.nodal_loads.values()),
             element_loads=analysis_loads,
@@ -350,6 +459,40 @@ class StaticsDrawingCanvas(QGraphicsView):
             for node_tag, (host_tag, position) in sorted(self.embedded_nodes.items())
         )
         return model
+
+    def _apply_hinge_releases(self, elements: dict[int, Element]) -> dict[int, Element]:
+        """Turn node-level hinges into member end releases for the analysis model.
+
+        A hinge releases the bending moment of every member end meeting at the node.
+        When the node itself carries no rotational restraint one member must stay
+        rigid, otherwise the joint spins freely and the stiffness matrix is singular.
+        """
+        releases = {tag: [False, False] for tag in elements}
+        for node_tag in self.hinge_nodes:
+            ends = sorted(
+                (tag, end)
+                for tag, element in elements.items()
+                for end in (0, 1)
+                if (element.node_i if end == 0 else element.node_j) == node_tag
+            )
+            if not ends:
+                continue
+            boundary = self.boundaries.get(node_tag)
+            rotation_restrained = bool(
+                boundary and len(boundary.restraints) > 2 and boundary.restraints[2]
+            )
+            if not rotation_restrained:
+                ends = ends[1:]
+            for tag, end in ends:
+                releases[tag][end] = True
+        return {
+            tag: replace(
+                element,
+                moment_release_i=releases[tag][0],
+                moment_release_j=releases[tag][1],
+            )
+            for tag, element in elements.items()
+        }
 
     def delete_selected(self) -> None:
         node_tags = set(self.selected_nodes)
@@ -448,7 +591,10 @@ class StaticsDrawingCanvas(QGraphicsView):
         self._selected = None
         self._member_start = None
         self._preview_point = None
+        self._chain.clear()
+        self._snap = None
         self._changed()
+        self.draw_state_changed.emit()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -469,6 +615,12 @@ class StaticsDrawingCanvas(QGraphicsView):
                 self._drag_current = self._drag_start
                 if not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                     self.clear_selection()
+            return
+        if self.mode == "draw":
+            target = self._resolve_cursor(
+                self.mapToScene(event.position().toPoint()), event.modifiers()
+            )
+            self.place_point(target.x, target.y, snap=target)
             return
         point = self.mapToScene(event.position().toPoint())
         x = round(point.x() / self._DRAW_SCALE / self.grid) * self.grid
@@ -529,6 +681,15 @@ class StaticsDrawingCanvas(QGraphicsView):
             self._drag_current = point
             self._redraw()
             return
+        if self.mode == "draw":
+            target = self._resolve_cursor(point, event.modifiers())
+            self._snap = target
+            self._preview_point = (
+                self._scene_point(target.x, target.y) if self._chain else None
+            )
+            self._redraw()
+            self.draw_state_changed.emit()
+            return
         if self.mode == "member" and self._member_start is not None:
             snapped = self._node_near_scene(point)
             if snapped is not None:
@@ -572,7 +733,19 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.scale(factor, factor)
         event.accept()
 
+    def _resolve_cursor(self, scene_point: QPointF, modifiers) -> SnapResult:
+        x, y = self._model_point(scene_point)
+        anchor = self.chain_anchor
+        locked = self.ortho or bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        if anchor is not None and locked:
+            x, y = apply_ortho(anchor, (x, y), self.ortho_increment)
+        return self.snap_at(x, y)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.end_chain()
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Delete:
             self.delete_selected()
             event.accept()
@@ -664,6 +837,29 @@ class StaticsDrawingCanvas(QGraphicsView):
                         22,
                         QPen(QColor("#22c55e"), 2),
                     )
+        anchor_point = self.chain_anchor
+        if anchor_point is not None and self._preview_point is not None:
+            anchor = self._scene_point(*anchor_point)
+            self.scene_model.addLine(
+                anchor.x(),
+                anchor.y(),
+                self._preview_point.x(),
+                self._preview_point.y(),
+                QPen(QColor("#22c55e"), 2, Qt.PenStyle.DashLine),
+            )
+            measure = self.pending_length_and_angle()
+            if measure is not None:
+                readout = self.scene_model.addText(f"{measure[0]:.4g} m   {measure[1]:.1f}°")
+                readout.setDefaultTextColor(QColor("#16a34a"))
+                readout.setPos(self._preview_point + QPointF(12, -32))
+        if self.mode == "draw" and self._snap is not None and self._snap.label:
+            marker = self._scene_point(self._snap.x, self._snap.y)
+            self.scene_model.addRect(
+                marker.x() - 6, marker.y() - 6, 12, 12, QPen(QColor("#0f766e"), 2)
+            )
+            hint = self.scene_model.addText(self._snap.label)
+            hint.setDefaultTextColor(QColor("#0f766e"))
+            hint.setPos(marker + QPointF(10, 2))
         if self._drag_start is not None and self._drag_current is not None:
             crossing = self._drag_current.x() < self._drag_start.x()
             selection_color = QColor("#16a34a" if crossing else "#2563eb")

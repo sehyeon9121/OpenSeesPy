@@ -39,6 +39,13 @@ class Element:
     node_j: int
     element_type: str
     properties: dict[str, float | str] = field(default_factory=dict)
+    moment_release_i: bool = False
+    moment_release_j: bool = False
+
+    @property
+    def release_count(self) -> int:
+        """Released end conditions, subtracted by the determinacy count."""
+        return int(self.moment_release_i) + int(self.moment_release_j)
 
 
 @dataclass(frozen=True, slots=True)

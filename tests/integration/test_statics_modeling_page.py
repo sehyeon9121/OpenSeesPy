@@ -30,6 +30,35 @@ def test_student_can_draw_and_solve_a_free_form_simply_supported_beam() -> None:
     assert page.viewport._result.node_results[right].reaction[1] == pytest.approx(20.0)
 
 
+def test_drawn_hinge_becomes_a_member_release_and_makes_a_gerber_beam_solvable() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    fixed = canvas.add_node(0.0, 0.0)
+    hinge = canvas.add_node(4.0, 0.0)
+    roller = canvas.add_node(8.0, 0.0)
+    canvas.add_member(fixed, hinge)
+    suspended = canvas.add_member(hinge, roller)
+    canvas.set_support(fixed, (True, True, True))
+    canvas.set_support(roller, (False, True, False))
+    canvas.set_uniform_load(suspended, (0.0, -10.0))
+    canvas.selected_nodes = {hinge}
+    canvas.set_selected_node_kind(True)
+
+    model = canvas.build_model()
+    assert model.elements[suspended].moment_release_i is True
+    assert check_determinacy(model).degree == 0
+
+    page.solve()
+
+    assert page.workspace_stack.currentIndex() == 1
+    assert page.viewport._result.node_results[fixed].reaction[1] == pytest.approx(20.0)
+    assert page.viewport._result.node_results[fixed].reaction[2] == pytest.approx(80.0)
+    assert page.viewport._result.node_results[roller].reaction[1] == pytest.approx(20.0)
+
+
 def test_selected_node_deletion_also_removes_connected_entities() -> None:
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()

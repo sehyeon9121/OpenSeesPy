@@ -63,7 +63,8 @@ def check_determinacy(model: StructuralModel) -> DeterminacyCheck:
         degree = members + reactions - 2 * joints
     else:
         reactions = sum(sum(condition.restraints[:3]) for condition in model.boundaries)
-        degree = 3 * members + reactions - 3 * joints
+        releases = sum(element.release_count for element in model.elements.values())
+        degree = 3 * members + reactions - 3 * joints - releases
 
     if degree == 0:
         message = "정정구조입니다. 재료 및 단면 물성 없이 반력과 부재력을 계산할 수 있습니다."
@@ -114,7 +115,7 @@ class MaterialFreeStaticsSolver:
 
         ops.geomTransf("Linear", 1)
         for element in model.elements.values():
-            ops.element(
+            arguments: list[object] = [
                 "elasticBeamColumn",
                 element.tag,
                 element.node_i,
@@ -123,7 +124,11 @@ class MaterialFreeStaticsSolver:
                 1.0,
                 1.0,
                 1,
-            )
+            ]
+            release_code = int(element.moment_release_i) + 2 * int(element.moment_release_j)
+            if release_code:
+                arguments += ["-release", release_code]
+            ops.element(*arguments)
 
     @staticmethod
     def _apply_loads(model: StructuralModel, system: str) -> None:

@@ -3,12 +3,14 @@
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -59,6 +61,7 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(self._build_status_bar())
 
         self.canvas.model_changed.connect(self._refresh_status)
+        self.canvas.draw_state_changed.connect(self._refresh_draw_readout)
         self.delete_shortcut = QShortcut(QKeySequence.StandardKey.Delete, self.canvas)
         self.delete_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.delete_shortcut.activated.connect(self.canvas.delete_selected)
@@ -99,6 +102,9 @@ class ModelingInterfacePage(QFrame):
         layout.setSpacing(5)
         select = QPushButton("선택")
         select.clicked.connect(self._activate_select_tool)
+        draw = QPushButton("그리기")
+        draw.setToolTip("연속 클릭으로 절점과 부재를 함께 만듭니다 (Esc로 끊기)")
+        draw.clicked.connect(self._activate_draw_tool)
         nodes = QPushButton("노드 생성")
         nodes.clicked.connect(self._activate_node_tool)
         move_nodes = QPushButton("노드 이동/복사")
@@ -106,6 +112,7 @@ class ModelingInterfacePage(QFrame):
         members = QPushButton("부재 생성")
         members.clicked.connect(self._activate_member_tool)
         layout.addWidget(select)
+        layout.addWidget(draw)
         layout.addWidget(nodes)
         layout.addWidget(move_nodes)
         layout.addWidget(members)
@@ -160,6 +167,7 @@ class ModelingInterfacePage(QFrame):
         self.tool_context.setObjectName("setupSummaryPanel")
         self._context_pages: dict[str, QWidget] = {}
         self._add_context("select", self._build_select_context())
+        self._add_context("draw", self._build_draw_context())
         self._add_context("node", self._build_node_context())
         self._add_context("node_transform", self._build_node_transform_context())
         self._add_context("member", self._hint_context("시작 노드 클릭 → 마우스 이동 → 스냅 표시된 끝 노드 클릭"))
@@ -181,6 +189,61 @@ class ModelingInterfacePage(QFrame):
         layout.addWidget(label)
         layout.addStretch(1)
         return page
+
+    def _build_draw_context(self) -> QWidget:
+        """Numeric entry beside the canvas, so sloped members do not need a steady hand."""
+        page = QWidget()
+        layout = QHBoxLayout(page)
+        layout.setContentsMargins(10, 7, 10, 7)
+        layout.addWidget(QLabel("좌표 입력"))
+        self.draw_entry = QLineEdit()
+        self.draw_entry.setPlaceholderText("5<30 (길이<각도) · @3,4 (상대) · 3,4 (절대) · 5 (현재 방향)")
+        self.draw_entry.setMinimumWidth(300)
+        self.draw_entry.returnPressed.connect(self._commit_draw_entry)
+        layout.addWidget(self.draw_entry)
+        self.draw_readout = QLabel()
+        self.draw_readout.setObjectName("setupSummaryHint")
+        self.draw_readout.setMinimumWidth(210)
+        layout.addWidget(self.draw_readout)
+        self.ortho_lock = QCheckBox("직교 고정")
+        self.ortho_lock.setToolTip("Shift를 누르고 있어도 같게 동작합니다.")
+        self.ortho_lock.toggled.connect(
+            lambda checked: setattr(self.canvas, "ortho", bool(checked))
+        )
+        layout.addWidget(self.ortho_lock)
+        self.ortho_increment = QComboBox()
+        for value in (90.0, 45.0, 30.0, 15.0):
+            self.ortho_increment.addItem(f"{value:g}°", value)
+        self.ortho_increment.setCurrentIndex(1)
+        self.ortho_increment.currentIndexChanged.connect(
+            lambda: setattr(
+                self.canvas, "ortho_increment", float(self.ortho_increment.currentData())
+            )
+        )
+        layout.addWidget(self.ortho_increment)
+        end_chain = QPushButton("연결 끊기")
+        end_chain.setToolTip("Esc")
+        end_chain.clicked.connect(self.canvas.end_chain)
+        layout.addWidget(end_chain)
+        layout.addStretch(1)
+        return page
+
+    def _commit_draw_entry(self) -> None:
+        if self.canvas.commit_entry(self.draw_entry.text()):
+            self.draw_entry.clear()
+            return
+        self.draw_readout.setText("입력 형식을 인식하지 못했습니다.")
+
+    def _refresh_draw_readout(self) -> None:
+        measure = self.canvas.pending_length_and_angle()
+        parts = []
+        if measure is not None:
+            parts.append(f"길이 {measure[0]:.4g} m · 각도 {measure[1]:.1f}°")
+        elif self.canvas.mode == "draw":
+            parts.append("시작점을 클릭하거나 좌표를 입력하세요.")
+        if self.canvas.snap_label:
+            parts.append(f"스냅: {self.canvas.snap_label}")
+        self.draw_readout.setText("   ".join(parts))
 
     def _build_select_context(self) -> QWidget:
         page = QWidget()
@@ -496,6 +559,15 @@ class ModelingInterfacePage(QFrame):
     def _activate_node_tool(self) -> None:
         self._show_context("node")
         self._set_mode("select", "좌표와 증분을 입력한 뒤 노드 생성 버튼을 누릅니다.")
+
+    def _activate_draw_tool(self) -> None:
+        self._show_context("draw")
+        self._set_mode(
+            "draw",
+            "연속 클릭으로 절점과 부재를 함께 만듭니다. 좌표 입력칸에 길이·각도를 쳐도 됩니다.",
+        )
+        self.draw_entry.setFocus()
+        self._refresh_draw_readout()
 
     def _activate_member_tool(self) -> None:
         self._show_context("member")
