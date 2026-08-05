@@ -48,7 +48,16 @@ def check_determinacy(model: StructuralModel) -> DeterminacyCheck:
 
     system = kinds.pop()
     members = len(model.elements)
-    joints = len(model.nodes)
+    active_nodes = {
+        node_tag
+        for element in model.elements.values()
+        for node_tag in (element.node_i, element.node_j)
+    }
+    active_nodes.update(
+        condition.node_tag for condition in model.boundaries if any(condition.restraints)
+    )
+    active_nodes.update(load.node_tag for load in model.nodal_loads)
+    joints = len(active_nodes)
     if system == "truss":
         reactions = sum(sum(condition.restraints[:2]) for condition in model.boundaries)
         degree = members + reactions - 2 * joints

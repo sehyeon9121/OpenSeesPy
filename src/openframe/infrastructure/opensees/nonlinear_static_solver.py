@@ -10,6 +10,20 @@ from openframe.infrastructure.opensees.element_load_collector import ElementLoad
 from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
 from openframe.infrastructure.opensees.script_execution import run_model_script
 
+#: Algorithms tried, in order, when the configured one fails to converge on a step -
+#: a plain LoadControl/DisplacementControl run otherwise stops dead at the first
+#: iteration count the *chosen* algorithm cannot satisfy, even when a different
+#: algorithm would have sailed through the same increment.
+_FALLBACK_ALGORITHMS = ("Newton", "ModifiedNewton", "KrylovNewton", "NewtonLineSearch")
+#: How many times a single reporting step may be halved before it counts as a real
+#: non-convergence. Each halving is a much smaller ask of the same equations, so a
+#: step that only fails because the increment was too coarse usually succeeds well
+#: before this limit.
+_MAX_BISECTIONS = 4
+#: Reserved timeSeries/pattern tag offset used when a lateral pattern is torn down
+#: for the gravity phase and rebuilt afterwards, kept clear of the user's own tags.
+_REPLAY_TAG_OFFSET = 900_000_000
+
 
 def _local_forces(element_tag: int) -> list[float]:
     """Return end forces along the member's own axes (see linear_static_solver)."""
@@ -51,6 +65,107 @@ def _load_warnings(collector: ElementLoadCollector, element_tags: list[int]) -> 
     ]
 
 
+def _all_pattern_tags(
+    property_collector: ModelCommandCollector, load_collector: ElementLoadCollector
+) -> set[int]:
+    tags = {
+        int(item["pattern_tag"])
+        for item in property_collector.loads
+        if item.get("pattern_tag") is not None
+    }
+    tags |= {
+        int(pattern_tag)
+        for pattern_tag, _element_tag in load_collector.uniform_load_cases
+        if pattern_tag is not None
+    }
+    return tags
+
+
+def _remove_patterns(pattern_tags: set[int]) -> None:
+    for tag in sorted(pattern_tags):
+        ops.remove("loadPattern", tag)
+
+
+def _replay_patterns(
+    pattern_tags: set[int],
+    ndm: int,
+    property_collector: ModelCommandCollector,
+    load_collector: ElementLoadCollector,
+) -> None:
+    """Recreate the given patterns (nodal + element loads) from what was collected
+    while the model script ran, so they can be torn down for the gravity-only phase
+    and rebuilt afterwards with a clean pseudo-time - OpenSees has no "pause this
+    pattern" command, only remove-and-redefine."""
+    for pattern_tag in sorted(pattern_tags):
+        replay_tag = _REPLAY_TAG_OFFSET + pattern_tag
+        ops.timeSeries("Linear", replay_tag)
+        ops.pattern("Plain", pattern_tag, replay_tag)
+        for item in property_collector.loads:
+            if item.get("pattern_tag") == pattern_tag:
+                ops.load(int(item["node_tag"]), *[float(v) for v in item["values"]])
+        for (case_pattern_tag, element_tag), values in load_collector.uniform_load_cases.items():
+            if case_pattern_tag != pattern_tag:
+                continue
+            wx, wy, wz = values
+            if ndm == 3:
+                ops.eleLoad("-ele", element_tag, "-type", "-beamUniform", wy, wz, wx)
+            else:
+                ops.eleLoad("-ele", element_tag, "-type", "-beamUniform", wy, wx)
+
+
+def _set_integrator(
+    integrator_type: str, control_node: int, control_dof: int, increment: float
+) -> None:
+    if integrator_type == "DisplacementControl":
+        ops.integrator("DisplacementControl", control_node, control_dof, increment)
+    else:
+        ops.integrator("LoadControl", increment)
+
+
+def _analyze_with_fallback(primary_algorithm: str, recovered_with: set[str]) -> bool:
+    if ops.analyze(1) == 0:
+        return True
+    for candidate in _FALLBACK_ALGORITHMS:
+        if candidate == primary_algorithm:
+            continue
+        ops.algorithm(candidate)
+        converged = ops.analyze(1) == 0
+        ops.algorithm(primary_algorithm)
+        if converged:
+            recovered_with.add(candidate)
+            return True
+    return False
+
+
+def _advance_one_step(
+    nominal_increment: float,
+    *,
+    integrator_type: str,
+    control_node: int,
+    control_dof: int,
+    algorithm: str,
+    recovered_with: set[str],
+) -> bool:
+    """Cover one reporting step's worth of pseudo-time/displacement, retrying with
+    algorithm fallback and (if that alone isn't enough) a halved increment - applied
+    repeatedly, so a step that only converges at a quarter or eighth of the nominal
+    size still completes instead of ending the whole curve early."""
+    fraction_remaining = 1.0
+    sub_fraction = 1.0
+    depth = 0
+    while fraction_remaining > 1.0e-9:
+        step_fraction = min(sub_fraction, fraction_remaining)
+        _set_integrator(integrator_type, control_node, control_dof, nominal_increment * step_fraction)
+        if _analyze_with_fallback(algorithm, recovered_with):
+            fraction_remaining -= step_fraction
+            continue
+        depth += 1
+        if depth > _MAX_BISECTIONS:
+            return False
+        sub_fraction = step_fraction / 2.0
+    return True
+
+
 def run_nonlinear_static_analysis(
     source: Path,
     *,
@@ -62,15 +177,30 @@ def run_nonlinear_static_analysis(
     algorithm: str = "Newton",
     test_type: str = "NormDispIncr",
     system: str = "BandGeneral",
+    gravity_pattern: int | None = None,
+    gravity_steps: int = 5,
+    integrator_type: str = "LoadControl",
+    target_displacement: float | None = None,
 ) -> dict[str, Any]:
     """Build the model by executing ``source``, then push it in ``num_steps`` equal
-    load increments (LoadControl), tracking base shear vs. ``control_node``'s
-    ``control_dof`` displacement at every converged step for a load-displacement
-    (pushover) curve.
+    increments, tracking base shear vs. ``control_node``'s ``control_dof``
+    displacement at every converged step for a load-displacement (pushover) curve.
 
-    Stops at the first step that fails to converge rather than raising: the curve up
-    to that point, and the last converged state, are still meaningful results - a
-    structure that stops converging partway through is telling you something real.
+    ``integrator_type="LoadControl"`` scales every active pattern by an equal load
+    factor each step - it cannot trace a softening/post-peak branch, since that needs
+    the *displacement* driving the analysis instead. ``"DisplacementControl"`` pushes
+    ``control_node``/``control_dof`` by a fixed increment each step and solves for
+    whatever load that takes, tracing the descending branch too.
+
+    ``gravity_pattern``, if given, is applied on its own first (in ``gravity_steps``
+    increments), frozen with ``loadConst``, and excluded from the main loop - so
+    gravity is fully present throughout the push instead of ramping up alongside it,
+    which real pushover procedure requires and a plastic material's path-dependence
+    makes more than cosmetic.
+
+    Retries a failed step with the other standard algorithms, then with a halved
+    increment, before finally stopping the curve there and reporting why - the curve
+    up to that point, and the last converged state, are still meaningful results.
     """
     load_collector = ElementLoadCollector()
     # The section properties are only knowable from the element() call itself, and the
@@ -101,6 +231,14 @@ def run_nonlinear_static_analysis(
             f"CONTROL DOF {control_dof}가 CONTROL NODE {control_node}의 자유도 범위"
             f"(1~{control_node_dof_count})를 벗어났습니다."
         )
+    if integrator_type == "DisplacementControl" and not target_displacement:
+        raise RuntimeError("DisplacementControl에는 0이 아닌 TARGET DISPLACEMENT 값이 필요합니다.")
+
+    all_pattern_tags = _all_pattern_tags(property_collector, load_collector)
+    if gravity_pattern is not None and gravity_pattern not in all_pattern_tags:
+        raise RuntimeError(f"GRAVITY PATTERN {gravity_pattern}가 모델에 존재하지 않습니다.")
+    if gravity_pattern is not None and gravity_steps <= 0:
+        raise RuntimeError("GRAVITY STEPS는 1 이상이어야 합니다.")
 
     fixed_nodes = [int(tag) for tag in ops.getFixedNodes()]
     # A model can, in principle, mix ndf across nodes (multiple ops.model() calls or
@@ -111,39 +249,84 @@ def run_nonlinear_static_analysis(
         tag for tag in fixed_nodes if len(ops.nodeReaction(tag)) >= control_dof
     ]
 
+    def _base_shear() -> float:
+        ops.reactions()
+        # Reactions oppose the applied load (Newton's third law); base shear is read
+        # as the resistance the structure develops, so the sign is flipped to grow
+        # positive with the push instead of growing more negative.
+        return -sum(float(ops.nodeReaction(tag)[control_dof - 1]) for tag in reaction_nodes)
+
     ops.wipeAnalysis()
     ops.constraints("Plain")
     ops.numberer("RCM")
     ops.system(system)
     ops.test(test_type, tolerance, max_iterations)
     ops.algorithm(algorithm)
-    ops.integrator("LoadControl", 1.0 / num_steps)
-    ops.analysis("Static")
 
     messages: list[str] = []
+    baseline_base_shear = 0.0
+
+    if gravity_pattern is not None:
+        lateral_pattern_tags = all_pattern_tags - {gravity_pattern}
+        _remove_patterns(lateral_pattern_tags)
+        ops.integrator("LoadControl", 1.0 / gravity_steps)
+        ops.analysis("Static")
+        for step in range(1, gravity_steps + 1):
+            if ops.analyze(1) != 0:
+                raise RuntimeError(
+                    f"중력 하중(GRAVITY PATTERN {gravity_pattern}) 적용 중 {step}번째 스텝에서 "
+                    "수렴하지 않았습니다. GRAVITY STEPS를 늘려보세요."
+                )
+        ops.loadConst("-time", 0.0)
+        baseline_base_shear = _base_shear()
+        ndm = property_collector.ndm
+        _replay_patterns(lateral_pattern_tags, ndm, property_collector, load_collector)
+
+    nominal_increment = (
+        (target_displacement or 0.0) / num_steps
+        if integrator_type == "DisplacementControl"
+        else 1.0 / num_steps
+    )
+    # An integrator must exist before ops.analysis() is created, or OpenSees falls
+    # back to its own default and warns about it - _advance_one_step redefines this
+    # every substep anyway, so the initial value only has to be valid, not final.
+    _set_integrator(integrator_type, control_node, control_dof, nominal_increment)
+    ops.analysis("Static")
+
     curve: list[dict[str, float | int]] = []
+    recovered_steps: dict[int, set[str]] = {}
     for step in range(1, num_steps + 1):
-        if ops.analyze(1) != 0:
+        recovered_with: set[str] = set()
+        if not _advance_one_step(
+            nominal_increment,
+            integrator_type=integrator_type,
+            control_node=control_node,
+            control_dof=control_dof,
+            algorithm=algorithm,
+            recovered_with=recovered_with,
+        ):
             messages.append(
                 f"{step}번째 스텝에서 수렴하지 않았습니다 (총 {num_steps}스텝 중). "
                 "그 이전까지 수렴한 결과만 표시됩니다."
             )
             break
-        ops.reactions()
-        # Reactions oppose the applied load (Newton's third law); base shear is read
-        # as the resistance the structure develops, so the sign is flipped to grow
-        # positive with the push instead of growing more negative.
-        base_shear = -sum(
-            float(ops.nodeReaction(tag)[control_dof - 1]) for tag in reaction_nodes
-        )
+        if recovered_with:
+            recovered_steps[step] = recovered_with
+        base_shear = _base_shear() - baseline_base_shear
         displacement = float(ops.nodeDisp(control_node, control_dof))
         curve.append(
             {"step": step, "control_displacement": displacement, "base_shear": base_shear}
         )
 
     if not curve:
-        raise RuntimeError("첫 하중 스텝부터 수렴하지 않았습니다. 해석 설정을 조정해 보세요.")
+        raise RuntimeError("첫 스텝부터 수렴하지 않았습니다. 해석 설정을 조정해 보세요.")
 
+    if recovered_steps:
+        step_list = ", ".join(str(step) for step in sorted(recovered_steps))
+        messages.append(
+            f"{step_list}번째 스텝은 기본 알고리즘으로 수렴하지 않아 대체 알고리즘 또는 "
+            "축소된 증분으로 재시도해 수렴했습니다."
+        )
     messages.extend(_load_warnings(load_collector, element_tags))
 
     return {

@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QPoint, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -94,8 +94,8 @@ def test_member_click_uses_the_same_near_node_snap_as_the_preview() -> None:
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
-    canvas.resize(800, 500)
-    canvas.show()
+    page.resize(1000, 700)
+    page.show()
     application.processEvents()
     canvas.add_node(0.0, 0.0)
     canvas.add_node(4.0, 0.0)
@@ -189,7 +189,7 @@ def test_repeated_node_creation_is_one_undo_operation() -> None:
     assert not page.canvas.nodes
 
 
-def test_normal_node_added_on_a_member_splits_and_connects_the_member() -> None:
+def test_midpoint_snap_adds_an_analysis_node_without_splitting_the_visible_member() -> None:
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -197,20 +197,23 @@ def test_normal_node_added_on_a_member_splits_and_connects_the_member() -> None:
     assert application is QApplication.instance()
     left = canvas.add_node(0.0, 0.0)
     right = canvas.add_node(4.0, 0.0)
-    canvas.add_member(left, right)
-    middle = canvas.add_node(2.0, 0.0)
+    member = canvas.add_member(left, right)
+    middle = canvas.add_member_midpoint_node(member)
     canvas.set_support(left, (True, True, False))
     canvas.set_support(right, (False, True, False))
     canvas.set_nodal_load(middle, (0.0, -10.0, 0.0))
 
     model = canvas.build_model()
+    assert len(canvas.elements) == 1
     assert len(model.elements) == 2
     assert all(middle in {element.node_i, element.node_j} for element in model.elements.values())
     assert model.metadata["hinge_nodes"] == ""
+    assert model.metadata["logical_member_count"] == "1"
+    assert model.metadata["embedded_nodes"] == f"{middle}:{member}:0.5"
     assert check_determinacy(model).degree == 0
 
 
-def test_member_drawn_across_existing_middle_node_is_created_as_segments() -> None:
+def test_collinear_node_is_auto_attached_without_splitting_the_visible_member() -> None:
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -221,7 +224,122 @@ def test_member_drawn_across_existing_middle_node_is_created_as_segments() -> No
     right = canvas.add_node(4.0, 0.0)
     canvas.add_member(left, right)
 
-    assert {(element.node_i, element.node_j) for element in canvas.elements.values()} == {
-        (left, middle),
-        (middle, right),
-    }
+    assert len(canvas.elements) == 1
+    element = next(iter(canvas.elements.values()))
+    assert (element.node_i, element.node_j) == (left, right)
+    assert canvas.embedded_nodes[middle] == (element.tag, 0.5)
+    assert len(canvas.build_model().elements) == 2
+
+
+def test_midpoint_tool_snaps_near_member_center_and_is_undoable() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.set_mode("member_midpoint")
+    near_midpoint = QPointF(2.0 * canvas._DRAW_SCALE, 8.0)
+    snapped_member = canvas._member_near_scene(near_midpoint)
+    assert snapped_member == member
+    canvas.add_member_midpoint_node(snapped_member)
+    assert len(canvas.nodes) == 3
+    assert next(iter(canvas.embedded_nodes.values())) == (member, 0.5)
+    assert len(canvas.elements) == 1
+
+    canvas.undo()
+    assert len(canvas.nodes) == 2
+    assert not canvas.embedded_nodes
+    assert len(canvas.elements) == 1
+
+
+def test_arbitrary_member_station_accepts_a_point_load_without_instability() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(10.0, 0.0)
+    member = canvas.add_member(left, right)
+    load_node = canvas.add_member_station_node(member, 0.3)
+    canvas.set_support(left, (True, True, False))
+    canvas.set_support(right, (False, True, False))
+    canvas.set_nodal_load(load_node, (0.0, -15.0, 0.0))
+
+    model = canvas.build_model()
+    assert len(canvas.elements) == 1
+    assert len(model.elements) == 2
+    assert canvas.nodes[load_node].x == pytest.approx(3.0)
+    assert check_determinacy(model).degree == 0
+    page.solve()
+    assert page.viewport._result.node_results[left].reaction[1] == pytest.approx(10.5)
+    assert page.viewport._result.node_results[right].reaction[1] == pytest.approx(4.5)
+
+
+def test_selected_node_can_move_without_losing_member_connectivity_and_undo() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.selected_nodes = {right}
+    assert canvas.transform_selected_nodes("move", 1.5, 0.5) == 1
+    assert (canvas.nodes[right].x, canvas.nodes[right].y) == pytest.approx((5.5, 0.5))
+    assert canvas.elements[member].node_j == right
+
+    canvas.undo()
+    assert (canvas.nodes[right].x, canvas.nodes[right].y) == pytest.approx((4.0, 0.0))
+
+
+def test_selected_nodes_can_be_copied_repeatedly_as_one_undo_operation() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    source = canvas.add_node(0.25, 0.5)
+    canvas.selected_nodes = {source}
+    canvas.set_selected_node_kind(True)
+    assert canvas.transform_selected_nodes("copy", 1.25, 0.5, repeat=3) == 3
+    assert [(node.x, node.y) for node in canvas.nodes.values()] == pytest.approx(
+        [(0.25, 0.5), (1.5, 1.0), (2.75, 1.5), (4.0, 2.0)]
+    )
+    assert canvas.hinge_nodes == {1, 2, 3, 4}
+
+    canvas.undo()
+    assert list(canvas.nodes) == [source]
+
+
+def test_blank_space_drag_selects_nodes_even_while_member_tool_is_active() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    page.resize(1000, 700)
+    page.show()
+    application.processEvents()
+    canvas = page.canvas
+    node = canvas.add_node(0.0, 0.0)
+    canvas.set_mode("member")
+    start = canvas.mapFromScene(-30.0, -30.0)
+    end = canvas.mapFromScene(30.0, 30.0)
+
+    QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(canvas.viewport(), end)
+    QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
+
+    assert canvas.selected_nodes == {node}
+    assert canvas.mode == "member"
+
+
+def test_node_transform_tool_activates_node_drag_selection_without_support_tool() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+
+    assert application is QApplication.instance()
+    page._activate_node_transform_tool()
+    assert page.canvas.mode == "select"
+    assert page.canvas.selection_filter == "nodes"

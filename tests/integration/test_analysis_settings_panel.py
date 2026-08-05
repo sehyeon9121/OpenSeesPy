@@ -70,3 +70,78 @@ def test_control_node_default_is_the_free_node_for_the_spring_model_too() -> Non
 
     assert panel.control_node.currentData() == 2
     application.processEvents()
+
+
+def test_gravity_pattern_combo_lists_patterns_found_in_the_model() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+
+    panel = AnalysisSettingsPanel()
+    panel.set_model(model)
+
+    labels = [
+        panel.gravity_pattern.itemText(index) for index in range(panel.gravity_pattern.count())
+    ]
+    assert labels == ["NONE", "Pattern 1"]
+    assert panel.gravity_pattern.currentData() is None
+    application.processEvents()
+
+
+def test_gravity_steps_hidden_until_a_gravity_pattern_is_chosen() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.set_model(model)
+    panel._nonlinear_dialog.show()
+    application.processEvents()
+
+    assert panel.gravity_steps_group.isVisible() is False
+    panel.gravity_pattern.setCurrentIndex(panel.gravity_pattern.findData(1))
+    assert panel.gravity_steps_group.isVisible() is True
+    panel._nonlinear_dialog.close()
+
+
+def test_target_displacement_hidden_until_displacement_control_is_chosen() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel._nonlinear_dialog.show()
+    application.processEvents()
+
+    assert panel.target_displacement_group.isVisible() is False
+    panel.integrator_type.setCurrentIndex(
+        panel.integrator_type.findData("DisplacementControl")
+    )
+    assert panel.target_displacement_group.isVisible() is True
+    panel._nonlinear_dialog.close()
+
+
+def test_build_options_omits_gravity_and_target_displacement_by_default() -> None:
+    panel = AnalysisSettingsPanel()
+
+    options = panel.build_options()
+
+    assert options["integrator_type"] == "LoadControl"
+    assert "gravity_pattern" not in options
+    assert "gravity_steps" not in options
+    assert "target_displacement" not in options
+
+
+def test_build_options_includes_gravity_and_target_displacement_when_selected() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.set_model(model)
+    panel.gravity_pattern.setCurrentIndex(panel.gravity_pattern.findData(1))
+    panel.gravity_steps.setValue(7)
+    panel.integrator_type.setCurrentIndex(
+        panel.integrator_type.findData("DisplacementControl")
+    )
+    panel.target_displacement.setValue(0.5)
+
+    options = panel.build_options()
+
+    assert options["gravity_pattern"] == 1
+    assert options["gravity_steps"] == 7
+    assert options["integrator_type"] == "DisplacementControl"
+    assert options["target_displacement"] == 0.5
+    application.processEvents()

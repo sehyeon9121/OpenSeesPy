@@ -50,6 +50,7 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.boundaries: dict[int, BoundaryCondition] = {}
         self.nodal_loads: dict[int, NodalLoad] = {}
         self.element_loads: dict[int, UniformElementLoad] = {}
+        self.embedded_nodes: dict[int, tuple[int, float]] = {}
         self.mode = "select"
         self.selection_filter = "all"
         self.grid = 1.0
@@ -61,6 +62,7 @@ class StaticsDrawingCanvas(QGraphicsView):
         self._drag_start: QPointF | None = None
         self._drag_current: QPointF | None = None
         self._preview_point: QPointF | None = None
+        self._preview_midpoint: tuple[int, QPointF, float] | None = None
         self._panning = False
         self._pan_start = QPointF()
         self.support_restraints = (True, True, False)
@@ -75,6 +77,7 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.mode = mode
         self._member_start = None
         self._preview_point = None
+        self._preview_midpoint = None
         self.setDragMode(
             QGraphicsView.DragMode.ScrollHandDrag
             if mode == "select"
@@ -134,6 +137,59 @@ class StaticsDrawingCanvas(QGraphicsView):
             )
         self._changed()
 
+    def transform_selected_nodes(
+        self,
+        operation: str,
+        dx: float,
+        dy: float,
+        repeat: int = 1,
+    ) -> int:
+        """Move selected nodes, or create translated copies with new node tags."""
+        if not self.selected_nodes or (dx == 0.0 and dy == 0.0):
+            return 0
+        selected = sorted(self.selected_nodes)
+        if operation == "move":
+            targets = {
+                tag: (self.nodes[tag].x + dx, self.nodes[tag].y + dy) for tag in selected
+            }
+            occupied = {
+                (round(node.x, 12), round(node.y, 12))
+                for tag, node in self.nodes.items()
+                if tag not in self.selected_nodes
+            }
+            if any((round(x, 12), round(y, 12)) in occupied for x, y in targets.values()):
+                return 0
+            self._record_history()
+            for tag, (x, y) in targets.items():
+                old = self.nodes[tag]
+                self.nodes[tag] = Node(tag, x, y, old.z, old.ndf)
+                self.embedded_nodes.pop(tag, None)
+                self._attach_node_to_member(tag)
+            self._changed()
+            return len(selected)
+
+        if operation != "copy":
+            raise ValueError(f"Unknown node transform operation: {operation}")
+        self.begin_history_group()
+        created: set[int] = set()
+        try:
+            for step in range(1, max(1, repeat) + 1):
+                for source_tag in selected:
+                    source = self.nodes[source_tag]
+                    before = set(self.nodes)
+                    tag = self.add_node(source.x + dx * step, source.y + dy * step)
+                    if tag in before:
+                        continue
+                    created.add(tag)
+                    if source_tag in self.hinge_nodes:
+                        self.hinge_nodes.add(tag)
+        finally:
+            self.end_history_group()
+        self.selected_nodes = created
+        self.selected_elements.clear()
+        self._redraw()
+        return len(created)
+
     def add_node(self, x: float, y: float) -> int:
         existing = self._nearest_node(x, y)
         if existing is not None:
@@ -141,78 +197,71 @@ class StaticsDrawingCanvas(QGraphicsView):
         self._record_history()
         tag = max(self.nodes, default=0) + 1
         self.nodes[tag] = Node(tag, x, y)
-        self._split_members_at_node(tag)
+        self._attach_node_to_member(tag)
         self._changed()
         return tag
 
     def add_member(self, node_i: int, node_j: int) -> int | None:
         if node_i == node_j:
             return None
-        start = self.nodes[node_i]
-        end = self.nodes[node_j]
-        intermediate = sorted(
-            (
-                (parameter, tag)
-                for tag, node in self.nodes.items()
-                if tag not in {node_i, node_j}
-                and (parameter := self._point_parameter(node, start, end)) is not None
-            ),
-            key=lambda item: item[0],
-        )
-        chain = [node_i, *(tag for _, tag in intermediate), node_j]
-        pairs = list(pairwise(chain))
-        missing = [
-            pair
-            for pair in pairs
-            if not any(
-                {element.node_i, element.node_j} == set(pair)
-                for element in self.elements.values()
-            )
-        ]
-        if not missing:
+        if any(
+            {element.node_i, element.node_j} == {node_i, node_j}
+            for element in self.elements.values()
+        ):
             return None
         self._record_history()
-        first_tag: int | None = None
-        for pair in missing:
-            tag = max(self.elements, default=0) + 1
-            self.elements[tag] = Element(tag, pair[0], pair[1], "frame")
-            first_tag = tag if first_tag is None else first_tag
+        tag = max(self.elements, default=0) + 1
+        self.elements[tag] = Element(tag, node_i, node_j, "frame")
+        for candidate_tag in self.nodes:
+            if candidate_tag not in {node_i, node_j}:
+                self._attach_node_to_member(candidate_tag, preferred_member=tag)
         self._changed()
-        return first_tag
+        return tag
 
-    def _split_members_at_node(self, node_tag: int) -> None:
+    def add_member_midpoint_node(self, element_tag: int) -> int:
+        return self.add_member_station_node(element_tag, 0.5)
+
+    def add_member_station_node(self, element_tag: int, position: float) -> int:
+        position = max(1.0e-9, min(1.0 - 1.0e-9, position))
+        for node_tag, (host_tag, existing_position) in self.embedded_nodes.items():
+            if host_tag == element_tag and abs(existing_position - position) < 1.0e-9:
+                return node_tag
+        element = self.elements[element_tag]
+        start = self.nodes[element.node_i]
+        end = self.nodes[element.node_j]
+        x = start.x + (end.x - start.x) * position
+        y = start.y + (end.y - start.y) * position
+        existing = self._nearest_node(x, y)
+        if existing is not None:
+            if self.embedded_nodes.get(existing) != (element_tag, position):
+                self._record_history()
+                self.embedded_nodes[existing] = (element_tag, position)
+                self._changed()
+            return existing
+        tag = self.add_node(x, y)
+        self.embedded_nodes[tag] = (element_tag, position)
+        self._changed()
+        return tag
+
+    def _attach_node_to_member(
+        self, node_tag: int, preferred_member: int | None = None
+    ) -> bool:
         node = self.nodes[node_tag]
-        for tag, element in list(self.elements.items()):
-            start = self.nodes[element.node_i]
-            end = self.nodes[element.node_j]
-            if self._point_parameter(node, start, end) is None:
+        ordered = sorted(self.elements)
+        if preferred_member in self.elements:
+            ordered.remove(preferred_member)
+            ordered.insert(0, preferred_member)
+        for element_tag in ordered:
+            element = self.elements[element_tag]
+            if node_tag in {element.node_i, element.node_j}:
                 continue
-            original_end = element.node_j
-            self.elements[tag] = Element(
-                tag,
-                element.node_i,
-                node_tag,
-                element.element_type,
-                dict(element.properties),
+            position = self._point_parameter(
+                node, self.nodes[element.node_i], self.nodes[element.node_j]
             )
-            new_tag = max(self.elements, default=0) + 1
-            self.elements[new_tag] = Element(
-                new_tag,
-                node_tag,
-                original_end,
-                element.element_type,
-                dict(element.properties),
-            )
-            load = self.element_loads.get(tag)
-            if load is not None:
-                self.element_loads[new_tag] = UniformElementLoad(
-                    new_tag,
-                    wx=load.wx,
-                    wy=load.wy,
-                    wz=load.wz,
-                    pattern_tag=load.pattern_tag,
-                    case_type=load.case_type,
-                )
+            if position is not None:
+                self.embedded_nodes[node_tag] = (element_tag, position)
+                return True
+        return False
 
     @staticmethod
     def _point_parameter(point: Node, start: Node, end: Node) -> float | None:
@@ -249,14 +298,57 @@ class StaticsDrawingCanvas(QGraphicsView):
         self._changed()
 
     def build_model(self) -> StructuralModel:
+        analysis_elements: dict[int, Element] = {}
+        analysis_loads: list[UniformElementLoad] = []
+        next_tag = max(self.elements, default=0) + 1
+        for element_tag, element in self.elements.items():
+            stations = sorted(
+                (
+                    (position, node_tag)
+                    for node_tag, (host_tag, position) in self.embedded_nodes.items()
+                    if host_tag == element_tag
+                ),
+                key=lambda item: item[0],
+            )
+            chain = [element.node_i, *(node_tag for _, node_tag in stations), element.node_j]
+            segment_tags = [element_tag]
+            segment_tags.extend(range(next_tag, next_tag + max(0, len(chain) - 2)))
+            next_tag += max(0, len(chain) - 2)
+            for segment_tag, (node_i, node_j) in zip(
+                segment_tags, pairwise(chain), strict=True
+            ):
+                analysis_elements[segment_tag] = Element(
+                    segment_tag,
+                    node_i,
+                    node_j,
+                    element.element_type,
+                    dict(element.properties),
+                )
+                load = self.element_loads.get(element_tag)
+                if load is not None:
+                    analysis_loads.append(
+                        UniformElementLoad(
+                            segment_tag,
+                            wx=load.wx,
+                            wy=load.wy,
+                            wz=load.wz,
+                            pattern_tag=load.pattern_tag,
+                            case_type=load.case_type,
+                        )
+                    )
         model = StructuralModel(
             nodes=dict(self.nodes),
-            elements=dict(self.elements),
+            elements=analysis_elements,
             boundaries=list(self.boundaries.values()),
             nodal_loads=list(self.nodal_loads.values()),
-            element_loads=list(self.element_loads.values()),
+            element_loads=analysis_loads,
         )
         model.metadata["hinge_nodes"] = ",".join(str(tag) for tag in sorted(self.hinge_nodes))
+        model.metadata["logical_member_count"] = str(len(self.elements))
+        model.metadata["embedded_nodes"] = ",".join(
+            f"{node_tag}:{host_tag}:{position:g}"
+            for node_tag, (host_tag, position) in sorted(self.embedded_nodes.items())
+        )
         return model
 
     def delete_selected(self) -> None:
@@ -279,7 +371,19 @@ class StaticsDrawingCanvas(QGraphicsView):
             self.boundaries.pop(tag, None)
             self.nodal_loads.pop(tag, None)
             self.hinge_nodes.discard(tag)
+            self.embedded_nodes.pop(tag, None)
         for tag in element_tags:
+            hosted_nodes = [
+                node_tag
+                for node_tag, (host_tag, _) in self.embedded_nodes.items()
+                if host_tag == tag
+            ]
+            for node_tag in hosted_nodes:
+                self.nodes.pop(node_tag, None)
+                self.boundaries.pop(node_tag, None)
+                self.nodal_loads.pop(node_tag, None)
+                self.hinge_nodes.discard(node_tag)
+                self.embedded_nodes.pop(node_tag, None)
             self.elements.pop(tag, None)
             self.element_loads.pop(tag, None)
         self._selected = None
@@ -328,6 +432,7 @@ class StaticsDrawingCanvas(QGraphicsView):
             "nodal_loads": dict(self.nodal_loads),
             "element_loads": dict(self.element_loads),
             "hinge_nodes": set(self.hinge_nodes),
+            "embedded_nodes": dict(self.embedded_nodes),
         }
 
     def _restore(self, snapshot: dict[str, object]) -> None:
@@ -337,6 +442,7 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.nodal_loads = dict(snapshot["nodal_loads"])
         self.element_loads = dict(snapshot["element_loads"])
         self.hinge_nodes = set(snapshot["hinge_nodes"])
+        self.embedded_nodes = dict(snapshot["embedded_nodes"])
         self.selected_nodes.clear()
         self.selected_elements.clear()
         self._selected = None
@@ -371,6 +477,19 @@ class StaticsDrawingCanvas(QGraphicsView):
         if node is None:
             node = self._node_near_scene(point)
         member = self._member_at_view(event.position().toPoint())
+        if member is None:
+            member = self._member_near_scene(point)
+        can_start_global_selection = (
+            node is None
+            and member is None
+            and not (self.mode == "member" and self._member_start is not None)
+        )
+        if can_start_global_selection:
+            self._drag_start = point
+            self._drag_current = point
+            if not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.clear_selection()
+            return
         if self.mode == "node":
             self.add_node(x, y)
         elif self.mode == "member" and node is not None:
@@ -388,6 +507,10 @@ class StaticsDrawingCanvas(QGraphicsView):
             self.set_nodal_load(node, self.pending_nodal_load)
         elif self.mode == "uniform_load" and member is not None:
             self.set_uniform_load(member, self.pending_uniform_load)
+        elif self.mode == "member_midpoint" and member is not None:
+            station = self._member_station_near_scene(point)
+            if station is not None:
+                self.add_member_station_node(station[0], station[1])
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._panning:
@@ -402,6 +525,10 @@ class StaticsDrawingCanvas(QGraphicsView):
             event.accept()
             return
         point = self.mapToScene(event.position().toPoint())
+        if self._drag_start is not None:
+            self._drag_current = point
+            self._redraw()
+            return
         if self.mode == "member" and self._member_start is not None:
             snapped = self._node_near_scene(point)
             if snapped is not None:
@@ -413,8 +540,13 @@ class StaticsDrawingCanvas(QGraphicsView):
                 self._preview_point = point
             self._redraw()
             return
-        if self.mode == "select" and self._drag_start is not None:
-            self._drag_current = point
+        if self.mode == "member_midpoint":
+            station = self._member_station_near_scene(point)
+            if station is None:
+                self._preview_midpoint = None
+            else:
+                member, position, projected = station
+                self._preview_midpoint = (member, projected, position)
             self._redraw()
             return
         super().mouseMoveEvent(event)
@@ -425,7 +557,7 @@ class StaticsDrawingCanvas(QGraphicsView):
             self.unsetCursor()
             event.accept()
             return
-        if self.mode == "select" and self._drag_start is not None:
+        if self._drag_start is not None:
             current = self._drag_current or self._drag_start
             rectangle = QRectF(self._drag_start, current).normalized()
             self._select_in_rect(rectangle, crossing=current.x() < self._drag_start.x())
@@ -540,10 +672,28 @@ class StaticsDrawingCanvas(QGraphicsView):
                 QPen(selection_color, 1, Qt.PenStyle.DashLine),
                 QColor(selection_color.red(), selection_color.green(), selection_color.blue(), 35),
             )
+        if self._preview_midpoint is not None:
+            _, midpoint, position = self._preview_midpoint
+            self.scene_model.addEllipse(
+                midpoint.x() - 10,
+                midpoint.y() - 10,
+                20,
+                20,
+                QPen(QColor("#22c55e"), 2),
+                QColor(34, 197, 94, 45),
+            )
+            station_label = "MID" if abs(position - 0.5) < 1.0e-9 else f"{position:.3g}L"
+            label = self.scene_model.addText(station_label)
+            label.setDefaultTextColor(QColor("#16a34a"))
+            label.setPos(midpoint + QPointF(10, -25))
 
     def _nearest_node(self, x: float, y: float) -> int | None:
         return next(
-            (tag for tag, node in self.nodes.items() if abs(node.x - x) < 0.2 and abs(node.y - y) < 0.2),
+            (
+                tag
+                for tag, node in self.nodes.items()
+                if abs(node.x - x) < 1.0e-9 and abs(node.y - y) < 1.0e-9
+            ),
             None,
         )
 
@@ -558,6 +708,62 @@ class StaticsDrawingCanvas(QGraphicsView):
         )
         distance, tag = min(candidates, default=(float("inf"), None))
         return tag if distance <= tolerance * tolerance else None
+
+    def _member_near_scene(self, point: QPointF, tolerance: float = 14.0) -> int | None:
+        candidates: list[tuple[float, int]] = []
+        for tag, element in self.elements.items():
+            start_node = self.nodes[element.node_i]
+            end_node = self.nodes[element.node_j]
+            start = QPointF(
+                start_node.x * self._DRAW_SCALE, -start_node.y * self._DRAW_SCALE
+            )
+            end = QPointF(end_node.x * self._DRAW_SCALE, -end_node.y * self._DRAW_SCALE)
+            dx, dy = end.x() - start.x(), end.y() - start.y()
+            length_squared = dx * dx + dy * dy
+            if length_squared == 0.0:
+                continue
+            station = max(
+                0.0,
+                min(1.0, ((point.x() - start.x()) * dx + (point.y() - start.y()) * dy) / length_squared),
+            )
+            projected = QPointF(start.x() + station * dx, start.y() + station * dy)
+            distance = (point.x() - projected.x()) ** 2 + (point.y() - projected.y()) ** 2
+            candidates.append((distance, tag))
+        distance, tag = min(candidates, default=(float("inf"), None))
+        return tag if distance <= tolerance * tolerance else None
+
+    def _member_station_near_scene(
+        self, point: QPointF, tolerance: float = 14.0
+    ) -> tuple[int, float, QPointF] | None:
+        candidates: list[tuple[float, int, float, QPointF, float]] = []
+        for tag, element in self.elements.items():
+            a = self.nodes[element.node_i]
+            b = self.nodes[element.node_j]
+            start = QPointF(a.x * self._DRAW_SCALE, -a.y * self._DRAW_SCALE)
+            end = QPointF(b.x * self._DRAW_SCALE, -b.y * self._DRAW_SCALE)
+            dx, dy = end.x() - start.x(), end.y() - start.y()
+            length_squared = dx * dx + dy * dy
+            if length_squared == 0.0:
+                continue
+            position = max(
+                0.0,
+                min(
+                    1.0,
+                    ((point.x() - start.x()) * dx + (point.y() - start.y()) * dy)
+                    / length_squared,
+                ),
+            )
+            if abs(position - 0.5) * length_squared**0.5 <= tolerance:
+                position = 0.5
+            projected = QPointF(start.x() + position * dx, start.y() + position * dy)
+            distance = (point.x() - projected.x()) ** 2 + (point.y() - projected.y()) ** 2
+            candidates.append((distance, tag, position, projected, length_squared))
+        distance, tag, position, projected, _ = min(
+            candidates, default=(float("inf"), 0, 0.0, QPointF(), 0.0)
+        )
+        if distance > tolerance * tolerance or position in {0.0, 1.0}:
+            return None
+        return tag, position, projected
 
     def _toggle_selection(
         self, key: tuple[str, int], modifiers: Qt.KeyboardModifier

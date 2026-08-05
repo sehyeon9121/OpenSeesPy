@@ -19,6 +19,10 @@ class NonlinearStaticAnalysis(AnalysisModule):
             errors.append("Python 파일이 필요합니다.")
         if request.options.get("control_node") is None:
             errors.append("비선형 정적해석에는 CONTROL NODE 지정이 필요합니다.")
+        if request.options.get("integrator_type") == "DisplacementControl" and not request.options.get(
+            "target_displacement"
+        ):
+            errors.append("DisplacementControl에는 0이 아닌 TARGET DISPLACEMENT 값이 필요합니다.")
         return errors
 
     def run(self, request: AnalysisRequest) -> AnalysisResult:

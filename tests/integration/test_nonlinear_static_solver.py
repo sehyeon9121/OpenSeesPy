@@ -142,6 +142,178 @@ def test_rejects_control_dof_beyond_the_model_ndf(tmp_path: Path) -> None:
         ops.wipe()
 
 
+#: Two patterns on the same DOF - pattern 1 (80, "gravity") and pattern 2 (60,
+#: "lateral") - so combined-ramp vs. gravity-held-constant produce a measurably
+#: different curve even though both are just Steel01 in one direction.
+_TWO_PATTERN_SPRING_MODEL = """
+import openseespy.opensees as ops
+ops.wipe()
+ops.model('basic', '-ndm', 1, '-ndf', 1)
+ops.node(1, 0.0)
+ops.node(2, 1.0)
+ops.fix(1, 1)
+ops.uniaxialMaterial('Steel01', 1, 100.0, 1000.0, 0.02)
+ops.element('zeroLength', 1, 1, 2, '-mat', 1, '-dir', 1)
+ops.timeSeries('Linear', 1)
+ops.pattern('Plain', 1, 1)
+ops.load(2, 80.0)
+ops.timeSeries('Linear', 2)
+ops.pattern('Plain', 2, 2)
+ops.load(2, 60.0)
+"""
+
+#: A softening (strength-degrading) spring: rises to a peak at e=0.2, then the
+#: backbone descends to a residual plateau at e=0.5 - LoadControl cannot trace the
+#: descending branch (there's no load factor beyond the peak that has an equilibrium
+#: solution), DisplacementControl can.
+_SOFTENING_SPRING_MODEL = """
+import openseespy.opensees as ops
+ops.wipe()
+ops.model('basic', '-ndm', 1, '-ndf', 1)
+ops.node(1, 0.0)
+ops.node(2, 1.0)
+ops.fix(1, 1)
+ops.uniaxialMaterial(
+    'Hysteretic', 1,
+    100.0, 0.1, 120.0, 0.2, 40.0, 0.5,
+    -100.0, -0.1, -120.0, -0.2, -40.0, -0.5,
+    1.0, 1.0, 0.0, 0.0, 0.0,
+)
+ops.element('zeroLength', 1, 1, 2, '-mat', 1, '-dir', 1)
+ops.timeSeries('Linear', 1)
+ops.pattern('Plain', 1, 1)
+ops.load(2, 200.0)
+"""
+
+
+def test_gravity_pattern_is_held_constant_instead_of_ramping_with_the_push(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "two_pattern.py"
+    source.write_text(_TWO_PATTERN_SPRING_MODEL, encoding="utf-8")
+
+    try:
+        combined = run_nonlinear_static_analysis(
+            source, control_node=2, control_dof=1, num_steps=20
+        )
+        ops.wipe()
+        separated = run_nonlinear_static_analysis(
+            source,
+            control_node=2,
+            control_dof=1,
+            num_steps=20,
+            gravity_pattern=1,
+            gravity_steps=5,
+        )
+    finally:
+        ops.wipe()
+
+    assert combined["messages"] == []
+    assert separated["messages"] == []
+
+    # Both patterns pushed together: base shear at the end is the full 80+60=140,
+    # and since a monotonic single-direction push on a kinematic-hardening spring is
+    # path-independent, the final displacement matches the separated run too.
+    combined_last = combined["load_displacement_curve"][-1]
+    assert combined_last["base_shear"] == pytest.approx(140.0, rel=1e-6)
+    assert combined_last["control_displacement"] == pytest.approx(2.1, rel=1e-3)
+
+    # Gravity (80) held constant, only the lateral pattern (60) is in the reported
+    # curve - final base shear is just the lateral contribution, not the total.
+    separated_last = separated["load_displacement_curve"][-1]
+    assert separated_last["base_shear"] == pytest.approx(60.0, rel=1e-6)
+    assert separated_last["control_displacement"] == pytest.approx(2.1, rel=1e-3)
+
+    # The very first reported point already shows the difference: combined has both
+    # patterns' first increment (140/20=7), separated has only the lateral one's
+    # (60/20=3) - gravity never shows up in the curve at all once separated.
+    assert combined["load_displacement_curve"][0]["base_shear"] == pytest.approx(7.0, rel=1e-6)
+    assert separated["load_displacement_curve"][0]["base_shear"] == pytest.approx(3.0, rel=1e-6)
+
+
+def test_rejects_unknown_gravity_pattern(tmp_path: Path) -> None:
+    source = tmp_path / "spring.py"
+    source.write_text(_TWO_PATTERN_SPRING_MODEL, encoding="utf-8")
+    try:
+        with pytest.raises(RuntimeError, match="GRAVITY PATTERN"):
+            run_nonlinear_static_analysis(
+                source, control_node=2, control_dof=1, gravity_pattern=999
+            )
+    finally:
+        ops.wipe()
+
+
+def test_load_control_cannot_trace_the_post_peak_softening_branch(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "softening.py"
+    source.write_text(_SOFTENING_SPRING_MODEL, encoding="utf-8")
+
+    try:
+        result = run_nonlinear_static_analysis(
+            source, control_node=2, control_dof=1, num_steps=20
+        )
+    finally:
+        ops.wipe()
+
+    # Pushed toward 200 (well past the 120 peak), LoadControl must fail to converge
+    # somewhere on or after the descending branch - it cannot express "more
+    # displacement for less load" at a fixed load factor.
+    assert result["messages"] != []
+    assert any("수렴하지 않았습니다" in message for message in result["messages"])
+
+
+def test_displacement_control_traces_the_post_peak_softening_branch(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "softening.py"
+    source.write_text(_SOFTENING_SPRING_MODEL, encoding="utf-8")
+
+    try:
+        result = run_nonlinear_static_analysis(
+            source,
+            control_node=2,
+            control_dof=1,
+            num_steps=30,
+            integrator_type="DisplacementControl",
+            target_displacement=0.6,
+        )
+    finally:
+        ops.wipe()
+
+    assert result["messages"] == []
+    curve = result["load_displacement_curve"]
+    assert len(curve) == 30
+    assert curve[-1]["control_displacement"] == pytest.approx(0.6, rel=1e-6)
+
+    # The peak (120 at e=0.2) is at step 10 of 30 (0.02 per step) - after it, base
+    # shear must actually decrease for a run of steps, which LoadControl cannot do.
+    peak_step = max(range(len(curve)), key=lambda index: curve[index]["base_shear"])
+    assert curve[peak_step]["base_shear"] == pytest.approx(120.0, rel=1e-3)
+    descending = curve[peak_step + 1 :]
+    assert all(
+        later["base_shear"] < earlier["base_shear"]
+        for earlier, later in pairwise(descending[:14])
+    )
+    # Backbone flattens to the residual 40 beyond e=0.5 - final point sits on that
+    # plateau, not still sliding down.
+    assert curve[-1]["base_shear"] == pytest.approx(40.0, rel=1e-3)
+
+
+def test_displacement_control_requires_a_nonzero_target(tmp_path: Path) -> None:
+    source = _write_spring_model(tmp_path, load=150.0)
+    try:
+        with pytest.raises(RuntimeError, match="TARGET DISPLACEMENT"):
+            run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                integrator_type="DisplacementControl",
+            )
+    finally:
+        ops.wipe()
+
+
 def test_truss_pushover_reaches_full_applied_load(tmp_path: Path) -> None:
     """At the final load step the sum of reactions must equal the fully-applied
     Px=160 (the OpenSeesPy docs' own example plots exactly this curve)."""

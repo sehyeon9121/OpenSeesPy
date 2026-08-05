@@ -41,11 +41,11 @@ def test_nonlinear_settings_move_to_a_dialog_and_keep_the_sidebar_short() -> Non
 
     assert settings.open_nonlinear_settings_button.isVisible()
     assert "Node" in settings.nonlinear_summary.text() or "not set" in settings.nonlinear_summary.text()
-    # None of the seven fields live in the sidebar's layout any more, so the panel
-    # only has to fit a combo, a button and a one-line summary - nowhere near the
+    # None of the nonlinear fields live in the sidebar's layout any more, so the
+    # panel only has to fit a combo, a button and a short summary - nowhere near the
     # ~230px floor the old scroll-area workaround needed - and the model inspector
     # below it keeps real space instead of getting squeezed to nothing.
-    assert settings.height() < 260
+    assert settings.height() < 300
     assert sidebar.inspector.height() > 0
 
     fields = [settings.analysis_type, settings.solver, settings.open_nonlinear_settings_button]

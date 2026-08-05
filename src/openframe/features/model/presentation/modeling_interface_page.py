@@ -101,10 +101,13 @@ class ModelingInterfacePage(QFrame):
         select.clicked.connect(self._activate_select_tool)
         nodes = QPushButton("노드 생성")
         nodes.clicked.connect(self._activate_node_tool)
+        move_nodes = QPushButton("노드 이동/복사")
+        move_nodes.clicked.connect(self._activate_node_transform_tool)
         members = QPushButton("부재 생성")
         members.clicked.connect(self._activate_member_tool)
         layout.addWidget(select)
         layout.addWidget(nodes)
+        layout.addWidget(move_nodes)
         layout.addWidget(members)
         layout.addSpacing(10)
         support = QPushButton("지점")
@@ -158,6 +161,7 @@ class ModelingInterfacePage(QFrame):
         self._context_pages: dict[str, QWidget] = {}
         self._add_context("select", self._build_select_context())
         self._add_context("node", self._build_node_context())
+        self._add_context("node_transform", self._build_node_transform_context())
         self._add_context("member", self._hint_context("시작 노드 클릭 → 마우스 이동 → 스냅 표시된 끝 노드 클릭"))
         self._add_context("support", self._build_support_context())
         self._add_context("load", self._build_load_context())
@@ -221,6 +225,9 @@ class ModelingInterfacePage(QFrame):
         add.setObjectName("setupContinueButton")
         add.clicked.connect(self._add_nodes_from_coordinates)
         layout.addWidget(add)
+        midpoint = QPushButton("부재 위 노드 찍기")
+        midpoint.clicked.connect(self._activate_midpoint_node_tool)
+        layout.addWidget(midpoint)
         layout.addStretch(1)
         return page
 
@@ -242,6 +249,41 @@ class ModelingInterfacePage(QFrame):
         apply_button.clicked.connect(
             lambda: self.canvas.apply_support_to_selection(self.support_kind.currentData())
         )
+        layout.addWidget(apply_button)
+        layout.addStretch(1)
+        return page
+
+    def _build_node_transform_context(self) -> QWidget:
+        page = QWidget()
+        layout = QHBoxLayout(page)
+        layout.setContentsMargins(10, 7, 10, 7)
+        layout.addWidget(QLabel("1. 노드 선택"))
+        layout.addWidget(QLabel("2. 작업"))
+        self.node_transform_operation = QComboBox()
+        self.node_transform_operation.addItem("이동", "move")
+        self.node_transform_operation.addItem("복사", "copy")
+        self.node_transform_operation.currentIndexChanged.connect(
+            lambda: self.node_transform_repeat.setEnabled(
+                self.node_transform_operation.currentData() == "copy"
+            )
+        )
+        layout.addWidget(self.node_transform_operation)
+        self.node_transform_dx = self._number(1.0)
+        self.node_transform_dy = self._number(0.0)
+        self.node_transform_repeat = SafeSpinBox()
+        self.node_transform_repeat.setRange(1, 1000)
+        self.node_transform_repeat.setEnabled(False)
+        for label, field in (
+            ("dX", self.node_transform_dx),
+            ("dY", self.node_transform_dy),
+            ("반복", self.node_transform_repeat),
+        ):
+            layout.addWidget(QLabel(label))
+            field.setMaximumWidth(90)
+            layout.addWidget(field)
+        apply_button = QPushButton("3. 적용")
+        apply_button.setObjectName("setupContinueButton")
+        apply_button.clicked.connect(self._apply_node_transform)
         layout.addWidget(apply_button)
         layout.addStretch(1)
         return page
@@ -448,6 +490,7 @@ class ModelingInterfacePage(QFrame):
 
     def _activate_select_tool(self) -> None:
         self._show_context("select")
+        self.selection_filter.setCurrentIndex(self.selection_filter.findData("all"))
         self._set_mode("select", "대상을 클릭하거나 드래그하여 선택합니다.")
 
     def _activate_node_tool(self) -> None:
@@ -457,6 +500,18 @@ class ModelingInterfacePage(QFrame):
     def _activate_member_tool(self) -> None:
         self._show_context("member")
         self._set_mode("member", "시작 노드에서 끝 노드까지 스냅 연결합니다.")
+
+    def _activate_midpoint_node_tool(self) -> None:
+        self._show_context("node")
+        self._set_mode(
+            "member_midpoint",
+            "부재 위 임의 위치를 클릭합니다. 중앙 근처에서는 MID로 자동 스냅됩니다.",
+        )
+
+    def _activate_node_transform_tool(self) -> None:
+        self._show_context("node_transform")
+        self.selection_filter.setCurrentIndex(self.selection_filter.findData("nodes"))
+        self._set_mode("select", "이동하거나 복사할 노드를 클릭 또는 드래그 선택합니다.")
 
     def _activate_support_tool(self) -> None:
         self._show_context("support")
@@ -541,6 +596,14 @@ class ModelingInterfacePage(QFrame):
                 )
         finally:
             self.canvas.end_history_group()
+
+    def _apply_node_transform(self) -> None:
+        self.canvas.transform_selected_nodes(
+            self.node_transform_operation.currentData(),
+            self.node_transform_dx.value(),
+            self.node_transform_dy.value(),
+            self.node_transform_repeat.value(),
+        )
 
     def _apply_nodal_load(self) -> None:
         self.canvas.apply_nodal_load_to_selection(

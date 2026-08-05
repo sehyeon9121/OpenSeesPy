@@ -60,3 +60,25 @@ def test_validate_passes_with_control_node_set() -> None:
     module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
 
     assert module.validate(_request(control_node=2)) == []
+
+
+def test_validate_requires_target_displacement_for_displacement_control() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(
+        _request(control_node=2, integrator_type="DisplacementControl")
+    )
+
+    assert errors == ["DisplacementControl에는 0이 아닌 TARGET DISPLACEMENT 값이 필요합니다."]
+
+
+def test_validate_passes_for_displacement_control_with_a_target() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(
+        _request(
+            control_node=2, integrator_type="DisplacementControl", target_displacement=0.5
+        )
+    )
+
+    assert errors == []
