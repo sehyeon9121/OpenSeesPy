@@ -4,7 +4,13 @@ import math
 
 from PySide6.QtCore import Property, QObject, Signal
 
-from openframe.core.domain import AnalysisResult, Element, LoadCaseKind, StructuralModel
+from openframe.core.domain import (
+    AnalysisResult,
+    Element,
+    LoadCaseKind,
+    StructuralModel,
+    SupportKind,
+)
 
 #: Blue -> yellow -> red stops, matching
 #: features/results/presentation/result_color_scale.py's palette so the 2D result
@@ -35,6 +41,13 @@ _LOAD_CASE_COLORS = {
 #: of what colour the node would otherwise have.
 _SELECTED_NODE_COLOR = "#00e5ff"
 _SELECTED_NODE_RADIUS_SCALE = 1.6
+_SUPPORT_COLORS = {
+    SupportKind.FIXED: "#00856a",
+    SupportKind.PINNED: "#00a6a6",
+    SupportKind.ROLLER_VERTICAL: "#6366f1",
+    SupportKind.ROLLER_HORIZONTAL: "#6366f1",
+    SupportKind.CUSTOM: "#f59e0b",
+}
 
 
 def _color_for_ratio(ratio: float) -> str:
@@ -71,7 +84,9 @@ class Quick3DSceneBridge(QObject):
         self._ghost_nodes: list[dict[str, float | int | str]] = []
         self._ghost_members: list[dict[str, float | int | str]] = []
         self._load_arrows: list[dict[str, float | int | str]] = []
+        self._support_parts: list[dict[str, float | int | str]] = []
         self._loads_visible = True
+        self._supports_visible = True
         self._load_filter = "all"
         self._load_case_filter = "all"
         self._center = (0.0, 0.0, 0.0)
@@ -112,7 +127,19 @@ class Quick3DSceneBridge(QObject):
             0.5 * (min(y_values) + max(y_values)),
             0.5 * (min(z_values) + max(z_values)),
         )
-        self._ground_y = min(y_values) - self._extent * 0.025
+        if model.boundaries:
+            support_height = max(self._extent * 0.05, 0.055)
+            support_plate = max(support_height * 0.16, 0.012)
+            ground_thickness = max(self._extent * 0.012, 0.01)
+            self._ground_y = (
+                min(y_values)
+                - self._node_radius
+                - support_height
+                - support_plate
+                - ground_thickness / 2
+            )
+        else:
+            self._ground_y = min(y_values) - self._extent * 0.025
         self._ground_width = max(spans[0] + self._extent * 0.35, self._extent * 0.5)
         self._ground_depth = max(spans[2] + self._extent * 0.35, self._extent * 0.5)
 
@@ -121,6 +148,7 @@ class Quick3DSceneBridge(QObject):
         self._ghost_nodes = []
         self._ghost_members = []
         self._load_arrows = self._build_all_load_arrows(model, points)
+        self._support_parts = self._build_support_parts(model, points)
         self.scene_changed.emit()
 
     def set_result(
@@ -226,6 +254,10 @@ class Quick3DSceneBridge(QObject):
         self._loads_visible = visible
         self.scene_changed.emit()
 
+    def set_supports_visible(self, visible: bool) -> None:
+        self._supports_visible = visible
+        self.scene_changed.emit()
+
     def set_load_filter(self, load_filter: str) -> None:
         if load_filter not in {"all", "nodal", "element"}:
             return
@@ -279,6 +311,10 @@ class Quick3DSceneBridge(QObject):
             and (self._load_case_filter == "all" or part["case_type"] == self._load_case_filter)
         ]
 
+    @Property("QVariantList", notify=scene_changed)
+    def supportSymbols(self) -> list[dict[str, float | int | str]]:
+        return self._support_parts if self._supports_visible else []
+
     @Property(float, notify=scene_changed)
     def center_x(self) -> float:
         return self._center[0]
@@ -331,6 +367,123 @@ class Quick3DSceneBridge(QObject):
             if entry is not None:
                 members.append(entry)
         self._members = members
+
+    def _build_support_parts(
+        self,
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+    ) -> list[dict[str, float | int | str]]:
+        """Build MIDAS-like 3D support glyphs beneath restrained nodes."""
+        parts: list[dict[str, float | int | str]] = []
+        width = max(self._extent * 0.055, 0.06)
+        height = max(self._extent * 0.05, 0.055)
+        plate_height = max(height * 0.16, 0.012)
+        identity = {"qscalar": 1.0, "qx": 0.0, "qy": 0.0, "qz": 0.0}
+
+        for boundary in model.boundaries:
+            point = points.get(boundary.node_tag)
+            if point is None:
+                continue
+            kind = boundary.support_kind
+            color = _SUPPORT_COLORS[kind]
+            common = {
+                "tag": boundary.node_tag,
+                "kind": kind.value,
+                "color": color,
+                "restraints": "".join("1" if value else "0" for value in boundary.restraints),
+                **identity,
+            }
+            node_bottom = point[1] - self._node_radius
+
+            if kind == SupportKind.FIXED:
+                parts.append(
+                    {
+                        **common,
+                        "role": "fixed_block",
+                        "shape": "#Cube",
+                        "x": point[0],
+                        "y": node_bottom - height / 2,
+                        "z": point[2],
+                        "scale_x": width,
+                        "scale_y": height,
+                        "scale_z": width,
+                    }
+                )
+                continue
+
+            if kind in {SupportKind.PINNED, SupportKind.ROLLER_VERTICAL}:
+                cone_base_y = node_bottom - height
+                parts.append(
+                    {
+                        **common,
+                        "role": "pin_cone",
+                        "shape": "#Cone",
+                        "x": point[0],
+                        "y": cone_base_y,
+                        "z": point[2],
+                        "scale_x": width,
+                        "scale_y": height,
+                        "scale_z": width,
+                    }
+                )
+                base_y = cone_base_y - plate_height / 2
+                if kind == SupportKind.PINNED:
+                    parts.append(
+                        {
+                            **common,
+                            "role": "ground_plate",
+                            "shape": "#Cube",
+                            "x": point[0],
+                            "y": base_y,
+                            "z": point[2],
+                            "scale_x": width * 1.35,
+                            "scale_y": plate_height,
+                            "scale_z": width * 1.35,
+                        }
+                    )
+                else:
+                    roller_radius = width * 0.13
+                    rotation = self._rotation_from_y_axis((0.0, 0.0, 1.0))
+                    roller_q = {
+                        "qscalar": rotation[0],
+                        "qx": rotation[1],
+                        "qy": rotation[2],
+                        "qz": rotation[3],
+                    }
+                    for offset in (-width * 0.28, width * 0.28):
+                        parts.append(
+                            {
+                                **common,
+                                **roller_q,
+                                "role": "roller",
+                                "shape": "#Cylinder",
+                                "x": point[0] + offset,
+                                "y": cone_base_y - roller_radius,
+                                "z": point[2],
+                                "scale_x": roller_radius * 2,
+                                "scale_y": width * 0.9,
+                                "scale_z": roller_radius * 2,
+                            }
+                        )
+                continue
+
+            # Horizontal rollers and arbitrary partial restraints are rendered as an
+            # amber/indigo restraint block; the exact active DOFs remain available in
+            # the model tree and inspector instead of being hidden by a generic pin.
+            parts.append(
+                {
+                    **common,
+                    "role": "custom_block",
+                    "shape": "#Cube",
+                    "x": point[0],
+                    "y": node_bottom - height * 0.32,
+                    "z": point[2],
+                    "scale_x": width * 0.72,
+                    "scale_y": height * 0.64,
+                    "scale_z": width * 0.72,
+                }
+            )
+        return parts
 
     def _member_entry(
         self,
@@ -657,6 +810,7 @@ class Quick3DSceneBridge(QObject):
         self._ghost_nodes = []
         self._ghost_members = []
         self._load_arrows = []
+        self._support_parts = []
         self._center = (0.0, 0.0, 0.0)
         self._extent = 1.0
         self._ground_y = 0.0

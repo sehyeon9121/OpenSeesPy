@@ -66,6 +66,9 @@ class Quick3DViewport(QFrame):
     def set_loads_visible(self, visible: bool) -> None:
         self.bridge.set_loads_visible(visible)
 
+    def set_supports_visible(self, visible: bool) -> None:
+        self.bridge.set_supports_visible(visible)
+
     def set_load_filter(self, load_filter: str) -> None:
         self.bridge.set_load_filter(load_filter)
 

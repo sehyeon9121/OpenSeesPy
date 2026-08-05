@@ -122,6 +122,37 @@ Item {
         }
 
         Repeater3D {
+            // MIDAS-style support glyphs: block=fixed, cone=pin, cone+rollers=roller.
+            model: sceneBridge.supportSymbols
+            delegate: Model {
+                source: modelData.shape
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                rotation: Qt.quaternion(
+                    modelData.qscalar,
+                    modelData.qx,
+                    modelData.qy,
+                    modelData.qz
+                )
+                scale: Qt.vector3d(
+                    modelData.scale_x / 100,
+                    modelData.scale_y / 100,
+                    modelData.scale_z / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        metalness: 0.0
+                        roughness: 0.48
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                property int supportNodeTag: modelData.tag
+                property string supportKind: modelData.kind
+            }
+        }
+
+        Repeater3D {
             model: sceneBridge.members
             delegate: Model {
                 source: "#Cube"

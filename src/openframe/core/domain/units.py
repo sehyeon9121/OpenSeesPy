@@ -20,6 +20,14 @@ class UnitSystem:
     def moment(self) -> str:
         return f"{self.force}·{self.length}"
 
+    @property
+    def stress(self) -> str:
+        return f"{self.force}/{self.length}²"
+
+    @property
+    def volumetric_force(self) -> str:
+        return f"{self.force}/{self.length}³"
+
 
 FORCE_UNITS = ("kN", "N", "kip")
 LENGTH_UNITS = ("m", "mm", "ft", "in")

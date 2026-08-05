@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QStackedWidget,
     QToolTip,
@@ -38,6 +39,9 @@ from openframe.features.results.diagrams import DiagramKind
 from openframe.features.results.magnitudes import magnitude_range, member_magnitudes
 from openframe.features.results.presentation.frame_diagram_renderer import (
     FrameDiagramRenderer,
+)
+from openframe.features.results.presentation.load_displacement_curve_view import (
+    LoadDisplacementCurveView,
 )
 from openframe.features.results.presentation.node_displacement_item import (
     NodeDisplacementItem,
@@ -64,6 +68,7 @@ RESULT_TYPE_NAMES = {
     "axial": "AXIAL FORCE (N)",
     "shear": "SHEAR FORCE (V)",
     "moment": "BENDING MOMENT (M)",
+    "pushover": "PUSHOVER CURVE",
     "tables": "RESULT TABLES",
 }
 
@@ -118,9 +123,11 @@ class ResultViewport(QFrame):
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.quick3d_view = Quick3DViewport(self)
+        self.curve_view = LoadDisplacementCurveView(self)
         self.canvas_stack = QStackedWidget()
         self.canvas_stack.addWidget(self.view)
         self.canvas_stack.addWidget(self.quick3d_view)
+        self.canvas_stack.addWidget(self.curve_view)
         layout.addWidget(self.canvas_stack, 1)
 
         controls = QFrame()
@@ -143,7 +150,32 @@ class ResultViewport(QFrame):
         self.scale_value = QLabel("x30")
         self.scale_value.setObjectName("resultScaleValue")
         controls_layout.addWidget(self.scale_value)
-        layout.addWidget(controls)
+
+        # A deformation-scale slider and "undeformed shape" toggle mean nothing for an
+        # XY curve, so the pushover result type swaps this bar for one summarising the
+        # run instead (steps completed, peak base shear/displacement, convergence).
+        pushover_stats = QFrame()
+        pushover_stats.setObjectName("resultViewportControls")
+        pushover_stats_layout = QHBoxLayout(pushover_stats)
+        pushover_stats_layout.setContentsMargins(10, 5, 10, 5)
+        self.pushover_steps_label = self._stat_label()
+        self.pushover_max_shear_label = self._stat_label()
+        self.pushover_max_disp_label = self._stat_label()
+        self.pushover_status_label = self._stat_label()
+        for label in (
+            self.pushover_steps_label,
+            self.pushover_max_shear_label,
+            self.pushover_max_disp_label,
+        ):
+            pushover_stats_layout.addWidget(label)
+            pushover_stats_layout.addSpacing(18)
+        pushover_stats_layout.addStretch(1)
+        pushover_stats_layout.addWidget(self.pushover_status_label)
+
+        self.controls_stack = QStackedWidget()
+        self.controls_stack.addWidget(controls)
+        self.controls_stack.addWidget(pushover_stats)
+        layout.addWidget(self.controls_stack)
 
         zoom_in.clicked.connect(lambda: self._zoom(1.2))
         zoom_out.clicked.connect(lambda: self._zoom(1 / 1.2))
@@ -225,6 +257,8 @@ class ResultViewport(QFrame):
         QToolTip.showText(QPoint(global_x, global_y), text, self.quick3d_view)
 
     def fit_model(self) -> None:
+        if self.canvas_stack.currentWidget() is self.curve_view:
+            return
         if self.canvas_stack.currentWidget() is self.quick3d_view:
             preset = self.view_selector.currentData()
             if preset not in {"iso", "xy", "xz", "yz"}:
@@ -239,6 +273,8 @@ class ResultViewport(QFrame):
         self.view.fit_content()
 
     def _zoom(self, factor: float) -> None:
+        if self.canvas_stack.currentWidget() is self.curve_view:
+            return
         if self.canvas_stack.currentWidget() is self.quick3d_view:
             self.quick3d_view.zoom(1.0 / factor)
         else:
@@ -264,6 +300,17 @@ class ResultViewport(QFrame):
         self._redraw()
 
     def _redraw(self) -> None:
+        if self._result_type == "pushover":
+            self._redraw_pushover()
+            return
+
+        self.controls_stack.setCurrentIndex(0)
+        if self._model is not None:
+            self.canvas_stack.setCurrentWidget(
+                self.quick3d_view if self._model.ndm == 3 else self.view
+            )
+            self.view_selector.setVisible(self._model.ndm == 3)
+
         force_diagram = self._result_type in {"axial", "shear", "moment"}
         self.scale_caption.setText("DIAGRAM SCALE" if force_diagram else "DEFORMATION SCALE")
         self.scale_value.setText(
@@ -341,6 +388,39 @@ class ResultViewport(QFrame):
             )
         else:
             self.quick3d_view.clear_result()
+
+    def _redraw_pushover(self) -> None:
+        self.canvas_stack.setCurrentWidget(self.curve_view)
+        self.controls_stack.setCurrentIndex(1)
+        self.view_selector.setVisible(False)
+        curve = self._result.load_displacement_curve if self._result is not None else ()
+        # The curve is only ever non-empty for a nonlinear run, so any message on that
+        # result is almost certainly the "stopped converging at step N" note - good
+        # enough to flag the plot as a partial pushover without re-deriving it here.
+        incomplete = bool(self._result and self._result.messages)
+        self.curve_view.set_curve(curve, unit_system=self._unit_system, incomplete=incomplete)
+        self._update_pushover_stats(curve, incomplete)
+
+    def _update_pushover_stats(
+        self, curve: tuple[LoadDisplacementPoint, ...], incomplete: bool
+    ) -> None:
+        if not curve:
+            self.pushover_steps_label.setText("STEPS —")
+            self.pushover_max_shear_label.setText("MAX BASE SHEAR —")
+            self.pushover_max_disp_label.setText("MAX DISPLACEMENT —")
+            self.pushover_status_label.setText("")
+            return
+        force_unit = self._unit_system.force
+        length_unit = self._unit_system.length
+        max_shear = max(abs(point.base_shear) for point in curve)
+        max_disp = max(abs(point.control_displacement) for point in curve)
+        self.pushover_steps_label.setText(f"STEPS {curve[-1].step}")
+        self.pushover_max_shear_label.setText(f"MAX BASE SHEAR {max_shear:.4g} {force_unit}")
+        self.pushover_max_disp_label.setText(f"MAX DISPLACEMENT {max_disp:.4g} {length_unit}")
+        self.pushover_status_label.setText("STOPPED (수렴 실패)" if incomplete else "CONVERGED")
+        self.pushover_status_label.setProperty("status", "warning" if incomplete else "ok")
+        self.pushover_status_label.style().unpolish(self.pushover_status_label)
+        self.pushover_status_label.style().polish(self.pushover_status_label)
 
     def _member_magnitudes(self) -> dict[int, float]:
         if self._model is None or self._result is None:

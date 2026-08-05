@@ -13,6 +13,7 @@ from openframe.core.domain import (
     AnalysisResult,
     AnalysisStatus,
     ElementResult,
+    LoadDisplacementPoint,
     NodeResult,
 )
 
@@ -41,6 +42,10 @@ class OpenSeesProcessRunner:
                 str(output),
                 "--mode",
                 "analysis",
+                "--kind",
+                str(request.kind),
+                "--options",
+                json.dumps(request.options),
             ]
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             try:
@@ -97,9 +102,18 @@ class OpenSeesProcessRunner:
             )
             for item in payload.get("element_results", [])
         }
+        curve = tuple(
+            LoadDisplacementPoint(
+                step=int(item["step"]),
+                control_displacement=float(item["control_displacement"]),
+                base_shear=float(item["base_shear"]),
+            )
+            for item in payload.get("load_displacement_curve", [])
+        )
         return AnalysisResult(
             status=AnalysisStatus.COMPLETED,
             node_results=node_results,
             element_results=element_results,
             messages=[str(message) for message in payload.get("messages", [])],
+            load_displacement_curve=curve,
         )

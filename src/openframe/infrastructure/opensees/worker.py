@@ -15,6 +15,9 @@ import openseespy.opensees as ops
 
 from openframe.infrastructure.opensees.linear_static_solver import run_linear_static_analysis
 from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
+from openframe.infrastructure.opensees.nonlinear_static_solver import (
+    run_nonlinear_static_analysis,
+)
 from openframe.infrastructure.opensees.script_execution import (
     AnalysisStageTracker,
     run_model_definition_only,
@@ -38,18 +41,30 @@ def collect_model(source: Path) -> dict[str, object]:
         collector.restore()
 
 
+def run_analysis(source: Path, kind: str, options: dict[str, object]) -> dict[str, object]:
+    if kind == "nonlinear_static":
+        return run_nonlinear_static_analysis(source, **options)
+    return run_linear_static_analysis(source)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("model", "analysis"), default="model")
+    parser.add_argument("--kind", default="linear_static")
+    parser.add_argument("--options", default="{}")
     arguments = parser.parse_args()
 
     try:
         if arguments.mode == "model":
             payload: dict[str, object] = {"ok": True, "model": collect_model(arguments.source)}
         else:
-            payload = {"ok": True, "results": run_linear_static_analysis(arguments.source)}
+            options = json.loads(arguments.options)
+            payload = {
+                "ok": True,
+                "results": run_analysis(arguments.source, arguments.kind, options),
+            }
         exit_code = 0
     except BaseException as error:  # noqa: BLE001 - user-script failures become JSON data.
         payload = {

@@ -12,11 +12,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from openframe.core.domain.units import UnitSystem
+
 
 class ModelSetupPage(QFrame):
     """Collects the small set of decisions required before authoring entities."""
 
     continue_requested = Signal()
+    unit_system_changed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,7 +66,22 @@ class ModelSetupPage(QFrame):
             self.analysis_kind,
         ):
             selector.currentIndexChanged.connect(self._refresh_summary)
+        self.force_unit.currentIndexChanged.connect(self._unit_selection_changed)
+        self.length_unit.currentIndexChanged.connect(self._unit_selection_changed)
         self._refresh_summary()
+
+    def unit_system(self) -> UnitSystem:
+        return UnitSystem(
+            force=self.force_unit.currentText(),
+            length=self.length_unit.currentText(),
+        )
+
+    def is_material_free_statics(self) -> bool:
+        """Whether this workflow may skip stiffness-dependent inputs."""
+        return self.analysis_kind.currentIndex() == 0
+
+    def _unit_selection_changed(self) -> None:
+        self.unit_system_changed.emit(self.unit_system())
 
     def _build_form(self) -> QFrame:
         panel = QFrame()
@@ -111,6 +129,8 @@ class ModelSetupPage(QFrame):
         self.analysis_kind = self._selector(
             ("선형 정적해석", "비선형 정적해석", "시간이력해석")
         )
+        self.analysis_kind.insertItem(0, "구조역학 정정해석 (재료 불필요)")
+        self.analysis_kind.setCurrentIndex(0)
         self.gravity_direction = self._selector(("-Y", "-Z", "+Y", "+Z"))
         analysis_form.addRow("해석 유형", self.analysis_kind)
         analysis_form.addRow("중력 방향", self.gravity_direction)

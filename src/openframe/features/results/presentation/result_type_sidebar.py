@@ -64,6 +64,12 @@ class ResultTypeSidebar(QFrame):
         )
         self._add_group(
             layout,
+            "NONLINEAR RESPONSE",
+            "Incremental pushover history",
+            (("pushover", "Pushover Curve"),),
+        )
+        self._add_group(
+            layout,
             "DATA",
             "Numerical verification",
             (("tables", "Result Tables"),),

@@ -19,6 +19,16 @@ class NodeResult:
 
 
 @dataclass(frozen=True, slots=True)
+class LoadDisplacementPoint:
+    """One converged step of an incremental nonlinear analysis, for plotting a
+    load-displacement (pushover) curve."""
+
+    step: int
+    control_displacement: float
+    base_shear: float
+
+
+@dataclass(frozen=True, slots=True)
 class ElementResult:
     element_tag: int
     local_forces: tuple[float, ...] = ()
@@ -38,4 +48,7 @@ class AnalysisResult:
     element_results: dict[int, ElementResult] = field(default_factory=dict)
     messages: list[str] = field(default_factory=list)
     time_points: list[float] = field(default_factory=list)
+    #: Empty for analyses that are not incremental (linear static, ...). Populated by
+    #: nonlinear static analysis, one point per converged load step.
+    load_displacement_curve: tuple[LoadDisplacementPoint, ...] = ()
 

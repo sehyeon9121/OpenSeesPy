@@ -45,6 +45,7 @@ def test_main_window_can_be_constructed() -> None:
         "axial",
         "shear",
         "moment",
+        "pushover",
         "tables",
     }
     assert window.analysis_settings.analysis_type.currentText() == "Linear Static"
@@ -65,12 +66,19 @@ def test_new_model_opens_at_basic_setup_step() -> None:
     assert direct.workflow.current_step() == "setup"
     assert direct.stage_stack.currentWidget() is direct.setup_page
     assert window.navigation.isHidden()
+    assert window.header.isHidden()
     assert window._current_model_source is None
 
     direct.setup_page.dimension.setCurrentIndex(1)
     assert "'-ndm', 3" in direct.setup_page.command_preview.text()
     assert "'-ndf', 6" in direct.setup_page.command_preview.text()
 
+    direct.setup_page.continue_button.click()
+    assert direct.workflow.current_step() == "geometry"
+    assert direct.stage_stack.currentWidget() is direct.geometry_page
+
+    direct.set_current_step("setup")
+    direct.setup_page.analysis_kind.setCurrentIndex(1)
     direct.setup_page.continue_button.click()
     assert direct.workflow.current_step() == "materials"
     assert direct.stage_stack.currentWidget() is direct.materials_page

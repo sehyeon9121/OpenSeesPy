@@ -154,6 +154,7 @@ class MainWindow(QMainWindow):
             self._store_current_session_section(self._resume_section)
         self._refresh_start_sessions()
         self.workspace_stack.setCurrentWidget(self.start_workspace)
+        self.header.show()
         self.navigation.hide()
         self.header.set_welcome_mode(True)
         self.statusBar().showMessage("Choose how to start a project")
@@ -178,7 +179,7 @@ class MainWindow(QMainWindow):
         """Open the authoring shell at its first prerequisite step."""
         self._current_model_source = None
         self.navigation.hide()
-        self.header.set_welcome_mode(True)
+        self.header.hide()
         self.direct_model_workspace.set_current_step("setup")
         self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
         self.statusBar().showMessage(
@@ -189,6 +190,7 @@ class MainWindow(QMainWindow):
         self._resume_section = "model"
         self.navigation.set_current_section("model")
         self.navigation.show()
+        self.header.show()
         self.header.set_welcome_mode(False)
         self.workspace_stack.setCurrentWidget(self.workspace)
 
@@ -196,6 +198,7 @@ class MainWindow(QMainWindow):
         if not self._has_active_workspace:
             return
         self.navigation.show()
+        self.header.show()
         self.header.set_welcome_mode(False)
         self.navigation.set_current_section(self._resume_section)
         self._change_workspace_section(self._resume_section)
@@ -203,6 +206,7 @@ class MainWindow(QMainWindow):
     def _open_results_workspace(self) -> None:
         self.analysis_progress.hide()
         self.navigation.show()
+        self.header.show()
         self.header.set_welcome_mode(False)
         self.navigation.set_current_section("results", emit=True)
 
@@ -249,6 +253,7 @@ class MainWindow(QMainWindow):
         self.model_sidebar.set_model(model)
         self.viewport.set_model(model)
         self.model_inspector.set_model(model)
+        self.analysis_settings.set_model(model)
         self.results_workspace.set_model(model)
         self.results_workspace.clear_result()
         key = str(source_path)
@@ -319,7 +324,11 @@ class MainWindow(QMainWindow):
         if self._analysis_run_thread and self._analysis_run_thread.isRunning():
             return
 
-        request = AnalysisRequest(source_path=self._current_model_source, kind=kind)
+        request = AnalysisRequest(
+            source_path=self._current_model_source,
+            kind=kind,
+            options=self.analysis_settings.build_options(),
+        )
         run_generation = self._model_generation
         run_session_key = self._current_session_key
 
@@ -447,6 +456,7 @@ class MainWindow(QMainWindow):
         self.model_sidebar.set_model(session.model)
         self.viewport.set_model(session.model)
         self.model_inspector.set_model(session.model)
+        self.analysis_settings.set_model(session.model)
         self.results_workspace.set_model(session.model)
         self.results_workspace.clear_result()
         if session.result is not None:

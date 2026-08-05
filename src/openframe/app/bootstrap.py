@@ -12,6 +12,7 @@ def run_desktop_app() -> int:
     from openframe.core.domain import AnalysisKind
     from openframe.features.analysis.application.run_analysis import RunAnalysisService
     from openframe.features.analysis.linear_static.module import LinearStaticAnalysis
+    from openframe.features.analysis.nonlinear_static.module import NonlinearStaticAnalysis
     from openframe.features.model.application.open_model import OpenModelService
     from openframe.infrastructure.opensees.model_importer import OpenSeesModelImporter
     from openframe.infrastructure.opensees.runner import OpenSeesProcessRunner
@@ -26,7 +27,13 @@ def run_desktop_app() -> int:
 
     analysis_runner = OpenSeesProcessRunner()
     linear_static = LinearStaticAnalysis(analysis_runner)
-    run_analysis_service = RunAnalysisService({AnalysisKind.LINEAR_STATIC: linear_static})
+    nonlinear_static = NonlinearStaticAnalysis(analysis_runner)
+    run_analysis_service = RunAnalysisService(
+        {
+            AnalysisKind.LINEAR_STATIC: linear_static,
+            AnalysisKind.NONLINEAR_STATIC: nonlinear_static,
+        }
+    )
 
     window = MainWindow(
         open_model_service=open_model_service,

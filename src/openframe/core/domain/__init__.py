@@ -1,6 +1,13 @@
 """Framework-independent structural engineering domain objects."""
 
 from openframe.core.domain.analysis import AnalysisKind, AnalysisRequest
+from openframe.core.domain.materials import (
+    MaterialDefinition,
+    MaterialFamily,
+    MaterialSource,
+    ShearDeformationSettings,
+    ShearModulusMode,
+)
 from openframe.core.domain.model import (
     BoundaryCondition,
     Element,
@@ -11,17 +18,11 @@ from openframe.core.domain.model import (
     SupportKind,
     UniformElementLoad,
 )
-from openframe.core.domain.materials import (
-    MaterialDefinition,
-    MaterialFamily,
-    MaterialSource,
-    ShearDeformationSettings,
-    ShearModulusMode,
-)
 from openframe.core.domain.results import (
     AnalysisResult,
     AnalysisStatus,
     ElementResult,
+    LoadDisplacementPoint,
     NodeResult,
 )
 from openframe.core.domain.units import (
@@ -43,15 +44,16 @@ __all__ = [
     "Element",
     "ElementResult",
     "LoadCaseKind",
+    "LoadDisplacementPoint",
     "MaterialDefinition",
     "MaterialFamily",
     "MaterialSource",
     "NodalLoad",
     "Node",
     "NodeResult",
-    "StructuralModel",
     "ShearDeformationSettings",
     "ShearModulusMode",
+    "StructuralModel",
     "SupportKind",
     "UniformElementLoad",
     "UnitSystem",

@@ -756,35 +756,42 @@ QFrame#directModelWorkspace { background: #f5f7fa; }
 QFrame#directModelCommandBar {
     background: #ffffff; border-bottom: 1px solid #d8e0e9;
 }
+QLabel#directModelBrand {
+    color: #0f376d; font-size: 11pt; font-weight: 700; padding-right: 22px;
+}
 QPushButton#directModelBackButton {
     min-height: 28px; padding: 0 9px; border: 0; background: transparent;
     color: #586b82; font-weight: 600;
 }
 QPushButton#directModelBackButton:hover { color: #174ea6; background: #eaf0f8; }
+QPushButton#directModelSaveButton {
+    min-height: 28px; padding: 0 11px; color: #40546d; background: #ffffff;
+    border: 1px solid #bdc9d8; border-radius: 3px;
+}
 QFrame#modelingWorkflow {
-    min-height: 45px; max-height: 45px;
-    background: #ffffff;
-    border-bottom: 1px solid #d4dde7;
+    min-width: 180px; max-width: 180px;
+    background: #edf3fc;
+    border-right: 1px solid #cfd9e6;
 }
 QLabel#workflowTitle {
-    color: #334960; font-size: 8pt; font-weight: 700;
-    padding-right: 12px;
+    color: #122a4b; font-size: 12pt; font-weight: 700;
 }
-QLabel#workflowConnector {
-    color: #a2adba; padding: 0 2px; font-size: 11pt;
+QLabel#workflowSubtitle { color: #6d7e91; font-size: 8pt; }
+QFrame#workflowProjectHeader {
+    background: #f4f7fc; border-bottom: 1px solid #d5deea;
 }
 QToolButton#workflowStep {
-    min-height: 28px; padding: 0 8px;
-    border: 1px solid transparent; border-radius: 3px;
+    min-width: 180px; max-width: 180px; min-height: 38px;
+    padding: 0 11px; border: 0; border-left: 3px solid transparent;
     background: transparent; color: #69798c;
-    font-size: 8pt; font-weight: 600;
+    font-size: 9pt; font-weight: 600; text-align: left;
 }
 QToolButton#workflowStep:hover {
-    color: #174ea6; background: #f1f5fa;
+    color: #174ea6; background: #e7eef9;
 }
 QToolButton#workflowStep:checked {
-    color: #174ea6; background: #e7effa;
-    border-color: #bfd0e7;
+    color: #ffffff; background: #174ea6;
+    border-left-color: #0f3e82;
 }
 QFrame#modelSetupPage, QFrame#workflowPlaceholderPage {
     background: #f5f7fa;
@@ -832,6 +839,143 @@ QLabel#workflowPlaceholderState {
     color: #6e7f92; background: #ffffff; border: 1px dashed #bac7d5;
     border-radius: 5px; padding: 20px;
 }
+QFrame#materialSettingsPage { background: #f5f7fa; }
+QLabel#materialEyebrow { color: #174ea6; font-size: 8pt; font-weight: 700; }
+QLabel#materialTitle { color: #142b49; font-size: 17pt; font-weight: 700; }
+QLabel#materialDescription { color: #68798d; font-size: 8pt; }
+QLabel#materialCountBadge, QLabel#materialIdBadge {
+    color: #174ea6; background: #e7effb; border: 1px solid #cad9ef;
+    border-radius: 3px; padding: 3px 7px; font-size: 7pt; font-weight: 700;
+}
+QTabWidget#materialSourceTabs::pane {
+    background: #ffffff; border: 1px solid #d8e1eb;
+}
+QTabWidget#materialSourceTabs QTabBar::tab {
+    min-width: 120px; padding: 7px 12px; color: #718096;
+    background: #eef2f6; border-bottom: 2px solid transparent;
+}
+QTabWidget#materialSourceTabs QTabBar::tab:selected {
+    color: #174ea6; background: #ffffff; border-bottom-color: #174ea6;
+    font-weight: 700;
+}
+QWidget#materialTabPage { background: #ffffff; }
+QFrame#materialBrowserPanel, QFrame#materialEditorPanel, QFrame#kdsEmptyPanel {
+    background: #fbfcfe; border: 1px solid #dce4ed; border-radius: 4px;
+}
+QLabel#materialPanelTitle { color: #263f5d; font-size: 9pt; font-weight: 700; }
+QListWidget#kdsMaterialList, QListWidget#userMaterialList {
+    background: #ffffff; border: 1px solid #d5dee8; outline: 0;
+}
+QListWidget#kdsMaterialList::item, QListWidget#userMaterialList::item {
+    min-height: 38px; padding: 5px 8px; border-bottom: 1px solid #edf1f5;
+}
+QListWidget#kdsMaterialList::item:selected, QListWidget#userMaterialList::item:selected {
+    color: #174ea6; background: #e7effb;
+}
+QLabel#kdsEmptyTitle { color: #24415f; font-size: 13pt; font-weight: 700; }
+QLabel#kdsEmptyDescription { color: #748397; font-size: 9pt; }
+QLabel#kdsRecordCount {
+    color: #66788d; background: #eef2f7; border-radius: 3px; padding: 5px 8px;
+}
+QPushButton#materialPrimaryButton, QPushButton#materialSecondaryButton,
+QPushButton#materialDangerButton, QPushButton#materialContinueButton {
+    min-height: 30px; padding: 0 11px; border-radius: 3px; font-weight: 600;
+}
+QPushButton#materialPrimaryButton, QPushButton#materialContinueButton {
+    color: #ffffff; background: #174ea6; border: 1px solid #174ea6;
+}
+QPushButton#materialPrimaryButton:hover, QPushButton#materialContinueButton:hover {
+    background: #123f89;
+}
+QPushButton#materialSecondaryButton {
+    color: #334b67; background: #ffffff; border: 1px solid #bdc9d8;
+}
+QPushButton#materialDangerButton {
+    color: #a42f36; background: #ffffff; border: 1px solid #dfb9bc;
+}
+QLabel#materialValidation { min-height: 20px; font-size: 8pt; }
+QLabel#materialValidation[state="error"] {
+    color: #a42f36; background: #fde7e8; padding: 4px 7px;
+}
+QLabel#materialValidation[state="saved"] { color: #28724a; }
+QFrame#shearSettingsPanel {
+    background: #ffffff; border: 1px solid #d8e1eb; border-radius: 4px;
+}
+QLabel#materialSectionHint, QLabel#materialFooterHint {
+    color: #7a899b; font-size: 8pt;
+}
+QDoubleSpinBox {
+    min-height: 29px; background: #ffffff; border: 1px solid #cfd8e3;
+    border-radius: 3px; padding: 0 7px;
+}
+QSplitter#materialEditorSplitter::handle { background: #d8e1eb; width: 1px; }
+
+/* Refined material editor */
+QFrame#materialSettingsPage { background: #ffffff; }
+QTabWidget#materialSourceTabs::pane {
+    border: 0; border-top: 1px solid #d5deea; background: #ffffff;
+}
+QTabWidget#materialSourceTabs QTabBar::tab {
+    min-width: 122px; min-height: 34px; padding: 0 12px;
+    background: #f1f4f8; color: #6f7f91; border: 0;
+    border-bottom: 2px solid transparent;
+}
+QTabWidget#materialSourceTabs QTabBar::tab:selected {
+    color: #174ea6; background: #ffffff; border-bottom-color: #174ea6;
+}
+QFrame#materialBrowserPanel {
+    background: #f8faff; border: 0; border-right: 1px solid #d5deea; border-radius: 0;
+}
+QFrame#materialEditorPanel, QFrame#kdsEmptyPanel {
+    background: #ffffff; border: 0; border-radius: 0;
+}
+QLabel#materialEditorTitle { color: #102d54; font-size: 11pt; font-weight: 700; }
+QLabel#materialIdBadge {
+    color: #49627f; background: #eef2f7; border: 0;
+    padding: 3px 7px; font-size: 8pt; font-weight: 600;
+}
+QPushButton#materialListAddButton {
+    min-height: 28px; padding: 0 9px; color: #294a70; background: #ffffff;
+    border: 1px solid #c4cfdd; border-radius: 3px; font-weight: 600;
+}
+QLineEdit, QComboBox, QDoubleSpinBox {
+    min-height: 34px; max-height: 34px;
+}
+QListWidget#userMaterialList::item {
+    min-height: 48px; padding: 7px 9px; border-bottom: 1px solid #e5eaf0;
+}
+QListWidget#userMaterialList::item:selected {
+    color: #174ea6; background: #e3ebff; border: 1px solid #5b7ee5;
+}
+QFrame#materialPropertyGroup {
+    background: #f8faff; border: 1px solid #d4ddea; border-radius: 2px;
+}
+QLabel#materialPropertyGroupTitle {
+    min-height: 31px; padding: 0 10px; color: #173657;
+    background: #e9f0fb; border-bottom: 1px solid #d0dae7;
+    font-size: 9pt; font-weight: 700;
+}
+QLabel#materialFieldLabel {
+    min-width: 142px; color: #233b59; font-size: 8pt; font-weight: 600;
+}
+QLabel#materialUnitLabel {
+    min-width: 48px; color: #5f7187; font-family: "Consolas"; font-size: 8pt;
+}
+QLabel#materialFilterLabel {
+    color: #66788d; font-size: 7pt; font-weight: 700; padding-top: 3px;
+}
+QLineEdit#derivedMaterialValue {
+    color: #53647a; background: #eef2f7; border: 1px solid #d7dee7;
+}
+QFrame#shearSettingsPanel {
+    background: #ffffff; border: 0; border-top: 1px solid #d7dfe8; border-radius: 0;
+}
+QFrame#materialFooter {
+    min-height: 42px; max-height: 42px; background: #ffffff;
+    border-top: 1px solid #d5deea;
+}
+QPushButton#materialContinueButton { min-height: 30px; }
+QSplitter#materialEditorSplitter::handle { width: 1px; background: #d5deea; }
 """
 
 

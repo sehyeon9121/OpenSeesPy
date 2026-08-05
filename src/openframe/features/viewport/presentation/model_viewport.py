@@ -324,6 +324,8 @@ class ModelViewport(QFrame):
     def _set_item_kind_visible(self, item_kind: str, visible: bool) -> None:
         if item_kind == "load":
             self.quick3d_view.set_loads_visible(visible)
+        elif item_kind == "support":
+            self.quick3d_view.set_supports_visible(visible)
         if item_kind == "node_label":
             visible = visible and self.filter_options["node"].isChecked()
         for item in self.scene.items():
