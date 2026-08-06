@@ -90,6 +90,13 @@ class ResultsWorkspace(QFrame):
     def set_analysis_kind(self, kind: AnalysisKind) -> None:
         self.toolbar.set_analysis_kind(kind)
 
+    def set_result_type(self, result_type: str) -> None:
+        """Select a result type as if the user had clicked it in the sidebar."""
+        button = self.result_types.buttons.get(result_type)
+        if button is not None:
+            button.setChecked(True)
+        self._set_result_type(result_type)
+
     def _set_result_type(self, result_type: str) -> None:
         self.viewport.set_result_type(result_type)
         self.data_panel.set_result_type(result_type)

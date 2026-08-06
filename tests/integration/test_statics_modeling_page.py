@@ -173,7 +173,7 @@ def test_context_support_and_directional_load_apply_without_panel_hopping() -> N
 
     assert application is QApplication.instance()
     page._activate_support_tool()
-    page.support_kind.setCurrentIndex(1)
+    page.support_kind.setCurrentIndex(page.support_kind.findText("수직 롤러"))
     page.canvas.apply_support_to_selection(page.support_kind.currentData())
     page._activate_load_tool()
     page.load_target.setCurrentIndex(page.load_target.findData("node"))

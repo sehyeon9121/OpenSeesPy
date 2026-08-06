@@ -1,5 +1,6 @@
 """Common structural model representation produced by every importer."""
 
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -50,11 +51,27 @@ class Element:
 
 @dataclass(frozen=True, slots=True)
 class BoundaryCondition:
+    """A support whose restrained directions may be rotated away from the global axes.
+
+    ``restraints[0]`` and ``[1]`` constrain translation along a local frame rotated
+    ``angle`` degrees counter-clockwise from global +X: local x' runs along the
+    support surface, local y' is normal to it.  ``angle=0`` reduces exactly to the
+    ordinary global-axis support this project always had, which is why every caller
+    that never mentions ``angle`` keeps working unchanged.
+    """
+
     node_tag: int
     restraints: tuple[bool, ...]
+    angle: float = 0.0
+
+    @property
+    def is_inclined(self) -> bool:
+        return not math.isclose(self.angle % 360.0, 0.0, abs_tol=1.0e-9)
 
     @property
     def support_kind(self) -> SupportKind:
+        if self.is_inclined:
+            return SupportKind.CUSTOM
         if len(self.restraints) >= 6:
             normalized_3d = tuple(self.restraints[:6])
             if normalized_3d == (True, True, True, True, True, True):

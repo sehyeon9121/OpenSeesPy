@@ -810,6 +810,24 @@ QToolButton#workflowStep {
 QToolButton#workflowStep:hover {
     color: #174ea6; background: #e7eef9;
 }
+QPushButton#railToolButton {
+    min-height: 34px; padding: 0 6px; border: 1px solid #d8e1eb; border-radius: 4px;
+    background: #ffffff; color: #35485f; font-weight: 700;
+}
+QPushButton#railToolButton:hover { background: #f0f5fb; border-color: #b9cadf; }
+QPushButton#railToolButton:checked {
+    background: #174ea6; border-color: #174ea6; color: #ffffff;
+}
+QPushButton#railCommandButton {
+    min-height: 26px; padding: 0 6px; border: 1px solid transparent; border-radius: 4px;
+    background: transparent; color: #53657a; font-size: 8pt;
+}
+QPushButton#railCommandButton:hover { background: #eef3f9; color: #174ea6; }
+QPushButton#sectionToggleButton {
+    min-height: 24px; padding: 0 4px; border: 0; background: transparent;
+    color: #174ea6; font-size: 8pt; font-weight: 700; text-align: left;
+}
+QPushButton#sectionToggleButton:hover { color: #0f3e82; text-decoration: underline; }
 QToolButton#workflowStep:checked {
     color: #ffffff; background: #174ea6;
     border-left-color: #0f3e82;

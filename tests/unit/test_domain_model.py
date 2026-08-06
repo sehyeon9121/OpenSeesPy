@@ -41,3 +41,22 @@ def test_support_kind_is_classified_from_2d_restraints() -> None:
         == SupportKind.ROLLER_HORIZONTAL
     )
     assert BoundaryCondition(5, (False, False, True)).support_kind == SupportKind.CUSTOM
+
+
+def test_zero_angle_is_not_inclined_and_keeps_its_ordinary_classification() -> None:
+    boundary = BoundaryCondition(1, (False, True, False), angle=0.0)
+
+    assert boundary.is_inclined is False
+    assert boundary.support_kind == SupportKind.ROLLER_VERTICAL
+
+
+def test_a_nonzero_angle_is_inclined_and_reports_as_custom() -> None:
+    boundary = BoundaryCondition(1, (False, True, False), angle=30.0)
+
+    assert boundary.is_inclined is True
+    assert boundary.support_kind == SupportKind.CUSTOM
+
+
+def test_a_full_360_degree_turn_is_treated_as_not_inclined() -> None:
+    assert BoundaryCondition(1, (True, True, False), angle=360.0).is_inclined is False
+    assert BoundaryCondition(1, (True, True, False), angle=-360.0).is_inclined is False

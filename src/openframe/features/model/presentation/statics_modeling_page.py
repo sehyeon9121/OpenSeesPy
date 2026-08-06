@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QGraphicsEllipseItem,
+    QGraphicsItemGroup,
+    QGraphicsLineItem,
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
@@ -32,8 +34,10 @@ from openframe.core.domain import (
 )
 from openframe.features.analysis.statics import MaterialFreeStaticsSolver, check_determinacy
 from openframe.features.model.drawing import (
+    PlaneKind,
     SnapOptions,
     SnapResult,
+    WorkPlane,
     apply_ortho,
     parse_entry,
     resolve_snap,
@@ -45,6 +49,7 @@ from openframe.features.results.presentation.result_viewport import ResultViewpo
 class StaticsDrawingCanvas(QGraphicsView):
     model_changed = Signal()
     draw_state_changed = Signal()
+    selection_changed = Signal()
     _DRAW_SCALE = 40.0
     _SNAP_PIXELS = 14.0
 
@@ -55,6 +60,8 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setMouseTracking(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSceneRect(-100_000, -100_000, 200_000, 200_000)
         self.nodes: dict[int, Node] = {}
         self.elements: dict[int, Element] = {}
@@ -77,6 +84,7 @@ class StaticsDrawingCanvas(QGraphicsView):
         self._panning = False
         self._pan_start = QPointF()
         self.support_restraints = (True, True, False)
+        self.support_angle = 0.0
         self.pending_nodal_load = (0.0, -10.0, 0.0)
         self.pending_uniform_load = (0.0, -10.0)
         self.snap_options = SnapOptions()
@@ -88,6 +96,70 @@ class StaticsDrawingCanvas(QGraphicsView):
         self._redo_stack: list[dict[str, object]] = []
         self._history_group_depth = 0
         self._history_group_snapshot: dict[str, object] | None = None
+        # A plain 2D canvas is a 3D one whose only plane is the ground (identity
+        # XY at 0): every coordinate a node ever gets is (u, v, 0), which is
+        # exactly what this class always produced before it knew about planes.
+        self.ndm = 2
+        self.work_plane = WorkPlane()
+        self.levels: list[WorkPlane] = [self.work_plane]
+
+    # --- work planes (3D authoring) -----------------------------------------
+
+    def enter_3d_mode(self) -> None:
+        """Switch the canvas from a flat 2D sheet to a stack of work planes."""
+        self.ndm = 3
+
+    def add_level(self, offset: float, label: str, kind: PlaneKind = PlaneKind.XY) -> WorkPlane:
+        plane = WorkPlane(kind, offset, label)
+        self.levels.append(plane)
+        return plane
+
+    def set_active_plane(self, plane: WorkPlane) -> None:
+        self.work_plane = plane
+        self.clear_selection()
+        self._changed()
+
+    def extrude_selection_to_plane(self, target: WorkPlane) -> int:
+        """Connect the selected nodes straight up (or across) to another plane.
+
+        This is how a column between two storeys gets drawn: pick the base nodes
+        on the current plan, extrude to the next level's plane, and a member
+        appears between each node and its counterpart there. Clicking a point in
+        empty 3D space has no single right answer, so free-form 3D authoring
+        never asks for that — every point is placed on a plane, including this one.
+        """
+        if not self.selected_nodes:
+            return 0
+        self.begin_history_group()
+        created_members = 0
+        try:
+            for tag in sorted(self.selected_nodes):
+                u, v = self._uv(self.nodes[tag])
+                target_tag = self._add_node_at(target.to_3d(u, v))
+                if self.add_member(tag, target_tag) is not None:
+                    created_members += 1
+        finally:
+            self.end_history_group()
+        return created_members
+
+    def _uv(self, node: Node) -> tuple[float, float]:
+        """Project a node onto the active work plane's local 2D coordinates."""
+        return self.work_plane.to_2d((node.x, node.y, node.z))
+
+    def _on_plane(self, node: Node) -> bool:
+        return self.work_plane.contains((node.x, node.y, node.z))
+
+    def _plane_node_tags(self) -> set[int]:
+        return {tag for tag, node in self.nodes.items() if self._on_plane(node)}
+
+    def _plane_element_tags(self, plane_nodes: set[int] | None = None) -> set[int]:
+        """Members fully on the active plane — both ends, not just one."""
+        on_plane = self._plane_node_tags() if plane_nodes is None else plane_nodes
+        return {
+            tag
+            for tag, element in self.elements.items()
+            if element.node_i in on_plane and element.node_j in on_plane
+        }
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode
@@ -112,9 +184,9 @@ class StaticsDrawingCanvas(QGraphicsView):
 
     @property
     def chain_anchor(self) -> tuple[float, float] | None:
-        """Model-space point the next member starts from, if a chain is open."""
+        """Plane-local point the next member starts from, if a chain is open."""
         node = self.nodes.get(self._chain[-1]) if self._chain else None
-        return None if node is None else (node.x, node.y)
+        return None if node is None else self._uv(node)
 
     @property
     def snap_label(self) -> str:
@@ -131,8 +203,22 @@ class StaticsDrawingCanvas(QGraphicsView):
         )
 
     def snap_at(self, x: float, y: float) -> SnapResult:
+        """Resolve a cursor position against geometry on the active plane only.
+
+        ``resolve_snap`` knows nothing about planes — it compares ``Node.x``/``.y``
+        directly — so a node from another storey must never reach it. Passing a
+        plane-projected, plane-filtered copy of the model keeps that boundary in
+        one place instead of every caller having to remember it. In 2D mode the
+        plane is the identity ground plane, so this is exactly ``self.nodes`` and
+        ``self.elements`` unchanged.
+        """
         options = replace(self.snap_options, grid=max(0.0, self.grid))
-        return resolve_snap(self.nodes, self.elements, (x, y), self._tolerance(), options)
+        plane_node_tags = self._plane_node_tags()
+        plane_nodes = {tag: self._projected_node(self.nodes[tag]) for tag in plane_node_tags}
+        plane_elements = {
+            tag: self.elements[tag] for tag in self._plane_element_tags(plane_node_tags)
+        }
+        return resolve_snap(plane_nodes, plane_elements, (x, y), self._tolerance(), options)
 
     def place_point(self, x: float, y: float, snap: SnapResult | None = None) -> int:
         """Add the next point of the drawing chain, connecting it to the previous one.
@@ -195,15 +281,20 @@ class StaticsDrawingCanvas(QGraphicsView):
         return QPointF(x * self._DRAW_SCALE, -y * self._DRAW_SCALE)
 
     def select_all(self) -> None:
-        self.selected_nodes = set(self.nodes)
-        self.selected_elements = set(self.elements)
-        self._redraw()
+        plane_nodes = self._plane_node_tags()
+        self.selected_nodes = plane_nodes
+        self.selected_elements = self._plane_element_tags(plane_nodes)
+        self._selection_changed()
 
     def clear_selection(self) -> None:
         self.selected_nodes.clear()
         self.selected_elements.clear()
         self._selected = None
+        self._selection_changed()
+
+    def _selection_changed(self) -> None:
         self._redraw()
+        self.selection_changed.emit()
 
     def fit_model(self) -> None:
         bounds = self.scene_model.itemsBoundingRect()
@@ -220,20 +311,43 @@ class StaticsDrawingCanvas(QGraphicsView):
             self.hinge_nodes.difference_update(self.selected_nodes)
         self._changed()
 
-    def apply_support_to_selection(self, restraints: tuple[bool, bool, bool]) -> None:
+    def apply_support_to_selection(
+        self, restraints: tuple[bool, bool, bool], angle: float = 0.0
+    ) -> None:
+        """Assign a support, or remove it entirely when nothing is restrained."""
         if not self.selected_nodes:
             return
         self._record_history()
         for node_tag in self.selected_nodes:
-            self.boundaries[node_tag] = BoundaryCondition(node_tag, restraints)
+            if any(restraints):
+                self.boundaries[node_tag] = BoundaryCondition(node_tag, restraints, angle)
+            else:
+                self.boundaries.pop(node_tag, None)
         self._changed()
 
-    def apply_nodal_load_to_selection(self, values: tuple[float, float, float]) -> None:
+    def apply_nodal_load_to_selection(self, values: tuple[float, ...]) -> None:
         if not self.selected_nodes:
             return
         self._record_history()
         for node_tag in self.selected_nodes:
             self.nodal_loads[node_tag] = NodalLoad(node_tag, values)
+        self._changed()
+
+    def set_member_end_release(self, element_tag: int, end: str, released: bool) -> None:
+        """Pin one end of a drawn member, independent of any node-level hinge.
+
+        ``end`` is ``"i"`` for the end at ``node_i`` or ``"j"`` for ``node_j`` — the
+        two ends a member always has, regardless of which node tags they land on.
+        """
+        element = self.elements.get(element_tag)
+        if element is None or end not in {"i", "j"}:
+            return
+        self._record_history()
+        self.elements[element_tag] = replace(
+            element,
+            moment_release_i=released if end == "i" else element.moment_release_i,
+            moment_release_j=released if end == "j" else element.moment_release_j,
+        )
         self._changed()
 
     def apply_uniform_load_to_selection(self, values: tuple[float, float]) -> None:
@@ -253,25 +367,33 @@ class StaticsDrawingCanvas(QGraphicsView):
         dy: float,
         repeat: int = 1,
     ) -> int:
-        """Move selected nodes, or create translated copies with new node tags."""
+        """Move selected nodes, or create translated copies with new node tags.
+
+        ``dx``/``dy`` are offsets along the active work plane's local axes, not
+        necessarily global X/Y — on an elevation plane, "dy" moves along Z.
+        """
         if not self.selected_nodes or (dx == 0.0 and dy == 0.0):
             return 0
         selected = sorted(self.selected_nodes)
         if operation == "move":
-            targets = {
-                tag: (self.nodes[tag].x + dx, self.nodes[tag].y + dy) for tag in selected
-            }
+            targets: dict[int, tuple[float, float, float]] = {}
+            for tag in selected:
+                u, v = self._uv(self.nodes[tag])
+                targets[tag] = self.work_plane.to_3d(u + dx, v + dy)
             occupied = {
-                (round(node.x, 12), round(node.y, 12))
+                (round(node.x, 12), round(node.y, 12), round(node.z, 12))
                 for tag, node in self.nodes.items()
                 if tag not in self.selected_nodes
             }
-            if any((round(x, 12), round(y, 12)) in occupied for x, y in targets.values()):
+            if any(
+                (round(x, 12), round(y, 12), round(z, 12)) in occupied
+                for x, y, z in targets.values()
+            ):
                 return 0
             self._record_history()
-            for tag, (x, y) in targets.items():
+            for tag, (x, y, z) in targets.items():
                 old = self.nodes[tag]
-                self.nodes[tag] = Node(tag, x, y, old.z, old.ndf)
+                self.nodes[tag] = Node(tag, x, y, z, old.ndf)
                 self.embedded_nodes.pop(tag, None)
                 self._attach_node_to_member(tag)
             self._changed()
@@ -284,9 +406,9 @@ class StaticsDrawingCanvas(QGraphicsView):
         try:
             for step in range(1, max(1, repeat) + 1):
                 for source_tag in selected:
-                    source = self.nodes[source_tag]
+                    source_u, source_v = self._uv(self.nodes[source_tag])
                     before = set(self.nodes)
-                    tag = self.add_node(source.x + dx * step, source.y + dy * step)
+                    tag = self.add_node(source_u + dx * step, source_v + dy * step)
                     if tag in before:
                         continue
                     created.add(tag)
@@ -296,16 +418,107 @@ class StaticsDrawingCanvas(QGraphicsView):
             self.end_history_group()
         self.selected_nodes = created
         self.selected_elements.clear()
-        self._redraw()
+        self._selection_changed()
         return len(created)
 
+    def mirror_selection(self, axis: str, value: float) -> int:
+        """Mirror the selected nodes, and any selected member between them, across
+        a vertical (``axis="x"``) or horizontal (``axis="y"``) line **within the
+        active work plane** — the plane's local axes, not necessarily global X/Y.
+
+        Existing points and duplicate members are reused through the ordinary
+        coincidence checks in ``add_node``/``add_member``, so mirroring a half-gable
+        frame across the line through its own apex reconnects at the apex instead
+        of stacking a second node on top of it.
+        """
+        if not self.selected_nodes or axis not in {"x", "y"}:
+            return 0
+        self.begin_history_group()
+        mapping: dict[int, int] = {}
+        try:
+            for tag in sorted(self.selected_nodes):
+                u, v = self._uv(self.nodes[tag])
+                mirrored = (2.0 * value - u, v) if axis == "x" else (u, 2.0 * value - v)
+                mapping[tag] = self.add_node(*mirrored)
+                if tag in self.hinge_nodes:
+                    self.hinge_nodes.add(mapping[tag])
+            for element in list(self.elements.values()):
+                if element.node_i in mapping and element.node_j in mapping:
+                    self.add_member(mapping[element.node_i], mapping[element.node_j])
+        finally:
+            self.end_history_group()
+        self.selected_nodes = set(mapping.values())
+        self.selected_elements.clear()
+        self._selection_changed()
+        return len(mapping)
+
+    def array_copy_selection(self, dx: float, dy: float, count: int) -> int:
+        """Repeat the selected nodes, and the members between them, along a step.
+
+        This is what turning one truss panel into a run of ``count`` panels needs:
+        the plain node copy only duplicates points, never the members joining them.
+        """
+        if not self.selected_nodes or count < 1:
+            return 0
+        self.begin_history_group()
+        original_elements = list(self.elements.values())
+        created_members = 0
+        try:
+            for step in range(1, count + 1):
+                mapping: dict[int, int] = {}
+                for tag in sorted(self.selected_nodes):
+                    source_u, source_v = self._uv(self.nodes[tag])
+                    mapping[tag] = self.add_node(source_u + dx * step, source_v + dy * step)
+                    if tag in self.hinge_nodes:
+                        self.hinge_nodes.add(mapping[tag])
+                for element in original_elements:
+                    if (
+                        element.node_i in mapping
+                        and element.node_j in mapping
+                        and self.add_member(mapping[element.node_i], mapping[element.node_j])
+                        is not None
+                    ):
+                        created_members += 1
+        finally:
+            self.end_history_group()
+        self._redraw()
+        return created_members
+
+    def subdivide_member(self, element_tag: int, segments: int) -> list[int]:
+        """Insert nodes splitting a member into ``segments`` equal-length pieces."""
+        if element_tag not in self.elements or segments < 2:
+            return []
+        created: list[int] = []
+        self.begin_history_group()
+        try:
+            for step in range(1, segments):
+                created.append(self.add_member_station_node(element_tag, step / segments))
+        finally:
+            self.end_history_group()
+        return created
+
     def add_node(self, x: float, y: float) -> int:
-        existing = self._nearest_node(x, y)
+        """Add a node from a point on the active work plane (plane-local u, v).
+
+        In 2D mode the active plane is always the identity ground plane, so
+        ``(x, y)`` is the model point directly — unchanged from before this class
+        knew about planes.
+        """
+        return self._add_node_at(self.work_plane.to_3d(x, y))
+
+    def _add_node_at(self, point: tuple[float, float, float]) -> int:
+        """Add a node at a true 3D model point, bypassing the active plane.
+
+        Used where the target point is already known in model space — an
+        embedded station on an existing member, a mirrored or arrayed copy — so
+        it is placed exactly there regardless of which plane is being viewed.
+        """
+        existing = self._nearest_node_3d(point)
         if existing is not None:
             return existing
         self._record_history()
         tag = max(self.nodes, default=0) + 1
-        self.nodes[tag] = Node(tag, x, y)
+        self.nodes[tag] = Node(tag, *point)
         self._attach_node_to_member(tag)
         self._changed()
         return tag
@@ -338,16 +551,19 @@ class StaticsDrawingCanvas(QGraphicsView):
         element = self.elements[element_tag]
         start = self.nodes[element.node_i]
         end = self.nodes[element.node_j]
-        x = start.x + (end.x - start.x) * position
-        y = start.y + (end.y - start.y) * position
-        existing = self._nearest_node(x, y)
+        point = (
+            start.x + (end.x - start.x) * position,
+            start.y + (end.y - start.y) * position,
+            start.z + (end.z - start.z) * position,
+        )
+        existing = self._nearest_node_3d(point)
         if existing is not None:
             if self.embedded_nodes.get(existing) != (element_tag, position):
                 self._record_history()
                 self.embedded_nodes[existing] = (element_tag, position)
                 self._changed()
             return existing
-        tag = self.add_node(x, y)
+        tag = self._add_node_at(point)
         self.embedded_nodes[tag] = (element_tag, position)
         self._changed()
         return tag
@@ -374,24 +590,42 @@ class StaticsDrawingCanvas(QGraphicsView):
 
     @staticmethod
     def _point_parameter(point: Node, start: Node, end: Node) -> float | None:
+        """Where ``point`` falls on segment ``start``-``end``, in true 3D.
+
+        Colinearity is a real geometric relationship the current work plane has
+        no say in — a node dropped mid-height on a column has to embed there
+        whether you are looking at a floor plan or an elevation. The z terms are
+        zero for every node a purely 2D canvas ever creates, so this reduces
+        exactly to the old x/y-only formula in that case.
+        """
         dx = end.x - start.x
         dy = end.y - start.y
-        length_squared = dx * dx + dy * dy
+        dz = end.z - start.z
+        length_squared = dx * dx + dy * dy + dz * dz
         if length_squared <= 1.0e-18:
             return None
-        parameter = ((point.x - start.x) * dx + (point.y - start.y) * dy) / length_squared
+        parameter = (
+            (point.x - start.x) * dx + (point.y - start.y) * dy + (point.z - start.z) * dz
+        ) / length_squared
         if not 1.0e-9 < parameter < 1.0 - 1.0e-9:
             return None
         projected_x = start.x + parameter * dx
         projected_y = start.y + parameter * dy
+        projected_z = start.z + parameter * dz
         tolerance = max(length_squared**0.5, 1.0) * 1.0e-8
-        if abs(point.x - projected_x) > tolerance or abs(point.y - projected_y) > tolerance:
+        if (
+            abs(point.x - projected_x) > tolerance
+            or abs(point.y - projected_y) > tolerance
+            or abs(point.z - projected_z) > tolerance
+        ):
             return None
         return parameter
 
-    def set_support(self, node_tag: int, restraints: tuple[bool, bool, bool]) -> None:
+    def set_support(
+        self, node_tag: int, restraints: tuple[bool, bool, bool], angle: float = 0.0
+    ) -> None:
         self._record_history()
-        self.boundaries[node_tag] = BoundaryCondition(node_tag, restraints)
+        self.boundaries[node_tag] = BoundaryCondition(node_tag, restraints, angle)
         self._changed()
 
     def set_nodal_load(self, node_tag: int, values: tuple[float, float, float]) -> None:
@@ -423,15 +657,21 @@ class StaticsDrawingCanvas(QGraphicsView):
             segment_tags = [element_tag]
             segment_tags.extend(range(next_tag, next_tag + max(0, len(chain) - 2)))
             next_tag += max(0, len(chain) - 2)
-            for segment_tag, (node_i, node_j) in zip(
-                segment_tags, pairwise(chain), strict=True
+            last_index = len(segment_tags) - 1
+            for index, (segment_tag, (node_i, node_j)) in enumerate(
+                zip(segment_tags, pairwise(chain), strict=True)
             ):
+                # A member the user split with an embedded node becomes several
+                # analysis segments; only the outer edges of the chain can carry the
+                # end release the user set on the original drawn member.
                 analysis_elements[segment_tag] = Element(
                     segment_tag,
                     node_i,
                     node_j,
                     element.element_type,
                     dict(element.properties),
+                    moment_release_i=element.moment_release_i if index == 0 else False,
+                    moment_release_j=element.moment_release_j if index == last_index else False,
                 )
                 load = self.element_loads.get(element_tag)
                 if load is not None:
@@ -446,6 +686,8 @@ class StaticsDrawingCanvas(QGraphicsView):
                         )
                     )
         model = StructuralModel(
+            ndm=self.ndm,
+            ndf=3 if self.ndm == 2 else 6,
             nodes=dict(self.nodes),
             elements=self._apply_hinge_releases(analysis_elements),
             boundaries=list(self.boundaries.values()),
@@ -466,8 +708,13 @@ class StaticsDrawingCanvas(QGraphicsView):
         A hinge releases the bending moment of every member end meeting at the node.
         When the node itself carries no rotational restraint one member must stay
         rigid, otherwise the joint spins freely and the stiffness matrix is singular.
+        Explicit per-member end releases set via ``set_member_end_release`` are
+        combined with, never overwritten by, the node-level hinge.
         """
-        releases = {tag: [False, False] for tag in elements}
+        releases = {
+            tag: [element.moment_release_i, element.moment_release_j]
+            for tag, element in elements.items()
+        }
         for node_tag in self.hinge_nodes:
             ends = sorted(
                 (tag, end)
@@ -533,6 +780,7 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.selected_nodes.clear()
         self.selected_elements.clear()
         self._changed()
+        self.selection_changed.emit()
 
     def begin_history_group(self) -> None:
         if self._history_group_depth == 0:
@@ -595,6 +843,7 @@ class StaticsDrawingCanvas(QGraphicsView):
         self._snap = None
         self._changed()
         self.draw_state_changed.emit()
+        self.selection_changed.emit()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -654,7 +903,7 @@ class StaticsDrawingCanvas(QGraphicsView):
                 self._preview_point = None
                 self.add_member(start, node)
         elif self.mode == "support" and node is not None:
-            self.set_support(node, self.support_restraints)
+            self.set_support(node, self.support_restraints, self.support_angle)
         elif self.mode == "nodal_load" and node is not None:
             self.set_nodal_load(node, self.pending_nodal_load)
         elif self.mode == "uniform_load" and member is not None:
@@ -693,10 +942,8 @@ class StaticsDrawingCanvas(QGraphicsView):
         if self.mode == "member" and self._member_start is not None:
             snapped = self._node_near_scene(point)
             if snapped is not None:
-                node = self.nodes[snapped]
-                self._preview_point = QPointF(
-                    node.x * self._DRAW_SCALE, -node.y * self._DRAW_SCALE
-                )
+                u, v = self._uv(self.nodes[snapped])
+                self._preview_point = QPointF(u * self._DRAW_SCALE, -v * self._DRAW_SCALE)
             else:
                 self._preview_point = point
             self._redraw()
@@ -724,7 +971,7 @@ class StaticsDrawingCanvas(QGraphicsView):
             self._select_in_rect(rectangle, crossing=current.x() < self._drag_start.x())
             self._drag_start = None
             self._drag_current = None
-            self._redraw()
+            self._selection_changed()
             return
         super().mouseReleaseEvent(event)
 
@@ -779,11 +1026,25 @@ class StaticsDrawingCanvas(QGraphicsView):
         self._redraw()
         self.model_changed.emit()
 
+    def _projected_node(self, node: Node) -> Node:
+        """The node's position on the active plane, as a drawable (u, v, 0) node.
+
+        Every scene-drawing helper only ever reads ``.x``/``.y``; feeding them this
+        projection instead of the real node is what lets them stay plane-agnostic.
+        In 2D mode the plane is the identity ground plane, so this is ``node``
+        itself in every case that matters (z is always 0 already).
+        """
+        u, v = self._uv(node)
+        return Node(node.tag, u, v, 0.0, node.ndf)
+
     def _redraw(self) -> None:
         self.scene_model.clear()
         scale = self._DRAW_SCALE
-        for tag, element in self.elements.items():
-            a, b = self.nodes[element.node_i], self.nodes[element.node_j]
+        plane_nodes = self._plane_node_tags()
+        for tag in self._plane_element_tags(plane_nodes):
+            element = self.elements[tag]
+            a = self._projected_node(self.nodes[element.node_i])
+            b = self._projected_node(self.nodes[element.node_j])
             selected = tag in self.selected_elements or self._selected == ("element", tag)
             item = self.scene_model.addLine(
                 a.x * scale,
@@ -793,9 +1054,14 @@ class StaticsDrawingCanvas(QGraphicsView):
                 QPen(QColor("#ef4444" if selected else "#174ea6"), 4),
             )
             item.setData(0, ("element", tag))
+            if element.moment_release_i:
+                self._draw_end_release(a, b, scale)
+            if element.moment_release_j:
+                self._draw_end_release(b, a, scale)
             if tag in self.element_loads:
                 self._draw_uniform_load(a, b, self.element_loads[tag], scale)
-        for tag, node in self.nodes.items():
+        for tag in plane_nodes:
+            node = self._projected_node(self.nodes[tag])
             item = QGraphicsEllipseItem(-6, -6, 12, 12)
             item.setPos(node.x * scale, -node.y * scale)
             selected = tag in self.selected_nodes or self._selected == ("node", tag)
@@ -810,11 +1076,11 @@ class StaticsDrawingCanvas(QGraphicsView):
             self.scene_model.addItem(item)
             self.scene_model.addText(f"N{tag}").setPos(node.x * scale + 7, -node.y * scale - 22)
             if tag in self.boundaries:
-                self._draw_support(node, self.boundaries[tag].restraints, scale)
+                self._draw_support(node, self.boundaries[tag], scale)
             if tag in self.nodal_loads:
                 self._draw_nodal_load(node, self.nodal_loads[tag].values, scale)
-        if self._member_start in self.nodes:
-            node = self.nodes[self._member_start]
+        if self._member_start in plane_nodes:
+            node = self._projected_node(self.nodes[self._member_start])
             self.scene_model.addEllipse(
                 node.x * scale - 10, -node.y * scale - 10, 20, 20, QPen(QColor("#22c55e"), 2)
             )
@@ -829,7 +1095,7 @@ class StaticsDrawingCanvas(QGraphicsView):
                 )
                 snapped = self._node_near_scene(self._preview_point)
                 if snapped is not None:
-                    target = self.nodes[snapped]
+                    target = self._projected_node(self.nodes[snapped])
                     self.scene_model.addEllipse(
                         target.x * scale - 11,
                         -target.y * scale - 11,
@@ -883,37 +1149,45 @@ class StaticsDrawingCanvas(QGraphicsView):
             label.setDefaultTextColor(QColor("#16a34a"))
             label.setPos(midpoint + QPointF(10, -25))
 
-    def _nearest_node(self, x: float, y: float) -> int | None:
+    def _nearest_node_3d(self, point: tuple[float, float, float]) -> int | None:
         return next(
             (
                 tag
                 for tag, node in self.nodes.items()
-                if abs(node.x - x) < 1.0e-9 and abs(node.y - y) < 1.0e-9
+                if abs(node.x - point[0]) < 1.0e-9
+                and abs(node.y - point[1]) < 1.0e-9
+                and abs(node.z - point[2]) < 1.0e-9
             ),
             None,
         )
 
     def _node_near_scene(self, point: QPointF, tolerance: float = 16.0) -> int | None:
-        candidates = (
-            (
-                (node.x * self._DRAW_SCALE - point.x()) ** 2
-                + (-node.y * self._DRAW_SCALE - point.y()) ** 2,
-                tag,
+        """Nearest node to a scene point, restricted to nodes on the active plane."""
+        candidates = []
+        for tag, node in self.nodes.items():
+            if not self._on_plane(node):
+                continue
+            u, v = self._uv(node)
+            candidates.append(
+                (
+                    (u * self._DRAW_SCALE - point.x()) ** 2
+                    + (-v * self._DRAW_SCALE - point.y()) ** 2,
+                    tag,
+                )
             )
-            for tag, node in self.nodes.items()
-        )
         distance, tag = min(candidates, default=(float("inf"), None))
         return tag if distance <= tolerance * tolerance else None
 
     def _member_near_scene(self, point: QPointF, tolerance: float = 14.0) -> int | None:
         candidates: list[tuple[float, int]] = []
-        for tag, element in self.elements.items():
+        for tag in self._plane_element_tags():
+            element = self.elements[tag]
             start_node = self.nodes[element.node_i]
             end_node = self.nodes[element.node_j]
-            start = QPointF(
-                start_node.x * self._DRAW_SCALE, -start_node.y * self._DRAW_SCALE
-            )
-            end = QPointF(end_node.x * self._DRAW_SCALE, -end_node.y * self._DRAW_SCALE)
+            start_u, start_v = self._uv(start_node)
+            end_u, end_v = self._uv(end_node)
+            start = QPointF(start_u * self._DRAW_SCALE, -start_v * self._DRAW_SCALE)
+            end = QPointF(end_u * self._DRAW_SCALE, -end_v * self._DRAW_SCALE)
             dx, dy = end.x() - start.x(), end.y() - start.y()
             length_squared = dx * dx + dy * dy
             if length_squared == 0.0:
@@ -932,11 +1206,14 @@ class StaticsDrawingCanvas(QGraphicsView):
         self, point: QPointF, tolerance: float = 14.0
     ) -> tuple[int, float, QPointF] | None:
         candidates: list[tuple[float, int, float, QPointF, float]] = []
-        for tag, element in self.elements.items():
+        for tag in self._plane_element_tags():
+            element = self.elements[tag]
             a = self.nodes[element.node_i]
             b = self.nodes[element.node_j]
-            start = QPointF(a.x * self._DRAW_SCALE, -a.y * self._DRAW_SCALE)
-            end = QPointF(b.x * self._DRAW_SCALE, -b.y * self._DRAW_SCALE)
+            a_u, a_v = self._uv(a)
+            b_u, b_v = self._uv(b)
+            start = QPointF(a_u * self._DRAW_SCALE, -a_v * self._DRAW_SCALE)
+            end = QPointF(b_u * self._DRAW_SCALE, -b_v * self._DRAW_SCALE)
             dx, dy = end.x() - start.x(), end.y() - start.y()
             length_squared = dx * dx + dy * dy
             if length_squared == 0.0:
@@ -978,19 +1255,30 @@ class StaticsDrawingCanvas(QGraphicsView):
         else:
             target.add(tag)
         self._selected = key
-        self._redraw()
+        self._selection_changed()
 
     def _select_in_rect(self, rectangle: QRectF, *, crossing: bool) -> None:
+        """Drag-select — restricted to what the active plane actually shows.
+
+        Selecting something invisible (a node from another storey) would be a
+        trap: it looks unselected but the next delete or support click would
+        silently reach it anyway.
+        """
         scale = self._DRAW_SCALE
+        plane_nodes = self._plane_node_tags()
         if self.selection_filter in {"all", "nodes"}:
-            for tag, node in self.nodes.items():
-                if rectangle.contains(QPointF(node.x * scale, -node.y * scale)):
+            for tag in plane_nodes:
+                u, v = self._uv(self.nodes[tag])
+                if rectangle.contains(QPointF(u * scale, -v * scale)):
                     self.selected_nodes.add(tag)
         if self.selection_filter in {"all", "elements"}:
-            for tag, element in self.elements.items():
+            for tag in self._plane_element_tags(plane_nodes):
+                element = self.elements[tag]
                 a, b = self.nodes[element.node_i], self.nodes[element.node_j]
-                start = QPointF(a.x * scale, -a.y * scale)
-                end = QPointF(b.x * scale, -b.y * scale)
+                a_u, a_v = self._uv(a)
+                b_u, b_v = self._uv(b)
+                start = QPointF(a_u * scale, -a_v * scale)
+                end = QPointF(b_u * scale, -b_v * scale)
                 fully_inside = rectangle.contains(start) and rectangle.contains(end)
                 member_line = QLineF(start, end)
                 edges = (
@@ -1009,30 +1297,55 @@ class StaticsDrawingCanvas(QGraphicsView):
                 if fully_inside or (crossing and intersects):
                     self.selected_elements.add(tag)
 
-    def _draw_support(
-        self, node: Node, restraints: tuple[bool, ...], scale: float
-    ) -> None:
-        x, y = node.x * scale, -node.y * scale
+    def _draw_support(self, node: Node, boundary: BoundaryCondition, scale: float) -> None:
+        """Draw the support glyph rotated to the boundary condition's incline angle.
+
+        The glyph is built at the origin in an unrotated local frame — the same
+        shape as before this method learned about angles — then the whole group is
+        positioned and rotated once. Qt rotates clockwise for a positive angle in
+        its y-down scene space, which is exactly the on-screen direction a
+        counter-clockwise angle in model space (y-up) needs, so ``setRotation``
+        takes the boundary's angle unchanged.
+        """
         pen = QPen(QColor("#334155"), 2)
-        normalized = tuple(restraints[:3])
+        group = QGraphicsItemGroup()
+        normalized = tuple(boundary.restraints[:3])
         if normalized == (True, True, True):
-            self.scene_model.addLine(x - 14, y + 8, x + 14, y + 8, pen)
+            group.addToGroup(self._line_item(-14, 8, 14, 8, pen))
             for offset in (-12, -6, 0, 6, 12):
-                self.scene_model.addLine(x + offset, y + 8, x + offset - 5, y + 16, pen)
-            return
-        if normalized == (True, False, False):
-            self.scene_model.addLine(x + 8, y - 12, x + 8, y + 12, pen)
-            self.scene_model.addLine(x, y, x + 8, y - 10, pen)
-            self.scene_model.addLine(x, y, x + 8, y + 10, pen)
-            self.scene_model.addEllipse(x + 10, y - 7, 4, 4, pen)
-            self.scene_model.addEllipse(x + 10, y + 3, 4, 4, pen)
-            return
-        self.scene_model.addLine(x, y, x - 11, y + 17, pen)
-        self.scene_model.addLine(x, y, x + 11, y + 17, pen)
-        self.scene_model.addLine(x - 11, y + 17, x + 11, y + 17, pen)
-        if normalized == (False, True, False):
-            self.scene_model.addEllipse(x - 8, y + 18, 5, 5, pen)
-            self.scene_model.addEllipse(x + 3, y + 18, 5, 5, pen)
+                group.addToGroup(self._line_item(offset, 8, offset - 5, 16, pen))
+        elif normalized == (True, False, False):
+            group.addToGroup(self._line_item(8, -12, 8, 12, pen))
+            group.addToGroup(self._line_item(0, 0, 8, -10, pen))
+            group.addToGroup(self._line_item(0, 0, 8, 10, pen))
+            group.addToGroup(self._ellipse_item(10, -7, 4, 4, pen))
+            group.addToGroup(self._ellipse_item(10, 3, 4, 4, pen))
+        else:
+            group.addToGroup(self._line_item(0, 0, -11, 17, pen))
+            group.addToGroup(self._line_item(0, 0, 11, 17, pen))
+            group.addToGroup(self._line_item(-11, 17, 11, 17, pen))
+            if normalized == (False, True, False):
+                group.addToGroup(self._ellipse_item(-8, 18, 5, 5, pen))
+                group.addToGroup(self._ellipse_item(3, 18, 5, 5, pen))
+        group.setPos(node.x * scale, -node.y * scale)
+        group.setRotation(boundary.angle)
+        self.scene_model.addItem(group)
+        if boundary.is_inclined:
+            label = self.scene_model.addText(f"{boundary.angle:g}°")
+            label.setDefaultTextColor(QColor("#0f766e"))
+            label.setPos(node.x * scale + 16, -node.y * scale + 14)
+
+    @staticmethod
+    def _line_item(x1: float, y1: float, x2: float, y2: float, pen: QPen) -> QGraphicsLineItem:
+        item = QGraphicsLineItem(x1, y1, x2, y2)
+        item.setPen(pen)
+        return item
+
+    @staticmethod
+    def _ellipse_item(x: float, y: float, w: float, h: float, pen: QPen) -> QGraphicsEllipseItem:
+        item = QGraphicsEllipseItem(x, y, w, h)
+        item.setPen(pen)
+        return item
 
     def _draw_nodal_load(self, node: Node, values: tuple[float, ...], scale: float) -> None:
         fx, fy, mz = (*values, 0.0, 0.0, 0.0)[:3]
@@ -1048,20 +1361,57 @@ class StaticsDrawingCanvas(QGraphicsView):
             label.setDefaultTextColor(QColor("#dc2626"))
             label.setPos(origin + QPointF(10, -38))
 
+    @staticmethod
+    def load_arrow_segments(
+        start: Node, end: Node, load: UniformElementLoad, reach: float
+    ) -> list[tuple[tuple[float, float], tuple[float, float], str]]:
+        """Arrow tails and tips in model space, expressed in the member's local axes.
+
+        A uniform load is defined along the member, so the arrows have to follow the
+        member: on a sloped rafter they stand perpendicular to it, not straight down.
+        """
+        dx = end.x - start.x
+        dy = end.y - start.y
+        length = (dx * dx + dy * dy) ** 0.5
+        if length <= 0.0:
+            return []
+        along = (dx / length, dy / length)
+        normal = (-along[1], along[0])
+        segments = []
+        for fraction in (0.1, 0.3, 0.5, 0.7, 0.9):
+            tip = (start.x + dx * fraction, start.y + dy * fraction)
+            if load.wy:
+                sign = -1.0 if load.wy < 0 else 1.0
+                tail = (tip[0] - normal[0] * reach * sign, tip[1] - normal[1] * reach * sign)
+                segments.append(
+                    (tail, tip, f"qy {load.wy:g}" if fraction == 0.5 else "")
+                )
+            if load.wx and fraction == 0.5:
+                sign = 1.0 if load.wx > 0 else -1.0
+                tail = (tip[0] - along[0] * reach * sign, tip[1] - along[1] * reach * sign)
+                segments.append((tail, tip, f"qx {load.wx:g}"))
+        return segments
+
+    def _draw_end_release(self, end: Node, away_from: Node, scale: float) -> None:
+        """Small open circle set back from the joint marking a pinned member end."""
+        dx, dy = away_from.x - end.x, away_from.y - end.y
+        length = max((dx * dx + dy * dy) ** 0.5, 1.0e-9)
+        offset = 11.0
+        x = end.x * scale + dx / length * offset
+        y = -end.y * scale - dy / length * offset
+        self.scene_model.addEllipse(
+            x - 4, y - 4, 8, 8, QPen(QColor("#f97316"), 2), QColor("#fff7ed")
+        )
+
     def _draw_uniform_load(
         self, start: Node, end: Node, load: UniformElementLoad, scale: float
     ) -> None:
-        for fraction in (0.1, 0.3, 0.5, 0.7, 0.9):
-            point = QPointF(
-                (start.x + (end.x - start.x) * fraction) * scale,
-                -(start.y + (end.y - start.y) * fraction) * scale,
+        for tail, tip, text in self.load_arrow_segments(start, end, load, 32.0 / scale):
+            self._draw_arrow(
+                QPointF(tail[0] * scale, -tail[1] * scale),
+                QPointF(tip[0] * scale, -tip[1] * scale),
+                text,
             )
-            if load.wy:
-                offset = QPointF(0, -32 if load.wy < 0 else 32)
-                self._draw_arrow(point + offset, point, "" if fraction != 0.5 else f"qy {load.wy:g}")
-            if load.wx and fraction == 0.5:
-                offset = QPointF(-35 if load.wx > 0 else 35, 0)
-                self._draw_arrow(point + offset, point, f"qx {load.wx:g}")
 
     def _draw_arrow(self, start: QPointF, end: QPointF, text: str) -> None:
         pen = QPen(QColor("#dc2626"), 2)

@@ -13,12 +13,15 @@ from openframe.features.model.drawing.snapping import (
     apply_ortho,
     resolve_snap,
 )
+from openframe.features.model.drawing.work_plane import PlaneKind, WorkPlane
 
 __all__ = [
     "EntryMode",
+    "PlaneKind",
     "SnapKind",
     "SnapOptions",
     "SnapResult",
+    "WorkPlane",
     "apply_ortho",
     "parse_entry",
     "polar_point",
