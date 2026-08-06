@@ -3,9 +3,12 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QKeyEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication
 
 from openframe.features.analysis.statics import check_determinacy
+from openframe.features.model.drawing import PlaneKind
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 
@@ -41,6 +44,64 @@ def test_escape_ends_the_chain_so_the_next_click_starts_a_new_run() -> None:
     assert canvas.is_drawing is True
     assert len(canvas.nodes) == 3
     assert len(canvas.elements) == 1
+
+
+def test_escape_in_draw_mode_requests_a_return_to_select_instead_of_just_clearing() -> None:
+    """Pressing Escape while a chain is open used to only clear the chain and
+    leave the draw tool active, so getting back to selecting meant reaching for
+    the 선택 button too. One Escape should be enough."""
+    canvas = _canvas()
+    canvas.place_point(0.0, 0.0)
+    canvas.place_point(4.0, 0.0)
+    requests: list[None] = []
+    canvas.escape_requested.connect(lambda: requests.append(None))
+
+    canvas.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+
+    assert requests, "escape_requested must fire while the draw tool is active"
+    assert canvas.mode == "draw", "the canvas itself does not switch modes — the page does, via the signal"
+
+
+def test_escape_outside_draw_mode_still_just_clears_a_pending_preview() -> None:
+    canvas = _canvas()
+    canvas.set_mode("select")
+    requests: list[None] = []
+    canvas.escape_requested.connect(lambda: requests.append(None))
+
+    canvas.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+
+    assert not requests
+
+
+def test_axis_lines_span_the_visible_rect_when_the_origin_is_in_view() -> None:
+    x_axis, y_axis = StaticsDrawingCanvas.axis_lines((-100.0, -50.0, 100.0, 50.0), (0.0, 0.0))
+
+    assert x_axis == (-100.0, 0.0, 100.0, 0.0)
+    assert y_axis == (0.0, -50.0, 0.0, 50.0)
+
+
+def test_axis_lines_omit_an_axis_panned_off_screen() -> None:
+    """After panning far from the origin, the X or Y line should not still be
+    drawn at some meaningless coordinate outside the visible rect."""
+    x_axis, y_axis = StaticsDrawingCanvas.axis_lines((500.0, 500.0, 700.0, 600.0), (0.0, 0.0))
+
+    assert x_axis is None
+    assert y_axis is None
+
+
+def test_axis_lines_follow_the_active_work_planes_local_origin() -> None:
+    """A front elevation plane's local origin is a different point than the
+    ground plan's — the axes must track whichever plane is active, not always
+    global (0, 0)."""
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    front = canvas.add_level(2.0, "front", kind=PlaneKind.XZ)
+    canvas.set_active_plane(front)
+
+    origin_scene = canvas._scene_point(0.0, 0.0)
+    x_axis, _ = canvas.axis_lines((-1000.0, -1000.0, 1000.0, 1000.0), (origin_scene.x(), origin_scene.y()))
+
+    assert x_axis == (-1000.0, origin_scene.y(), 1000.0, origin_scene.y())
 
 
 def test_typed_polar_entry_draws_a_gable_frame_with_its_sloped_rafters() -> None:
@@ -182,6 +243,170 @@ def test_member_end_release_lands_on_the_outer_segment_after_a_station_split() -
     assert releases[member] == (False, False)
     far_segment = next(tag for tag in releases if tag != member)
     assert releases[far_segment] == (False, True)
+
+
+def _wheel(delta: int, x: float = 120.0, y: float = 90.0) -> QWheelEvent:
+    point = QPointF(x, y)
+    return QWheelEvent(
+        point,
+        point,
+        QPoint(0, 0),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+
+def test_wheel_zoom_keeps_the_point_under_the_cursor_fixed_while_drawing() -> None:
+    """Regression test: our mouseMoveEvent override returns early in draw mode
+    without reaching QGraphicsView's own implementation, which is what
+    AnchorUnderMouse alone depends on to know where the cursor is — so zooming
+    while the draw tool is active used to re-centre on the viewport instead of
+    the cursor. Qt's own scrollbar-based panning only lands on whole scrollbar
+    steps, so a small sub-pixel residual is expected and does not accumulate —
+    only a large jump (the actual bug) should fail this.
+    """
+    canvas = _canvas()
+    canvas.resize(400, 300)
+    canvas.show()
+    canvas.place_point(0.0, 0.0)
+    canvas.place_point(6.0, 0.0)
+    canvas.fit_model()
+    cursor = QPoint(120, 90)
+
+    before = canvas.mapToScene(cursor)
+    canvas.wheelEvent(_wheel(120, cursor.x(), cursor.y()))
+    after = canvas.mapToScene(cursor)
+
+    assert (after.x(), after.y()) == pytest.approx((before.x(), before.y()), abs=1.5)
+
+
+def test_wheel_zoom_out_also_keeps_the_cursor_point_fixed() -> None:
+    canvas = _canvas()
+    canvas.resize(400, 300)
+    canvas.show()
+    canvas.place_point(0.0, 0.0)
+    canvas.place_point(6.0, 0.0)
+    canvas.fit_model()
+    cursor = QPoint(200, 60)
+
+    before = canvas.mapToScene(cursor)
+    canvas.wheelEvent(_wheel(-120, cursor.x(), cursor.y()))
+    after = canvas.mapToScene(cursor)
+
+    assert (after.x(), after.y()) == pytest.approx((before.x(), before.y()), abs=1.5)
+
+
+def test_repeated_wheel_zoom_does_not_drift_the_cursor_anchor() -> None:
+    """The small per-step quantization noise must stay bounded, not compound
+    into a visible drift after many scroll notches."""
+    canvas = _canvas()
+    canvas.resize(400, 300)
+    canvas.show()
+    canvas.place_point(0.0, 0.0)
+    canvas.place_point(6.0, 0.0)
+    canvas.fit_model()
+    cursor = QPoint(150, 100)
+
+    start = canvas.mapToScene(cursor)
+    for _ in range(10):
+        canvas.wheelEvent(_wheel(120, cursor.x(), cursor.y()))
+    end = canvas.mapToScene(cursor)
+
+    assert (end.x(), end.y()) == pytest.approx((start.x(), start.y()), abs=2.0)
+
+
+def test_the_origin_axes_do_not_inflate_fit_models_bounding_rect() -> None:
+    """The axes are painted in drawBackground, not added as scene items — if
+    they were ever turned into QGraphicsItems instead, itemsBoundingRect() would
+    include their huge span and fit_model() would zoom out to nothing."""
+    canvas = _canvas()
+    canvas.place_point(0.0, 0.0)
+    canvas.place_point(4.0, 3.0)
+    canvas.end_chain()
+
+    bounds = canvas.scene_model.itemsBoundingRect()
+
+    assert bounds.width() < 1000
+    assert bounds.height() < 1000
+
+
+def test_fit_model_recentres_the_view_after_the_structure_is_scrolled_off_screen() -> None:
+    canvas = _canvas()
+    canvas.resize(400, 300)
+    canvas.show()
+    canvas.place_point(0.0, 0.0)
+    canvas.place_point(6.0, 4.0)
+    canvas.end_chain()
+
+    canvas.centerOn(QPointF(50_000.0, 50_000.0))  # scroll far away, as if lost
+    lost_center = canvas.mapToScene(canvas.viewport().rect().center())
+    assert abs(lost_center.x()) > 1000  # confirm we really did get lost first
+
+    canvas.fit_model()
+
+    recovered_center = canvas.mapToScene(canvas.viewport().rect().center())
+    # The model spans x in [0, 6] and y in [-4, 0] (scene y is flipped), so its
+    # midpoint is near (3, -2); fit_model should bring the view back near there.
+    assert recovered_center.x() == pytest.approx(3.0 * canvas._DRAW_SCALE, abs=200.0)
+
+
+def test_a_hinge_marker_is_visually_distinct_from_a_rigid_node_not_just_a_colour_change() -> None:
+    """Regression test: _redraw used to set a hinge-coloured pen and then
+    unconditionally overwrite it with the plain blue pen right after, so a
+    hinge rendered as an ordinary node with a slightly bigger, hollow outline —
+    easy to miss entirely. A hinge must be a different symbol (ring + pin dot),
+    not a subtler shade of the regular filled dot."""
+    from PySide6.QtWidgets import QGraphicsEllipseItem
+
+    canvas = _canvas()
+    rigid = canvas.place_point(0.0, 0.0)
+    hinge = canvas.place_point(4.0, 0.0)
+    canvas.selected_nodes = {hinge}
+    canvas.set_selected_node_kind(True)
+    canvas.selected_nodes.clear()
+    canvas._redraw()
+
+    ellipses = [
+        item
+        for item in canvas.scene_model.items()
+        if isinstance(item, QGraphicsEllipseItem) and item.data(0) == ("node", hinge)
+    ]
+    assert len(ellipses) == 2, "a hinge draws two parts: the ring and the pin dot"
+    pen_colors = {item.pen().color().name() for item in ellipses}
+    assert "#f97316" in pen_colors, "the ring must actually carry the hinge accent colour"
+
+    rigid_ellipses = [
+        item
+        for item in canvas.scene_model.items()
+        if isinstance(item, QGraphicsEllipseItem) and item.data(0) == ("node", rigid)
+    ]
+    assert len(rigid_ellipses) == 1
+    assert rigid_ellipses[0].pen().color().name() == "#174ea6"
+
+
+def test_a_hinge_node_is_labelled_as_a_joint_on_the_canvas_itself() -> None:
+    """The scene label, not just the property panel, must say 절점 for a hinge —
+    a student scanning the drawing should not have to select a node to learn
+    it is a hinge."""
+    from PySide6.QtWidgets import QGraphicsTextItem
+
+    canvas = _canvas()
+    rigid = canvas.place_point(0.0, 0.0)
+    hinge = canvas.place_point(4.0, 0.0)
+    canvas.selected_nodes = {hinge}
+    canvas.set_selected_node_kind(True)
+
+    labels = {
+        item.toPlainText()
+        for item in canvas.scene_model.items()
+        if isinstance(item, QGraphicsTextItem)
+    }
+    assert f"절점{hinge}" in labels
+    assert f"N{rigid}" in labels
+    assert f"N{hinge}" not in labels
 
 
 def test_the_draw_tool_and_its_entry_field_are_wired_to_the_canvas() -> None:

@@ -789,23 +789,11 @@ QPushButton#directModelSaveButton {
     min-height: 28px; padding: 0 11px; color: #40546d; background: #ffffff;
     border: 1px solid #bdc9d8; border-radius: 3px;
 }
-QFrame#modelingWorkflow {
-    min-width: 180px; max-width: 180px;
-    background: #edf3fc;
-    border-right: 1px solid #cfd9e6;
-}
-QLabel#workflowTitle {
-    color: #122a4b; font-size: 12pt; font-weight: 700;
-}
-QLabel#workflowSubtitle { color: #6d7e91; font-size: 8pt; }
-QFrame#workflowProjectHeader {
-    background: #f4f7fc; border-bottom: 1px solid #d5deea;
-}
+QFrame#modelingWorkflow { background: transparent; }
 QToolButton#workflowStep {
-    min-width: 180px; max-width: 180px; min-height: 38px;
-    padding: 0 11px; border: 0; border-left: 3px solid transparent;
-    background: transparent; color: #69798c;
-    font-size: 9pt; font-weight: 600; text-align: left;
+    min-height: 28px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent;
+    border-radius: 3px; background: transparent; color: #69798c;
+    font-size: 9pt; font-weight: 600; text-align: center;
 }
 QToolButton#workflowStep:hover {
     color: #174ea6; background: #e7eef9;
@@ -830,7 +818,7 @@ QPushButton#sectionToggleButton {
 QPushButton#sectionToggleButton:hover { color: #0f3e82; text-decoration: underline; }
 QToolButton#workflowStep:checked {
     color: #ffffff; background: #174ea6;
-    border-left-color: #0f3e82;
+    border-bottom-color: #0f3e82;
 }
 QFrame#modelSetupPage, QFrame#workflowPlaceholderPage {
     background: #f5f7fa;

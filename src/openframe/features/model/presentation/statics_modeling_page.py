@@ -50,6 +50,7 @@ class StaticsDrawingCanvas(QGraphicsView):
     model_changed = Signal()
     draw_state_changed = Signal()
     selection_changed = Signal()
+    escape_requested = Signal()
     _DRAW_SCALE = 40.0
     _SNAP_PIXELS = 14.0
 
@@ -229,6 +230,26 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.begin_history_group()
         try:
             tag = self._node_for_point(x, y, snap)
+            return self._continue_chain(tag)
+        finally:
+            self.end_history_group()
+
+    def continue_chain_to_node(self, tag: int) -> int:
+        """Extend the current chain to an already-known node tag directly.
+
+        Used when a point was resolved somewhere other than the active work
+        plane's own (u, v) math — a 3D viewport click on an existing node, say,
+        which may not even lie on the plane currently showing. Going through
+        ``place_point``'s plane conversion there would reproduce the wrong point
+        whenever the node isn't on that plane; this bypasses it entirely.
+        """
+        if tag not in self.nodes:
+            return tag
+        return self._continue_chain(tag)
+
+    def _continue_chain(self, tag: int) -> int:
+        self.begin_history_group()
+        try:
             if self._chain and self._chain[-1] != tag:
                 self.add_member(self._chain[-1], tag)
             if not self._chain or self._chain[-1] != tag:
@@ -312,7 +333,7 @@ class StaticsDrawingCanvas(QGraphicsView):
         self._changed()
 
     def apply_support_to_selection(
-        self, restraints: tuple[bool, bool, bool], angle: float = 0.0
+        self, restraints: tuple[bool, ...], angle: float = 0.0
     ) -> None:
         """Assign a support, or remove it entirely when nothing is restrained."""
         if not self.selected_nodes:
@@ -976,8 +997,24 @@ class StaticsDrawingCanvas(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
+        """Zoom in/out keeping the point under the cursor fixed on screen.
+
+        ``AnchorUnderMouse`` is not reliable here — it depends on internal Qt
+        state this view's mode-switching ``mouseMoveEvent`` override does not
+        reliably keep current — and a manual ``scale()`` + ``translate()``
+        correction turned out not to compose the way the Qt docs imply either
+        (translate's arguments are pre-multiplied into the *new* scale, not
+        applied in absolute scene units, so a naive delta correction over- or
+        under-shoots). Recomputing the viewport centre and calling ``centerOn``
+        is the version that actually holds the anchor point fixed.
+        """
         factor = 1.18 if event.angleDelta().y() > 0 else 1 / 1.18
+        anchor = event.position().toPoint()
+        before = self.mapToScene(anchor)
         self.scale(factor, factor)
+        viewport_center = self.mapToScene(QRectF(self.viewport().rect()).center().toPoint())
+        anchor_now = self.mapToScene(anchor)
+        self.centerOn(viewport_center + (before - anchor_now))
         event.accept()
 
     def _resolve_cursor(self, scene_point: QPointF, modifiers) -> SnapResult:
@@ -990,7 +1027,14 @@ class StaticsDrawingCanvas(QGraphicsView):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
-            self.end_chain()
+            if self.mode == "draw":
+                # Leaving the tool entirely, not just clearing the in-progress
+                # chain — the whole point is not having to reach for the 선택
+                # button afterwards. The page listens for this to keep its rail
+                # button and property panel in sync with the mode switch.
+                self.escape_requested.emit()
+            else:
+                self.end_chain()
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete:
@@ -1021,6 +1065,36 @@ class StaticsDrawingCanvas(QGraphicsView):
         while y <= rect.bottom():
             painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
             y += spacing
+
+        origin = self._scene_point(0.0, 0.0)
+        x_axis, y_axis = self.axis_lines(
+            (rect.left(), rect.top(), rect.right(), rect.bottom()), (origin.x(), origin.y())
+        )
+        if x_axis is not None:
+            painter.setPen(QPen(QColor("#dc2626"), 1.4))
+            painter.drawLine(QPointF(x_axis[0], x_axis[1]), QPointF(x_axis[2], x_axis[3]))
+            painter.drawText(QPointF(rect.right() - 22, origin.y() - 6), "X")
+        if y_axis is not None:
+            painter.setPen(QPen(QColor("#16a34a"), 1.4))
+            painter.drawLine(QPointF(y_axis[0], y_axis[1]), QPointF(y_axis[2], y_axis[3]))
+            painter.drawText(QPointF(origin.x() + 6, rect.top() + 16), "Y")
+
+    @staticmethod
+    def axis_lines(
+        rect: tuple[float, float, float, float], origin: tuple[float, float]
+    ) -> tuple[tuple[float, float, float, float] | None, tuple[float, float, float, float] | None]:
+        """X/Y axis line endpoints spanning the visible rect, or None if the
+        origin is currently panned off screen in that direction.
+
+        A plain function (rect and origin as tuples, not Qt types) so the
+        geometry is testable without constructing a painter or a shown widget —
+        the same pattern as ``load_arrow_segments``.
+        """
+        left, top, right, bottom = rect
+        origin_x, origin_y = origin
+        x_axis = (left, origin_y, right, origin_y) if top <= origin_y <= bottom else None
+        y_axis = (origin_x, top, origin_x, bottom) if left <= origin_x <= right else None
+        return x_axis, y_axis
 
     def _changed(self) -> None:
         self._redraw()
@@ -1062,19 +1136,40 @@ class StaticsDrawingCanvas(QGraphicsView):
                 self._draw_uniform_load(a, b, self.element_loads[tag], scale)
         for tag in plane_nodes:
             node = self._projected_node(self.nodes[tag])
-            item = QGraphicsEllipseItem(-6, -6, 12, 12)
-            item.setPos(node.x * scale, -node.y * scale)
             selected = tag in self.selected_nodes or self._selected == ("node", tag)
             if tag in self.hinge_nodes:
-                item.setRect(-8, -8, 16, 16)
-                item.setBrush(QColor("#fff7ed"))
-                item.setPen(QPen(QColor("#f97316" if not selected else "#ef4444"), 3))
+                # A hinge (절점) is drawn as the textbook symbol: an open ring
+                # around the joint with a small pin dot at its centre, not just a
+                # colour change on the same filled dot a rigid node (노드) uses —
+                # the two must read as different symbols at a glance, not
+                # different shades of the same one.
+                accent = QColor("#ef4444" if selected else "#f97316")
+                ring = QGraphicsEllipseItem(-9, -9, 18, 18)
+                ring.setPos(node.x * scale, -node.y * scale)
+                ring.setBrush(QColor("#fff7ed"))
+                ring.setPen(QPen(accent, 3))
+                ring.setData(0, ("node", tag))
+                self.scene_model.addItem(ring)
+                pin = QGraphicsEllipseItem(-3, -3, 6, 6)
+                pin.setPos(node.x * scale, -node.y * scale)
+                pin.setBrush(accent)
+                pin.setPen(QPen(accent, 0))
+                pin.setData(0, ("node", tag))
+                self.scene_model.addItem(pin)
             else:
+                item = QGraphicsEllipseItem(-6, -6, 12, 12)
+                item.setPos(node.x * scale, -node.y * scale)
                 item.setBrush(QColor("#dbeafe" if selected else "#174ea6"))
-            item.setPen(QPen(QColor("#174ea6"), 2))
-            item.setData(0, ("node", tag))
-            self.scene_model.addItem(item)
-            self.scene_model.addText(f"N{tag}").setPos(node.x * scale + 7, -node.y * scale - 22)
+                item.setPen(QPen(QColor("#174ea6"), 2))
+                item.setData(0, ("node", tag))
+                self.scene_model.addItem(item)
+            # A plain node ("N") is a rigid connection; a hinge is a "절점"
+            # (joint) where rotation is released. The label says which one this
+            # is at a glance, not just the marker shape/colour.
+            label_text = f"절점{tag}" if tag in self.hinge_nodes else f"N{tag}"
+            self.scene_model.addText(label_text).setPos(
+                node.x * scale + 7, -node.y * scale - 22
+            )
             if tag in self.boundaries:
                 self._draw_support(node, self.boundaries[tag], scale)
             if tag in self.nodal_loads:

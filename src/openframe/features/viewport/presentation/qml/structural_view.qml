@@ -12,8 +12,17 @@ Item {
     property real lastMouseY: 0
     property bool panning: false
     property bool pickingEnabled: false
+    // Free-form 3D authoring: clicking the active work plane places a point
+    // there (in view coordinates — Python converts back to structural and
+    // then to the plane's own u/v); clicking an existing node instead
+    // continues the current chain to it. Both only fire while this is true,
+    // so the read-only model viewer's plain node-inspection clicks are unaffected.
+    property bool planePickingEnabled: false
+    property string planeKind: "xy"
+    property real planeOffset: 0
     signal cameraModeChanged(string mode)
     signal nodePicked(int tag, real screenX, real screenY)
+    signal planePicked(real viewX, real viewY, real viewZ)
 
     function setPreset(preset) {
         if (preset === "xy") {
@@ -33,6 +42,29 @@ Item {
         panY = 0
         cameraDistance = Math.max(sceneBridge.extent * 2.8, 4.0)
         cameraModeChanged(preset)
+    }
+
+    // Structural (x, y, z) -> view (x, z, -y); see Quick3DSceneBridge._view_coordinates.
+    // A work plane is rendered as a thin slab spanning the two axes it holds
+    // constant-free and pinned along the third at its offset, so its silhouette
+    // in the view always matches what the 2D canvas would show for that plane.
+    function planePosition() {
+        if (root.planeKind === "xy") {
+            return Qt.vector3d(sceneBridge.center_x, root.planeOffset, sceneBridge.center_z)
+        } else if (root.planeKind === "xz") {
+            return Qt.vector3d(sceneBridge.center_x, sceneBridge.center_y, -root.planeOffset)
+        }
+        return Qt.vector3d(root.planeOffset, sceneBridge.center_y, sceneBridge.center_z)
+    }
+    function planeScale() {
+        let size = Math.max(sceneBridge.extent * 3, 10) / 100
+        let thin = Math.max(sceneBridge.extent * 0.003, 0.004) / 100
+        if (root.planeKind === "xy") {
+            return Qt.vector3d(size, thin, size)
+        } else if (root.planeKind === "xz") {
+            return Qt.vector3d(size, size, thin)
+        }
+        return Qt.vector3d(thin, size, size)
     }
 
     function zoomBy(factor) {
@@ -104,6 +136,78 @@ Item {
             metalness: 0.0
             roughness: 0.95
         }
+
+        // Coordinate-system axes through the structural origin (0,0,0), so a
+        // student can always tell which way X/Y/Z point without hunting for a
+        // node label. Structural (x, y, z) maps to view (x, z, -y) — see
+        // Quick3DSceneBridge._view_coordinates — so only the vertical (Z) axis
+        // lines up with the view's own Y without rotation.
+        property real axisLength: Math.max(sceneBridge.extent * 1.2, 2.0)
+        property real axisThickness: Math.max(sceneBridge.extent * 0.006, 0.008)
+        PrincipledMaterial {
+            id: xAxisMaterial
+            baseColor: "#dc2626"
+            lighting: PrincipledMaterial.NoLighting
+        }
+        PrincipledMaterial {
+            id: yAxisMaterial
+            baseColor: "#16a34a"
+            lighting: PrincipledMaterial.NoLighting
+        }
+        PrincipledMaterial {
+            id: zAxisMaterial
+            baseColor: "#2563eb"
+            lighting: PrincipledMaterial.NoLighting
+        }
+        Model {
+            // Structural X -> view +X
+            source: "#Cylinder"
+            eulerRotation: Qt.vector3d(0, 0, -90)
+            scale: Qt.vector3d(axisThickness / 100, axisLength / 100, axisThickness / 100)
+            materials: [xAxisMaterial]
+            castsShadows: false
+            receivesShadows: false
+        }
+        Model {
+            // Structural Y -> view -Z
+            source: "#Cylinder"
+            eulerRotation: Qt.vector3d(-90, 0, 0)
+            scale: Qt.vector3d(axisThickness / 100, axisLength / 100, axisThickness / 100)
+            materials: [yAxisMaterial]
+            castsShadows: false
+            receivesShadows: false
+        }
+        Model {
+            // Structural Z -> view +Y, already the cylinder's default axis.
+            source: "#Cylinder"
+            scale: Qt.vector3d(axisThickness / 100, axisLength / 100, axisThickness / 100)
+            materials: [zAxisMaterial]
+            castsShadows: false
+            receivesShadows: false
+        }
+
+        PrincipledMaterial {
+            id: activePlaneMaterial
+            baseColor: "#3b82f6"
+            opacity: 0.1
+            lighting: PrincipledMaterial.NoLighting
+            cullMode: Material.NoCulling
+        }
+        Model {
+            // The surface free-form 3D drawing clicks land on — visible and
+            // pickable only while the draw tool is active (planePickingEnabled),
+            // so it never gets in the way of orbiting or picking existing nodes.
+            id: activePlaneModel
+            source: "#Cube"
+            visible: root.planePickingEnabled
+            pickable: root.planePickingEnabled
+            position: root.planePosition()
+            scale: root.planeScale()
+            materials: [activePlaneMaterial]
+            castsShadows: false
+            receivesShadows: false
+        }
+
         Model {
             source: "#Cube"
             position: Qt.vector3d(
@@ -294,7 +398,20 @@ Item {
         anchors.fill: parent
         acceptedButtons: Qt.MiddleButton | Qt.LeftButton
         onClicked: function(mouse) {
-            if (mouse.button !== Qt.LeftButton || !root.pickingEnabled)
+            if (mouse.button !== Qt.LeftButton)
+                return
+            if (root.planePickingEnabled) {
+                let result = view3d.pick(mouse.x, mouse.y)
+                if (result.objectHit && result.objectHit.nodeTag !== undefined) {
+                    // Clicked an existing node — continue the chain to it
+                    // rather than dropping a new point on top of it.
+                    root.nodePicked(result.objectHit.nodeTag, mouse.x, mouse.y)
+                } else if (result.objectHit === activePlaneModel) {
+                    root.planePicked(result.scenePosition.x, result.scenePosition.y, result.scenePosition.z)
+                }
+                return
+            }
+            if (!root.pickingEnabled)
                 return
             let result = view3d.pick(mouse.x, mouse.y)
             if (result.objectHit && result.objectHit.nodeTag !== undefined)

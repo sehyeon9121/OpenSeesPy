@@ -15,6 +15,10 @@ from openframe.features.viewport.presentation.quick3d_scene_bridge import (
 class Quick3DViewport(QFrame):
     camera_mode_changed = Signal(str)
     node_picked = Signal(int, int, int)
+    #: A click on the active work plane, as structural (x, y, z) — already
+    #: converted out of the QML scene's y-up view coordinates, so callers never
+    #: need to know about that mapping.
+    plane_point_picked = Signal(float, float, float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -33,10 +37,15 @@ class Quick3DViewport(QFrame):
         if root is not None:
             root.cameraModeChanged.connect(self.camera_mode_changed.emit)
             root.nodePicked.connect(self._on_node_picked)
+            root.planePicked.connect(self._on_plane_picked)
 
     def _on_node_picked(self, tag: int, x: float, y: float) -> None:
         global_pos = self.quick_widget.mapToGlobal(QPoint(int(x), int(y)))
         self.node_picked.emit(tag, global_pos.x(), global_pos.y())
+
+    def _on_plane_picked(self, view_x: float, view_y: float, view_z: float) -> None:
+        # Inverse of Quick3DSceneBridge._view_coordinates: view = (x, z, -y).
+        self.plane_point_picked.emit(view_x, -view_z, view_y)
 
     def set_picking_mode(self, enabled: bool) -> None:
         if enabled:
@@ -47,9 +56,38 @@ class Quick3DViewport(QFrame):
         if root is not None:
             root.setProperty("pickingEnabled", enabled)
 
-    def set_model(self, model: StructuralModel) -> None:
+    def set_plane_picking_mode(self, enabled: bool) -> None:
+        """Toggle click-to-place-on-the-active-plane, for free-form 3D drawing.
+
+        Kept distinct from ``set_picking_mode`` (used by the read-only result
+        viewport to inspect a node's displacement) so turning one on never
+        changes the other's behaviour.
+        """
+        if enabled:
+            self.quick_widget.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.quick_widget.unsetCursor()
+        root = self.quick_widget.rootObject()
+        if root is not None:
+            root.setProperty("planePickingEnabled", enabled)
+
+    def set_active_plane(self, kind: str, offset: float) -> None:
+        root = self.quick_widget.rootObject()
+        if root is not None:
+            root.setProperty("planeKind", kind)
+            root.setProperty("planeOffset", offset)
+
+    def set_model(self, model: StructuralModel, reset_camera: bool = True) -> None:
+        """Load a model, optionally without reframing the camera.
+
+        Reframing on every call is right for opening a file once, but wrong
+        while a student is actively drawing — the view would jump back to ISO
+        after every single click, which is the opposite of the free orbiting
+        this viewport is meant to offer.
+        """
         self.bridge.set_model(model)
-        self.set_camera_preset("iso")
+        if reset_camera:
+            self.set_camera_preset("iso")
 
     def show_result(
         self,

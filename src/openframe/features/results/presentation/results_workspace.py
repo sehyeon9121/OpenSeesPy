@@ -67,6 +67,7 @@ class ResultsWorkspace(QFrame):
     def set_model(self, model: StructuralModel) -> None:
         # A different model invalidates whatever the previous run produced.
         self.clear_result()
+        self.toolbar.set_dimension(model.ndm)
         self.viewport.set_model(model)
         self.data_panel.set_model(model)
         self.summary.set_model(model)

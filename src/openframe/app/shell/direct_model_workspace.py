@@ -45,14 +45,15 @@ class DirectModelWorkspace(QFrame):
         self.back_button.clicked.connect(self.back_requested)
         command_layout.addWidget(self.back_button)
         command_layout.addStretch(1)
+        self.workflow = ModelingWorkflowBar()
+        command_layout.addWidget(self.workflow)
+        command_layout.addStretch(1)
         self.save_button = QPushButton("저장")
         self.save_button.setObjectName("directModelSaveButton")
         self.save_button.setToolTip("프로젝트 저장 기능 연결 예정")
         self.save_button.setDisabled(True)
         command_layout.addWidget(self.save_button)
         root.addWidget(command_bar)
-
-        self.workflow = ModelingWorkflowBar()
 
         self.setup_page = ModelSetupPage()
         self.materials_page = MaterialSettingsPage()
@@ -75,12 +76,7 @@ class DirectModelWorkspace(QFrame):
             self.supports_page,
         ):
             self.stage_stack.addWidget(page)
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
-        body.addWidget(self.workflow)
-        body.addWidget(self.stage_stack, 1)
-        root.addLayout(body, 1)
+        root.addWidget(self.stage_stack, 1)
 
         self._pages = {
             "setup": self.setup_page,

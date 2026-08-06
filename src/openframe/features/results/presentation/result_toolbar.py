@@ -56,6 +56,12 @@ class ResultToolbar(QFrame):
         layout.addWidget(export_button)
         layout.addWidget(report_button)
 
+    def set_dimension(self, ndm: int) -> None:
+        """A 2D model has no isometric/orbit view to pick, so the VIEW selector
+        (currently a dormant "2D Front / 3D Isometric (Future)" stub, not wired
+        to anything) is just misleading, occupied-looking chrome in that case."""
+        self.view_mode.parentWidget().setVisible(ndm == 3)
+
     def set_analysis_kind(self, kind: AnalysisKind) -> None:
         labels = {
             AnalysisKind.LINEAR_STATIC: "Linear Static 01",

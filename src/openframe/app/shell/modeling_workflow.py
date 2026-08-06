@@ -1,11 +1,16 @@
 """Visible authoring sequence for a complete structural model."""
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QButtonGroup, QFrame, QLabel, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QToolButton, QWidget
 
 
 class ModelingWorkflowBar(QFrame):
-    """Keeps prerequisites visible without turning them into modal wizard pages."""
+    """Keeps prerequisites visible without turning them into modal wizard pages.
+
+    Sits inline in the top command bar rather than as a side column, so the
+    modeling canvas gets the full width of the window instead of losing a
+    fixed-width strip to step navigation.
+    """
 
     step_selected = Signal(str)
 
@@ -22,23 +27,9 @@ class ModelingWorkflowBar(QFrame):
         self.setObjectName("modelingWorkflow")
         self._buttons: dict[str, QToolButton] = {}
 
-        self.setFixedWidth(180)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 10)
-        layout.setSpacing(0)
-
-        project_header = QFrame()
-        project_header.setObjectName("workflowProjectHeader")
-        project_layout = QVBoxLayout(project_header)
-        project_layout.setContentsMargins(11, 10, 11, 10)
-        project_layout.setSpacing(3)
-        title = QLabel("새 구조 모델")
-        title.setObjectName("workflowTitle")
-        subtitle = QLabel("직접 모델링")
-        subtitle.setObjectName("workflowSubtitle")
-        project_layout.addWidget(title)
-        project_layout.addWidget(subtitle)
-        layout.addWidget(project_header)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
 
         group = QButtonGroup(self)
         group.setExclusive(True)
@@ -52,14 +43,13 @@ class ModelingWorkflowBar(QFrame):
         for key, label, tooltip in self.STEPS:
             button = QToolButton()
             button.setObjectName("workflowStep")
-            button.setText(f"{icons[key]}    {label}")
+            button.setText(f"{icons[key]}  {label}")
             button.setToolTip(tooltip)
             button.setCheckable(True)
             button.clicked.connect(lambda checked=False, step=key: self._select(step))
             group.addButton(button)
             self._buttons[key] = button
             layout.addWidget(button)
-        layout.addStretch(1)
         self.set_current_step("setup")
 
     def current_step(self) -> str:

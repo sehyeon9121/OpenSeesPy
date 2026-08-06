@@ -177,9 +177,8 @@ def test_context_support_and_directional_load_apply_without_panel_hopping() -> N
     page.canvas.apply_support_to_selection(page.support_kind.currentData())
     page._activate_load_tool()
     page.load_target.setCurrentIndex(page.load_target.findData("node"))
-    page.load_direction.setCurrentIndex(3)
-    page.load_magnitude.setValue(12.5)
-    page._apply_directional_load()
+    page.load_fields["fy"].setValue(-12.5)
+    page._apply_load()
 
     model = page.canvas.build_model()
     assert model.boundaries[0].restraints == (False, True, False)

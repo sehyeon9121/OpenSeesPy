@@ -228,9 +228,8 @@ def test_a_3d_cantilever_column_is_drawn_loaded_and_solved_entirely_through_the_
     page.canvas.selected_nodes = {top}
     page.canvas.selection_changed.emit()
     page.load_target.setCurrentIndex(page.load_target.findData("node"))
-    page.load_direction.setCurrentIndex(page.load_direction.findData("fx+"))
-    page.load_magnitude.setValue(10.0)
-    page._apply_directional_load()
+    page.load_fields["fx"].setValue(10.0)
+    page._apply_load()
 
     page.solve()
 
@@ -238,6 +237,160 @@ def test_a_3d_cantilever_column_is_drawn_loaded_and_solved_entirely_through_the_
     reaction = page.results.viewport._result.node_results[base].reaction
     assert reaction[0] == pytest.approx(-10.0, abs=1.0e-6)
     assert abs(reaction[4]) == pytest.approx(40.0, abs=1.0e-6)  # P * L
+
+
+def test_the_3d_preview_gets_camera_chrome_matching_the_imported_model_viewer() -> None:
+    page = _page()
+    page.mode_3d_toggle.setChecked(True)
+
+    assert page.preview_3d_panel.isVisible() is True
+    assert [page.preview_3d_camera.itemData(i) for i in range(page.preview_3d_camera.count())] == [
+        "iso",
+        "xy",
+        "xz",
+        "yz",
+    ]
+
+    page.preview_3d_camera.setCurrentIndex(page.preview_3d_camera.findData("xy"))
+    assert page.preview_3d.bridge is not None  # camera preset call must not raise
+
+    page._fit_3d_preview()  # must not raise even with an empty model
+
+
+def test_continue_chain_to_node_connects_even_when_the_node_is_off_the_active_plane() -> None:
+    """A 3D-viewport click on an existing node from another storey must reconnect
+    to that exact node — going through the active plane's (u, v) math would
+    reproduce the wrong point, since the node is not sitting on that plane."""
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    ground_node = canvas.place_point(0.0, 0.0)
+    roof = canvas.add_level(5.0, "roof")
+    canvas.selected_nodes = {ground_node}
+    canvas.extrude_selection_to_plane(roof)
+    top = next(iter(canvas.elements.values())).node_j
+
+    canvas.place_point(2.0, 2.0)  # starts a fresh chain on the ground plane
+    result = canvas.continue_chain_to_node(top)
+
+    assert result == top
+    assert len(canvas.nodes) == 3  # no duplicate node created for `top`
+    member = next(e for e in canvas.elements.values() if top in (e.node_i, e.node_j))
+    assert canvas.nodes[top].z == pytest.approx(5.0)
+    assert member.node_i != member.node_j
+
+
+def test_continue_chain_to_node_with_an_unknown_tag_is_a_no_op() -> None:
+    canvas = _canvas()
+    canvas.place_point(0.0, 0.0)
+
+    result = canvas.continue_chain_to_node(999)
+
+    assert result == 999
+    assert len(canvas.elements) == 0
+
+
+def test_3d_mode_swaps_the_2d_canvas_out_for_the_3d_view_entirely() -> None:
+    """No side-by-side split: the 3D view replaces the 2D plan as the primary
+    surface, matching a SketchUp-style single freely-orbited viewport rather
+    than a small preview beside a dominant 2D canvas."""
+    page = _page()
+    assert page.canvas_stack.currentWidget() is page.canvas
+
+    page.mode_3d_toggle.setChecked(True)
+    assert page.canvas_stack.currentWidget() is page.preview_3d_panel
+
+    page.mode_3d_toggle.setChecked(False)
+    assert page.canvas_stack.currentWidget() is page.canvas
+
+
+def test_the_draw_tool_enables_plane_picking_on_the_3d_view_not_node_picking() -> None:
+    page = _page()
+    page.mode_3d_toggle.setChecked(True)
+    root = page.preview_3d.quick_widget.rootObject()
+
+    page._activate_draw_tool()
+    assert root.property("planePickingEnabled") is True
+    assert root.property("pickingEnabled") is False
+
+    page._activate_select_tool()
+    assert root.property("planePickingEnabled") is False
+    assert root.property("pickingEnabled") is True
+
+
+def test_clicking_the_active_plane_in_3d_places_a_point_through_the_same_chain_logic() -> None:
+    """The 3D pick path and the 2D click path must produce identical model
+    data — this is what lets every existing 2D drawing test's guarantees (snap,
+    undo, member creation) carry over to 3D clicking for free."""
+    page = _page()
+    page.mode_3d_toggle.setChecked(True)
+    page._activate_draw_tool()
+
+    page._on_3d_plane_picked(0.0, 0.0, 0.0)
+    page._on_3d_plane_picked(4.0, 0.0, 0.0)
+
+    assert len(page.canvas.nodes) == 2
+    assert len(page.canvas.elements) == 1
+    element = next(iter(page.canvas.elements.values()))
+    assert page.canvas.nodes[element.node_i].x == pytest.approx(0.0)
+    assert page.canvas.nodes[element.node_j].x == pytest.approx(4.0)
+
+
+def test_clicking_an_existing_node_in_3d_continues_the_chain_while_drawing() -> None:
+    page = _page()
+    page.mode_3d_toggle.setChecked(True)
+    base = page.canvas.place_point(0.0, 0.0)
+    roof = page.canvas.add_level(3.0, "roof")
+    page.canvas.selected_nodes = {base}
+    page.canvas.extrude_selection_to_plane(roof)
+    top = next(iter(page.canvas.elements.values())).node_j
+    page.canvas.end_chain()
+
+    page._activate_draw_tool()
+    page.canvas.place_point(2.0, 2.0)
+    page._on_3d_node_picked(top, 0, 0)
+
+    member = next(e for e in page.canvas.elements.values() if top in (e.node_i, e.node_j))
+    assert page.canvas.nodes[top].z == pytest.approx(3.0)
+    assert member.node_i != member.node_j
+
+
+def test_clicking_an_existing_node_in_3d_selects_it_outside_draw_mode() -> None:
+    page = _page()
+    page.mode_3d_toggle.setChecked(True)
+    node = page.canvas.add_node(0.0, 0.0)
+    page._activate_select_tool()
+
+    page._on_3d_node_picked(node, 0, 0)
+
+    assert page.canvas.selected_nodes == {node}
+
+
+def test_changing_the_active_plane_keeps_the_3d_view_in_sync() -> None:
+    page = _page()
+    page.mode_3d_toggle.setChecked(True)
+    page.new_plane_offset.setValue(2.5)
+    page.new_plane_label.setText("2F")
+    page._add_plane()
+
+    root = page.preview_3d.quick_widget.rootObject()
+    assert root.property("planeOffset") == pytest.approx(2.5)
+    assert root.property("planeKind") == "xy"
+
+
+def test_drawing_in_3d_does_not_reset_the_orbit_camera_on_every_click() -> None:
+    """Regression guard: set_model() used to always reframe to ISO, which would
+    fight the student's own orbiting after every single placed point."""
+    page = _page()
+    page.mode_3d_toggle.setChecked(True)
+    root = page.preview_3d.quick_widget.rootObject()
+    page.preview_3d.set_camera_preset("xy")
+    assert root.property("cameraPitch") == pytest.approx(-89.0)
+
+    page._activate_draw_tool()
+    page._on_3d_plane_picked(0.0, 0.0, 0.0)
+    page._on_3d_plane_picked(3.0, 0.0, 0.0)
+
+    assert root.property("cameraPitch") == pytest.approx(-89.0)
 
 
 def test_snapping_only_reaches_nodes_on_the_active_plane() -> None:
