@@ -1,9 +1,16 @@
 """Create shared services and launch the desktop application."""
 
+import os
 import sys
 
 
 def run_desktop_app() -> int:
+    # Force the OpenGL RHI backend for Qt Quick 3D. The Windows default (Direct3D11)
+    # combined with QQuickWidget's texture blit + MSAA is a known Qt6 combination that
+    # renders the View3D scene as garbled/rainbow noise on some GPU driver stacks
+    # instead of the actual model - this must be set before any Qt module is imported.
+    os.environ.setdefault("QSG_RHI_BACKEND", "opengl")
+
     # Qt imports stay at the application boundary so domain modules remain GUI-independent.
     from PySide6.QtWidgets import QApplication
 

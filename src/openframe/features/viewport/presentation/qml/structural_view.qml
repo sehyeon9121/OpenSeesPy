@@ -147,17 +147,20 @@ Item {
         PrincipledMaterial {
             id: xAxisMaterial
             baseColor: "#dc2626"
-            lighting: PrincipledMaterial.NoLighting
+            metalness: 0.0
+            roughness: 0.6
         }
         PrincipledMaterial {
             id: yAxisMaterial
             baseColor: "#16a34a"
-            lighting: PrincipledMaterial.NoLighting
+            metalness: 0.0
+            roughness: 0.6
         }
         PrincipledMaterial {
             id: zAxisMaterial
             baseColor: "#2563eb"
-            lighting: PrincipledMaterial.NoLighting
+            metalness: 0.0
+            roughness: 0.6
         }
         Model {
             // Structural X -> view +X
@@ -190,7 +193,8 @@ Item {
             id: activePlaneMaterial
             baseColor: "#3b82f6"
             opacity: 0.1
-            lighting: PrincipledMaterial.NoLighting
+            metalness: 0.0
+            roughness: 1.0
             cullMode: Material.NoCulling
         }
         Model {

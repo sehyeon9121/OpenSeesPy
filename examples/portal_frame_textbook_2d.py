@@ -58,8 +58,8 @@ ops.element(
 )
 # Members follow the order the frame is traversed by hand (A up, across, then down to B).
 # A member's i->j direction sets its local axes, and therefore which side its A.F.D and
-# S.F.D are plotted on, so traversing this way reproduces the reference figure: compression
-# is drawn inside the frame on both columns.
+# S.F.D are plotted on, so traversing this way keeps both columns' A.F.D/S.F.D on
+# consistent, mirrored faces of the frame (compression on the outer face of both columns).
 ops.element(
     "elasticBeamColumn", 5, node_f, node_b, area, elastic_modulus, moment_of_inertia, 1
 )

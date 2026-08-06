@@ -15,6 +15,8 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication, QGraphicsScene
 
 from openframe.core.domain import AnalysisRequest, AnalysisStatus
+from openframe.features.analysis.statics.solver import MaterialFreeStaticsSolver
+from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 from openframe.features.results.diagrams import DiagramKind
 from openframe.features.results.presentation.frame_diagram_renderer import (
     FrameDiagramRenderer,
@@ -63,18 +65,19 @@ def test_positive_shear_on_left_column_is_drawn_outside_the_frame() -> None:
     assert all(x < 0.0 for x, _ in outlines[1])
 
 
-def test_compression_is_drawn_inside_the_frame_on_both_columns() -> None:
-    """Compression is negative and plots on the inner face, as in the reference figure.
+def test_compression_is_drawn_outside_the_frame_on_both_columns() -> None:
+    """Compression is negative and plots on the outer face, per explicit user request
+    to swap the axial diagram to the opposite side from where it used to draw.
 
-    Both columns must land inside even though one is traversed upward and the other
+    Both columns must land outside even though one is traversed upward and the other
     downward, which is what following the hand-solution member order achieves.
     """
     outlines = _outline_points(DiagramKind.AXIAL)
 
-    # Left column sits at x=0, right column at x=7; inside is 0 < x < 7.
+    # Left column sits at x=0, right column at x=7; outside is x < 0 or x > 7.
     for element_tag in (1, 2, 5):
-        assert all(0.0 < x < 7.0 for x, _ in outlines[element_tag]), (
-            f"element {element_tag} axial diagram fell outside the frame"
+        assert all(x < 0.0 or x > 7.0 for x, _ in outlines[element_tag]), (
+            f"element {element_tag} axial diagram fell inside the frame"
         )
 
 
@@ -110,3 +113,55 @@ def test_sagging_beam_moment_is_drawn_below_the_beam() -> None:
     for element_tag in (3, 4):
         assert any(y > BEAM_SCREEN_Y for _, y in outlines[element_tag])
         assert all(y >= BEAM_SCREEN_Y - 1e-9 for _, y in outlines[element_tag])
+
+
+def _bridge_items(kind: DiagramKind):
+    QApplication.instance() or QApplication([])
+    canvas = StaticsDrawingCanvas()
+    n1 = canvas.add_node(0.0, 0.0)
+    n2 = canvas.add_node(0.0, 4.0)
+    n3 = canvas.add_node(9.0, 4.0)
+    n4 = canvas.add_node(9.0, 0.0)
+    canvas.add_member(n1, n2)
+    top = canvas.add_member(n2, n3)
+    canvas.add_member(n3, n4)
+    hinge = canvas.add_member_station_node(top, 1.0 / 3.0)
+    branch = canvas.add_member_station_node(top, 2.0 / 3.0)
+    canvas.selected_nodes = {hinge}
+    canvas.set_selected_node_kind(True)
+    n7 = canvas.add_node(6.0, 2.0)
+    n8 = canvas.add_node(4.0, 2.0)
+    canvas.add_member(branch, n7)
+    canvas.add_member(n7, n8)
+    canvas.set_support(n1, (True, True, False))
+    canvas.set_support(n4, (True, True, False))
+    canvas.set_nodal_load(n8, (0.0, -20.0, 0.0))
+
+    model = canvas.build_model()
+    result = MaterialFreeStaticsSolver().solve(model)
+    scene = QGraphicsScene()
+    FrameDiagramRenderer().render(scene, model, result, kind, 50, "kN·m")
+    return [
+        item
+        for item in scene.items()
+        if isinstance(item.data(0), tuple) and item.data(0)[0] == "result_diagram_bridge"
+    ]
+
+
+def test_a_branch_point_gets_a_bridge_between_the_two_collinear_diagram_lobes() -> None:
+    """A member branching off a beam (a stem hanging below it, here) legitimately makes
+    the beam's own moment jump between its two collinear halves at that node - both
+    values are real, but two independently-closed polygons with nothing drawn between
+    their tips at the same point used to read as "the diagram broke" (reported by a
+    user as the moment "becoming 0" there) rather than "the diagram stepped"."""
+    bridges = _bridge_items(DiagramKind.MOMENT)
+    assert bridges, "expected a bridge connecting the two beam halves at the branch node"
+
+
+def test_no_bridge_is_drawn_at_the_hinge_where_both_sides_already_agree() -> None:
+    """The hinge sits between two collinear segments too, but both read 0 there (that's
+    what a hinge means) - a bridge would be a zero-length no-op, so none should be drawn."""
+    bridges = _bridge_items(DiagramKind.MOMENT)
+    # Every bridge in this model belongs to the single branch node, not the hinge -
+    # cheapest way to assert that is checking there is exactly one branch point's worth.
+    assert len(bridges) == 2  # one connecting line + one connecting fill triangle

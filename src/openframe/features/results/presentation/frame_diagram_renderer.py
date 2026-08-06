@@ -23,13 +23,15 @@ DIAGRAM_INDEX = {
 
 # Which side of the member each quantity is plotted on, following the drawing conventions
 # used in structural mechanics. ``normal`` below points along -local_y, so:
-#   N, V  -> +1 plots a positive value on the +local_y side (above a beam, and on the
-#            outer face of a column), matching the usual A.F.D / S.F.D layout.
-#   M     -> -1 keeps the bending moment on the tension side (a sagging beam moment is
-#            drawn below the member), which is the 인장측 작도 convention.
+#   V  -> -1 plots a positive value on the +local_y side (above a beam, and on the
+#         outer face of a column), matching the usual S.F.D layout.
+#   N  -> +1, the mirror of V's side. User request: swap the axial diagram to the
+#         opposite face from where it used to draw (sign/values unaffected).
+#   M  -> +1 keeps the bending moment on the tension side (a sagging beam moment is
+#         drawn below the member), which is the 인장측 작도 convention.
 # Only the plotted offset is affected; printed values keep their true sign.
 PLOT_SIDE = {
-    DiagramKind.AXIAL: -1.0,
+    DiagramKind.AXIAL: 1.0,
     DiagramKind.SHEAR: -1.0,
     DiagramKind.MOMENT: 1.0,
 }
@@ -38,6 +40,10 @@ PLOT_SIDE = {
 # whatever the largest value in the diagram is, so an absolute cutoff either misses it
 # on a small model or hides real values on a very large one.
 _RELATIVE_NOISE_TOLERANCE = 1.0e-9
+
+
+def _close(a: QPointF, b: QPointF) -> bool:
+    return math.hypot(a.x() - b.x(), a.y() - b.y()) < 1.0e-9
 
 
 def _sign_runs(diagram: MemberDiagram) -> list[tuple[int, int]]:
@@ -92,6 +98,15 @@ class FrameDiagramRenderer:
             1.0,
         )
         maximum_offset = model_span * 0.18 * max(scale_percent, 1) / 50.0
+        signed_offset = maximum_offset * PLOT_SIDE[kind]
+
+        # A branch member (e.g. a stem hanging off a beam) legitimately carries part of
+        # the moment/shear away, so the diagram genuinely steps between the two collinear
+        # halves at that shared node. Each half is still its own independent polygon (so
+        # picking/tests keep working per element) but nothing was drawn *between* their
+        # tips at that shared point, which reads as "the diagram broke" rather than "the
+        # diagram stepped". Collect what touches each node here and bridge it afterwards.
+        node_touches: dict[int, list[tuple[QPointF, QPointF, QPointF]]] = {}
 
         for element in model.elements.values():
             diagram = diagrams.get(element.tag)
@@ -107,6 +122,11 @@ class FrameDiagramRenderer:
             if length <= 1.0e-12:
                 continue
             normal = QPointF(-dy / length, dx / length)
+            direction = QPointF(dx / length, dy / length)
+            first_point = start + normal * (diagram.points[0].value / maximum * signed_offset)
+            last_point = end + normal * (diagram.points[-1].value / maximum * signed_offset)
+            node_touches.setdefault(element.node_i, []).append((direction, start, first_point))
+            node_touches.setdefault(element.node_j, []).append((direction, end, last_point))
             self._draw_member(
                 scene,
                 element.tag,
@@ -115,10 +135,45 @@ class FrameDiagramRenderer:
                 end,
                 normal,
                 maximum,
-                maximum_offset * PLOT_SIDE[kind],
+                signed_offset,
                 unit,
             )
+        self._bridge_junctions(scene, node_touches)
         return abs(maximum_offset)
+
+    @staticmethod
+    def _bridge_junctions(
+        scene: QGraphicsScene,
+        node_touches: dict[int, list[tuple[QPointF, QPointF, QPointF]]],
+    ) -> None:
+        for touches in node_touches.values():
+            for first in range(len(touches)):
+                for second in range(first + 1, len(touches)):
+                    direction_a, base, point_a = touches[first]
+                    direction_b, _, point_b = touches[second]
+                    collinear = abs(
+                        direction_a.x() * direction_b.x() + direction_a.y() * direction_b.y()
+                    ) > 0.999
+                    if not collinear or _close(point_a, point_b):
+                        continue
+                    bridge = QPainterPath()
+                    bridge.moveTo(base)
+                    bridge.lineTo(point_a)
+                    bridge.lineTo(point_b)
+                    bridge.closeSubpath()
+                    bridge_item = QGraphicsPathItem(bridge)
+                    bridge_item.setPen(Qt.PenStyle.NoPen)
+                    bridge_item.setBrush(QColor(113, 82, 171, 55))
+                    bridge_item.setZValue(3.5)
+                    bridge_item.setData(0, ("result_diagram_bridge",))
+                    scene.addItem(bridge_item)
+                    riser_pen = QPen(QColor("#7254a8"), 2.4)
+                    riser_pen.setCosmetic(True)
+                    riser = QGraphicsLineItem(point_a.x(), point_a.y(), point_b.x(), point_b.y())
+                    riser.setPen(riser_pen)
+                    riser.setZValue(5.0)
+                    riser.setData(0, ("result_diagram_bridge",))
+                    scene.addItem(riser)
 
     @staticmethod
     def _diagrams(
