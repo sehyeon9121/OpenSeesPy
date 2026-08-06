@@ -41,7 +41,7 @@ def test_imports_textbook_portal_geometry_supports_and_loads() -> None:
     assert (model.nodes[5].x, model.nodes[5].y) == (7.0, 4.0)  # F
 
     supports = {boundary.node_tag: boundary.support_kind for boundary in model.boundaries}
-    assert supports == {1: SupportKind.PINNED, 6: SupportKind.ROLLER_VERTICAL}
+    assert supports == {1: SupportKind.PINNED, 6: SupportKind.ROLLER_HORIZONTAL}
 
     loads = {load.node_tag: load.values for load in model.nodal_loads}
     assert loads[2] == pytest.approx((35.0, 0.0, 0.0))

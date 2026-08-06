@@ -29,8 +29,8 @@ LOAD_CASE_PRESENTATION = {
 SUPPORT_NAMES = {
     SupportKind.FIXED: "고정지점",
     SupportKind.PINNED: "회전지점(힌지)",
-    SupportKind.ROLLER_VERTICAL: "이동지점(수직 반력)",
-    SupportKind.ROLLER_HORIZONTAL: "이동지점(수평 반력)",
+    SupportKind.ROLLER_VERTICAL: "이동지점(수평 반력)",
+    SupportKind.ROLLER_HORIZONTAL: "이동지점(수직 반력)",
     SupportKind.CUSTOM: "사용자 구속",
 }
 

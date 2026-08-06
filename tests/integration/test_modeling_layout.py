@@ -444,3 +444,51 @@ def test_2d_results_hide_the_dormant_3d_view_selector() -> None:
     page.solve()
 
     assert not page.results.toolbar.view_mode.parentWidget().isVisible()
+
+
+def test_adding_a_node_by_relative_coordinates_offsets_from_the_selected_node() -> None:
+    page = _page()
+    anchor = page.canvas.add_node(3.0, 4.0)
+    page.canvas.selected_nodes = {anchor}
+    page.canvas.selection_changed.emit()
+
+    page.node_relative.setChecked(True)
+    page.node_x.setValue(2.0)
+    page.node_y.setValue(-1.0)
+    page.node_repeat.setValue(1)
+    page._add_nodes_from_coordinates()
+
+    model = page.canvas.build_model()
+    new_node = next(node for tag, node in model.nodes.items() if tag != anchor)
+    assert (new_node.x, new_node.y) == pytest.approx((5.0, 3.0))
+
+
+def test_relative_node_entry_falls_back_to_the_origin_without_a_single_selection() -> None:
+    page = _page()
+    page.node_relative.setChecked(True)
+    page.node_x.setValue(2.0)
+    page.node_y.setValue(-1.0)
+    page.node_repeat.setValue(1)
+    page._add_nodes_from_coordinates()
+
+    model = page.canvas.build_model()
+    (node,) = model.nodes.values()
+    assert (node.x, node.y) == pytest.approx((2.0, -1.0))
+
+
+def test_vertical_roller_restrains_horizontal_movement_not_vertical() -> None:
+    """The user found the original naming counter-intuitive and asked for the
+    axes to swap: 수직 롤러 (vertical roller) now blocks Ux, 수평 롤러
+    (horizontal roller) now blocks Uy — the opposite of the original mapping."""
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+
+    page.support_kind.setCurrentIndex(page.support_kind.findText("수직 롤러"))
+    page.canvas.apply_support_to_selection(page.support_kind.currentData())
+    assert page.canvas.build_model().boundaries[0].restraints == (True, False, False)
+
+    page.support_kind.setCurrentIndex(page.support_kind.findText("수평 롤러"))
+    page.canvas.apply_support_to_selection(page.support_kind.currentData())
+    assert page.canvas.build_model().boundaries[0].restraints == (False, True, False)

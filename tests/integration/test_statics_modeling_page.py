@@ -181,7 +181,7 @@ def test_context_support_and_directional_load_apply_without_panel_hopping() -> N
     page._apply_load()
 
     model = page.canvas.build_model()
-    assert model.boundaries[0].restraints == (False, True, False)
+    assert model.boundaries[0].restraints == (True, False, False)
     assert model.nodal_loads[0].values == pytest.approx((0.0, -12.5, 0.0))
 
 

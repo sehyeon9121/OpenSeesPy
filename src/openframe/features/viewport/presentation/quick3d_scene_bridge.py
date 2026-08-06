@@ -411,7 +411,7 @@ class Quick3DSceneBridge(QObject):
                 )
                 continue
 
-            if kind in {SupportKind.PINNED, SupportKind.ROLLER_VERTICAL}:
+            if kind in {SupportKind.PINNED, SupportKind.ROLLER_HORIZONTAL}:
                 cone_base_y = node_bottom - height
                 parts.append(
                     {

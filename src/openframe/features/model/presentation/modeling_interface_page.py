@@ -408,6 +408,9 @@ class ModelingInterfacePage(QFrame):
 
     def _build_create_section(self) -> QWidget:
         section, root = self._section("좌표로 노드 추가")
+        self.node_relative = QCheckBox("상대좌표 (선택한 노드 기준)")
+        self.node_relative.toggled.connect(self._refresh_create_section_hint)
+        root.addWidget(self.node_relative)
         form = QFormLayout()
         self.node_x = self._number(0.0)
         self.node_y = self._number(0.0)
@@ -424,11 +427,23 @@ class ModelingInterfacePage(QFrame):
         add = QPushButton("노드 추가")
         add.clicked.connect(self._add_nodes_from_coordinates)
         root.addWidget(add)
-        hint = QLabel("연속으로 그리려면 왼쪽 레일의 그리기 도구를 쓰세요.")
-        hint.setWordWrap(True)
-        hint.setObjectName("setupSectionHint")
-        root.addWidget(hint)
+        self.create_section_hint = QLabel()
+        self.create_section_hint.setWordWrap(True)
+        self.create_section_hint.setObjectName("setupSectionHint")
+        root.addWidget(self.create_section_hint)
+        self._refresh_create_section_hint()
         return section
+
+    def _refresh_create_section_hint(self) -> None:
+        if not self.node_relative.isChecked():
+            self.create_section_hint.setText(
+                "연속으로 그리려면 왼쪽 레일의 그리기 도구를 쓰세요."
+            )
+            return
+        self.create_section_hint.setText(
+            "노드를 하나만 선택하면 그 노드 기준 오프셋으로 추가합니다. "
+            "선택이 없으면 원점(0, 0) 기준으로 추가합니다."
+        )
 
     def _build_node_section(self) -> QWidget:
         section, root = self._section("노드 속성")
@@ -436,8 +451,8 @@ class ModelingInterfacePage(QFrame):
         self.support_kind = QComboBox()
         self.support_kind.addItem("자유 (지점 없음)", (False, False, False))
         self.support_kind.addItem("핀 지점", (True, True, False))
-        self.support_kind.addItem("수직 롤러", (False, True, False))
-        self.support_kind.addItem("수평 롤러", (True, False, False))
+        self.support_kind.addItem("수직 롤러", (True, False, False))
+        self.support_kind.addItem("수평 롤러", (False, True, False))
         self.support_kind.addItem("고정 지점", (True, True, True))
         self.support_kind.addItem("커스텀 (자유도 직접 지정)", None)
         self.support_kind.setCurrentIndex(1)
@@ -1065,8 +1080,12 @@ class ModelingInterfacePage(QFrame):
             self.canvas.apply_uniform_load_to_selection(values)
 
     def _add_nodes_from_coordinates(self) -> None:
-        x = self.node_x.value()
-        y = self.node_y.value()
+        base_x, base_y = 0.0, 0.0
+        if self.node_relative.isChecked() and len(self.canvas.selected_nodes) == 1:
+            reference = self.canvas.nodes[next(iter(self.canvas.selected_nodes))]
+            base_x, base_y = reference.x, reference.y
+        x = base_x + self.node_x.value()
+        y = base_y + self.node_y.value()
         self.canvas.begin_history_group()
         try:
             for index in range(self.node_repeat.value()):

@@ -84,9 +84,14 @@ class BoundaryCondition:
             return SupportKind.FIXED
         if normalized == (True, True, False):
             return SupportKind.PINNED
-        if normalized == (False, True, False):
-            return SupportKind.ROLLER_VERTICAL
+        # Named for the axis the roller *restrains*, not the ground it rolls
+        # along: a "vertical roller" blocks Ux (vertical rolling motion) while a
+        # "horizontal roller" blocks Uy (horizontal rolling motion, resting flat
+        # on the ground) — confirmed with the user, who found the opposite
+        # mapping (naming by which axis stays free) counter-intuitive.
         if normalized == (True, False, False):
+            return SupportKind.ROLLER_VERTICAL
+        if normalized == (False, True, False):
             return SupportKind.ROLLER_HORIZONTAL
         return SupportKind.CUSTOM
 

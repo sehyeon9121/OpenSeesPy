@@ -9,8 +9,8 @@ from openframe.core.domain import SupportKind
 SUPPORT_NAMES = {
     SupportKind.FIXED: "고정지점",
     SupportKind.PINNED: "회전지점(힌지)",
-    SupportKind.ROLLER_VERTICAL: "이동지점(수직 반력)",
-    SupportKind.ROLLER_HORIZONTAL: "이동지점(수평 반력)",
+    SupportKind.ROLLER_VERTICAL: "이동지점(수평 반력)",
+    SupportKind.ROLLER_HORIZONTAL: "이동지점(수직 반력)",
     SupportKind.CUSTOM: "사용자 구속",
 }
 
@@ -53,9 +53,11 @@ class SupportItem(QGraphicsItem):
         elif self.kind == SupportKind.PINNED:
             self._draw_pinned(painter)
         elif self.kind == SupportKind.ROLLER_VERTICAL:
-            self._draw_vertical_roller(painter)
+            # Restrains Ux (blocks horizontal motion) -> rests against a wall.
+            self._draw_roller_on_wall(painter)
         elif self.kind == SupportKind.ROLLER_HORIZONTAL:
-            self._draw_horizontal_roller(painter)
+            # Restrains Uy (blocks vertical motion) -> rests on the ground.
+            self._draw_roller_on_ground(painter)
         else:
             self._draw_custom(painter)
 
@@ -80,7 +82,7 @@ class SupportItem(QGraphicsItem):
         for x in range(-11, 16, 6):
             painter.drawLine(x, 20, x - 4, 25)
 
-    def _draw_vertical_roller(self, painter: QPainter) -> None:
+    def _draw_roller_on_ground(self, painter: QPainter) -> None:
         triangle = QPainterPath()
         triangle.moveTo(0, 5)
         triangle.lineTo(-10, 16)
@@ -92,7 +94,7 @@ class SupportItem(QGraphicsItem):
         painter.drawEllipse(QRectF(2, 17, 6, 6))
         painter.drawLine(-14, 25, 14, 25)
 
-    def _draw_horizontal_roller(self, painter: QPainter) -> None:
+    def _draw_roller_on_wall(self, painter: QPainter) -> None:
         triangle = QPainterPath()
         triangle.moveTo(5, 0)
         triangle.lineTo(16, -10)
