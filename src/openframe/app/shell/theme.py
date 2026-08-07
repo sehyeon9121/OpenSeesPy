@@ -824,6 +824,14 @@ QPushButton#sectionToggleButton {
     color: #174ea6; font-size: 8pt; font-weight: 700; text-align: left;
 }
 QPushButton#sectionToggleButton:hover { color: #0f3e82; text-decoration: underline; }
+QToolButton#slideOutToggle {
+    min-height: 30px; padding: 0 10px; border: 1px solid #d8e1eb; border-radius: 4px;
+    background: #ffffff; color: #35485f; font-size: 9pt; font-weight: 600;
+}
+QToolButton#slideOutToggle:hover { background: #f0f5fb; border-color: #b9cadf; }
+QToolButton#slideOutToggle:checked {
+    background: #eaf1fb; border-color: #9ebbe3; color: #174ea6;
+}
 QToolButton#workflowStep:checked {
     color: #ffffff; background: #174ea6;
     border-bottom-color: #0f3e82;

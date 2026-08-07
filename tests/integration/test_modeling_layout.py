@@ -22,12 +22,13 @@ def _visible(page: ModelingInterfacePage) -> set[str]:
 
 
 def test_an_empty_selection_offers_the_always_on_sections() -> None:
-    """create(좌표로 노드 추가)/node(지점·힌지)/load(하중) 모두 선택 여부와
-    무관하게 항상 보인다 - 학생이 지점을 설정하거나 좌표로 노드를 추가하려고
-    먼저 뭔가를 선택할 필요 없이 바로 컨트롤을 볼 수 있게."""
+    """create(좌표로 노드 추가)/material(재료 물성치)/node(지점 상세) 모두
+    선택 여부와 무관하게 항상 보인다 - 학생이 지점을 설정하거나 좌표로 노드를
+    추가하려고 먼저 뭔가를 선택할 필요 없이 바로 컨트롤을 볼 수 있게. 하중은
+    이제 우측 패널이 아니라 캔버스 상단 막대의 슬라이드아웃에 있다."""
     page = _page()
 
-    assert _visible(page) == {"create", "node", "load"}
+    assert _visible(page) == {"create", "material", "node"}
     assert "선택된 대상이 없습니다" in page.selection_summary.text()
 
 
@@ -52,7 +53,7 @@ def test_selecting_a_node_swaps_the_panel_to_node_properties() -> None:
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
 
-    assert _visible(page) == {"create", "node", "load"}
+    assert _visible(page) == {"create", "material", "node"}
     assert "노드 1개 선택됨" in page.selection_summary.text()
 
     page._toggle_transform_section()
@@ -72,7 +73,7 @@ def test_selecting_a_member_adds_member_properties_alongside_the_always_on_secti
     page.canvas.selected_elements = {member}
     page.canvas.selection_changed.emit()
 
-    assert _visible(page) == {"create", "node", "load", "member"}
+    assert _visible(page) == {"create", "material", "node", "member"}
     assert "부재 1개 선택됨" in page.selection_summary.text()
     assert page.member_end_i.text() == "N1 쪽 핀 해제 (모멘트 0)"
     assert page.member_end_j.text() == "N2 쪽 핀 해제 (모멘트 0)"

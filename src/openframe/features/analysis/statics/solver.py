@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import openseespy.opensees as ops
 
-from openframe.core.domain.model import BoundaryCondition, StructuralModel
+from openframe.core.domain.model import BoundaryCondition, Element, StructuralModel
 from openframe.core.domain.results import (
     AnalysisResult,
     AnalysisStatus,
@@ -32,6 +32,25 @@ _INCLINED_SUPPORT_STIFFNESS = 1.0e8
 # elastic material (E=1, matching every other unit-stiffness placeholder here)
 # covers every truss member in the model.
 _TRUSS_MATERIAL_TAG = 9_000_002
+
+# OpenSeesPy's own eleLoad has no linearly-varying ("trapezoidal") transverse load
+# type - only a constant -beamUniform. A member carrying one (wx != wx_j or
+# wy != wy_j) is therefore chained together from many short, rigidly-connected
+# elasticBeamColumn sub-elements instead of built as one OpenSees element, each
+# sub-element carrying OpenSees' own constant -beamUniform at the true w(x) value
+# sampled at its own midpoint. This is invisible outside the solver: the domain
+# model, check_determinacy and every other feature still see exactly one Element
+# per member. Offsets are well past any tag a hand-drawn model or the inclined-
+# support machinery above would ever reach.
+_TRAPEZOID_NODE_TAG_OFFSET = 7_000_000
+_TRAPEZOID_ELEMENT_TAG_OFFSET = 7_500_000
+#: Sub-elements per trapezoidally-loaded member. A midpoint sample reproduces the
+#: exact resultant force of a *linear* w(x) over each sub-segment regardless of
+#: this count (the only error left is the within-segment uniform-shape
+#: approximation), and that error shrinks fast as this grows - verified in
+#: tests/unit/test_material_free_statics.py against the closed-form
+#: simply-supported triangular-load case (wL^2/(9*sqrt(3)) at x=L/sqrt(3)).
+_TRAPEZOID_SEGMENTS = 40
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,19 +126,46 @@ def check_determinacy(model: StructuralModel) -> DeterminacyCheck:
 
 
 class MaterialFreeStaticsSolver:
-    """Calculate reactions and N/V/M forces for determinate planar structures."""
+    """Calculate reactions and N/V/M forces for determinate planar structures.
 
-    def solve(self, model: StructuralModel) -> AnalysisResult:
+    Given real (E, A, I) - per element via ``Element.properties["E"/"A"/"I"]``,
+    or a uniform fallback via ``solve(model, material=...)`` - it can also
+    solve *indeterminate* 2D frames: determinate results never depend on
+    stiffness, but an indeterminate structure's internal forces genuinely do,
+    so equilibrium alone (unit placeholder stiffness) cannot give a physically
+    meaningful answer for one. Every existing caller that never sets either
+    keeps the exact original unit-stiffness, determinate-only behaviour
+    unchanged.
+    """
+
+    def solve(
+        self, model: StructuralModel, material: tuple[float, float, float] | None = None
+    ) -> AnalysisResult:
+        """``material`` is a (E, A, I) fallback applied to any 2D frame member
+        that doesn't carry its own E/A/I in ``properties`` - real values here
+        (per element or as this fallback) also give real (not unit-normalised)
+        deflection for determinate structures, since deflection, unlike
+        reactions and N/V/M, does scale with EI even when it is determinate.
+        """
         check = check_determinacy(model)
         if not check.can_solve_without_materials:
-            return AnalysisResult(status=AnalysisStatus.FAILED, messages=[check.message])
+            if material is None and not self._has_material_everywhere(model, check.system):
+                return AnalysisResult(status=AnalysisStatus.FAILED, messages=[check.message])
+            if check.system != "frame" or model.ndm != 2:
+                return AnalysisResult(
+                    status=AnalysisStatus.FAILED,
+                    messages=[
+                        check.message,
+                        "부정정 트러스·3D 모델의 강성 해석은 아직 지원하지 않습니다.",
+                    ],
+                )
 
         ops.wipe()
         try:
-            self._build(model, check.system)
+            self._build(model, check.system, material)
             self._apply_loads(model, check.system)
             self._analyze()
-            return self._collect(model, check.system, check.message)
+            return self._collect(model, check.system, check.message, material)
         except (RuntimeError, ValueError, ops.OpenSeesError) as error:
             return AnalysisResult(
                 status=AnalysisStatus.FAILED,
@@ -129,7 +175,47 @@ class MaterialFreeStaticsSolver:
             ops.wipe()
 
     @staticmethod
-    def _build(model: StructuralModel, system: str) -> None:
+    def _element_material(element: Element) -> tuple[float, float, float] | None:
+        """(E, A, I) from ``element.properties``, or ``None`` if any of the
+        three is missing or not a real number - e.g. a truss member's own
+        "A"/"material_tag" pair, which is a different shape entirely."""
+        try:
+            return (
+                float(element.properties["E"]),
+                float(element.properties["A"]),
+                float(element.properties["I"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _resolve_material(
+        element: Element, fallback: tuple[float, float, float] | None
+    ) -> tuple[float, float, float]:
+        """(E, A, I) for one element: its own properties win, then the solve-
+        wide fallback (if given), then the unit placeholder every determinate
+        call already relied on."""
+        return (
+            MaterialFreeStaticsSolver._element_material(element)
+            or fallback
+            or (1.0, 1.0, 1.0)
+        )
+
+    @staticmethod
+    def _has_material_everywhere(model: StructuralModel, system: str) -> bool:
+        if system != "frame":
+            return False
+        return all(
+            MaterialFreeStaticsSolver._element_material(element) is not None
+            for element in model.elements.values()
+        )
+
+    @staticmethod
+    def _build(
+        model: StructuralModel,
+        system: str,
+        material: tuple[float, float, float] | None = None,
+    ) -> None:
         ndm = model.ndm
         ndf = (2 if system == "truss" else 3) if ndm == 2 else (3 if system == "truss" else 6)
         ops.model("basic", "-ndm", ndm, "-ndf", ndf)
@@ -162,15 +248,27 @@ class MaterialFreeStaticsSolver:
 
         if ndm == 2:
             ops.geomTransf("Linear", 1)
+            trapezoid_loads = {
+                load.element_tag: load for load in model.element_loads if not load.is_uniform
+            }
             for element in model.elements.values():
+                elastic, area, inertia = MaterialFreeStaticsSolver._resolve_material(
+                    element, material
+                )
+                trapezoid = trapezoid_loads.get(element.tag)
+                if trapezoid is not None:
+                    MaterialFreeStaticsSolver._build_discretized_member(
+                        model, element, area, elastic, inertia
+                    )
+                    continue
                 arguments: list[object] = [
                     "elasticBeamColumn",
                     element.tag,
                     element.node_i,
                     element.node_j,
-                    1.0,
-                    1.0,
-                    1.0,
+                    area,
+                    elastic,
+                    inertia,
                     1,
                 ]
                 release_code = int(element.moment_release_i) + 2 * int(element.moment_release_j)
@@ -199,6 +297,64 @@ class MaterialFreeStaticsSolver:
                 1.0,
                 transf_tag,
             )
+
+    @staticmethod
+    def _trapezoid_sub_element_tags(element_tag: int) -> list[int]:
+        """Deterministic from ``element_tag`` alone, so ``_apply_loads`` and
+        ``_collect`` can each regenerate the same tags independently instead of
+        threading shared state through this class's staticmethods."""
+        return [
+            _TRAPEZOID_ELEMENT_TAG_OFFSET + element_tag * 1000 + segment
+            for segment in range(_TRAPEZOID_SEGMENTS)
+        ]
+
+    @staticmethod
+    def _build_discretized_member(
+        model: StructuralModel,
+        element: Element,
+        area: float = 1.0,
+        elastic: float = 1.0,
+        inertia: float = 1.0,
+    ) -> None:
+        node_i = model.nodes[element.node_i]
+        node_j = model.nodes[element.node_j]
+        segments = _TRAPEZOID_SEGMENTS
+        node_tags = (
+            [element.node_i]
+            + [
+                _TRAPEZOID_NODE_TAG_OFFSET + element.tag * 1000 + segment
+                for segment in range(1, segments)
+            ]
+            + [element.node_j]
+        )
+        for segment in range(1, segments):
+            ratio = segment / segments
+            ops.node(
+                node_tags[segment],
+                node_i.x + (node_j.x - node_i.x) * ratio,
+                node_i.y + (node_j.y - node_i.y) * ratio,
+            )
+        sub_tags = MaterialFreeStaticsSolver._trapezoid_sub_element_tags(element.tag)
+        for segment, sub_tag in enumerate(sub_tags):
+            arguments: list[object] = [
+                "elasticBeamColumn",
+                sub_tag,
+                node_tags[segment],
+                node_tags[segment + 1],
+                area,
+                elastic,
+                inertia,
+                1,
+            ]
+            # A release only ever belongs at the member's *true* ends - every
+            # sub-node in between is an artefact of the discretization, not a
+            # real joint, and must stay moment-continuous.
+            release_i = element.moment_release_i if segment == 0 else False
+            release_j = element.moment_release_j if segment == segments - 1 else False
+            release_code = int(release_i) + 2 * int(release_j)
+            if release_code:
+                arguments += ["-release", release_code]
+            ops.element(*arguments)
 
     @staticmethod
     def _fix_inclined(condition: BoundaryCondition, ndf: int, model: StructuralModel) -> None:
@@ -266,7 +422,22 @@ class MaterialFreeStaticsSolver:
                 "3D 모델의 부재 분포하중은 아직 지원하지 않습니다. 절점하중으로 입력하세요."
             )
         for load in model.element_loads:
-            ops.eleLoad("-ele", load.element_tag, "-type", "-beamUniform", load.wy, load.wx)
+            if load.is_uniform:
+                ops.eleLoad("-ele", load.element_tag, "-type", "-beamUniform", load.wy, load.wx)
+                continue
+            # No native linearly-varying eleLoad exists (see _TRAPEZOID_SEGMENTS) -
+            # _build already split this member into that many sub-elements, so
+            # each sub-element gets OpenSees' own constant -beamUniform sampled at
+            # the true w(x) value at its own midpoint. A midpoint sample equals
+            # the segment's exact average for a linear w(x), so this reproduces
+            # the exact resultant force per segment; only the within-segment
+            # shape is approximated.
+            sub_tags = MaterialFreeStaticsSolver._trapezoid_sub_element_tags(load.element_tag)
+            for segment, sub_tag in enumerate(sub_tags):
+                midpoint = (segment + 0.5) / _TRAPEZOID_SEGMENTS
+                wx_mid = load.wx + (load.wx_j - load.wx) * midpoint
+                wy_mid = load.wy + (load.wy_j - load.wy) * midpoint
+                ops.eleLoad("-ele", sub_tag, "-type", "-beamUniform", wy_mid, wx_mid)
 
     @staticmethod
     def _analyze() -> None:
@@ -281,7 +452,12 @@ class MaterialFreeStaticsSolver:
         ops.reactions()
 
     @staticmethod
-    def _collect(model: StructuralModel, system: str, message: str) -> AnalysisResult:
+    def _collect(
+        model: StructuralModel,
+        system: str,
+        message: str,
+        material: tuple[float, float, float] | None = None,
+    ) -> AnalysisResult:
         # An inclined support's reaction was never fixed at the real node — it lives
         # on the dummy ground node the zero-length spring pushes against — so that is
         # where the reaction has to be read back from.
@@ -301,8 +477,10 @@ class MaterialFreeStaticsSolver:
             for tag in model.nodes
         }
         uniform_loads = {
-            load.element_tag: (load.wx, load.wy) for load in model.element_loads
+            load.element_tag: (load.wx, load.wy, load.wx_j, load.wy_j)
+            for load in model.element_loads
         }
+        trapezoid_tags = {load.element_tag for load in model.element_loads if not load.is_uniform}
         element_results: dict[int, ElementResult] = {}
         for tag, element in model.elements.items():
             node_i = model.nodes[element.node_i]
@@ -320,15 +498,38 @@ class MaterialFreeStaticsSolver:
                     if model.ndm == 2
                     else (-axial, 0.0, 0.0, 0.0, 0.0, 0.0, axial, 0.0, 0.0, 0.0, 0.0, 0.0)
                 )
+            elif tag in trapezoid_tags:
+                # This member was never built as one OpenSees element (see
+                # _build_discretized_member) - its true end forces are the first
+                # sub-element's i-end and the last sub-element's j-end.
+                sub_tags = MaterialFreeStaticsSolver._trapezoid_sub_element_tags(tag)
+                first = ops.eleResponse(sub_tags[0], "localForce") or ops.eleForce(sub_tags[0])
+                last = ops.eleResponse(sub_tags[-1], "localForce") or ops.eleForce(sub_tags[-1])
+                local_force = (first[0], first[1], first[2], last[3], last[4], last[5])
             else:
                 local_force = ops.eleResponse(tag, "localForce")
                 if not local_force:
                     local_force = ops.eleForce(tag)
+            # Real EI, when given (per element or as the solve-wide fallback),
+            # is what lets deflected_shape.py's clamped-sag correction produce
+            # true absolute deflection instead of the flat (unit-normalised)
+            # shape it falls back to at flexural_rigidity == 0 - see
+            # ElementResult.flexural_rigidity's own docstring. Deliberately
+            # NOT using _resolve_material's unit-placeholder fallback here:
+            # that 1.0 exists only so OpenSees has a nonzero stiffness to
+            # build with, not a real EI whose deflection would mean anything.
+            real_material = MaterialFreeStaticsSolver._element_material(element) or material
+            flexural_rigidity = (
+                real_material[0] * real_material[2]
+                if real_material is not None and system != "truss"
+                else 0.0
+            )
             element_results[tag] = ElementResult(
                 element_tag=tag,
                 local_forces=tuple(float(value) for value in local_force),
                 length=length,
-                uniform_load=uniform_loads.get(tag, (0.0, 0.0)),
+                uniform_load=uniform_loads.get(tag, (0.0, 0.0, 0.0, 0.0)),
+                flexural_rigidity=flexural_rigidity,
             )
         return AnalysisResult(
             status=AnalysisStatus.COMPLETED,

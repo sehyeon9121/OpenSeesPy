@@ -34,8 +34,10 @@ class ElementResult:
     local_forces: tuple[float, ...] = ()
     #: Member length, needed to evaluate internal forces between the two ends.
     length: float = 0.0
-    #: Distributed load (wx, wy) along the member's own axes, zero when none applies.
-    uniform_load: tuple[float, float] = (0.0, 0.0)
+    #: Distributed load (wx_i, wy_i, wx_j, wy_j) along the member's own axes -
+    #: linearly varying from end i to end j, zero (all four) when none applies.
+    #: A plain uniform load has wx_i==wx_j and wy_i==wy_j.
+    uniform_load: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     #: Bending stiffness EI, needed to rebuild the sag between the two ends. Zero when
     #: the element's section properties could not be read.
     flexural_rigidity: float = 0.0

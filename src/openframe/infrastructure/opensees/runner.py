@@ -18,9 +18,14 @@ from openframe.core.domain import (
 )
 
 
-def _uniform_load(values: Any) -> tuple[float, float]:
+def _uniform_load(values: Any) -> tuple[float, float, float, float]:
+    """Real OpenSeesPy analyses only ever carry a plain constant (wx, wy) -
+    OpenSees itself has no linearly-varying eleLoad type - so the pair is
+    duplicated into the (wx_i, wy_i, wx_j, wy_j) shape ``ElementResult``
+    expects, with i == j."""
     padded = (*values, 0.0, 0.0)
-    return float(padded[0]), float(padded[1])
+    wx, wy = float(padded[0]), float(padded[1])
+    return wx, wy, wx, wy
 
 
 class OpenSeesProcessRunner:

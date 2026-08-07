@@ -128,6 +128,7 @@ class MainWindow(QMainWindow):
         self.header.home_requested.connect(self._show_start_workspace)
         self.start_workspace.import_opensees_requested.connect(self._start_import_workspace)
         self.start_workspace.new_model_requested.connect(self._start_new_model_workspace)
+        self.start_workspace.new_3d_model_requested.connect(self._start_new_3d_model_workspace)
         self.direct_model_workspace.back_requested.connect(self._show_start_workspace)
         self.start_workspace.template_requested.connect(
             lambda: self._show_pending_workflow("Template Browser")
@@ -185,6 +186,20 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "New 2D Model · 기본 설정부터 새 모델을 작성합니다"
         )
+
+    def _start_new_3d_model_workspace(self) -> None:
+        """3D has no material-free/stiffness fork to choose and no separate
+        material or section step worth showing first — jump straight to the
+        canvas with 3D mode already on, instead of the 2D setup wizard."""
+        self._current_model_source = None
+        self.navigation.hide()
+        self.header.hide()
+        geometry_page = self.direct_model_workspace.geometry_page
+        if not geometry_page.mode_3d_toggle.isChecked():
+            geometry_page.mode_3d_toggle.setChecked(True)
+        self.direct_model_workspace.set_current_step("geometry")
+        self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
+        self.statusBar().showMessage("New 3D Model · 3D 캔버스에서 바로 시작합니다")
 
     def _show_model_workspace(self) -> None:
         self._resume_section = "model"

@@ -71,7 +71,7 @@ def test_uniformly_loaded_beam_reports_the_span_moment_not_zero() -> None:
 
     element = result.element_results[1]
     assert element.length == pytest.approx(4.0)
-    assert element.uniform_load == pytest.approx((0.0, -10.0))
+    assert element.uniform_load == pytest.approx((0.0, -10.0, 0.0, -10.0))
 
     _, shear_diagram, moment_diagram = member_diagrams(element)
     moments = _values(moment_diagram)

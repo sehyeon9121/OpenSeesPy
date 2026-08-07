@@ -9,7 +9,7 @@ object never adds another button to learn.
 
 from typing import Callable, ClassVar
 
-from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtCore import QPropertyAnimation, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QIcon,
@@ -205,6 +205,99 @@ def _render_glyph_icon(paint: Callable[[QPainter, str], None], size: int = 32) -
         painter.end()
         icon.addPixmap(pixmap, QIcon.Mode.Normal, state)
     return icon
+
+
+class _RectangleSectionPreview(QWidget):
+    """A tiny live-rendered rectangle, scaled to the member's own width:height
+    ratio, so typing a section's dimensions gives an immediate visual instead
+    of trusting two numbers to look "right" in your head."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(64, 64)
+        self.setToolTip("입력한 폭·높이 비율의 단면 미리보기")
+        self._width = 0.3
+        self._height = 0.5
+
+    def set_dimensions(self, width: float, height: float) -> None:
+        self._width = max(width, 0.001)
+        self._height = max(height, 0.001)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        margin = 8.0
+        box = QRectF(self.rect()).adjusted(margin, margin, -margin, -margin)
+        scale = min(box.width() / self._width, box.height() / self._height)
+        rect_width = self._width * scale
+        rect_height = self._height * scale
+        rect = QRectF(
+            box.center().x() - rect_width / 2.0,
+            box.center().y() - rect_height / 2.0,
+            rect_width,
+            rect_height,
+        )
+        pen = QPen(QColor("#174ea6"), 1.6)
+        painter.setPen(pen)
+        painter.setBrush(QColor(23, 78, 166, 45))
+        painter.drawRect(rect)
+
+
+class _SlideOutSection(QWidget):
+    """A "title ▸" toggle that reveals ``content`` sliding open sideways.
+
+    Used to keep the canvas-top bar (지점/하중) compact by default instead of
+    always showing every icon and field: most of the time you are drawing, not
+    setting a support or a load, so those controls only need to be one click
+    away, not permanently taking up width.
+    """
+
+    def __init__(self, title: str, content: QWidget, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._title = title
+        self._content = content
+        self._expanded_width: int | None = None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.toggle_button = QToolButton()
+        self.toggle_button.setObjectName("slideOutToggle")
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._update_toggle_text()
+        self.toggle_button.clicked.connect(self._toggle)
+        layout.addWidget(self.toggle_button)
+
+        content.setParent(self)
+        content.setMaximumWidth(0)
+        content.setMinimumWidth(0)
+        layout.addWidget(content)
+
+        self._animation = QPropertyAnimation(content, b"maximumWidth", self)
+        self._animation.setDuration(160)
+
+    def _update_toggle_text(self) -> None:
+        arrow = "▾" if self.toggle_button.isChecked() else "▸"
+        self.toggle_button.setText(f"{self._title} {arrow}")
+
+    def _toggle(self, checked: bool) -> None:
+        self.set_expanded(checked)
+
+    def set_expanded(self, expanded: bool) -> None:
+        if self._expanded_width is None:
+            # sizeHint() is only meaningful once the content has real children
+            # laid out, which is true by the time this first runs (built in
+            # the caller before wrapping it here).
+            self._expanded_width = max(self._content.sizeHint().width(), 1)
+        self.toggle_button.setChecked(expanded)
+        self._update_toggle_text()
+        self._animation.stop()
+        self._animation.setStartValue(self._content.maximumWidth())
+        self._animation.setEndValue(self._expanded_width if expanded else 0)
+        self._animation.start()
 
 
 class ModelingInterfacePage(QFrame):
@@ -565,8 +658,6 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(self._sections["node"])
         self._sections["transform"] = self._build_transform_section()
         root.addWidget(self._sections["transform"])
-        self._sections["load"] = self._build_load_section()
-        root.addWidget(self._sections["load"])
 
         self._sections["member"] = self._build_member_section()
         root.addWidget(self._sections["member"])
@@ -664,22 +755,33 @@ class ModelingInterfacePage(QFrame):
         return section
 
     def _build_node_property_bar(self) -> QFrame:
-        """지점 조건 + 노드 유형 아이콘 — 캔버스 바로 위, 오른쪽 패널이 아니라
-        여기 고정된 가로 막대에 둔다. 선택 여부와 무관하게 항상 보이고(오른쪽
-        패널의 다른 always-on 카드들과 동일한 이유 — no-op이 안전하고, 학생이
-        뭘 먼저 선택할 필요 없이 바로 컨트롤을 찾을 수 있어야 함), 캔버스 폭을
-        그대로 쓸 수 있어 6개 지점 아이콘이 한 줄로 들어간다(오른쪽 패널의 좁은
-        폭이었다면 2행 3열로 접어야 했을 것)."""
+        """지점/하중 — 캔버스 바로 위, 오른쪽 패널이 아니라 여기 고정된 가로
+        막대에 둔다. 선택 여부와 무관하게 항상 사용 가능하고(오른쪽 패널의
+        다른 always-on 카드들과 동일한 이유 — no-op이 안전하고, 학생이 뭘 먼저
+        선택할 필요 없이 바로 컨트롤을 찾을 수 있어야 함), 캔버스 폭을 그대로
+        쓸 수 있다. 다만 그리는 동안에는 계속 필요한 게 아니라서, 기본은
+        "지점 ▸"/"하중 ▸" 제목만 보이고 눌러야 옆으로 슬라이드 열리며 실제
+        아이콘/입력칸이 나온다(``_SlideOutSection``) — 항상 펼쳐 두면 다시
+        나열된 느낌이 되므로."""
         bar = QFrame()
         bar.setObjectName("directModelCommandBar")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(6)
-        layout.addWidget(QLabel("지점"))
-        layout.addWidget(self._build_support_icon_row())
-        layout.addSpacing(14)
-        layout.addWidget(QLabel("노드 유형"))
-        layout.addWidget(self._build_node_kind_icon_row())
+        layout.setSpacing(10)
+
+        support_content = QWidget()
+        support_layout = QHBoxLayout(support_content)
+        support_layout.setContentsMargins(0, 0, 0, 0)
+        support_layout.setSpacing(10)
+        support_layout.addWidget(self._build_support_icon_row())
+        support_layout.addWidget(QLabel("노드 유형"))
+        support_layout.addWidget(self._build_node_kind_icon_row())
+        self.support_slide_out = _SlideOutSection("지점", support_content)
+        layout.addWidget(self.support_slide_out)
+
+        self.load_slide_out = _SlideOutSection("하중", self._build_load_bar_content())
+        layout.addWidget(self.load_slide_out)
+
         layout.addStretch(1)
         return bar
 
@@ -878,13 +980,51 @@ class ModelingInterfacePage(QFrame):
         return section
 
     def _build_member_section(self) -> QWidget:
-        """Per-end pin release and mid-span node insertion for one selected member.
+        """Section/material (재료 물성치) plus per-end pin release and mid-span
+        node insertion, for one selected member.
 
         A member always has two ends regardless of which node tags they land on, so
         the checkboxes are labelled with the actual node numbers when the selection
         changes rather than fixed "start/end" text.
+
+        Section input is per member (select one, type its own b/h/E), not one
+        global value for the whole model — a hand-drawn cantilever, portal
+        frame etc. can freely mix member sizes, and this is also what makes a
+        width unambiguous: b and h are just two ordinary fields next to a
+        member you already picked, not something a canvas drag would need to
+        somehow guess a third dimension for.
         """
         section, root = self._section("부재 속성")
+
+        root.addWidget(QLabel("단면 (사각형) · 재료"))
+        section_row = QHBoxLayout()
+        self.member_section_preview = _RectangleSectionPreview()
+        section_row.addWidget(self.member_section_preview)
+        section_form = QFormLayout()
+        self.member_width = self._number(0.3)
+        self.member_width.setRange(0.001, 100.0)
+        self.member_height = self._number(0.5)
+        self.member_height.setRange(0.001, 100.0)
+        self.member_elastic = self._number(200_000_000.0)
+        self.member_elastic.setRange(0.0, 1.0e12)
+        self.member_width.valueChanged.connect(self._refresh_member_section_preview)
+        self.member_height.valueChanged.connect(self._refresh_member_section_preview)
+        section_form.addRow(f"폭 b ({self._unit_system.length})", self.member_width)
+        section_form.addRow(f"높이 h ({self._unit_system.length})", self.member_height)
+        section_form.addRow("탄성계수 E", self.member_elastic)
+        section_row.addLayout(section_form, 1)
+        root.addLayout(section_row)
+        apply_section = QPushButton("선택 부재에 적용")
+        apply_section.clicked.connect(self._apply_member_section)
+        root.addWidget(apply_section)
+        section_hint = QLabel(
+            "정정구조는 없어도 풀리지만, 부정정 구조를 풀거나 실제 처짐 값을 보려면 "
+            "선택한 부재마다 입력해야 합니다."
+        )
+        section_hint.setWordWrap(True)
+        section_hint.setObjectName("setupSectionHint")
+        root.addWidget(section_hint)
+
         self.member_end_i = QCheckBox("i단 핀 해제 (모멘트 0)")
         self.member_end_i.toggled.connect(
             lambda checked: self._apply_member_end_release("i", checked)
@@ -922,7 +1062,7 @@ class ModelingInterfacePage(QFrame):
         root.addLayout(subdivide_row)
         return section
 
-    def _build_load_section(self) -> QWidget:
+    def _build_load_bar_content(self) -> QWidget:
         """Every applicable load component as its own field, applied together.
 
         A direction dropdown plus one magnitude field cannot represent Fx and Fy
@@ -930,17 +1070,34 @@ class ModelingInterfacePage(QFrame):
         again, silently discards Fx (each apply replaced the whole load). Showing
         every component side by side and applying them all in one click removes
         the trap instead of asking the user to remember it.
+
+        This is the content a 하중 ``_SlideOutSection`` reveals in the canvas-
+        top bar — laid out horizontally, not as the vertical card it used to be
+        in the right panel.
         """
-        section, root = self._section("하중")
+        content = QWidget()
+        root = QHBoxLayout(content)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
         root.addWidget(self._build_load_target_icon_row())
-        self.load_form_layout = QFormLayout()
+        self.load_trapezoid_toggle = QCheckBox("사다리꼴")
+        self.load_trapezoid_toggle.setToolTip(
+            "체크하면 시작(i)단과 끝(j)단의 하중값을 따로 입력합니다. "
+            "한쪽을 0으로 두면 삼각형 분포하중이 됩니다."
+        )
+        self.load_trapezoid_toggle.toggled.connect(self._load_target_changed)
+        root.addWidget(self.load_trapezoid_toggle)
+        self.load_form_layout = QHBoxLayout()
+        self.load_form_layout.setSpacing(6)
         self.load_fields: dict[str, QDoubleSpinBox] = {}
         root.addLayout(self.load_form_layout)
-        apply_button = QPushButton("선택 대상에 적용 (전체 성분)")
+        apply_button = QPushButton("적용")
+        apply_button.setToolTip("선택 대상에 적용 (전체 성분)")
         apply_button.clicked.connect(self._apply_load)
         root.addWidget(apply_button)
+        root.addStretch(1)
         self._load_target_changed()
-        return section
+        return content
 
     def _build_load_target_icon_row(self) -> QWidget:
         """집중하중(node)/등분포하중(element) icon buttons, mirroring the 지점
@@ -1032,6 +1189,12 @@ class ModelingInterfacePage(QFrame):
         model = self.canvas.build_model()
         check = check_determinacy(model)
         self.determinacy_status.setText(f"정정성: {check.message}")
+        # Real per-member (E, A, I) - set via the 부재 속성 section's 단면·재료
+        # fields, stored on each Element's own properties - is what makes an
+        # indeterminate 2D frame solvable at all. A determinate one solves
+        # identically either way for reactions/N/V/M (equilibrium alone
+        # already gives the exact answer), but still benefits: without any
+        # member's section set, deflection has no absolute scale to report.
         result = self._solver.solve(model)
         if result.status.value != "completed":
             self.determinacy_status.setText(
@@ -1186,10 +1349,14 @@ class ModelingInterfacePage(QFrame):
 
     def _activate_support_tool(self) -> None:
         self._pin_section("node", "nodes")
+        self.support_slide_out.set_expanded(True)
 
     def _activate_load_tool(self) -> None:
+        # 하중 no longer has a right-panel section to pin - it lives in the
+        # canvas-top bar's own slide-out now, so "opening" it just means
+        # expanding that instead.
         self._load_target_changed()
-        self._pin_section("load", None)
+        self.load_slide_out.set_expanded(True)
 
     def _pin_section(self, key: str, selection_filter: str | None) -> None:
         """Keep one property section open while the user builds up a selection."""
@@ -1227,19 +1394,24 @@ class ModelingInterfacePage(QFrame):
     def _sync_property_panel(self) -> None:
         """Show the sections that apply to what is selected right now.
 
-        ``create`` (좌표로 노드 추가), ``node`` (지점·힌지) and ``load`` (하중)
-        are always on, not just when something is selected — every 적용 action
-        in them already no-ops safely with an empty selection
+        ``create`` (좌표로 노드 추가), ``material`` (재료 물성치) and ``node``
+        (지점 상세) are always on, not just when something is selected — every
+        적용 action in them already no-ops safely with an empty selection
         (``apply_support_to_selection`` etc. check ``if not selected: return``),
         so there is no correctness reason to hide them, only a discoverability
-        one: a student setting up a support, a load, or a coordinate-entered
-        node should not have to select something first just to find the
-        controls for it. ``create`` specifically also needs to stay up while
-        its relative-offset reference node is selected, or the fields to use
-        it disappear right when they're needed. ``member`` and ``transform``
-        stay selection-gated — a member's end-release checkboxes and
-        move/copy/array only mean anything once something concrete is
-        selected to act on.
+        one: a student setting up a support or a coordinate-entered node
+        should not have to select something first just to find the controls
+        for it. ``create`` specifically also needs to stay up while its
+        relative-offset reference node is selected, or the fields to use it
+        disappear right when they're needed. ``하중`` no longer has a section
+        here at all — it moved to the canvas-top bar's own slide-out
+        (``_build_node_property_bar``) alongside 지점, for the same reason
+        지점's icons moved there. 재료 물성치 also has no section of its own
+        any more — it is per member now, inside ``member`` (단면·재료), since a
+        single global value could not represent a model with mixed section
+        sizes. ``member`` and ``transform`` stay selection-gated — a member's
+        section/end-release fields and move/copy/array only mean anything
+        once something concrete is selected to act on.
         """
         nodes = len(self.canvas.selected_nodes)
         elements = len(self.canvas.selected_elements)
@@ -1254,7 +1426,6 @@ class ModelingInterfacePage(QFrame):
             # opens it back up.
             "transform": False,
             "member": member_tag is not None,
-            "load": True,
         }
         if pinned is not None:
             visible[pinned] = True
@@ -1291,6 +1462,32 @@ class ModelingInterfacePage(QFrame):
         self.member_end_j.blockSignals(True)
         self.member_end_j.setChecked(element.moment_release_j)
         self.member_end_j.blockSignals(False)
+
+        width = element.properties.get("width")
+        height = element.properties.get("height")
+        elastic = element.properties.get("E")
+        if width is not None and height is not None:
+            self.member_width.blockSignals(True)
+            self.member_width.setValue(float(width))
+            self.member_width.blockSignals(False)
+            self.member_height.blockSignals(True)
+            self.member_height.setValue(float(height))
+            self.member_height.blockSignals(False)
+        if elastic is not None:
+            self.member_elastic.blockSignals(True)
+            self.member_elastic.setValue(float(elastic))
+            self.member_elastic.blockSignals(False)
+        self._refresh_member_section_preview()
+
+    def _refresh_member_section_preview(self) -> None:
+        self.member_section_preview.set_dimensions(
+            self.member_width.value(), self.member_height.value()
+        )
+
+    def _apply_member_section(self) -> None:
+        self.canvas.apply_section_to_selection(
+            self.member_width.value(), self.member_height.value(), self.member_elastic.value()
+        )
 
     def _apply_member_end_release(self, end: str, released: bool) -> None:
         member_tag = self._selected_member_tag()
@@ -1334,6 +1531,8 @@ class ModelingInterfacePage(QFrame):
         "mz": "Mz",
         "qx": "qx (로컬 x)",
         "qy": "qy (로컬 y)",
+        "qx_j": "qx (로컬 x, j단)",
+        "qy_j": "qy (로컬 y, j단)",
     }
 
     def _current_load_target(self) -> str:
@@ -1344,30 +1543,52 @@ class ModelingInterfacePage(QFrame):
         """Rebuild the load field list for the current target and dimension.
 
         Every applicable component gets its own field so one "적용" click sets
-        the whole load at once — see ``_build_load_section`` for why that matters.
+        the whole load at once — see ``_build_load_bar_content`` for why that
+        matters. A 부재 load additionally offers a 사다리꼴/삼각형 toggle:
+        unchecked (the default) is the plain uniform load this always was, one
+        qx/qy pair applied to the whole span; checked adds qx_j/qy_j fields for
+        the j-end, so a linearly-varying load can be entered without disturbing
+        the common uniform case at all. Fields lay out left-to-right with short
+        "qx:"/"Fx:" labels (not the full descriptive text, kept in the
+        tooltip instead) because this strip now slides open sideways above the
+        canvas rather than sitting as a vertical card in the right panel.
         """
         if not hasattr(self, "load_form_layout"):
             return
-        while self.load_form_layout.rowCount():
-            self.load_form_layout.removeRow(0)
+        while self.load_form_layout.count():
+            item = self.load_form_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
         self.load_fields.clear()
         target = self._current_load_target()
+        self.load_trapezoid_toggle.setVisible(target == "element")
+        trapezoid = target == "element" and self.load_trapezoid_toggle.isChecked()
         if target == "node":
             components = (
                 self._NODE_LOAD_COMPONENTS_3D if self.canvas.ndm == 3 else self._NODE_LOAD_COMPONENTS_2D
             )
             filter_key = "nodes"
         else:
-            components = ("qx", "qy")
+            components = ("qx", "qy", "qx_j", "qy_j") if trapezoid else ("qx", "qy")
             filter_key = "elements"
         for component in components:
             field = self._number(0.0)
             field.setRange(-1_000_000.0, 1_000_000.0)
+            field.setMaximumWidth(76)
             unit = self._unit_system.moment if component[0] == "m" else self._unit_system.force
             if target == "element":
                 unit = f"{self._unit_system.force}/{self._unit_system.length}"
             self.load_fields[component] = field
-            self.load_form_layout.addRow(f"{self._COMPONENT_LABELS[component]} ({unit})", field)
+            full_label = self._COMPONENT_LABELS[component]
+            short_label = full_label.split(" ", 1)[0]
+            if trapezoid and component in ("qx", "qy"):
+                short_label += "(i)"
+            elif component.endswith("_j"):
+                short_label += "(j)"
+            field.setToolTip(f"{full_label} ({unit})")
+            self.load_form_layout.addWidget(QLabel(f"{short_label}:"))
+            self.load_form_layout.addWidget(field)
         if hasattr(self, "selection_filter"):
             self.selection_filter.setCurrentIndex(self.selection_filter.findData(filter_key))
 
@@ -1380,6 +1601,8 @@ class ModelingInterfacePage(QFrame):
             self.canvas.apply_nodal_load_to_selection(values)
         else:
             values = (self.load_fields["qx"].value(), self.load_fields["qy"].value())
+            if "qx_j" in self.load_fields:
+                values += (self.load_fields["qx_j"].value(), self.load_fields["qy_j"].value())
             self.canvas.apply_uniform_load_to_selection(values)
 
     def _add_nodes_from_coordinates(self) -> None:

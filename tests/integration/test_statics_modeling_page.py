@@ -272,6 +272,43 @@ def test_midpoint_snap_adds_an_analysis_node_without_splitting_the_visible_membe
     assert check_determinacy(model).degree == 0
 
 
+def test_splitting_a_trapezoidal_load_interpolates_each_segment_not_copies_the_whole_span() -> None:
+    """Regression test: build_model() used to rebuild every analysis segment's
+    load from just (wx, wy) - the member's own *i-end* values - dropping
+    wx_j/wy_j entirely, so a triangular/trapezoidal load collapsed back into a
+    uniform one (at the i-end's value) the moment a member carrying one was
+    split by an embedded node. Each segment must instead carry its own local
+    slice of the linearly-varying load."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(8.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.add_member_midpoint_node(member)  # splits the member at fraction 0.5
+    canvas.selected_elements = {member}
+    canvas.apply_uniform_load_to_selection((0.0, 0.0, 0.0, -20.0))  # 0 at i -> -20 at j
+
+    model = canvas.build_model()
+    assert len(model.elements) == 2
+    loads_by_tag = {load.element_tag: load for load in model.element_loads}
+    assert len(loads_by_tag) == 2
+
+    # build_model() keeps the original tag for the first segment (fraction
+    # 0.0->0.5 of the original member) and mints a new tag for the second
+    # (0.5->1.0), so each one's i/j values must be the load interpolated at
+    # its own pair of fractions, not the whole member's i/j values copied twice.
+    first, second = loads_by_tag[member], next(
+        load for tag, load in loads_by_tag.items() if tag != member
+    )
+    assert first.wy == pytest.approx(0.0)
+    assert first.wy_j == pytest.approx(-10.0)
+    assert second.wy == pytest.approx(-10.0)
+    assert second.wy_j == pytest.approx(-20.0)
+
+
 def test_collinear_node_is_auto_attached_without_splitting_the_visible_member() -> None:
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()

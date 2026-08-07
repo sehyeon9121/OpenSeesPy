@@ -106,12 +106,38 @@ class NodalLoad:
 
 @dataclass(frozen=True, slots=True)
 class UniformElementLoad:
+    """Linearly-varying distributed load along a member: w(x) = w_i + (w_j -
+    w_i) * x/L for each axis, x measured from ``node_i``.
+
+    A plain uniform load is simply w_i == w_j. The ``*_j`` fields default to
+    the matching ``*_i`` value (not to zero) precisely so every existing call
+    site that only ever set wx/wy/wz keeps meaning "uniform" without being
+    touched — OpenSeesPy's own ``eleLoad -beamUniform`` has no linearly-
+    varying form, so this is purely an OpenFrame-side extension for the
+    determinate-structure solver and diagrams.
+    """
+
     element_tag: int
     wx: float = 0.0
     wy: float = 0.0
     wz: float = 0.0
+    wx_j: float | None = None
+    wy_j: float | None = None
+    wz_j: float | None = None
     pattern_tag: int | None = None
     case_type: LoadCaseKind = LoadCaseKind.UNCLASSIFIED
+
+    def __post_init__(self) -> None:
+        if self.wx_j is None:
+            object.__setattr__(self, "wx_j", self.wx)
+        if self.wy_j is None:
+            object.__setattr__(self, "wy_j", self.wy)
+        if self.wz_j is None:
+            object.__setattr__(self, "wz_j", self.wz)
+
+    @property
+    def is_uniform(self) -> bool:
+        return self.wx == self.wx_j and self.wy == self.wy_j and self.wz == self.wz_j
 
 
 @dataclass(slots=True)

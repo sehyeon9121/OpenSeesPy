@@ -218,6 +218,52 @@ def test_a_determinate_2d_truss_matches_hand_calculated_reactions() -> None:
     assert result.node_results[2].reaction == pytest.approx((-4.0, 6.0), abs=1.0e-6)
 
 
+def test_triangular_load_matches_the_textbook_reactions_and_max_moment() -> None:
+    """OpenSeesPy's own eleLoad has no linearly-varying transverse load type, so
+    a member with wy != wy_j is solved by chaining many short, rigidly-connected
+    sub-elements internally (see _TRAPEZOID_SEGMENTS) - this is the end-to-end
+    check that the *whole solve*, not just the diagram formula already checked
+    in test_distributed_load_diagrams.py, converges to the closed-form answer.
+
+    Same textbook case as there: simply supported beam, load ramping 0 (end i,
+    x=0) -> w (end j, x=L). R_i = wL/6, R_j = wL/3, M_max = wL^2/(9 sqrt(3)) at
+    x = L/sqrt(3) from end i.
+    """
+    length, peak = 6.0, 12.0
+    model = StructuralModel(
+        nodes={1: Node(1, 0.0, 0.0), 2: Node(2, length, 0.0)},
+        elements={1: Element(1, 1, 2, "frame")},
+        boundaries=[
+            BoundaryCondition(1, (True, True, False)),
+            BoundaryCondition(2, (False, True, False)),
+        ],
+        element_loads=[UniformElementLoad(1, wy=0.0, wy_j=-peak)],
+    )
+
+    assert check_determinacy(model).degree == 0
+    result = MaterialFreeStaticsSolver().solve(model)
+
+    assert result.status == AnalysisStatus.COMPLETED
+    # A small (~3e-4 relative) discretization error is expected and correct: each
+    # of the _TRAPEZOID_SEGMENTS sub-elements is treated as uniform, so only the
+    # within-segment shape is approximated (see _build_discretized_member) - not
+    # a bug, and 1e-3 leaves comfortable margin above the actual ~3e-4 seen here.
+    expected_reaction_i = peak * length / 6.0
+    expected_reaction_j = peak * length / 3.0
+    assert result.node_results[1].reaction[1] == pytest.approx(expected_reaction_i, rel=1e-3)
+    assert result.node_results[2].reaction[1] == pytest.approx(expected_reaction_j, rel=1e-3)
+
+    _, shear, moment = member_diagrams(result.element_results[1])
+    expected_moment = peak * length ** 2 / (9.0 * 3.0 ** 0.5)
+    expected_position = length / 3.0 ** 0.5
+    turning_point = max(moment.points, key=lambda point: point.value)
+    assert turning_point.value == pytest.approx(expected_moment, rel=1e-3)
+    assert turning_point.position * length == pytest.approx(expected_position, rel=1e-3)
+    assert shear.points[0].value == pytest.approx(expected_reaction_i, rel=1e-3)
+    assert moment.points[0].value == pytest.approx(0.0, abs=1e-6)
+    assert moment.points[-1].value == pytest.approx(0.0, abs=expected_moment * 1e-3)
+
+
 def test_indeterminate_beam_requires_stiffness_instead_of_using_fake_values() -> None:
     model = _simply_supported_beam()
     model.boundaries[1] = BoundaryCondition(2, (True, True, False))
@@ -228,3 +274,121 @@ def test_indeterminate_beam_requires_stiffness_instead_of_using_fake_values() ->
     assert check.degree == 1
     assert result.status == AnalysisStatus.FAILED
     assert "부정정" in result.messages[0]
+
+
+def test_indeterminate_beam_solves_with_real_material_given() -> None:
+    """A propped cantilever (fixed at A, roller at B) under a UDL is the classic
+    1-degree-indeterminate textbook case: R_A = 5wL/8, R_B = 3wL/8, M_A = wL^2/8
+    (hogging at the fixed end). Passing (E, A, I) is what makes this solvable
+    at all - see test_indeterminate_beam_requires_stiffness_instead_of_using_fake_values
+    for the same model failing without it."""
+    length, load = 6.0, 10.0
+    model = StructuralModel(
+        nodes={1: Node(1, 0.0, 0.0), 2: Node(2, length, 0.0)},
+        elements={1: Element(1, 1, 2, "frame")},
+        boundaries=[
+            BoundaryCondition(1, (True, True, True)),
+            BoundaryCondition(2, (False, True, False)),
+        ],
+        element_loads=[UniformElementLoad(1, wy=-load)],
+    )
+
+    check = check_determinacy(model)
+    assert check.degree == 1
+    material = (200_000_000.0, 0.01, 0.0001)  # (E, A, I)
+    result = MaterialFreeStaticsSolver().solve(model, material=material)
+
+    assert result.status == AnalysisStatus.COMPLETED
+    expected_reaction_a = 5.0 * load * length / 8.0
+    expected_reaction_b = 3.0 * load * length / 8.0
+    expected_moment_a = load * length ** 2 / 8.0
+    assert result.node_results[1].reaction[1] == pytest.approx(expected_reaction_a, rel=1e-6)
+    assert result.node_results[2].reaction[1] == pytest.approx(expected_reaction_b, rel=1e-6)
+    assert abs(result.node_results[1].reaction[2]) == pytest.approx(expected_moment_a, rel=1e-6)
+    assert result.element_results[1].flexural_rigidity == pytest.approx(
+        material[0] * material[2]
+    )
+
+
+def test_indeterminate_truss_or_3d_still_rejected_even_with_material() -> None:
+    """Scope guard: the stiffness path only covers 2D frames so far (matches
+    _build's own material handling) - an indeterminate truss must still fail
+    clearly instead of silently ignoring the material and giving a wrong,
+    unit-stiffness answer."""
+    model = StructuralModel(
+        ndm=2,
+        nodes={1: Node(1, 0.0, 0.0), 2: Node(2, 4.0, 0.0), 3: Node(3, 2.0, 3.0)},
+        elements={
+            1: Element(1, 1, 3, "truss"),
+            2: Element(2, 2, 3, "truss"),
+            3: Element(3, 1, 2, "truss"),
+        },
+        boundaries=[
+            BoundaryCondition(1, (True, True)),
+            BoundaryCondition(2, (True, True)),
+        ],
+        nodal_loads=[NodalLoad(3, (0.0, -12.0))],
+    )
+
+    assert check_determinacy(model).degree == 1
+    result = MaterialFreeStaticsSolver().solve(model, material=(200_000_000.0, 0.01, 0.0001))
+
+    assert result.status == AnalysisStatus.FAILED
+
+
+def test_indeterminate_beam_solves_with_per_element_material_no_global_fallback() -> None:
+    """Same propped-cantilever textbook case as
+    test_indeterminate_beam_solves_with_real_material_given, but the (E, A, I)
+    lives on the element itself (as the member-selection UI now writes it) and
+    solve() is called with no ``material=`` fallback at all - this is the path
+    a real drawn model takes."""
+    length, load = 6.0, 10.0
+    element = Element(
+        1, 1, 2, "frame", properties={"E": 200_000_000.0, "A": 0.01, "I": 0.0001}
+    )
+    model = StructuralModel(
+        nodes={1: Node(1, 0.0, 0.0), 2: Node(2, length, 0.0)},
+        elements={1: element},
+        boundaries=[
+            BoundaryCondition(1, (True, True, True)),
+            BoundaryCondition(2, (False, True, False)),
+        ],
+        element_loads=[UniformElementLoad(1, wy=-load)],
+    )
+
+    result = MaterialFreeStaticsSolver().solve(model)
+
+    assert result.status == AnalysisStatus.COMPLETED
+    expected_reaction_a = 5.0 * load * length / 8.0
+    expected_reaction_b = 3.0 * load * length / 8.0
+    assert result.node_results[1].reaction[1] == pytest.approx(expected_reaction_a, rel=1e-6)
+    assert result.node_results[2].reaction[1] == pytest.approx(expected_reaction_b, rel=1e-6)
+    assert result.element_results[1].flexural_rigidity == pytest.approx(200_000_000.0 * 0.0001)
+
+
+def test_indeterminate_beam_without_any_material_still_fails_clearly() -> None:
+    """No per-element properties, no material= fallback: must still fail with
+    a clear message instead of silently building with unit placeholder
+    stiffness and reporting a meaningless answer."""
+    model = _simply_supported_beam()
+    model.boundaries[1] = BoundaryCondition(2, (True, True, False))
+
+    result = MaterialFreeStaticsSolver().solve(model)
+
+    assert result.status == AnalysisStatus.FAILED
+
+
+def test_determinate_beam_with_no_material_still_reports_zero_flexural_rigidity() -> None:
+    """Regression guard: resolving a per-element material still needs a unit
+    placeholder fallback for OpenSees to build with (can't leave EA/EI at
+    zero), but that placeholder must never leak into the *reported*
+    flexural_rigidity - otherwise a plain unit-stiffness determinate solve
+    would start reporting a meaningless (unit-EI-scaled) deflection instead of
+    the "no absolute scale available" 0.0 it always reported before this
+    feature existed."""
+    model = _simply_supported_beam()
+
+    result = MaterialFreeStaticsSolver().solve(model)
+
+    assert result.status == AnalysisStatus.COMPLETED
+    assert result.element_results[1].flexural_rigidity == 0.0

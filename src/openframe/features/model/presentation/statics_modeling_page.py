@@ -4,7 +4,16 @@ from dataclasses import replace
 from itertools import pairwise
 
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPen, QWheelEvent
+from PySide6.QtGui import (
+    QColor,
+    QKeyEvent,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QPolygonF,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -44,6 +53,10 @@ from openframe.features.model.drawing import (
 )
 from openframe.features.model.drawing.coordinates import direction_degrees, distance
 from openframe.features.results.presentation.result_viewport import ResultViewport
+
+
+def _lerp(start: float, end: float, fraction: float) -> float:
+    return start + (end - start) * fraction
 
 
 class StaticsDrawingCanvas(QGraphicsView):
@@ -371,13 +384,49 @@ class StaticsDrawingCanvas(QGraphicsView):
         )
         self._changed()
 
-    def apply_uniform_load_to_selection(self, values: tuple[float, float]) -> None:
+    def apply_section_to_selection(self, width: float, height: float, elastic: float) -> None:
+        """Rectangular section (width x height) + elastic modulus, applied to
+        every selected member — stored as A = width*height, I = width*height^3/12
+        (the properties MaterialFreeStaticsSolver actually reads, per
+        Element.properties["E"/"A"/"I"]) alongside the raw width/height/E so
+        the property panel can re-populate its fields and its section preview
+        when a member carrying one is re-selected.
+        """
         if not self.selected_elements:
             return
+        area = width * height
+        inertia = width * height**3 / 12.0
+        self._record_history()
+        for element_tag in self.selected_elements:
+            element = self.elements.get(element_tag)
+            if element is None:
+                continue
+            self.elements[element_tag] = replace(
+                element,
+                properties={
+                    **element.properties,
+                    "E": elastic,
+                    "A": area,
+                    "I": inertia,
+                    "width": width,
+                    "height": height,
+                },
+            )
+        self._changed()
+
+    def apply_uniform_load_to_selection(
+        self, values: tuple[float, float] | tuple[float, float, float, float]
+    ) -> None:
+        """``values`` is (wx, wy) for a plain uniform load, or (wx_i, wy_i,
+        wx_j, wy_j) for a linearly-varying (triangular/trapezoidal) one."""
+        if not self.selected_elements:
+            return
+        wx, wy = values[0], values[1]
+        wx_j, wy_j = (values[2], values[3]) if len(values) >= 4 else (wx, wy)
         self._record_history()
         for element_tag in self.selected_elements:
             self.element_loads[element_tag] = UniformElementLoad(
-                element_tag, wx=values[0], wy=values[1]
+                element_tag, wx=wx, wy=wy, wx_j=wx_j, wy_j=wy_j
             )
         self._changed()
 
@@ -654,10 +703,14 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.nodal_loads[node_tag] = NodalLoad(node_tag, values)
         self._changed()
 
-    def set_uniform_load(self, element_tag: int, values: tuple[float, float]) -> None:
+    def set_uniform_load(
+        self, element_tag: int, values: tuple[float, float] | tuple[float, float, float, float]
+    ) -> None:
+        wx, wy = values[0], values[1]
+        wx_j, wy_j = (values[2], values[3]) if len(values) >= 4 else (wx, wy)
         self._record_history()
         self.element_loads[element_tag] = UniformElementLoad(
-            element_tag, wx=values[0], wy=values[1]
+            element_tag, wx=wx, wy=wy, wx_j=wx_j, wy_j=wy_j
         )
         self._changed()
 
@@ -675,6 +728,13 @@ class StaticsDrawingCanvas(QGraphicsView):
                 key=lambda item: item[0],
             )
             chain = [element.node_i, *(node_tag for _, node_tag in stations), element.node_j]
+            # Fraction (0..1) along the *original* drawn member of every node in the
+            # chain, needed to interpolate a linearly-varying load correctly onto
+            # each analysis segment below - a plain uniform load doesn't care, but
+            # splitting a trapezoidal one at its actual wx/wy would otherwise copy
+            # the whole member's i/j values onto every segment instead of each
+            # segment's own local slice of the load.
+            chain_fractions = [0.0, *(position for position, _ in stations), 1.0]
             segment_tags = [element_tag]
             segment_tags.extend(range(next_tag, next_tag + max(0, len(chain) - 2)))
             next_tag += max(0, len(chain) - 2)
@@ -696,12 +756,17 @@ class StaticsDrawingCanvas(QGraphicsView):
                 )
                 load = self.element_loads.get(element_tag)
                 if load is not None:
+                    start_fraction = chain_fractions[index]
+                    end_fraction = chain_fractions[index + 1]
                     analysis_loads.append(
                         UniformElementLoad(
                             segment_tag,
-                            wx=load.wx,
-                            wy=load.wy,
-                            wz=load.wz,
+                            wx=_lerp(load.wx, load.wx_j, start_fraction),
+                            wy=_lerp(load.wy, load.wy_j, start_fraction),
+                            wz=_lerp(load.wz, load.wz_j, start_fraction),
+                            wx_j=_lerp(load.wx, load.wx_j, end_fraction),
+                            wy_j=_lerp(load.wy, load.wy_j, end_fraction),
+                            wz_j=_lerp(load.wz, load.wz_j, end_fraction),
                             pattern_tag=load.pattern_tag,
                             case_type=load.case_type,
                         )
@@ -1471,6 +1536,14 @@ class StaticsDrawingCanvas(QGraphicsView):
 
         A uniform load is defined along the member, so the arrows have to follow the
         member: on a sloped rafter they stand perpendicular to it, not straight down.
+
+        A trapezoidal load (wy != wy_j, or wx != wx_j) additionally tapers each
+        arrow's length to the interpolated w(x) at that arrow's own position
+        (0.25..1.0 of ``reach``, never fully to zero so the light end stays
+        visible), so a triangular/trapezoidal load visibly reads as one instead
+        of looking exactly like a uniform load. A plain uniform load (wy == wy_j)
+        reduces to the original fixed-length arrows unchanged, since every
+        position then interpolates back to the same constant value.
         """
         dx = end.x - start.x
         dy = end.y - start.y
@@ -1479,19 +1552,36 @@ class StaticsDrawingCanvas(QGraphicsView):
             return []
         along = (dx / length, dy / length)
         normal = (-along[1], along[0])
+        peak_y = max(abs(load.wy), abs(load.wy_j))
+        peak_x = max(abs(load.wx), abs(load.wx_j))
+        trapezoid_x = load.wx != load.wx_j
         segments = []
         for fraction in (0.1, 0.3, 0.5, 0.7, 0.9):
             tip = (start.x + dx * fraction, start.y + dy * fraction)
-            if load.wy:
-                sign = -1.0 if load.wy < 0 else 1.0
-                tail = (tip[0] - normal[0] * reach * sign, tip[1] - normal[1] * reach * sign)
-                segments.append(
-                    (tail, tip, f"qy {load.wy:g}" if fraction == 0.5 else "")
+            local_y = load.wy + (load.wy_j - load.wy) * fraction
+            if local_y and peak_y:
+                sign = -1.0 if local_y < 0 else 1.0
+                local_reach = reach * (0.25 + 0.75 * abs(local_y) / peak_y)
+                tail = (
+                    tip[0] - normal[0] * local_reach * sign,
+                    tip[1] - normal[1] * local_reach * sign,
                 )
-            if load.wx and fraction == 0.5:
-                sign = 1.0 if load.wx > 0 else -1.0
-                tail = (tip[0] - along[0] * reach * sign, tip[1] - along[1] * reach * sign)
-                segments.append((tail, tip, f"qx {load.wx:g}"))
+                label = (
+                    f"qy {load.wy:g}~{load.wy_j:g}" if load.wy != load.wy_j else f"qy {load.wy:g}"
+                )
+                segments.append((tail, tip, label if fraction == 0.5 else ""))
+            local_x = load.wx + (load.wx_j - load.wx) * fraction
+            if local_x and peak_x and (fraction == 0.5 or trapezoid_x):
+                sign = 1.0 if local_x > 0 else -1.0
+                local_reach = reach * (0.25 + 0.75 * abs(local_x) / peak_x)
+                tail = (
+                    tip[0] - along[0] * local_reach * sign,
+                    tip[1] - along[1] * local_reach * sign,
+                )
+                label = (
+                    f"qx {load.wx:g}~{load.wx_j:g}" if trapezoid_x else f"qx {load.wx:g}"
+                )
+                segments.append((tail, tip, label if fraction == 0.5 else ""))
         return segments
 
     def _draw_end_release(self, end: Node, away_from: Node, scale: float) -> None:
@@ -1508,12 +1598,92 @@ class StaticsDrawingCanvas(QGraphicsView):
     def _draw_uniform_load(
         self, start: Node, end: Node, load: UniformElementLoad, scale: float
     ) -> None:
+        """The transverse (qy) component draws as a semi-transparent closed box -
+        a trapezoid when wy != wy_j, a rectangle when uniform - instead of
+        floating arrows with no connecting edge, which made it hard to tell at a
+        glance whether the load actually spanned the whole member. The axial
+        (qx) component, a much rarer case where a perpendicular "box" would read
+        confusingly, keeps the arrow representation: ``load_arrow_segments``
+        still generates both, so only the ones running along the member (not
+        perpendicular to it) are drawn here.
+        """
+        if load.wy or load.wy_j:
+            self._draw_distributed_load_box(start, end, load, scale)
+        dx = end.x - start.x
+        dy = end.y - start.y
+        length = (dx * dx + dy * dy) ** 0.5
+        if length <= 0.0:
+            return
+        normal = (-dy / length, dx / length)
         for tail, tip, text in self.load_arrow_segments(start, end, load, 32.0 / scale):
-            self._draw_arrow(
-                QPointF(tail[0] * scale, -tail[1] * scale),
-                QPointF(tip[0] * scale, -tip[1] * scale),
-                text,
+            vector = (tip[0] - tail[0], tip[1] - tail[1])
+            perpendicular_component = vector[0] * normal[0] + vector[1] * normal[1]
+            if abs(perpendicular_component) < 1.0e-9:  # runs along the member -> axial (qx)
+                self._draw_arrow(
+                    QPointF(tail[0] * scale, -tail[1] * scale),
+                    QPointF(tip[0] * scale, -tip[1] * scale),
+                    text,
+                )
+
+    def _draw_distributed_load_box(
+        self, start: Node, end: Node, load: UniformElementLoad, scale: float
+    ) -> None:
+        dx = end.x - start.x
+        dy = end.y - start.y
+        length = (dx * dx + dy * dy) ** 0.5
+        if length <= 0.0:
+            return
+        along = (dx / length, dy / length)
+        normal = (-along[1], along[0])
+        peak = max(abs(load.wy), abs(load.wy_j))
+        if peak <= 0.0:
+            return
+        max_reach = 30.0 / scale
+
+        def offset(x: float, y: float, w: float) -> tuple[float, float]:
+            # Mirrors the sign convention load_arrow_segments already uses for
+            # qy, so a downward load's box sits on the same side its arrows
+            # used to: above the member, hatched down into it.
+            if w == 0.0:
+                return (x, y)
+            sign = -1.0 if w < 0.0 else 1.0
+            reach = max_reach * abs(w) / peak
+            return (x - normal[0] * reach * sign, y - normal[1] * reach * sign)
+
+        def to_scene(point: tuple[float, float]) -> QPointF:
+            return QPointF(point[0] * scale, -point[1] * scale)
+
+        inner_i, inner_j = (start.x, start.y), (end.x, end.y)
+        outer_i = offset(start.x, start.y, load.wy)
+        outer_j = offset(end.x, end.y, load.wy_j)
+
+        color = QColor("#dc2626")
+        fill = QColor(color)
+        fill.setAlpha(55)
+        pen = QPen(color, 1.4)
+        self.scene_model.addPolygon(
+            QPolygonF([to_scene(inner_i), to_scene(inner_j), to_scene(outer_j), to_scene(outer_i)]),
+            pen,
+            fill,
+        )
+        # Hatch lines from the outer edge back to the member so the load's
+        # direction still reads clearly through the semi-transparent fill.
+        for fraction in (0.15, 0.5, 0.85):
+            member_point = (start.x + dx * fraction, start.y + dy * fraction)
+            local_w = load.wy + (load.wy_j - load.wy) * fraction
+            outer_point = offset(*member_point, local_w)
+            scene_outer, scene_inner = to_scene(outer_point), to_scene(member_point)
+            self.scene_model.addLine(
+                scene_outer.x(), scene_outer.y(), scene_inner.x(), scene_inner.y(), QPen(color, 1.0)
             )
+
+        label = f"qy {load.wy:g}~{load.wy_j:g}" if load.wy != load.wy_j else f"qy {load.wy:g}"
+        midpoint = (start.x + dx * 0.5, start.y + dy * 0.5)
+        midpoint_load = load.wy + (load.wy_j - load.wy) * 0.5
+        label_point = to_scene(offset(*midpoint, midpoint_load))
+        text_item = self.scene_model.addText(label)
+        text_item.setDefaultTextColor(color)
+        text_item.setPos(label_point + QPointF(4, -14))
 
     def _draw_arrow(self, start: QPointF, end: QPointF, text: str) -> None:
         pen = QPen(QColor("#dc2626"), 2)

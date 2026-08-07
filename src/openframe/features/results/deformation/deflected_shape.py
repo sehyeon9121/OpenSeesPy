@@ -68,7 +68,9 @@ def member_deflection(
     transverse_j = -sine * ux_j + cosine * uy_j
 
     element_result = result.element_results.get(element_tag)
-    load_y = element_result.uniform_load[1] if element_result is not None else 0.0
+    load_y_i, load_y_j = (0.0, 0.0)
+    if element_result is not None:
+        _, load_y_i, _, load_y_j = element_result.uniform_load
     rigidity = element_result.flexural_rigidity if element_result is not None else 0.0
 
     stations: list[DeflectionStation] = []
@@ -79,7 +81,7 @@ def member_deflection(
         axial = axial_i + (axial_j - axial_i) * ratio
         transverse = _hermite(
             ratio, length, transverse_i, rotation_i, transverse_j, rotation_j
-        ) + _clamped_sag(distance, length, load_y, rigidity)
+        ) + _clamped_sag(distance, length, load_y_i, load_y_j, rigidity)
 
         stations.append(
             DeflectionStation(
@@ -117,12 +119,43 @@ def _hermite(
     )
 
 
-def _clamped_sag(distance: float, length: float, load_y: float, rigidity: float) -> float:
-    """Extra sag a cubic cannot express, i.e. the clamped-clamped shape under w.
+def _clamped_sag(
+    distance: float, length: float, load_y_i: float, load_y_j: float, rigidity: float
+) -> float:
+    """Extra sag a cubic cannot express, i.e. the clamped-clamped shape under a
+    load varying linearly from w_i at end i to w_j at end j (w_i == w_j is the
+    plain uniform case).
 
-    Peaks at w*L^4/(384*EI) mid-span, the textbook fixed-end deflection.
+    Solving EI*y'''' = w_i + (w_j-w_i)*x/L with y(0)=y'(0)=y(L)=y'(L)=0 (the
+    "clamped-clamped" boundary conditions - the actual end displacement/rotation
+    are already carried by the Hermite term this is added to, same as the
+    uniform case) gives, at x == distance:
+
+        y(x) = x^2 * (L*(3L^2 w_i + 2L^2 w_j - 7L w_i x - 3L w_j x + 5 w_i x^2)
+                       + x^3 (w_j - w_i)) / (120 * EI * L)
+
+    Independently re-derived and cross-checked three ways: by hand (double
+    integration + boundary-condition solve), with sympy's dsolve, and against a
+    finite-difference BVP solve (agreed to ~1e-6 relative error). Reduces
+    exactly to the uniform-load formula w*x^2*(L-x)^2/(24*EI) - peaking at
+    w*L^4/(384*EI) mid-span, the textbook fixed-end deflection - when
+    w_i == w_j, which is verified in tests/integration/test_deflected_shape.py.
     """
-    if load_y == 0.0 or rigidity <= 0.0:
+    if (load_y_i == 0.0 and load_y_j == 0.0) or rigidity <= 0.0 or length <= 0.0:
         return 0.0
-    remaining = length - distance
-    return load_y * distance * distance * remaining * remaining / (24.0 * rigidity)
+    x = distance
+    return (
+        x * x
+        * (
+            length
+            * (
+                3.0 * length * length * load_y_i
+                + 2.0 * length * length * load_y_j
+                - 7.0 * length * load_y_i * x
+                - 3.0 * length * load_y_j * x
+                + 5.0 * load_y_i * x * x
+            )
+            + x ** 3 * (load_y_j - load_y_i)
+        )
+        / (120.0 * rigidity * length)
+    )

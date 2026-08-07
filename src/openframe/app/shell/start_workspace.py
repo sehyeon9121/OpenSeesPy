@@ -10,6 +10,7 @@ class StartWorkspace(QFrame):
     """Project entry points and the current-session summary."""
 
     new_model_requested = Signal()
+    new_3d_model_requested = Signal()
     template_requested = Signal()
     import_opensees_requested = Signal()
     open_project_requested = Signal()
@@ -72,6 +73,16 @@ class StartWorkspace(QFrame):
             primary=True,
             callback=self.new_model_requested.emit,
             action_id="action_new_model",
+        )
+        self.new_3d_model_button = self._add_action_card(
+            layout,
+            icon="3D",
+            title="New 3D Model",
+            description="Create a space frame from a blank 3D canvas.",
+            action_text="START",
+            primary=False,
+            callback=self.new_3d_model_requested.emit,
+            action_id="action_new_3d_model",
         )
         self.import_button = self._add_action_card(
             layout,

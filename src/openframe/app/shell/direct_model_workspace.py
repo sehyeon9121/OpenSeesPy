@@ -96,6 +96,15 @@ class DirectModelWorkspace(QFrame):
 
     def set_current_step(self, step: str) -> None:
         self.workflow.set_current_step(step)
+        # Neither material-free 2D nor 3D authoring needs the setup/materials/
+        # sections/supports steps once you're actually on the canvas - 2D's
+        # material-free path already skips straight past materials/sections
+        # (see _continue_from_setup), and the "supports" step has always been
+        # an unimplemented placeholder (real support/load controls live in the
+        # canvas page itself). Hiding the step bar here, instead of removing
+        # steps that other flows may still reach, gives the canvas the full
+        # window width without touching how those other steps are entered.
+        self.workflow.setVisible(step != "geometry")
         self.stage_stack.setCurrentWidget(self._pages[step])
 
     def _continue_from_setup(self) -> None:
