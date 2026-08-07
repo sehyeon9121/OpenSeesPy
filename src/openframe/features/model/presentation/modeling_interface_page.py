@@ -7,10 +7,19 @@ hinges, loads — is a property of whatever is selected, so adding a new kind of
 object never adds another button to learn.
 """
 
-from typing import ClassVar
+from typing import Callable, ClassVar
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtGui import (
+    QColor,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -25,6 +34,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -47,6 +57,154 @@ class SafeDoubleSpinBox(QDoubleSpinBox):
 class SafeSpinBox(QSpinBox):
     def wheelEvent(self, event) -> None:
         event.ignore()
+
+
+#: (button label, tooltip, glyph key, restraint preset). Restraint presets are always
+#: the 2D (Ux, Uy, Rz) triple, matching the combo box they replaced — a 3D selection
+#: never matches one of these by length and always falls through to "커스텀", exactly
+#: as before.
+_SUPPORT_OPTIONS: tuple[tuple[str, str, str, tuple[bool, bool, bool] | None], ...] = (
+    ("자유", "자유 (지점 없음)", "free", (False, False, False)),
+    ("핀", "핀 지점 (회전 자유)", "pin", (True, True, False)),
+    ("수직롤러", "수직 롤러 — 수평(X) 반력만, 수직으로 구름", "roller_v", (True, False, False)),
+    ("수평롤러", "수평 롤러 — 수직(Y) 반력만, 수평으로 구름", "roller_h", (False, True, False)),
+    ("고정", "고정 지점", "fixed", (True, True, True)),
+    ("커스텀", "커스텀 (자유도 직접 지정)", "custom", None),
+)
+
+
+def _paint_support_glyph(painter: QPainter, key: str, color: str) -> None:
+    """Draw one support symbol on a 32x32 logical canvas.
+
+    Deliberately mirrors the shapes ``SupportItem`` already draws on the canvas
+    (features/viewport/items/support_item.py) so a button's icon and the glyph it
+    places on the model are visually the same symbol, just simplified for icon size.
+    """
+    if key == "free":
+        painter.drawEllipse(QRectF(13.0, 13.0, 6.0, 6.0))
+        return
+    if key == "fixed":
+        painter.drawLine(16, 4, 16, 14)
+        ground_pen = QPen(QColor(color), 2.4)
+        ground_pen.setCosmetic(True)
+        painter.setPen(ground_pen)
+        painter.drawLine(6, 14, 26, 14)
+        painter.setPen(QPen(QColor(color), 1.6))
+        for x in range(6, 27, 5):
+            painter.drawLine(x, 15, x - 4, 21)
+        return
+    if key == "pin":
+        triangle = QPainterPath()
+        triangle.moveTo(16, 4)
+        triangle.lineTo(7, 18)
+        triangle.lineTo(25, 18)
+        triangle.closeSubpath()
+        painter.drawPath(triangle)
+        painter.drawLine(5, 19, 27, 19)
+        for x in range(5, 28, 5):
+            painter.drawLine(x, 20, x - 3, 25)
+        return
+    if key == "roller_h":
+        # Restrains Uy only -> rests on the ground, free to roll horizontally.
+        triangle = QPainterPath()
+        triangle.moveTo(16, 4)
+        triangle.lineTo(7, 16)
+        triangle.lineTo(25, 16)
+        triangle.closeSubpath()
+        painter.drawPath(triangle)
+        painter.drawEllipse(QRectF(8.0, 17.0, 6.0, 6.0))
+        painter.drawEllipse(QRectF(18.0, 17.0, 6.0, 6.0))
+        painter.drawLine(5, 25, 27, 25)
+        return
+    if key == "roller_v":
+        # Restrains Ux only -> rests against a wall, free to roll vertically.
+        triangle = QPainterPath()
+        triangle.moveTo(20, 16)
+        triangle.lineTo(8, 7)
+        triangle.lineTo(8, 25)
+        triangle.closeSubpath()
+        painter.drawPath(triangle)
+        painter.drawEllipse(QRectF(21.0, 8.0, 6.0, 6.0))
+        painter.drawEllipse(QRectF(21.0, 18.0, 6.0, 6.0))
+        painter.drawLine(29, 5, 29, 27)
+        return
+    # custom
+    painter.drawLine(16, 4, 16, 10)
+    painter.drawRect(QRectF(9.0, 10.0, 14.0, 12.0))
+    painter.drawLine(7, 24, 25, 24)
+
+
+def _paint_node_kind_glyph(painter: QPainter, hinge: bool, color: str) -> None:
+    """강결(rigid joint) vs 활절점(hinge) — a crossed solid dot versus an open
+    circle with the connecting lines stopping short of it, the standard textbook
+    distinction between a moment-continuous and a moment-released joint."""
+    if hinge:
+        painter.drawLine(4, 16, 12, 16)
+        painter.drawLine(20, 16, 28, 16)
+        painter.drawEllipse(QRectF(11.0, 11.0, 10.0, 10.0))
+        return
+    painter.drawLine(16, 4, 16, 28)
+    painter.drawLine(4, 16, 28, 16)
+    painter.setBrush(QColor(color))
+    painter.drawEllipse(QRectF(12.5, 12.5, 7.0, 7.0))
+
+
+#: (button label, tooltip, target key, glyph key) for the 하중 대상 icon row.
+_LOAD_TARGET_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
+    ("집중하중", "노드에 힘·모멘트를 직접 가하는 절점 하중", "node", "point"),
+    ("등분포하중", "부재 길이를 따라 균일하게 분포된 하중", "element", "uniform"),
+)
+
+
+def _paint_load_glyph(painter: QPainter, key: str, color: str) -> None:
+    """집중하중(nodal point load) vs 등분포하중(uniform element load) — one arrow
+    landing on a point versus several evenly spaced arrows hanging from a line,
+    the standard textbook symbols for each."""
+    if key == "point":
+        painter.drawLine(16, 3, 16, 19)
+        head = QPainterPath()
+        head.moveTo(16, 27)
+        head.lineTo(11, 18)
+        head.lineTo(21, 18)
+        head.closeSubpath()
+        painter.setBrush(QColor(color))
+        painter.drawPath(head)
+        return
+    # uniform: a line with three evenly spaced arrows hanging from it
+    painter.drawLine(4, 6, 28, 6)
+    for x in (9, 16, 23):
+        painter.drawLine(x, 6, x, 19)
+        head = QPainterPath()
+        head.moveTo(x, 27)
+        head.lineTo(x - 3, 19)
+        head.lineTo(x + 3, 19)
+        head.closeSubpath()
+        painter.setBrush(QColor(color))
+        painter.drawPath(head)
+
+
+def _render_glyph_icon(paint: Callable[[QPainter, str], None], size: int = 32) -> QIcon:
+    """Build a QIcon with matched Off/On pixmaps (dark-slate / white) so a
+    checkable QToolButton's icon reads correctly both unchecked (light
+    background) and checked (filled accent-blue background) without any QSS
+    icon-swapping tricks."""
+    icon = QIcon()
+    for color, state in (("#35485f", QIcon.State.Off), ("#ffffff", QIcon.State.On)):
+        pixmap = QPixmap(size * 2, size * 2)
+        pixmap.setDevicePixelRatio(2.0)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor(color), 1.6)
+        pen.setCosmetic(True)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        paint(painter, color)
+        painter.end()
+        icon.addPixmap(pixmap, QIcon.Mode.Normal, state)
+    return icon
 
 
 class ModelingInterfacePage(QFrame):
@@ -194,6 +352,7 @@ class ModelingInterfacePage(QFrame):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        layout.addWidget(self._build_node_property_bar())
         self.mode_label = QLabel()
         self.mode_label.setContentsMargins(10, 6, 10, 6)
         self.mode_label.setObjectName("setupSummaryHint")
@@ -378,25 +537,39 @@ class ModelingInterfacePage(QFrame):
         return bar
 
     def _build_property_panel(self) -> QScrollArea:
+        """Each section renders as its own white card on a tinted background,
+        rather than a bare bold label, so several always-on sections stacked
+        together read as distinct blocks instead of one long undifferentiated
+        list. create(좌표로 노드 추가)/node(지점 상세)/load(하중)는 선택 여부와
+        무관하게 항상 보이는 카드로 맨 위에 고정한다 — 셋 다 자주 쓰는 컨트롤이라
+        선택했을 때만 나타나던 이전 방식에서는 화면이 위아래로 튀거나(create는
+        한때 접어 뒀다가, 자주 찾는 기능이라는 피드백을 받고 다시 고정함) 필요한
+        입력칸을 찾을 수 없었다. transform은 node 카드의 토글 버튼이 여는
+        내용이라 바로 아래에 붙여둔다. 지점 조건/노드 유형 아이콘 자체는 이제 이
+        패널에 없다 — 캔버스 폭을 그대로 쓸 수 있는 ``_build_node_property_bar``로
+        옮겨 캔버스 바로 위 고정 막대에 둔다."""
         panel = QFrame()
-        panel.setObjectName("setupFormPanel")
+        panel.setObjectName("modelingPropertyPanel")
         root = QVBoxLayout(panel)
-        root.setContentsMargins(14, 13, 14, 13)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
         self.selection_summary = QLabel()
         self.selection_summary.setObjectName("setupSectionTitle")
         self.selection_summary.setWordWrap(True)
         root.addWidget(self.selection_summary)
         self._sections: dict[str, QWidget] = {}
-        for key, section in (
-            ("create", self._build_create_section()),
-            ("node", self._build_node_section()),
-            ("transform", self._build_transform_section()),
-            ("member", self._build_member_section()),
-            ("load", self._build_load_section()),
-        ):
-            self._sections[key] = section
-            root.addWidget(section)
+
+        self._sections["create"] = self._build_create_section()
+        root.addWidget(self._sections["create"])
+        self._sections["node"] = self._build_node_section()
+        root.addWidget(self._sections["node"])
+        self._sections["transform"] = self._build_transform_section()
+        root.addWidget(self._sections["transform"])
+        self._sections["load"] = self._build_load_section()
+        root.addWidget(self._sections["load"])
+
+        self._sections["member"] = self._build_member_section()
+        root.addWidget(self._sections["member"])
         root.addStretch(1)
         scroll = QScrollArea()
         scroll.setObjectName("modelingInspectorScroll")
@@ -440,25 +613,25 @@ class ModelingInterfacePage(QFrame):
                 "연속으로 그리려면 왼쪽 레일의 그리기 도구를 쓰세요."
             )
             return
-        self.create_section_hint.setText(
-            "노드를 하나만 선택하면 그 노드 기준 오프셋으로 추가합니다. "
-            "선택이 없으면 원점(0, 0) 기준으로 추가합니다."
-        )
+        selected = len(self.canvas.selected_nodes)
+        if selected == 1:
+            self.create_section_hint.setText("선택한 노드를 기준으로 오프셋을 추가합니다.")
+        elif selected == 0:
+            self.create_section_hint.setText(
+                "원점(0, 0) 기준으로 추가합니다. 노드를 하나 선택하면 그 노드가 기준점이 됩니다."
+            )
+        else:
+            self.create_section_hint.setText(
+                f"노드 {selected}개가 선택돼 기준점이 모호합니다 — 지금은 원점(0, 0) 기준으로 "
+                "추가됩니다. 노드를 하나만 선택하면 그 노드가 기준점이 됩니다."
+            )
 
     def _build_node_section(self) -> QWidget:
-        section, root = self._section("노드 속성")
-        root.addWidget(QLabel("지점 조건"))
-        self.support_kind = QComboBox()
-        self.support_kind.addItem("자유 (지점 없음)", (False, False, False))
-        self.support_kind.addItem("핀 지점", (True, True, False))
-        self.support_kind.addItem("수직 롤러", (True, False, False))
-        self.support_kind.addItem("수평 롤러", (False, True, False))
-        self.support_kind.addItem("고정 지점", (True, True, True))
-        self.support_kind.addItem("커스텀 (자유도 직접 지정)", None)
-        self.support_kind.setCurrentIndex(1)
-        self.support_kind.currentIndexChanged.connect(self._refresh_support_custom_row)
-        root.addWidget(self.support_kind)
-
+        """The rarely-touched remainder of 지점/노드 settings — 지점 조건과
+        노드 유형 아이콘은 캔버스 상단 막대로 옮겨졌다 (``_build_node_property_bar``);
+        여기 남은 것들(커스텀 자유도, 경사각, 이동·복사·배열 진입점)은 아이콘 하나로
+        표현하기 애매하거나 자주 쓰지 않는 값이라 오른쪽 패널에 그대로 둔다."""
+        section, root = self._section("지점 상세")
         self.support_custom_row = QWidget()
         custom_layout = QHBoxLayout(self.support_custom_row)
         custom_layout.setContentsMargins(0, 0, 0, 0)
@@ -466,6 +639,7 @@ class ModelingInterfacePage(QFrame):
         self.support_dof_checks: dict[str, QCheckBox] = {}
         for dof in ("Ux", "Uy", "Uz", "Rx", "Ry", "Rz"):
             box = QCheckBox(dof)
+            box.toggled.connect(self._apply_support)
             self.support_dof_checks[dof] = box
             custom_layout.addWidget(box)
         self.support_custom_row.setVisible(False)
@@ -479,54 +653,137 @@ class ModelingInterfacePage(QFrame):
         self.support_angle.setToolTip(
             "지지면이 수평에서 반시계 방향으로 기울어진 각도. 0이면 보통의 수평·수직 지점입니다."
         )
+        self.support_angle.editingFinished.connect(self._apply_support)
         angle_row.addWidget(self.support_angle, 1)
         root.addLayout(angle_row)
-        apply_support = QPushButton("선택 노드에 적용")
-        apply_support.clicked.connect(self._apply_support)
-        root.addWidget(apply_support)
-        root.addWidget(QLabel("노드 유형"))
-        self.node_kind = QComboBox()
-        self.node_kind.addItem("일반 노드 (강결)", False)
-        self.node_kind.addItem("절점 (활절점 · 내부 힌지)", True)
-        root.addWidget(self.node_kind)
-        apply_kind = QPushButton("선택 노드에 적용")
-        apply_kind.clicked.connect(
-            lambda: self.canvas.set_selected_node_kind(bool(self.node_kind.currentData()))
-        )
-        root.addWidget(apply_kind)
+
         self.transform_toggle = QPushButton("이동 · 복사 · 배열 ▸")
         self.transform_toggle.setObjectName("sectionToggleButton")
         self.transform_toggle.clicked.connect(self._toggle_transform_section)
         root.addWidget(self.transform_toggle)
         return section
 
+    def _build_node_property_bar(self) -> QFrame:
+        """지점 조건 + 노드 유형 아이콘 — 캔버스 바로 위, 오른쪽 패널이 아니라
+        여기 고정된 가로 막대에 둔다. 선택 여부와 무관하게 항상 보이고(오른쪽
+        패널의 다른 always-on 카드들과 동일한 이유 — no-op이 안전하고, 학생이
+        뭘 먼저 선택할 필요 없이 바로 컨트롤을 찾을 수 있어야 함), 캔버스 폭을
+        그대로 쓸 수 있어 6개 지점 아이콘이 한 줄로 들어간다(오른쪽 패널의 좁은
+        폭이었다면 2행 3열로 접어야 했을 것)."""
+        bar = QFrame()
+        bar.setObjectName("directModelCommandBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(6)
+        layout.addWidget(QLabel("지점"))
+        layout.addWidget(self._build_support_icon_row())
+        layout.addSpacing(14)
+        layout.addWidget(QLabel("노드 유형"))
+        layout.addWidget(self._build_node_kind_icon_row())
+        layout.addStretch(1)
+        return bar
+
+    def _build_support_icon_row(self) -> QWidget:
+        """Icon buttons for 지점 조건, one per ``_SUPPORT_OPTIONS`` entry, applied
+        the moment you click one — no separate 적용 button, matching the instant-
+        apply feel of the 부재 단부 핀 해제 checkboxes below. Each icon mirrors the
+        symbol ``SupportItem`` draws on the canvas so the button you clicked and the
+        glyph that appears on the model read as the same shape."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.support_group = QButtonGroup(self)
+        self.support_group.setExclusive(True)
+        self.support_buttons: dict[int, QToolButton] = {}
+        for index, (label, tooltip, glyph_key, _restraints) in enumerate(_SUPPORT_OPTIONS):
+            button = QToolButton()
+            button.setObjectName("supportKindButton")
+            button.setCheckable(True)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            button.setIcon(_render_glyph_icon(lambda p, c, k=glyph_key: _paint_support_glyph(p, k, c)))
+            button.setIconSize(QSize(22, 22))
+            button.setText(label)
+            button.setToolTip(tooltip)
+            self.support_group.addButton(button, index)
+            self.support_buttons[index] = button
+            layout.addWidget(button)
+        self.support_buttons[1].setChecked(True)  # default: 핀 지점, matches the old combo's index
+        self.support_group.idClicked.connect(self._on_support_button_clicked)
+        return row
+
+    def _build_node_kind_icon_row(self) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.node_kind_group = QButtonGroup(self)
+        self.node_kind_group.setExclusive(True)
+
+        self.node_kind_rigid_button = QToolButton()
+        self.node_kind_rigid_button.setObjectName("supportKindButton")
+        self.node_kind_rigid_button.setCheckable(True)
+        self.node_kind_rigid_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self.node_kind_rigid_button.setIcon(
+            _render_glyph_icon(lambda p, c: _paint_node_kind_glyph(p, False, c))
+        )
+        self.node_kind_rigid_button.setIconSize(QSize(22, 22))
+        self.node_kind_rigid_button.setText("강결")
+        self.node_kind_rigid_button.setToolTip("일반 노드 (강결) — 만나는 부재끼리 모멘트를 전달합니다.")
+        self.node_kind_rigid_button.setChecked(True)
+        self.node_kind_group.addButton(self.node_kind_rigid_button, 0)
+        layout.addWidget(self.node_kind_rigid_button)
+
+        self.node_kind_hinge_button = QToolButton()
+        self.node_kind_hinge_button.setObjectName("supportKindButton")
+        self.node_kind_hinge_button.setCheckable(True)
+        self.node_kind_hinge_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self.node_kind_hinge_button.setIcon(
+            _render_glyph_icon(lambda p, c: _paint_node_kind_glyph(p, True, c))
+        )
+        self.node_kind_hinge_button.setIconSize(QSize(22, 22))
+        self.node_kind_hinge_button.setText("활절점")
+        self.node_kind_hinge_button.setToolTip("절점 (활절점 · 내부 힌지) — 모멘트를 전달하지 않습니다.")
+        self.node_kind_group.addButton(self.node_kind_hinge_button, 1)
+        layout.addWidget(self.node_kind_hinge_button)
+        layout.addStretch(1)
+
+        self.node_kind_group.idClicked.connect(
+            lambda index: self.canvas.set_selected_node_kind(bool(index))
+        )
+        return row
+
+    def _on_support_button_clicked(self, _index: int) -> None:
+        self._refresh_support_custom_row()
+        self._apply_support()
+
     def _refresh_support_custom_row(self) -> None:
-        is_custom = self.support_kind.currentData() is None
+        checked = self.support_group.checkedButton()
+        is_custom = checked is not None and _SUPPORT_OPTIONS[self.support_group.id(checked)][3] is None
         self.support_custom_row.setVisible(is_custom)
         three_d = self.canvas.ndm == 3
         for dof, box in self.support_dof_checks.items():
             box.setVisible(three_d or dof in {"Ux", "Uy", "Rz"})
 
     def _refresh_node_type_controls(self) -> None:
-        """Make the 노드 유형 / 지점 조건 combos reflect the *new* selection's
-        actual state, instead of whatever was last left in them.
+        """Make the 노드 유형 / 지점 조건 버튼들이 reflect the *new* selection's
+        actual state, instead of whatever was last left checked.
 
-        Neither combo used to reset on selection change. Mark one node as a
-        절점 (힌지), then select a different node to set its support, and the
-        노드 유형 combo was still sitting on 절점 — an absent-minded second
-        click on its 적용 button (easy to do while working through a frame's
-        joints one by one) would hinge a node nobody meant to touch. A node
-        clicked to build a member or place a nodal load must stay a plain rigid
-        node unless the combo genuinely reflects — and the user deliberately
-        changes — a hinge state for *that* node.
+        Neither control used to reset on selection change. Mark one node as a
+        절점 (힌지), then select a different node, and 노드 유형 was still sitting
+        on 절점 — an absent-minded extra click (easy while working through a
+        frame's joints one by one) would hinge a node nobody meant to touch. A
+        node clicked to build a member or place a nodal load must stay a plain
+        rigid node unless the control genuinely reflects — and the user
+        deliberately changes — a hinge state for *that* node. ``setChecked()``
+        never fires ``idClicked``, so refreshing here cannot loop back into
+        applying anything.
         """
         selected = self.canvas.selected_nodes
         if not selected:
             return
         all_hinge = selected <= self.canvas.hinge_nodes
-        self.node_kind.blockSignals(True)
-        self.node_kind.setCurrentIndex(1 if all_hinge else 0)
-        self.node_kind.blockSignals(False)
+        (self.node_kind_hinge_button if all_hinge else self.node_kind_rigid_button).setChecked(True)
 
         if len(selected) != 1:
             return
@@ -542,30 +799,30 @@ class ModelingInterfacePage(QFrame):
         preset_index = next(
             (
                 index
-                for index in range(self.support_kind.count())
-                if self.support_kind.itemData(index) is not None
-                and len(self.support_kind.itemData(index)) == dof
-                and tuple(self.support_kind.itemData(index)) == restraints
+                for index, (_, _, _, template) in enumerate(_SUPPORT_OPTIONS)
+                if template is not None and len(template) == dof and tuple(template) == restraints
             ),
             None,
         )
-        self.support_kind.blockSignals(True)
         if preset_index is not None:
-            self.support_kind.setCurrentIndex(preset_index)
+            self.support_buttons[preset_index].setChecked(True)
         else:
-            self.support_kind.setCurrentIndex(self.support_kind.findData(None))
+            self.support_buttons[len(_SUPPORT_OPTIONS) - 1].setChecked(True)  # 커스텀
             order = ("Ux", "Uy", "Uz", "Rx", "Ry", "Rz")[:dof]
             for dof_name, value in zip(order, restraints, strict=True):
                 self.support_dof_checks[dof_name].setChecked(value)
-        self.support_kind.blockSignals(False)
         self._refresh_support_custom_row()
 
     def _apply_support(self) -> None:
-        if self.support_kind.currentData() is None:
+        checked = self.support_group.checkedButton()
+        if checked is None:
+            return
+        template = _SUPPORT_OPTIONS[self.support_group.id(checked)][3]
+        if template is None:
             order = ("Ux", "Uy", "Uz", "Rx", "Ry", "Rz") if self.canvas.ndm == 3 else ("Ux", "Uy", "Rz")
             restraints = tuple(self.support_dof_checks[dof].isChecked() for dof in order)
         else:
-            restraints = self.support_kind.currentData()
+            restraints = template
         self.canvas.apply_support_to_selection(restraints, self.support_angle.value())
 
     def _toggle_transform_section(self) -> None:
@@ -675,11 +932,7 @@ class ModelingInterfacePage(QFrame):
         the trap instead of asking the user to remember it.
         """
         section, root = self._section("하중")
-        self.load_target = QComboBox()
-        self.load_target.addItem("노드", "node")
-        self.load_target.addItem("부재", "element")
-        self.load_target.currentIndexChanged.connect(self._load_target_changed)
-        root.addWidget(self.load_target)
+        root.addWidget(self._build_load_target_icon_row())
         self.load_form_layout = QFormLayout()
         self.load_fields: dict[str, QDoubleSpinBox] = {}
         root.addLayout(self.load_form_layout)
@@ -688,6 +941,35 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(apply_button)
         self._load_target_changed()
         return section
+
+    def _build_load_target_icon_row(self) -> QWidget:
+        """집중하중(node)/등분포하중(element) icon buttons, mirroring the 지점
+        조건 row: picking one swaps the field list below (still needs a
+        magnitude typed in and 적용 clicked — unlike 지점 조건 there is no
+        single value to apply instantly here)."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.load_target_group = QButtonGroup(self)
+        self.load_target_group.setExclusive(True)
+        self.load_target_keys: dict[int, str] = {}
+        for index, (label, tooltip, key, glyph_key) in enumerate(_LOAD_TARGET_OPTIONS):
+            button = QToolButton()
+            button.setObjectName("supportKindButton")
+            button.setCheckable(True)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            button.setIcon(_render_glyph_icon(lambda p, c, k=glyph_key: _paint_load_glyph(p, k, c)))
+            button.setIconSize(QSize(22, 22))
+            button.setText(label)
+            button.setToolTip(tooltip)
+            self.load_target_group.addButton(button, index)
+            self.load_target_keys[index] = key
+            layout.addWidget(button)
+        self.load_target_group.button(0).setChecked(True)  # default: 집중하중(node)
+        self.load_target_group.idClicked.connect(lambda _index: self._load_target_changed())
+        layout.addStretch(1)
+        return row
 
     def _build_result_workspace(self) -> QWidget:
         """The full post-processing workspace, not a bare viewport.
@@ -943,21 +1225,36 @@ class ModelingInterfacePage(QFrame):
         return next(iter(self.canvas.selected_elements))
 
     def _sync_property_panel(self) -> None:
-        """Show only the sections that apply to what is selected right now."""
+        """Show the sections that apply to what is selected right now.
+
+        ``create`` (좌표로 노드 추가), ``node`` (지점·힌지) and ``load`` (하중)
+        are always on, not just when something is selected — every 적용 action
+        in them already no-ops safely with an empty selection
+        (``apply_support_to_selection`` etc. check ``if not selected: return``),
+        so there is no correctness reason to hide them, only a discoverability
+        one: a student setting up a support, a load, or a coordinate-entered
+        node should not have to select something first just to find the
+        controls for it. ``create`` specifically also needs to stay up while
+        its relative-offset reference node is selected, or the fields to use
+        it disappear right when they're needed. ``member`` and ``transform``
+        stay selection-gated — a member's end-release checkboxes and
+        move/copy/array only mean anything once something concrete is
+        selected to act on.
+        """
         nodes = len(self.canvas.selected_nodes)
         elements = len(self.canvas.selected_elements)
         member_tag = self._selected_member_tag()
         pinned = self._pinned_section
         visible = {
-            "create": not nodes and not elements,
-            "node": bool(nodes),
+            "create": True,
+            "node": True,
             # Collapsed by default — move/copy/array/mirror is a wide block and most
             # selections only need a support or a load, not a geometry operation.
             # The toggle button inside the node section (or the rail's pin path)
             # opens it back up.
             "transform": False,
             "member": member_tag is not None,
-            "load": bool(nodes or elements),
+            "load": True,
         }
         if pinned is not None:
             visible[pinned] = True
@@ -966,6 +1263,7 @@ class ModelingInterfacePage(QFrame):
         self.transform_toggle.setText(
             "이동 · 복사 · 배열 감추기 ▾" if visible["transform"] else "이동 · 복사 · 배열 ▸"
         )
+        self._refresh_create_section_hint()
         if member_tag is not None:
             self._refresh_member_section(member_tag)
         if nodes:
@@ -1038,6 +1336,10 @@ class ModelingInterfacePage(QFrame):
         "qy": "qy (로컬 y)",
     }
 
+    def _current_load_target(self) -> str:
+        checked_id = self.load_target_group.checkedId()
+        return self.load_target_keys.get(checked_id, "node")
+
     def _load_target_changed(self) -> None:
         """Rebuild the load field list for the current target and dimension.
 
@@ -1049,7 +1351,8 @@ class ModelingInterfacePage(QFrame):
         while self.load_form_layout.rowCount():
             self.load_form_layout.removeRow(0)
         self.load_fields.clear()
-        if self.load_target.currentData() == "node":
+        target = self._current_load_target()
+        if target == "node":
             components = (
                 self._NODE_LOAD_COMPONENTS_3D if self.canvas.ndm == 3 else self._NODE_LOAD_COMPONENTS_2D
             )
@@ -1061,7 +1364,7 @@ class ModelingInterfacePage(QFrame):
             field = self._number(0.0)
             field.setRange(-1_000_000.0, 1_000_000.0)
             unit = self._unit_system.moment if component[0] == "m" else self._unit_system.force
-            if self.load_target.currentData() == "element":
+            if target == "element":
                 unit = f"{self._unit_system.force}/{self._unit_system.length}"
             self.load_fields[component] = field
             self.load_form_layout.addRow(f"{self._COMPONENT_LABELS[component]} ({unit})", field)
@@ -1069,7 +1372,7 @@ class ModelingInterfacePage(QFrame):
             self.selection_filter.setCurrentIndex(self.selection_filter.findData(filter_key))
 
     def _apply_load(self) -> None:
-        if self.load_target.currentData() == "node":
+        if self._current_load_target() == "node":
             components = (
                 self._NODE_LOAD_COMPONENTS_3D if self.canvas.ndm == 3 else self._NODE_LOAD_COMPONENTS_2D
             )
@@ -1130,14 +1433,21 @@ class ModelingInterfacePage(QFrame):
         self.determinacy_status.setText(f"정정성: {check.message}")
 
     @staticmethod
-    def _section(title: str) -> tuple[QWidget, QVBoxLayout]:
+    def _section(title: str, *, show_title: bool = True) -> tuple[QWidget, QVBoxLayout]:
+        """A white card on the panel's tinted background (propertySectionCard),
+        so several always-on sections stacked together read as distinct blocks
+        instead of one long list of bold labels. ``show_title=False`` is for
+        ``create``, whose external toggle button already carries the heading —
+        repeating it inside the card the button opens would just be noise."""
         section = QFrame()
+        section.setObjectName("propertySectionCard")
         layout = QVBoxLayout(section)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(10, 9, 10, 9)
         layout.setSpacing(6)
-        label = QLabel(title)
-        label.setObjectName("setupSectionTitle")
-        layout.addWidget(label)
+        if show_title:
+            label = QLabel(title)
+            label.setObjectName("setupSectionTitle")
+            layout.addWidget(label)
         return section, layout
 
     @staticmethod

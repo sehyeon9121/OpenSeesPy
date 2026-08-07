@@ -227,7 +227,7 @@ def test_a_3d_cantilever_column_is_drawn_loaded_and_solved_entirely_through_the_
     page.canvas.set_support(base, (True, True, True, True, True, True))
     page.canvas.selected_nodes = {top}
     page.canvas.selection_changed.emit()
-    page.load_target.setCurrentIndex(page.load_target.findData("node"))
+    page.load_target_group.button(0).click()  # 집중하중 (node)
     page.load_fields["fx"].setValue(10.0)
     page._apply_load()
 

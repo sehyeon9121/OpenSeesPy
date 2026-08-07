@@ -1384,9 +1384,16 @@ class StaticsDrawingCanvas(QGraphicsView):
                 )
                 intersects = rectangle.contains(start) or rectangle.contains(end)
                 if not intersects:
+                    # QLineF.intersects() reports UnboundedIntersection whenever the
+                    # two *infinite* lines would cross somewhere, even if that point
+                    # is nowhere near either actual segment - checking only "!=
+                    # NoIntersection" therefore matched almost every non-parallel
+                    # member against almost every rectangle edge, selecting the
+                    # entire model on any crossing-mode drag. BoundedIntersection is
+                    # the one value that means the two finite segments actually cross.
                     intersects = any(
                         member_line.intersects(edge)[0]
-                        != QLineF.IntersectionType.NoIntersection
+                        == QLineF.IntersectionType.BoundedIntersection
                         for edge in edges
                     )
                 if fully_inside or (crossing and intersects):

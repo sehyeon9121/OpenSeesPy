@@ -144,49 +144,40 @@ Item {
         // lines up with the view's own Y without rotation.
         property real axisLength: Math.max(sceneBridge.extent * 1.2, 2.0)
         property real axisThickness: Math.max(sceneBridge.extent * 0.006, 0.008)
-        PrincipledMaterial {
-            id: xAxisMaterial
-            baseColor: "#dc2626"
-            metalness: 0.0
-            roughness: 0.6
-        }
-        PrincipledMaterial {
-            id: yAxisMaterial
-            baseColor: "#16a34a"
-            metalness: 0.0
-            roughness: 0.6
-        }
-        PrincipledMaterial {
-            id: zAxisMaterial
-            baseColor: "#2563eb"
-            metalness: 0.0
-            roughness: 0.6
-        }
-        Model {
-            // Structural X -> view +X
-            source: "#Cylinder"
-            eulerRotation: Qt.vector3d(0, 0, -90)
-            scale: Qt.vector3d(axisThickness / 100, axisLength / 100, axisThickness / 100)
-            materials: [xAxisMaterial]
-            castsShadows: false
-            receivesShadows: false
-        }
-        Model {
-            // Structural Y -> view -Z
-            source: "#Cylinder"
-            eulerRotation: Qt.vector3d(-90, 0, 0)
-            scale: Qt.vector3d(axisThickness / 100, axisLength / 100, axisThickness / 100)
-            materials: [yAxisMaterial]
-            castsShadows: false
-            receivesShadows: false
-        }
-        Model {
-            // Structural Z -> view +Y, already the cylinder's default axis.
-            source: "#Cylinder"
-            scale: Qt.vector3d(axisThickness / 100, axisLength / 100, axisThickness / 100)
-            materials: [zAxisMaterial]
-            castsShadows: false
-            receivesShadows: false
+
+        Repeater3D {
+            // Rendered through the same Repeater3D + PrincipledMaterial-per-delegate
+            // pattern as members/supports/load arrows below, all of which are known
+            // to render correctly. A hand-written static Model (previously used here,
+            // with either eulerRotation or an equivalent quaternion) was found to
+            // corrupt the whole View3D's rendered output into a solid rainbow blob on
+            // at least one GPU/driver stack - only this data-driven form is confirmed
+            // safe, so the axis indicators use it too even though they don't need per-
+            // instance Python data.
+            model: [
+                { color: "#dc2626", qscalar: 0.70710678, qx: 0, qy: 0, qz: -0.70710678 },
+                { color: "#16a34a", qscalar: 0.70710678, qx: -0.70710678, qy: 0, qz: 0 },
+                { color: "#2563eb", qscalar: 1, qx: 0, qy: 0, qz: 0 },
+            ]
+            delegate: Model {
+                source: "#Cylinder"
+                position: Qt.vector3d(0, 0, 0)
+                rotation: Qt.quaternion(modelData.qscalar, modelData.qx, modelData.qy, modelData.qz)
+                scale: Qt.vector3d(
+                    view3d.axisThickness / 100,
+                    view3d.axisLength / 100,
+                    view3d.axisThickness / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        metalness: 0.0
+                        roughness: 0.6
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+            }
         }
 
         PrincipledMaterial {

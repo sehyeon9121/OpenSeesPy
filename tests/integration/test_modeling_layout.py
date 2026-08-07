@@ -21,11 +21,26 @@ def _visible(page: ModelingInterfacePage) -> set[str]:
     return {key for key, section in page._sections.items() if section.isVisible()}
 
 
-def test_an_empty_selection_offers_creation_only() -> None:
+def test_an_empty_selection_offers_the_always_on_sections() -> None:
+    """create(좌표로 노드 추가)/node(지점·힌지)/load(하중) 모두 선택 여부와
+    무관하게 항상 보인다 - 학생이 지점을 설정하거나 좌표로 노드를 추가하려고
+    먼저 뭔가를 선택할 필요 없이 바로 컨트롤을 볼 수 있게."""
     page = _page()
 
-    assert _visible(page) == {"create"}
+    assert _visible(page) == {"create", "node", "load"}
     assert "선택된 대상이 없습니다" in page.selection_summary.text()
+
+
+def test_create_section_stays_visible_across_selection_changes() -> None:
+    """The relative-offset workflow needs the fields to stay reachable right
+    after picking the reference node - create must never disappear just
+    because a selection was made, which is the bug this guards against."""
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+    assert "create" in _visible(page)
 
 
 def test_selecting_a_node_swaps_the_panel_to_node_properties() -> None:
@@ -37,7 +52,7 @@ def test_selecting_a_node_swaps_the_panel_to_node_properties() -> None:
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
 
-    assert _visible(page) == {"node", "load"}
+    assert _visible(page) == {"create", "node", "load"}
     assert "노드 1개 선택됨" in page.selection_summary.text()
 
     page._toggle_transform_section()
@@ -48,7 +63,7 @@ def test_selecting_a_node_swaps_the_panel_to_node_properties() -> None:
     assert "transform" not in _visible(page)
 
 
-def test_selecting_a_member_offers_loads_and_member_properties_but_not_node_properties() -> None:
+def test_selecting_a_member_adds_member_properties_alongside_the_always_on_sections() -> None:
     page = _page()
     first = page.canvas.add_node(0.0, 0.0)
     second = page.canvas.add_node(4.0, 0.0)
@@ -57,7 +72,7 @@ def test_selecting_a_member_offers_loads_and_member_properties_but_not_node_prop
     page.canvas.selected_elements = {member}
     page.canvas.selection_changed.emit()
 
-    assert _visible(page) == {"load", "member"}
+    assert _visible(page) == {"create", "node", "load", "member"}
     assert "부재 1개 선택됨" in page.selection_summary.text()
     assert page.member_end_i.text() == "N1 쪽 핀 해제 (모멘트 0)"
     assert page.member_end_j.text() == "N2 쪽 핀 해제 (모멘트 0)"
@@ -95,13 +110,16 @@ def test_inserting_a_member_station_node_from_the_panel_reaches_the_canvas() -> 
 
 
 def test_a_pinned_section_stays_open_until_the_selection_moves() -> None:
+    """node/load are always visible now, so pinning them has no visibility effect
+    left to observe - transform (move/copy/array/mirror, collapsed by default) is
+    the section that still actually toggles, so it's the one this test pins."""
     page = _page()
 
-    page._activate_support_tool()
-    assert "node" in _visible(page)
+    page._activate_node_transform_tool()
+    assert "transform" in _visible(page)
 
     page.canvas.selection_changed.emit()
-    assert "node" not in _visible(page)
+    assert "transform" not in _visible(page)
 
 
 def test_the_two_rail_tools_are_mutually_exclusive() -> None:
@@ -119,14 +137,15 @@ def test_the_two_rail_tools_are_mutually_exclusive() -> None:
 
 
 def test_choosing_the_free_support_removes_an_existing_one() -> None:
+    """지점 조건 is now a row of instant-apply icon buttons (index 0 = 자유),
+    not a combo + separate 적용 button — clicking one applies immediately."""
     page = _page()
     node = page.canvas.add_node(0.0, 0.0)
     page.canvas.selected_nodes = {node}
     page.canvas.apply_support_to_selection((True, True, False))
     assert len(page.canvas.build_model().boundaries) == 1
 
-    page.support_kind.setCurrentIndex(page.support_kind.findText("자유 (지점 없음)"))
-    page.canvas.apply_support_to_selection(page.support_kind.currentData())
+    page.support_buttons[0].click()  # 자유
 
     assert page.canvas.build_model().boundaries == []
     assert "지점 0" in page.model_status.text()
@@ -138,11 +157,9 @@ def test_the_support_angle_field_reaches_the_canvas_as_an_inclined_boundary() ->
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
 
-    page.support_kind.setCurrentIndex(page.support_kind.findText("수직 롤러"))
+    page.support_buttons[2].click()  # 수직롤러
     page.support_angle.setValue(30.0)
-    page.canvas.apply_support_to_selection(
-        page.support_kind.currentData(), page.support_angle.value()
-    )
+    page.support_angle.editingFinished.emit()
 
     boundary = page.canvas.build_model().boundaries[0]
     assert boundary.angle == pytest.approx(30.0)
@@ -253,10 +270,9 @@ def test_custom_support_lets_a_single_dof_be_restrained_on_its_own() -> None:
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
 
-    page.support_kind.setCurrentIndex(page.support_kind.findText("커스텀 (자유도 직접 지정)"))
+    page.support_buttons[5].click()  # 커스텀
     assert page.support_custom_row.isVisible() is True
     page.support_dof_checks["Rz"].setChecked(True)
-    page._apply_support()
 
     boundary = page.canvas.build_model().boundaries[0]
     assert boundary.restraints == (False, False, True)
@@ -269,10 +285,9 @@ def test_custom_support_reaches_all_six_dof_in_3d() -> None:
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
 
-    page.support_kind.setCurrentIndex(page.support_kind.findText("커스텀 (자유도 직접 지정)"))
+    page.support_buttons[5].click()  # 커스텀
     for dof in ("Ux", "Uz", "Ry"):
         page.support_dof_checks[dof].setChecked(True)
-    page._apply_support()
 
     boundary = page.canvas.build_model().boundaries[0]
     assert boundary.restraints == (True, False, True, False, True, False)
@@ -307,9 +322,9 @@ def test_a_hinge_is_labelled_as_a_joint_distinct_from_an_ordinary_node() -> None
 def test_node_kind_and_support_combos_resync_to_the_new_selection_not_the_last_edit() -> None:
     """A node clicked to build a member or place a nodal load must stay a plain
     rigid node. Before this fix, marking one node as a 절점 (hinge) left the
-    노드 유형 combo on 절점 forever — selecting an unrelated node afterwards
-    still showed 절점, so a second stray 적용 click could hinge a node nobody
-    meant to touch."""
+    노드 유형 buttons on 절점 forever — selecting an unrelated node afterwards
+    still showed 절점, so a second stray click could hinge a node nobody meant
+    to touch."""
     page = _page()
     hinge = page.canvas.add_node(0.0, 0.0)
     other = page.canvas.add_node(4.0, 0.0)
@@ -319,7 +334,7 @@ def test_node_kind_and_support_combos_resync_to_the_new_selection_not_the_last_e
     page.canvas.selected_nodes = {other}
     page.canvas.selection_changed.emit()
 
-    assert page.node_kind.currentData() is False
+    assert page.node_kind_rigid_button.isChecked() is True
     assert other not in page.canvas.hinge_nodes
 
 
@@ -332,11 +347,11 @@ def test_support_combo_resyncs_to_the_selected_nodes_actual_boundary_condition()
 
     page.canvas.selected_nodes = {pinned}
     page.canvas.selection_changed.emit()
-    assert page.support_kind.currentData() == (True, True, False)
+    assert page.support_buttons[1].isChecked() is True  # 핀
 
     page.canvas.selected_nodes = {free}
     page.canvas.selection_changed.emit()
-    assert page.support_kind.currentData() == (False, False, False)
+    assert page.support_buttons[0].isChecked() is True  # 자유
 
 
 def test_escape_while_drawing_returns_to_select_and_syncs_the_rail_button() -> None:
@@ -369,7 +384,7 @@ def test_returning_to_select_widens_a_selection_filter_left_narrowed_by_a_load_t
     page.canvas.add_member(member_a, member_b)
     other_node = page.canvas.add_node(4.0, 3.0)
 
-    page.load_target.setCurrentIndex(page.load_target.findData("element"))
+    page.load_target_group.button(1).click()  # 등분포하중 (element)
     assert page.canvas.selection_filter == "elements"
 
     page._activate_select_tool()
@@ -485,10 +500,8 @@ def test_vertical_roller_restrains_horizontal_movement_not_vertical() -> None:
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
 
-    page.support_kind.setCurrentIndex(page.support_kind.findText("수직 롤러"))
-    page.canvas.apply_support_to_selection(page.support_kind.currentData())
+    page.support_buttons[2].click()  # 수직롤러
     assert page.canvas.build_model().boundaries[0].restraints == (True, False, False)
 
-    page.support_kind.setCurrentIndex(page.support_kind.findText("수평 롤러"))
-    page.canvas.apply_support_to_selection(page.support_kind.currentData())
+    page.support_buttons[3].click()  # 수평롤러
     assert page.canvas.build_model().boundaries[0].restraints == (False, True, False)

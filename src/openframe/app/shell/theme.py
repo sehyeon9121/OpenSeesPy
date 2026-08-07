@@ -811,6 +811,14 @@ QPushButton#railCommandButton {
     background: transparent; color: #53657a; font-size: 8pt;
 }
 QPushButton#railCommandButton:hover { background: #eef3f9; color: #174ea6; }
+QToolButton#supportKindButton {
+    min-width: 56px; min-height: 46px; padding: 3px 2px; border: 1px solid #d8e1eb;
+    border-radius: 4px; background: #ffffff; color: #35485f; font-size: 8pt;
+}
+QToolButton#supportKindButton:hover { background: #f0f5fb; border-color: #b9cadf; }
+QToolButton#supportKindButton:checked {
+    background: #174ea6; border-color: #174ea6; color: #ffffff; font-weight: 700;
+}
 QPushButton#sectionToggleButton {
     min-height: 24px; padding: 0 4px; border: 0; background: transparent;
     color: #174ea6; font-size: 8pt; font-weight: 700; text-align: left;
@@ -834,6 +842,10 @@ QLabel#setupDescription {
 }
 QFrame#setupFormPanel, QFrame#setupSummaryPanel {
     background: #ffffff; border: 1px solid #d8e1eb; border-radius: 6px;
+}
+QFrame#modelingPropertyPanel { background: #eef1f6; }
+QFrame#propertySectionCard {
+    background: #ffffff; border: 1px solid #e1e7ee; border-radius: 6px;
 }
 QLabel#setupSectionTitle {
     color: #213953; font-size: 10pt; font-weight: 700;

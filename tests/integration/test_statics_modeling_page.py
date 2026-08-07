@@ -162,7 +162,39 @@ def test_drag_direction_and_filter_control_window_or_crossing_selection() -> Non
     canvas.selection_filter = "nodes"
     canvas._select_in_rect(small_window, crossing=True)
     assert canvas.selected_nodes == {left}
-    assert canvas.selected_elements == set()
+
+
+def test_crossing_selection_only_picks_members_the_rectangle_actually_crosses() -> None:
+    """Regression test: QLineF.intersects() reports UnboundedIntersection whenever
+    the two *infinite* lines would cross somewhere, even nowhere near either
+    actual segment. The crossing-selection check used to accept that ("!=
+    NoIntersection"), so a small crossing-mode drag selected almost every non-
+    parallel member in the model, not just the ones the rectangle visibly
+    touched - reported as "dragging bottom-to-top selects every member"."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    # Crossed: a horizontal member straddling the origin, well outside the
+    # small window at both ends but passing straight through its middle.
+    crossed_left = canvas.add_node(-2.0, 0.0)
+    crossed_right = canvas.add_node(2.0, 0.0)
+    crossed_member = canvas.add_member(crossed_left, crossed_right)
+
+    # Untouched: a diagonal member far from the window, chosen so its infinite
+    # line extension (not the actual segment) passes through the window - the
+    # exact shape that used to trigger the bug.
+    far_a = canvas.add_node(5.0, -10.0)
+    far_b = canvas.add_node(5.5, -11.0)
+    untouched_member = canvas.add_member(far_a, far_b)
+
+    small_window = QRectF(-10.0, -10.0, 20.0, 20.0)
+    canvas.selection_filter = "elements"
+    canvas._select_in_rect(small_window, crossing=True)
+
+    assert canvas.selected_elements == {crossed_member}
+    assert untouched_member not in canvas.selected_elements
 
 
 def test_context_support_and_directional_load_apply_without_panel_hopping() -> None:
@@ -173,10 +205,9 @@ def test_context_support_and_directional_load_apply_without_panel_hopping() -> N
 
     assert application is QApplication.instance()
     page._activate_support_tool()
-    page.support_kind.setCurrentIndex(page.support_kind.findText("수직 롤러"))
-    page.canvas.apply_support_to_selection(page.support_kind.currentData())
+    page.support_buttons[2].click()  # 수직롤러
     page._activate_load_tool()
-    page.load_target.setCurrentIndex(page.load_target.findData("node"))
+    page.load_target_group.button(0).click()  # 집중하중 (node)
     page.load_fields["fy"].setValue(-12.5)
     page._apply_load()
 
