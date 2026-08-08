@@ -1,0 +1,211 @@
+"""Subprocess-based OpenSeesPy source importer."""
+
+import ast
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from openframe.core.domain import (
+    BoundaryCondition,
+    Element,
+    LoadCaseKind,
+    NodalLoad,
+    Node,
+    StructuralModel,
+    UniformElementLoad,
+)
+from openframe.core.errors import ModelImportError
+from openframe.features.model.importers.python_source import (
+    inspect_python_source,
+    read_python_source,
+)
+
+
+class OpenSeesModelImporter:
+    def __init__(self, timeout_seconds: float = 15.0) -> None:
+        self._timeout_seconds = timeout_seconds
+
+    def load(self, source: Path) -> StructuralModel:
+        source = source.resolve()
+        inspection = inspect_python_source(source)
+        if inspection.syntax_errors:
+            raise ModelImportError("Python 구문 오류: " + "; ".join(inspection.syntax_errors))
+        with tempfile.TemporaryDirectory(prefix="openframe-model-") as temporary_directory:
+            output = Path(temporary_directory) / "model.json"
+            command = [
+                sys.executable,
+                "-m",
+                "openframe.infrastructure.opensees.worker",
+                "--source",
+                str(source),
+                "--output",
+                str(output),
+            ]
+            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=source.parent,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self._timeout_seconds,
+                    creationflags=creation_flags,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise ModelImportError(
+                    f"모델 실행이 {self._timeout_seconds:g}초 제한을 초과했습니다."
+                ) from error
+
+            if not output.exists():
+                detail = completed.stderr.strip() or completed.stdout.strip()
+                raise ModelImportError(f"모델 worker가 결과를 만들지 못했습니다. {detail}")
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            if not payload.get("ok"):
+                raise ModelImportError(str(payload.get("error", "알 수 없는 모델 실행 오류")))
+
+        model_payload = payload["model"]
+        self._apply_load_case_hints(source, model_payload)
+        model = self._to_domain_model(model_payload)
+        if not model.nodes or not model.elements:
+            import_hint = (
+                " 선택한 파일에서 OpenSeesPy import가 직접 확인되지 않아 "
+                "같은 폴더의 보조 모듈까지 실행해 확인했습니다."
+                if not inspection.imports_openseespy
+                else ""
+            )
+            raise ModelImportError(
+                "읽을 수 있는 OpenSees 절점과 요소가 생성되지 않았습니다." + import_hint
+            )
+        return model
+
+    def _to_domain_model(self, payload: dict[str, Any]) -> StructuralModel:
+        nodes = {
+            int(item["tag"]): Node(
+                tag=int(item["tag"]),
+                x=float(item["x"]),
+                y=float(item["y"]),
+                z=float(item.get("z", 0.0)),
+                ndf=int(item.get("ndf", payload.get("ndf", 3))),
+            )
+            for item in payload.get("nodes", [])
+        }
+        elements = {
+            int(item["tag"]): Element(
+                tag=int(item["tag"]),
+                node_i=int(item["node_i"]),
+                node_j=int(item["node_j"]),
+                element_type=str(item.get("element_type", "unknown")),
+                properties=dict(item.get("properties", {})),
+            )
+            for item in payload.get("elements", [])
+        }
+        boundaries = [
+            BoundaryCondition(
+                node_tag=int(item["node_tag"]),
+                restraints=tuple(bool(value) for value in item.get("restraints", [])),
+            )
+            for item in payload.get("boundaries", [])
+        ]
+        loads = [
+            NodalLoad(
+                node_tag=int(item["node_tag"]),
+                values=tuple(float(value) for value in item.get("values", [])),
+                pattern_tag=self._optional_int(item.get("pattern_tag")),
+                case_type=LoadCaseKind(str(item.get("case_type", "UNCLASSIFIED"))),
+            )
+            for item in payload.get("nodal_loads", [])
+        ]
+        element_loads = [
+            UniformElementLoad(
+                element_tag=int(item["element_tag"]),
+                wx=float(item.get("wx", 0.0)),
+                wy=float(item.get("wy", 0.0)),
+                wz=float(item.get("wz", 0.0)),
+                pattern_tag=self._optional_int(item.get("pattern_tag")),
+                case_type=LoadCaseKind(str(item.get("case_type", "UNCLASSIFIED"))),
+            )
+            for item in payload.get("element_loads", [])
+        ]
+        return StructuralModel(
+            ndm=int(payload.get("ndm", 2)),
+            ndf=int(payload.get("ndf", 3)),
+            nodes=nodes,
+            elements=elements,
+            boundaries=boundaries,
+            nodal_loads=loads,
+            element_loads=element_loads,
+            metadata=dict(payload.get("metadata", {})),
+        )
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        return None if value is None else int(value)
+
+    @staticmethod
+    def _apply_load_case_hints(source: Path, payload: dict[str, Any]) -> None:
+        """Apply an explicit ``OPENFRAME_LOAD_CASES`` mapping from user source."""
+        hints: dict[int, LoadCaseKind] = {}
+        try:
+            source_text = read_python_source(source)
+            tree = ast.parse(source_text, filename=str(source))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            return
+        for statement in tree.body:
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            if not any(
+                isinstance(target, ast.Name) and target.id == "OPENFRAME_LOAD_CASES"
+                for target in targets
+            ):
+                continue
+            try:
+                raw_mapping = ast.literal_eval(statement.value)
+            except (ValueError, TypeError, SyntaxError):
+                continue
+            if not isinstance(raw_mapping, dict):
+                continue
+            for raw_tag, raw_kind in raw_mapping.items():
+                try:
+                    hints[int(raw_tag)] = OpenSeesModelImporter._normalize_load_case(raw_kind)
+                except (TypeError, ValueError):
+                    continue
+
+        for collection_name in ("nodal_loads", "element_loads"):
+            for load in payload.get(collection_name, []):
+                pattern_tag = load.get("pattern_tag")
+                hint = hints.get(int(pattern_tag)) if pattern_tag is not None else None
+                load["case_type"] = (hint or LoadCaseKind.UNCLASSIFIED).value
+        if hints:
+            payload.setdefault("metadata", {})["load_case_hints"] = ", ".join(
+                f"{tag}:{kind.value}" for tag, kind in sorted(hints.items())
+            )
+
+    @staticmethod
+    def _normalize_load_case(value: object) -> LoadCaseKind:
+        normalized = str(value).strip().upper().replace(" ", "_")
+        aliases = {
+            "DL": LoadCaseKind.DEAD,
+            "DEAD_LOAD": LoadCaseKind.DEAD,
+            "고정하중": LoadCaseKind.DEAD,
+            "LL": LoadCaseKind.LIVE,
+            "LIVE_LOAD": LoadCaseKind.LIVE,
+            "활하중": LoadCaseKind.LIVE,
+            "EQ": LoadCaseKind.SEISMIC,
+            "EARTHQUAKE": LoadCaseKind.SEISMIC,
+            "지진하중": LoadCaseKind.SEISMIC,
+            "WL": LoadCaseKind.WIND,
+            "WIND_LOAD": LoadCaseKind.WIND,
+            "풍하중": LoadCaseKind.WIND,
+        }
+        if normalized in aliases:
+            return aliases[normalized]
+        return LoadCaseKind(normalized)

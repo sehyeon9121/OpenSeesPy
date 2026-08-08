@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "OpenFrame Studio 실행",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "openframe",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "subProcess": false
+    }
+  ]
+}
+
