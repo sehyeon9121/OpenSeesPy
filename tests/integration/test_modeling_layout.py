@@ -17,18 +17,15 @@ def _page() -> ModelingInterfacePage:
     return page
 
 
-def _visible(page: ModelingInterfacePage) -> set[str]:
-    return {key for key, section in page._sections.items() if section.isVisible()}
-
-
-def test_an_empty_selection_offers_the_always_on_sections() -> None:
-    """create(좌표로 노드 추가)/material(재료 물성치)/node(지점 상세) 모두
-    선택 여부와 무관하게 항상 보인다 - 학생이 지점을 설정하거나 좌표로 노드를
-    추가하려고 먼저 뭔가를 선택할 필요 없이 바로 컨트롤을 볼 수 있게. 하중은
-    이제 우측 패널이 아니라 캔버스 상단 막대의 슬라이드아웃에 있다."""
+def test_the_right_panel_offers_only_the_two_always_on_widgets() -> None:
+    """The right panel is deliberately fixed now: 좌표로 노드 추가 and 이동·복사·
+    배열, both always visible, nothing else, no selection-gating. Every other
+    editor (지점/노드 유형/부재/하중, 단면·재료 included) lives in the canvas-top
+    bar's accordion instead (``_build_node_property_bar``)."""
     page = _page()
 
-    assert _visible(page) == {"create", "material", "node"}
+    assert page.node_x.isVisible() is True
+    assert page.node_transform_operation.isVisible() is True
     assert "선택된 대상이 없습니다" in page.selection_summary.text()
 
 
@@ -41,30 +38,39 @@ def test_create_section_stays_visible_across_selection_changes() -> None:
 
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
-    assert "create" in _visible(page)
+    assert page.node_x.isVisible() is True
 
 
-def test_selecting_a_node_swaps_the_panel_to_node_properties() -> None:
-    """Move/copy/array/mirror stays collapsed by default: it is the panel's widest
-    block and most selections only need a support or a load, not a geometry op."""
+def test_the_right_panel_stays_fixed_when_a_node_is_selected() -> None:
+    """Selecting a node used to swap the right panel to node-only properties;
+    now the panel never changes shape at all - only the top-bar accordion and
+    the selection summary respond to what is selected."""
     page = _page()
     node = page.canvas.add_node(0.0, 0.0)
 
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
 
-    assert _visible(page) == {"create", "material", "node"}
     assert "노드 1개 선택됨" in page.selection_summary.text()
-
-    page._toggle_transform_section()
-    assert "transform" in _visible(page)
-    assert "감추기" in page.transform_toggle.text()
-
-    page._toggle_transform_section()
-    assert "transform" not in _visible(page)
+    assert page.node_x.isVisible() is True
+    assert page.node_transform_operation.isVisible() is True
 
 
-def test_selecting_a_member_adds_member_properties_alongside_the_always_on_sections() -> None:
+def test_activating_a_tool_expands_its_own_slide_out_and_collapses_the_others() -> None:
+    """지점/노드 유형/부재/하중 share one accordion (``_SlideOutGroup``): opening
+    one must automatically close whichever was open before, or the top bar
+    recreates the "everything laid out at once" clutter it exists to avoid."""
+    page = _page()
+
+    page._activate_support_tool()
+    assert page.support_slide_out.toggle_button.isChecked() is True
+
+    page._activate_load_tool()
+    assert page.load_slide_out.toggle_button.isChecked() is True
+    assert page.support_slide_out.toggle_button.isChecked() is False
+
+
+def test_selecting_a_member_refreshes_the_member_bar_and_the_summary() -> None:
     page = _page()
     first = page.canvas.add_node(0.0, 0.0)
     second = page.canvas.add_node(4.0, 0.0)
@@ -73,7 +79,6 @@ def test_selecting_a_member_adds_member_properties_alongside_the_always_on_secti
     page.canvas.selected_elements = {member}
     page.canvas.selection_changed.emit()
 
-    assert _visible(page) == {"create", "material", "node", "member"}
     assert "부재 1개 선택됨" in page.selection_summary.text()
     assert page.member_end_i.text() == "N1 쪽 핀 해제 (모멘트 0)"
     assert page.member_end_j.text() == "N2 쪽 핀 해제 (모멘트 0)"
@@ -110,17 +115,14 @@ def test_inserting_a_member_station_node_from_the_panel_reaches_the_canvas() -> 
     assert page.canvas.nodes[inserted].x == pytest.approx(1.0)
 
 
-def test_a_pinned_section_stays_open_until_the_selection_moves() -> None:
-    """node/load are always visible now, so pinning them has no visibility effect
-    left to observe - transform (move/copy/array/mirror, collapsed by default) is
-    the section that still actually toggles, so it's the one this test pins."""
+def test_the_node_transform_tool_filters_selection_to_nodes_only() -> None:
+    """이동·복사·배열 works on nodes, so activating it from the rail narrows the
+    selection filter to nodes-only - the same "no dead zone left behind" rule
+    the load/support tools follow, checked below by the returning-to-select test."""
     page = _page()
 
     page._activate_node_transform_tool()
-    assert "transform" in _visible(page)
-
-    page.canvas.selection_changed.emit()
-    assert "transform" not in _visible(page)
+    assert page.selection_filter.currentData() == "nodes"
 
 
 def test_the_two_rail_tools_are_mutually_exclusive() -> None:

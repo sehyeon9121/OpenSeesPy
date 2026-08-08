@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -48,10 +49,21 @@ from openframe.features.viewport.presentation.quick3d_viewport import Quick3DVie
 
 
 class SafeDoubleSpinBox(QDoubleSpinBox):
-    """Prevent a scrolling gesture from silently changing an engineering value."""
+    """Prevent a scrolling gesture from silently changing an engineering value,
+    and let the user type as many decimal places as they need. ``decimals()``
+    is set generously high (see ``_number``) so Qt's input validator never
+    blocks a keystroke; ``textFromValue`` then trims the trailing zeros that
+    a high fixed ``decimals()`` would otherwise pad every displayed value
+    with, so "5" still reads as "5", not "5.0000000000"."""
 
     def wheelEvent(self, event) -> None:
         event.ignore()
+
+    def textFromValue(self, value: float) -> str:
+        text = f"{value:.{self.decimals()}f}"
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return text or "0"
 
 
 class SafeSpinBox(QSpinBox):
@@ -153,13 +165,20 @@ def _paint_node_kind_glyph(painter: QPainter, hinge: bool, color: str) -> None:
 _LOAD_TARGET_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     ("집중하중", "노드에 힘·모멘트를 직접 가하는 절점 하중", "node", "point"),
     ("등분포하중", "부재 길이를 따라 균일하게 분포된 하중", "element", "uniform"),
+    (
+        "사다리꼴하중",
+        "부재 양 끝(i, j)에서 크기가 다른 선형변화 분포하중 — 한쪽을 0으로 두면 삼각형 하중이 됩니다.",
+        "element_trapezoid",
+        "trapezoid",
+    ),
 )
 
 
 def _paint_load_glyph(painter: QPainter, key: str, color: str) -> None:
-    """집중하중(nodal point load) vs 등분포하중(uniform element load) — one arrow
-    landing on a point versus several evenly spaced arrows hanging from a line,
-    the standard textbook symbols for each."""
+    """집중하중(nodal point load) vs 등분포하중(uniform element load) vs
+    사다리꼴하중(linearly-varying element load) — one arrow landing on a point,
+    several evenly spaced same-length arrows hanging from a line, or arrows
+    that grow from short to tall, the standard textbook symbols for each."""
     if key == "point":
         painter.drawLine(16, 3, 16, 19)
         head = QPainterPath()
@@ -169,6 +188,19 @@ def _paint_load_glyph(painter: QPainter, key: str, color: str) -> None:
         head.closeSubpath()
         painter.setBrush(QColor(color))
         painter.drawPath(head)
+        return
+    if key == "trapezoid":
+        # a line with three arrows of increasing length hanging from it
+        painter.drawLine(4, 4, 28, 10)
+        for x, top in ((7, 8), (16, 6), (25, 4)):
+            painter.drawLine(x, top, x, 25)
+            head = QPainterPath()
+            head.moveTo(x, 29)
+            head.lineTo(x - 3, 22)
+            head.lineTo(x + 3, 22)
+            head.closeSubpath()
+            painter.setBrush(QColor(color))
+            painter.drawPath(head)
         return
     # uniform: a line with three evenly spaced arrows hanging from it
     painter.drawLine(4, 6, 28, 6)
@@ -245,20 +277,47 @@ class _RectangleSectionPreview(QWidget):
         painter.drawRect(rect)
 
 
+class _SlideOutGroup:
+    """Accordion controller: expanding one member collapses every other one in
+    the group. 지점/노드 유형/부재/하중 all live in the same canvas-top bar, and
+    leaving more than one open at a time just recreates the "다 나열되어
+    있다" clutter this bar exists to avoid."""
+
+    def __init__(self) -> None:
+        self._sections: list[_SlideOutSection] = []
+
+    def add(self, section: "_SlideOutSection") -> None:
+        self._sections.append(section)
+
+    def notify_expanded(self, expanded: "_SlideOutSection") -> None:
+        for section in self._sections:
+            if section is not expanded:
+                section.set_expanded(False)
+
+
 class _SlideOutSection(QWidget):
     """A "title ▸" toggle that reveals ``content`` sliding open sideways.
 
-    Used to keep the canvas-top bar (지점/하중) compact by default instead of
-    always showing every icon and field: most of the time you are drawing, not
-    setting a support or a load, so those controls only need to be one click
-    away, not permanently taking up width.
+    Used to keep the canvas-top bar (지점/노드 유형/부재/하중) compact by default
+    instead of always showing every icon and field: most of the time you are
+    drawing, not setting a support or a load, so those controls only need to
+    be one click away, not permanently taking up width.
     """
 
-    def __init__(self, title: str, content: QWidget, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        content: QWidget,
+        group: "_SlideOutGroup | None" = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._title = title
         self._content = content
         self._expanded_width: int | None = None
+        self._group = group
+        if group is not None:
+            group.add(self)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -298,6 +357,39 @@ class _SlideOutSection(QWidget):
         self._animation.setStartValue(self._content.maximumWidth())
         self._animation.setEndValue(self._expanded_width if expanded else 0)
         self._animation.start()
+        if expanded and self._group is not None:
+            self._group.notify_expanded(self)
+
+
+class _FloatingPropertiesWindow(QDialog):
+    """A small non-modal window for a property editor whose content is too
+    tall to sit inline in the canvas-top bar without stretching the whole
+    bar's height and shrinking the canvas — 부재 속성 (section/material + pin
+    releases + node insertion) is the one case of this so far, since it stacks
+    several rows vertically while every other top-bar section (지점/노드 유형/
+    하중) lays its content out as a single horizontal row. Non-modal so the
+    canvas stays clickable to select a different member while the window is
+    open — the fields inside it already resync to whatever is selected on
+    every ``_sync_property_panel`` call, window open or not."""
+
+    def __init__(
+        self,
+        title: str,
+        content: QWidget,
+        on_close: Callable[[], None],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent, Qt.WindowType.Tool)
+        self.setWindowTitle(title)
+        self._on_close = on_close
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.addWidget(content)
+        self.setFixedWidth(320)
+
+    def closeEvent(self, event) -> None:
+        self._on_close()
+        super().closeEvent(event)
 
 
 class ModelingInterfacePage(QFrame):
@@ -308,7 +400,6 @@ class ModelingInterfacePage(QFrame):
         self.setObjectName("modelingInterfacePage")
         self._unit_system = DEFAULT_UNIT_SYSTEM
         self._solver = MaterialFreeStaticsSolver()
-        self._pinned_section: str | None = None
         self.canvas = StaticsDrawingCanvas()
 
         root = QVBoxLayout(self)
@@ -630,17 +721,15 @@ class ModelingInterfacePage(QFrame):
         return bar
 
     def _build_property_panel(self) -> QScrollArea:
-        """Each section renders as its own white card on a tinted background,
-        rather than a bare bold label, so several always-on sections stacked
-        together read as distinct blocks instead of one long undifferentiated
-        list. create(좌표로 노드 추가)/node(지점 상세)/load(하중)는 선택 여부와
-        무관하게 항상 보이는 카드로 맨 위에 고정한다 — 셋 다 자주 쓰는 컨트롤이라
-        선택했을 때만 나타나던 이전 방식에서는 화면이 위아래로 튀거나(create는
-        한때 접어 뒀다가, 자주 찾는 기능이라는 피드백을 받고 다시 고정함) 필요한
-        입력칸을 찾을 수 없었다. transform은 node 카드의 토글 버튼이 여는
-        내용이라 바로 아래에 붙여둔다. 지점 조건/노드 유형 아이콘 자체는 이제 이
-        패널에 없다 — 캔버스 폭을 그대로 쓸 수 있는 ``_build_node_property_bar``로
-        옮겨 캔버스 바로 위 고정 막대에 둔다."""
+        """This panel is deliberately minimal and fixed: 좌표로 노드 추가 and
+        이동·복사·배열, both always visible, never collapsed or selection-
+        gated. Every selection-dependent editor (지점, 노드 유형, 부재 — 단면·
+        재료·핀 해제·노드 삽입·등분할, 하중) lives in the canvas-top bar's
+        accordion instead (``_build_node_property_bar``). Any new property
+        editor added later belongs there too, not here — keeping this panel's
+        contents fixed is the point, not an accident of what happened to move
+        out first.
+        """
         panel = QFrame()
         panel.setObjectName("modelingPropertyPanel")
         root = QVBoxLayout(panel)
@@ -650,17 +739,9 @@ class ModelingInterfacePage(QFrame):
         self.selection_summary.setObjectName("setupSectionTitle")
         self.selection_summary.setWordWrap(True)
         root.addWidget(self.selection_summary)
-        self._sections: dict[str, QWidget] = {}
 
-        self._sections["create"] = self._build_create_section()
-        root.addWidget(self._sections["create"])
-        self._sections["node"] = self._build_node_section()
-        root.addWidget(self._sections["node"])
-        self._sections["transform"] = self._build_transform_section()
-        root.addWidget(self._sections["transform"])
-
-        self._sections["member"] = self._build_member_section()
-        root.addWidget(self._sections["member"])
+        root.addWidget(self._build_create_section())
+        root.addWidget(self._build_transform_section())
         root.addStretch(1)
         scroll = QScrollArea()
         scroll.setObjectName("modelingInspectorScroll")
@@ -717,12 +798,43 @@ class ModelingInterfacePage(QFrame):
                 "추가됩니다. 노드를 하나만 선택하면 그 노드가 기준점이 됩니다."
             )
 
-    def _build_node_section(self) -> QWidget:
-        """The rarely-touched remainder of 지점/노드 settings — 지점 조건과
-        노드 유형 아이콘은 캔버스 상단 막대로 옮겨졌다 (``_build_node_property_bar``);
-        여기 남은 것들(커스텀 자유도, 경사각, 이동·복사·배열 진입점)은 아이콘 하나로
-        표현하기 애매하거나 자주 쓰지 않는 값이라 오른쪽 패널에 그대로 둔다."""
-        section, root = self._section("지점 상세")
+    def _build_node_property_bar(self) -> QFrame:
+        """지점/하중 — 캔버스 바로 위, 오른쪽 패널이 아니라 여기 고정된 가로
+        막대에 둔다. 선택 여부와 무관하게 항상 사용 가능하고(오른쪽 패널의
+        다른 always-on 위젯들과 동일한 이유 — no-op이 안전하고, 학생이 뭘 먼저
+        선택할 필요 없이 바로 컨트롤을 찾을 수 있어야 함), 캔버스 폭을 그대로
+        쓸 수 있다. 다만 그리는 동안에는 계속 필요한 게 아니라서, 기본은
+        "제목 ▸"만 보이고 눌러야 옆으로 슬라이드 열리며 실제 아이콘/입력칸이
+        나온다(``_SlideOutSection``). 지점/노드 유형/하중, 세 섹션은 한
+        ``_SlideOutGroup``(아코디언)으로 묶여 있어 하나를 펼치면 나머지는
+        자동으로 접힌다 — 여러 개를 동시에 펼쳐 두면 다시 다 나열된 느낌이
+        되므로. **부재만 예외** — 단면·재료·핀 해제·노드 삽입까지 여러 줄이
+        세로로 쌓여서, 이걸 옆으로 슬라이드하는 대신 인라인으로 펼치면 그
+        높이만큼 막대 전체가 세로로 늘어나 캔버스가 줄어든다. 그래서 부재는
+        슬라이드아웃이 아니라 별도의 작은 창(``_FloatingPropertiesWindow``,
+        비모달)으로 띄운다 — 막대 높이에 영향을 주지 않고, 창이 열린 채로도
+        캔버스에서 다른 부재를 계속 선택할 수 있다."""
+        bar = QFrame()
+        bar.setObjectName("directModelCommandBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(10)
+        accordion = _SlideOutGroup()
+
+        support_content = QWidget()
+        support_layout = QHBoxLayout(support_content)
+        support_layout.setContentsMargins(0, 0, 0, 0)
+        support_layout.setSpacing(10)
+        support_layout.addWidget(self._build_support_icon_row())
+        support_layout.addWidget(QLabel("경사각(°)"))
+        self.support_angle = self._number(0.0)
+        self.support_angle.setRange(-360.0, 360.0)
+        self.support_angle.setMaximumWidth(90)
+        self.support_angle.setToolTip(
+            "지지면이 수평에서 반시계 방향으로 기울어진 각도. 0이면 보통의 수평·수직 지점입니다."
+        )
+        self.support_angle.editingFinished.connect(self._apply_support)
+        support_layout.addWidget(self.support_angle)
         self.support_custom_row = QWidget()
         custom_layout = QHBoxLayout(self.support_custom_row)
         custom_layout.setContentsMargins(0, 0, 0, 0)
@@ -734,52 +846,35 @@ class ModelingInterfacePage(QFrame):
             self.support_dof_checks[dof] = box
             custom_layout.addWidget(box)
         self.support_custom_row.setVisible(False)
-        root.addWidget(self.support_custom_row)
-
-        angle_row = QHBoxLayout()
-        angle_row.addWidget(QLabel("경사각(°)"))
-        self.support_angle = self._number(0.0)
-        self.support_angle.setRange(-360.0, 360.0)
-        self.support_angle.setDecimals(2)
-        self.support_angle.setToolTip(
-            "지지면이 수평에서 반시계 방향으로 기울어진 각도. 0이면 보통의 수평·수직 지점입니다."
-        )
-        self.support_angle.editingFinished.connect(self._apply_support)
-        angle_row.addWidget(self.support_angle, 1)
-        root.addLayout(angle_row)
-
-        self.transform_toggle = QPushButton("이동 · 복사 · 배열 ▸")
-        self.transform_toggle.setObjectName("sectionToggleButton")
-        self.transform_toggle.clicked.connect(self._toggle_transform_section)
-        root.addWidget(self.transform_toggle)
-        return section
-
-    def _build_node_property_bar(self) -> QFrame:
-        """지점/하중 — 캔버스 바로 위, 오른쪽 패널이 아니라 여기 고정된 가로
-        막대에 둔다. 선택 여부와 무관하게 항상 사용 가능하고(오른쪽 패널의
-        다른 always-on 카드들과 동일한 이유 — no-op이 안전하고, 학생이 뭘 먼저
-        선택할 필요 없이 바로 컨트롤을 찾을 수 있어야 함), 캔버스 폭을 그대로
-        쓸 수 있다. 다만 그리는 동안에는 계속 필요한 게 아니라서, 기본은
-        "지점 ▸"/"하중 ▸" 제목만 보이고 눌러야 옆으로 슬라이드 열리며 실제
-        아이콘/입력칸이 나온다(``_SlideOutSection``) — 항상 펼쳐 두면 다시
-        나열된 느낌이 되므로."""
-        bar = QFrame()
-        bar.setObjectName("directModelCommandBar")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(10)
-
-        support_content = QWidget()
-        support_layout = QHBoxLayout(support_content)
-        support_layout.setContentsMargins(0, 0, 0, 0)
-        support_layout.setSpacing(10)
-        support_layout.addWidget(self._build_support_icon_row())
-        support_layout.addWidget(QLabel("노드 유형"))
-        support_layout.addWidget(self._build_node_kind_icon_row())
-        self.support_slide_out = _SlideOutSection("지점", support_content)
+        support_layout.addWidget(self.support_custom_row)
+        support_layout.addStretch(1)
+        self.support_slide_out = _SlideOutSection("지점", support_content, group=accordion)
         layout.addWidget(self.support_slide_out)
 
-        self.load_slide_out = _SlideOutSection("하중", self._build_load_bar_content())
+        node_kind_content = QWidget()
+        node_kind_layout = QHBoxLayout(node_kind_content)
+        node_kind_layout.setContentsMargins(0, 0, 0, 0)
+        node_kind_layout.setSpacing(6)
+        node_kind_layout.addWidget(self._build_node_kind_icon_row())
+        node_kind_layout.addStretch(1)
+        self.node_kind_slide_out = _SlideOutSection("노드 유형", node_kind_content, group=accordion)
+        layout.addWidget(self.node_kind_slide_out)
+
+        member_button = QToolButton()
+        member_button.setObjectName("slideOutToggle")
+        member_button.setCheckable(True)
+        member_button.setText("부재 ▸")
+        member_button.setToolTip("선택한 부재의 단면·재료·핀 해제·노드 삽입을 작은 창에서 편집합니다.")
+        member_button.clicked.connect(self._toggle_member_window)
+        layout.addWidget(member_button)
+        self.member_window_button = member_button
+        self.member_window = _FloatingPropertiesWindow(
+            "부재 속성", self._build_member_bar_content(), self._on_member_window_closed, self
+        )
+
+        self.load_slide_out = _SlideOutSection(
+            "하중", self._build_load_bar_content(), group=accordion
+        )
         layout.addWidget(self.load_slide_out)
 
         layout.addStretch(1)
@@ -927,15 +1022,13 @@ class ModelingInterfacePage(QFrame):
             restraints = template
         self.canvas.apply_support_to_selection(restraints, self.support_angle.value())
 
-    def _toggle_transform_section(self) -> None:
-        self._pinned_section = None if self._pinned_section == "transform" else "transform"
-        self._sync_property_panel()
-
     def _build_transform_section(self) -> QWidget:
         """Move, copy, array-copy and mirror — every operation that turns a hand-
         drawn fragment into a repeated or symmetric shape without redrawing it.
-        Collapsed by default (see ``_sync_property_panel``); the toggle button in
-        the node section above opens it back up.
+        Always visible in the right panel, right under 좌표로 노드 추가 - not a
+        collapsible section any more, since this panel now only ever holds
+        these two always-on tools (every selection-dependent editor lives in
+        the canvas-top bar instead).
         """
         section, root = self._section("노드 이동 · 복사 · 배열")
         self.node_transform_operation = QComboBox()
@@ -979,9 +1072,13 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(mirror_button)
         return section
 
-    def _build_member_section(self) -> QWidget:
-        """Section/material (재료 물성치) plus per-end pin release and mid-span
-        node insertion, for one selected member.
+    def _build_member_bar_content(self) -> QWidget:
+        """Section/material (단면·재료) plus per-end pin release and mid-span
+        node insertion, for one selected member — the content shown inside
+        the 부재 floating window (``_FloatingPropertiesWindow``), not an
+        inline canvas-top-bar slide-out like 지점/노드 유형/하중, since this
+        one stacks too many rows to slide open sideways without stretching
+        the whole bar's height.
 
         A member always has two ends regardless of which node tags they land on, so
         the checkboxes are labelled with the actual node numbers when the selection
@@ -994,7 +1091,10 @@ class ModelingInterfacePage(QFrame):
         member you already picked, not something a canvas drag would need to
         somehow guess a third dimension for.
         """
-        section, root = self._section("부재 속성")
+        content = QWidget()
+        root = QVBoxLayout(content)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
 
         root.addWidget(QLabel("단면 (사각형) · 재료"))
         section_row = QHBoxLayout()
@@ -1009,9 +1109,13 @@ class ModelingInterfacePage(QFrame):
         self.member_elastic.setRange(0.0, 1.0e12)
         self.member_width.valueChanged.connect(self._refresh_member_section_preview)
         self.member_height.valueChanged.connect(self._refresh_member_section_preview)
-        section_form.addRow(f"폭 b ({self._unit_system.length})", self.member_width)
-        section_form.addRow(f"높이 h ({self._unit_system.length})", self.member_height)
+        section_form.addRow("폭 b", self.member_width)
+        section_form.addRow("높이 h", self.member_height)
         section_form.addRow("탄성계수 E", self.member_elastic)
+        self.member_unit_hint = QLabel()
+        self.member_unit_hint.setObjectName("setupSectionHint")
+        self._refresh_member_unit_hint()
+        section_form.addRow("", self.member_unit_hint)
         section_row.addLayout(section_form, 1)
         root.addLayout(section_row)
         apply_section = QPushButton("선택 부재에 적용")
@@ -1060,7 +1164,12 @@ class ModelingInterfacePage(QFrame):
         subdivide_button.clicked.connect(self._subdivide_member)
         subdivide_row.addWidget(subdivide_button)
         root.addLayout(subdivide_row)
-        return section
+        return content
+
+    def _refresh_member_unit_hint(self) -> None:
+        length = self._unit_system.length
+        force = self._unit_system.force
+        self.member_unit_hint.setText(f"현재 단위계: 길이 {length} · 힘 {force} (E: {force}/{length}²)")
 
     def _build_load_bar_content(self) -> QWidget:
         """Every applicable load component as its own field, applied together.
@@ -1080,13 +1189,6 @@ class ModelingInterfacePage(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
         root.addWidget(self._build_load_target_icon_row())
-        self.load_trapezoid_toggle = QCheckBox("사다리꼴")
-        self.load_trapezoid_toggle.setToolTip(
-            "체크하면 시작(i)단과 끝(j)단의 하중값을 따로 입력합니다. "
-            "한쪽을 0으로 두면 삼각형 분포하중이 됩니다."
-        )
-        self.load_trapezoid_toggle.toggled.connect(self._load_target_changed)
-        root.addWidget(self.load_trapezoid_toggle)
         self.load_form_layout = QHBoxLayout()
         self.load_form_layout.setSpacing(6)
         self.load_fields: dict[str, QDoubleSpinBox] = {}
@@ -1100,10 +1202,10 @@ class ModelingInterfacePage(QFrame):
         return content
 
     def _build_load_target_icon_row(self) -> QWidget:
-        """집중하중(node)/등분포하중(element) icon buttons, mirroring the 지점
-        조건 row: picking one swaps the field list below (still needs a
-        magnitude typed in and 적용 clicked — unlike 지점 조건 there is no
-        single value to apply instantly here)."""
+        """집중하중(node)/등분포하중(element)/사다리꼴하중(element_trapezoid) icon
+        buttons, mirroring the 지점 조건 row: picking one swaps the field list
+        below (still needs a magnitude typed in and 적용 clicked — unlike 지점
+        조건 there is no single value to apply instantly here)."""
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1184,6 +1286,7 @@ class ModelingInterfacePage(QFrame):
         self.results.set_unit_system(unit_system)
         self.unit_status.setText(f"단위: {unit_system.force}, {unit_system.length}")
         self._load_target_changed()
+        self._refresh_member_unit_hint()
 
     def solve(self) -> None:
         model = self.canvas.build_model()
@@ -1317,9 +1420,8 @@ class ModelingInterfacePage(QFrame):
 
     def _activate_select_tool(self) -> None:
         self.select_tool.setChecked(True)
-        self._pinned_section = None
         # A load/support/transform flow narrows the selection filter to just
-        # nodes or just members while it is pinned open (_pin_section), but
+        # nodes or just members while its top-bar slide-out is open, but
         # nothing ever widened it back — so after using, say, the 부재 load
         # target once, every later click on a node was silently ignored with
         # no visible reason why. Returning to the plain select tool (by
@@ -1328,13 +1430,12 @@ class ModelingInterfacePage(QFrame):
         self.selection_filter.setCurrentIndex(self.selection_filter.findData("all"))
         self._set_mode(
             "select",
-            "선택 · 클릭 또는 드래그로 선택하고 오른쪽 패널에서 속성을 적용합니다.",
+            "선택 · 클릭 또는 드래그로 선택하고 캔버스 위쪽 막대에서 속성을 적용합니다.",
         )
         self._sync_property_panel()
 
     def _activate_draw_tool(self) -> None:
         self.draw_tool.setChecked(True)
-        self._pinned_section = None
         self._set_mode(
             "draw",
             "그리기 · 연속 클릭으로 노드와 부재를 함께 만듭니다. "
@@ -1345,33 +1446,42 @@ class ModelingInterfacePage(QFrame):
         self._refresh_draw_readout()
 
     def _activate_node_transform_tool(self) -> None:
-        self._pin_section("transform", "nodes")
+        self.select_tool.setChecked(True)
+        self._set_mode("select", "이동·복사·배열할 노드를 선택한 뒤 오른쪽 패널에서 적용하세요.")
+        self.selection_filter.setCurrentIndex(self.selection_filter.findData("nodes"))
+        self._sync_property_panel()
 
     def _activate_support_tool(self) -> None:
-        self._pin_section("node", "nodes")
+        self.select_tool.setChecked(True)
+        self._set_mode("select", "지점을 적용할 노드를 선택한 뒤 위쪽 지점 막대에서 적용하세요.")
+        self.selection_filter.setCurrentIndex(self.selection_filter.findData("nodes"))
+        self._sync_property_panel()
         self.support_slide_out.set_expanded(True)
 
     def _activate_load_tool(self) -> None:
-        # 하중 no longer has a right-panel section to pin - it lives in the
-        # canvas-top bar's own slide-out now, so "opening" it just means
-        # expanding that instead.
+        self.select_tool.setChecked(True)
+        self._set_mode("select", "하중을 적용할 대상을 선택한 뒤 위쪽 하중 막대에서 적용하세요.")
+        self._sync_property_panel()
         self._load_target_changed()
         self.load_slide_out.set_expanded(True)
 
-    def _pin_section(self, key: str, selection_filter: str | None) -> None:
-        """Keep one property section open while the user builds up a selection."""
-        self.select_tool.setChecked(True)
-        self._set_mode("select", "대상을 선택한 뒤 오른쪽 패널에서 적용하세요.")
-        if selection_filter is not None:
-            self.selection_filter.setCurrentIndex(
-                self.selection_filter.findData(selection_filter)
-            )
-        self._pinned_section = key
+    def _selection_changed(self) -> None:
         self._sync_property_panel()
 
-    def _selection_changed(self) -> None:
-        self._pinned_section = None
-        self._sync_property_panel()
+    def _toggle_member_window(self, checked: bool) -> None:
+        self.member_window_button.setText("부재 ▾" if checked else "부재 ▸")
+        if checked:
+            button = self.member_window_button
+            self.member_window.move(button.mapToGlobal(button.rect().bottomLeft()))
+            self.member_window.show()
+            self.member_window.raise_()
+            self.member_window.activateWindow()
+        else:
+            self.member_window.hide()
+
+    def _on_member_window_closed(self) -> None:
+        self.member_window_button.setChecked(False)
+        self.member_window_button.setText("부재 ▸")
 
     def _node_selection_summary(self) -> str:
         """Count the selection as 노드 (rigid) versus 절점 (hinge) — MIDAS's split,
@@ -1392,48 +1502,19 @@ class ModelingInterfacePage(QFrame):
         return next(iter(self.canvas.selected_elements))
 
     def _sync_property_panel(self) -> None:
-        """Show the sections that apply to what is selected right now.
+        """Refresh whatever depends on the current selection.
 
-        ``create`` (좌표로 노드 추가), ``material`` (재료 물성치) and ``node``
-        (지점 상세) are always on, not just when something is selected — every
-        적용 action in them already no-ops safely with an empty selection
-        (``apply_support_to_selection`` etc. check ``if not selected: return``),
-        so there is no correctness reason to hide them, only a discoverability
-        one: a student setting up a support or a coordinate-entered node
-        should not have to select something first just to find the controls
-        for it. ``create`` specifically also needs to stay up while its
-        relative-offset reference node is selected, or the fields to use it
-        disappear right when they're needed. ``하중`` no longer has a section
-        here at all — it moved to the canvas-top bar's own slide-out
-        (``_build_node_property_bar``) alongside 지점, for the same reason
-        지점's icons moved there. 재료 물성치 also has no section of its own
-        any more — it is per member now, inside ``member`` (단면·재료), since a
-        single global value could not represent a model with mixed section
-        sizes. ``member`` and ``transform`` stay selection-gated — a member's
-        section/end-release fields and move/copy/array only mean anything
-        once something concrete is selected to act on.
+        The right panel itself (좌표로 노드 추가, 이동·복사·배열) never changes
+        visibility any more — both are always shown, full stop. What still
+        needs refreshing on every selection change is the canvas-top bar's
+        부재 슬라이드아웃 fields (only meaningful once exactly one member is
+        selected), the 노드 유형/지점 icons' checked state, the create-section
+        hint (its wording depends on how many nodes are selected), and the
+        selection-summary text.
         """
         nodes = len(self.canvas.selected_nodes)
         elements = len(self.canvas.selected_elements)
         member_tag = self._selected_member_tag()
-        pinned = self._pinned_section
-        visible = {
-            "create": True,
-            "node": True,
-            # Collapsed by default — move/copy/array/mirror is a wide block and most
-            # selections only need a support or a load, not a geometry operation.
-            # The toggle button inside the node section (or the rail's pin path)
-            # opens it back up.
-            "transform": False,
-            "member": member_tag is not None,
-        }
-        if pinned is not None:
-            visible[pinned] = True
-        for key, section in self._sections.items():
-            section.setVisible(visible[key])
-        self.transform_toggle.setText(
-            "이동 · 복사 · 배열 감추기 ▾" if visible["transform"] else "이동 · 복사 · 배열 ▸"
-        )
         self._refresh_create_section_hint()
         if member_tag is not None:
             self._refresh_member_section(member_tag)
@@ -1544,12 +1625,16 @@ class ModelingInterfacePage(QFrame):
 
         Every applicable component gets its own field so one "적용" click sets
         the whole load at once — see ``_build_load_bar_content`` for why that
-        matters. A 부재 load additionally offers a 사다리꼴/삼각형 toggle:
-        unchecked (the default) is the plain uniform load this always was, one
-        qx/qy pair applied to the whole span; checked adds qx_j/qy_j fields for
-        the j-end, so a linearly-varying load can be entered without disturbing
-        the common uniform case at all. Fields lay out left-to-right with short
-        "qx:"/"Fx:" labels (not the full descriptive text, kept in the
+        matters. 등분포하중(element) is the plain uniform load, one qx/qy pair
+        applied to the whole span; 사다리꼴하중(element_trapezoid) is its own
+        icon (not a checkbox tucked beside 등분포하중) offering qx_j/qy_j for
+        the j-end too, so a linearly-varying load — one end zero gives a
+        triangular load — can be entered without the common uniform case ever
+        carrying dead fields. Fields are grouped by AXIS, not by end: qx next
+        to qx_j, then qy next to qy_j, so the two numbers that describe the
+        same direction sit side by side instead of split apart by an
+        intervening end-i/end-j boundary. Fields lay out left-to-right with
+        short "qx:"/"Fx:" labels (not the full descriptive text, kept in the
         tooltip instead) because this strip now slides open sideways above the
         canvas rather than sitting as a vertical card in the right panel.
         """
@@ -1562,22 +1647,21 @@ class ModelingInterfacePage(QFrame):
                 widget.deleteLater()
         self.load_fields.clear()
         target = self._current_load_target()
-        self.load_trapezoid_toggle.setVisible(target == "element")
-        trapezoid = target == "element" and self.load_trapezoid_toggle.isChecked()
+        trapezoid = target == "element_trapezoid"
         if target == "node":
             components = (
                 self._NODE_LOAD_COMPONENTS_3D if self.canvas.ndm == 3 else self._NODE_LOAD_COMPONENTS_2D
             )
             filter_key = "nodes"
         else:
-            components = ("qx", "qy", "qx_j", "qy_j") if trapezoid else ("qx", "qy")
+            components = ("qx", "qx_j", "qy", "qy_j") if trapezoid else ("qx", "qy")
             filter_key = "elements"
         for component in components:
             field = self._number(0.0)
             field.setRange(-1_000_000.0, 1_000_000.0)
             field.setMaximumWidth(76)
             unit = self._unit_system.moment if component[0] == "m" else self._unit_system.force
-            if target == "element":
+            if target != "node":
                 unit = f"{self._unit_system.force}/{self._unit_system.length}"
             self.load_fields[component] = field
             full_label = self._COMPONENT_LABELS[component]
@@ -1677,6 +1761,8 @@ class ModelingInterfacePage(QFrame):
     def _number(value: float) -> QDoubleSpinBox:
         field = SafeDoubleSpinBox()
         field.setRange(-1_000_000.0, 1_000_000.0)
-        field.setDecimals(4)
+        # High enough that typing precision is never the limit; SafeDoubleSpinBox's
+        # textFromValue trims the trailing zeros this would otherwise show.
+        field.setDecimals(10)
         field.setValue(value)
         return field
