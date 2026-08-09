@@ -1047,22 +1047,28 @@ class ModelingInterfacePage(QFrame):
         self.node_transform_operation.addItem("이동", "move")
         self.node_transform_operation.addItem("복사", "copy")
         self.node_transform_operation.addItem("배열 복사 (부재 포함)", "array")
-        self.node_transform_operation.currentIndexChanged.connect(
-            lambda: self.node_transform_repeat.setEnabled(
-                self.node_transform_operation.currentData() in {"copy", "array"}
-            )
-        )
+        self.node_transform_operation.addItem("회전 복사 (부재 포함)", "rotate")
+        self.node_transform_operation.currentIndexChanged.connect(self._sync_transform_form)
         root.addWidget(self.node_transform_operation)
-        form = QFormLayout()
+        self.node_transform_form = QFormLayout()
+        form = self.node_transform_form
         self.node_transform_dx = self._number(1.0)
         self.node_transform_dy = self._number(0.0)
+        self.node_transform_dx_label = QLabel("dX")
+        self.node_transform_dy_label = QLabel("dY")
+        form.addRow(self.node_transform_dx_label, self.node_transform_dx)
+        form.addRow(self.node_transform_dy_label, self.node_transform_dy)
+        self.node_transform_angle = self._number(90.0)
+        self.node_transform_angle.setToolTip(
+            "복사할 때마다 누적되는 회전각 — 예: 3개·30°면 원본 기준 30°/60°/90° 위치에 복사됩니다."
+        )
+        form.addRow("회전각(°)", self.node_transform_angle)
         self.node_transform_repeat = SafeSpinBox()
         self.node_transform_repeat.setRange(1, 1000)
         self.node_transform_repeat.setEnabled(False)
-        form.addRow("dX", self.node_transform_dx)
-        form.addRow("dY", self.node_transform_dy)
         form.addRow("반복/배열 개수", self.node_transform_repeat)
         root.addLayout(form)
+        self._sync_transform_form()
         apply_button = QPushButton("선택 노드에 적용")
         apply_button.clicked.connect(self._apply_node_transform)
         root.addWidget(apply_button)
@@ -1803,12 +1809,33 @@ class ModelingInterfacePage(QFrame):
         finally:
             self.canvas.end_history_group()
 
+    def _sync_transform_form(self) -> None:
+        """dX/dY relabel to 중심 X/중심 Y for 회전 복사 — same two fields, since
+        a rotation's pivot point plays the same "where do I measure from" role
+        an offset's dx/dy does, so this reuses them instead of adding a
+        separate pair of fields only one operation would ever use. 회전각 is
+        the one genuinely new field, shown only for that operation."""
+        operation = self.node_transform_operation.currentData()
+        is_rotate = operation == "rotate"
+        self.node_transform_dx_label.setText("중심 X" if is_rotate else "dX")
+        self.node_transform_dy_label.setText("중심 Y" if is_rotate else "dY")
+        self.node_transform_form.setRowVisible(self.node_transform_angle, is_rotate)
+        self.node_transform_repeat.setEnabled(operation in {"copy", "array", "rotate"})
+
     def _apply_node_transform(self) -> None:
         operation = self.node_transform_operation.currentData()
         if operation == "array":
             self.canvas.array_copy_selection(
                 self.node_transform_dx.value(),
                 self.node_transform_dy.value(),
+                self.node_transform_repeat.value(),
+            )
+            return
+        if operation == "rotate":
+            self.canvas.rotate_copy_selection(
+                self.node_transform_dx.value(),
+                self.node_transform_dy.value(),
+                self.node_transform_angle.value(),
                 self.node_transform_repeat.value(),
             )
             return

@@ -398,6 +398,29 @@ def test_self_weight_requires_both_density_and_area_or_is_silently_skipped() -> 
     assert model.element_loads == []
 
 
+def test_rotate_copy_places_new_nodes_at_the_correct_angle_and_reproduces_members() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(1.0, 0.0)
+    right = canvas.add_node(2.0, 0.0)
+    canvas.add_member(left, right)
+    canvas.selected_nodes = {left, right}
+
+    created_members = canvas.rotate_copy_selection(0.0, 0.0, 90.0, 2)
+
+    assert created_members == 2
+    assert len(canvas.nodes) == 6
+    assert len(canvas.elements) == 3
+    positions = {(round(n.x, 6), round(n.y, 6)) for n in canvas.nodes.values()}
+    assert (0.0, 1.0) in positions  # (1,0) rotated 90 deg
+    assert (0.0, 2.0) in positions  # (2,0) rotated 90 deg
+    assert (-1.0, 0.0) in positions  # (1,0) rotated 180 deg
+    assert (-2.0, 0.0) in positions  # (2,0) rotated 180 deg
+
+
 def test_collinear_node_is_auto_attached_without_splitting_the_visible_member() -> None:
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()

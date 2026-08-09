@@ -1,5 +1,6 @@
 """Free-form 2D editor for textbook statics problems."""
 
+import math
 from dataclasses import replace
 from itertools import pairwise
 
@@ -555,6 +556,48 @@ class StaticsDrawingCanvas(QGraphicsView):
                 for tag in sorted(self.selected_nodes):
                     source_u, source_v = self._uv(self.nodes[tag])
                     mapping[tag] = self.add_node(source_u + dx * step, source_v + dy * step)
+                    if tag in self.hinge_nodes:
+                        self.hinge_nodes.add(mapping[tag])
+                for element in original_elements:
+                    if (
+                        element.node_i in mapping
+                        and element.node_j in mapping
+                        and self.add_member(mapping[element.node_i], mapping[element.node_j])
+                        is not None
+                    ):
+                        created_members += 1
+        finally:
+            self.end_history_group()
+        self._redraw()
+        return created_members
+
+    def rotate_copy_selection(
+        self, center_u: float, center_v: float, angle_degrees: float, count: int
+    ) -> int:
+        """Repeat the selected nodes, and the members between them, rotated by
+        ``angle_degrees`` increments around ``(center_u, center_v)`` — the
+        same step-and-repeat shape as ``array_copy_selection``, but stepping
+        around a pivot instead of along a straight offset. This is what a
+        radial fan of rafters or a segmented arch needs and a straight array
+        copy cannot reach without the user pre-computing each copy's offset
+        by hand.
+        """
+        if not self.selected_nodes or count < 1 or angle_degrees == 0.0:
+            return 0
+        self.begin_history_group()
+        original_elements = list(self.elements.values())
+        created_members = 0
+        try:
+            for step in range(1, count + 1):
+                theta = math.radians(angle_degrees * step)
+                cos_t, sin_t = math.cos(theta), math.sin(theta)
+                mapping: dict[int, int] = {}
+                for tag in sorted(self.selected_nodes):
+                    source_u, source_v = self._uv(self.nodes[tag])
+                    du, dv = source_u - center_u, source_v - center_v
+                    rotated_u = center_u + du * cos_t - dv * sin_t
+                    rotated_v = center_v + du * sin_t + dv * cos_t
+                    mapping[tag] = self.add_node(rotated_u, rotated_v)
                     if tag in self.hinge_nodes:
                         self.hinge_nodes.add(mapping[tag])
                 for element in original_elements:
