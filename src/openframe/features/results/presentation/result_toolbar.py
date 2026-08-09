@@ -1,23 +1,21 @@
-"""Result-case controls shared by every post-processing mode."""
+"""Result-case controls shared by every post-processing mode.
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (
-    QComboBox,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+Kept deliberately small: this used to also carry a LOAD CASE selector, a
+STEP selector, and EXPORT DATA/GENERATE REPORT buttons, none of which were
+ever wired to anything anywhere in the app (no load-combination or analysis-
+step feature exists to select between, and nothing implements an export or
+report). A dropdown or button that does nothing when used is worse than not
+having it - a first-time user has no way to tell "not implemented yet" apart
+from "broken". What's left is RESULT CASE (a real, if read-only, status of
+which analysis just ran) and VIEW (real, but only meaningful for 3D results).
+"""
+
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from openframe.core.domain import AnalysisKind
 
 
 class ResultToolbar(QFrame):
-    export_requested = Signal()
-    report_requested = Signal()
-
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("resultToolbar")
@@ -25,57 +23,28 @@ class ResultToolbar(QFrame):
         layout.setContentsMargins(14, 8, 14, 8)
         layout.setSpacing(12)
 
-        self.result_case = self._add_selector(
-            layout,
-            "RESULT CASE",
-            ("Linear Static 01", "Nonlinear Static (Future)", "Time History (Future)"),
-        )
-        self.load_case = self._add_selector(
-            layout,
-            "LOAD CASE",
-            ("Default Pattern", "Load Combination (Future)"),
-        )
-        self.step = self._add_selector(
-            layout,
-            "STEP",
-            ("Final", "Maximum", "Minimum", "Time Step (Future)"),
-        )
-        self.view_mode = self._add_selector(
-            layout,
-            "VIEW",
-            ("2D Front", "3D Isometric (Future)"),
-        )
+        self.result_case_field, self.result_case = self._add_display(layout, "RESULT CASE")
+        self.result_case.setText("Linear Static 01")
+        self.view_mode_field, self.view_mode = self._add_display(layout, "VIEW")
+        self.view_mode.setText("2D Front")
 
         layout.addStretch(1)
-        export_button = QPushButton("EXPORT DATA")
-        export_button.setObjectName("resultSecondaryButton")
-        export_button.clicked.connect(self.export_requested)
-        report_button = QPushButton("GENERATE REPORT")
-        report_button.setObjectName("resultPrimaryButton")
-        report_button.clicked.connect(self.report_requested)
-        layout.addWidget(export_button)
-        layout.addWidget(report_button)
 
     def set_dimension(self, ndm: int) -> None:
-        """A 2D model has no isometric/orbit view to pick, so the VIEW selector
-        (currently a dormant "2D Front / 3D Isometric (Future)" stub, not wired
-        to anything) is just misleading, occupied-looking chrome in that case."""
-        self.view_mode.parentWidget().setVisible(ndm == 3)
+        """A 2D model has no isometric/orbit view to pick, so VIEW is just
+        occupied-looking chrome in that case."""
+        self.view_mode_field.setVisible(ndm == 3)
 
     def set_analysis_kind(self, kind: AnalysisKind) -> None:
         labels = {
             AnalysisKind.LINEAR_STATIC: "Linear Static 01",
-            AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static (Future)",
-            AnalysisKind.TIME_HISTORY: "Time History (Future)",
+            AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
+            AnalysisKind.TIME_HISTORY: "Time History",
         }
-        self.result_case.setCurrentText(labels[kind])
+        self.result_case.setText(labels[kind])
 
     @staticmethod
-    def _add_selector(
-        layout: QHBoxLayout,
-        title: str,
-        options: tuple[str, ...],
-    ) -> QComboBox:
+    def _add_display(layout: QHBoxLayout, title: str) -> tuple[QFrame, QLabel]:
         field = QFrame()
         field.setObjectName("resultToolbarField")
         field_layout = QVBoxLayout(field)
@@ -83,10 +52,9 @@ class ResultToolbar(QFrame):
         field_layout.setSpacing(2)
         label = QLabel(title)
         label.setObjectName("resultToolbarLabel")
-        selector = QComboBox()
-        selector.setObjectName("resultToolbarSelector")
-        selector.addItems(options)
+        value = QLabel()
+        value.setObjectName("resultToolbarValue")
         field_layout.addWidget(label)
-        field_layout.addWidget(selector)
+        field_layout.addWidget(value)
         layout.addWidget(field)
-        return selector
+        return field, value

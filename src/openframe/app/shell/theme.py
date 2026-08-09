@@ -507,29 +507,14 @@ QLabel#resultToolbarLabel, QLabel#resultGroupLabel {
     font-size: 7pt;
     font-weight: 700;
 }
-QComboBox#resultToolbarSelector {
+QLabel#resultToolbarValue {
     min-height: 25px;
     max-height: 25px;
     min-width: 125px;
-    padding: 0 7px;
+    padding: 0 2px;
     font-size: 8pt;
-}
-QPushButton#resultPrimaryButton, QPushButton#resultSecondaryButton {
-    min-height: 29px;
-    padding: 0 11px;
-    border-radius: 3px;
-    font-size: 8pt;
-    font-weight: 600;
-}
-QPushButton#resultPrimaryButton {
-    color: #ffffff;
-    background: #174ea6;
-    border: 1px solid #174ea6;
-}
-QPushButton#resultSecondaryButton {
     color: #29405f;
-    background: #ffffff;
-    border: 1px solid #bdc9d8;
+    font-weight: 600;
 }
 QFrame#resultTypeSidebar {
     background: #f3f6fa;

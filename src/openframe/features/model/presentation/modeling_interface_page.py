@@ -1290,7 +1290,14 @@ class ModelingInterfacePage(QFrame):
         """The full post-processing workspace, not a bare viewport.
 
         Reactions, nodal displacements and the N/V/M diagrams all need a table beside
-        the picture; the reusable workspace already carries one.
+        the picture; the reusable workspace already carries one. Its own RESULT
+        TYPES sidebar (반력/변형/변위/N/V/M — and more) is the one place that
+        picks what's shown; this page used to also draw its own row of the
+        same six buttons above it, which meant two different controls did the
+        exact same job stacked on top of each other. Only "모델 편집으로
+        돌아가기" stays here — nothing inside ResultsWorkspace itself can get
+        back to the canvas, since it doesn't know one exists in the shared
+        (OpenSeesPy-import) case.
         """
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -1300,19 +1307,6 @@ class ModelingInterfacePage(QFrame):
         back = QPushButton("모델 편집으로 돌아가기")
         back.clicked.connect(lambda: self.workspace_stack.setCurrentIndex(0))
         tools.addWidget(back)
-        for label, kind in (
-            ("지점 반력", "reaction"),
-            ("변형 형상", "deformation"),
-            ("노드 변위", "displacement"),
-            ("축력도 N", "axial"),
-            ("전단력도 V", "shear"),
-            ("모멘트도 M", "moment"),
-        ):
-            button = QPushButton(label)
-            button.clicked.connect(
-                lambda checked=False, value=kind: self.results.set_result_type(value)
-            )
-            tools.addWidget(button)
         tools.addStretch(1)
         layout.addLayout(tools)
         self.results = ResultsWorkspace()
