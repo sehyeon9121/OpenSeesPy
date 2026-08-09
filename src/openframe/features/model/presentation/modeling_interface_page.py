@@ -126,6 +126,7 @@ class ModelingInterfacePage(QFrame):
         layout.addLayout(text)
         layout.addStretch(1)
         self.truss_mode_toggle = QPushButton("트러스 모드")
+        self.truss_mode_toggle.setObjectName("modelingToggleButton")
         self.truss_mode_toggle.setCheckable(True)
         self.truss_mode_toggle.setToolTip(
             "켜면 이제부터 그리는 부재가 양단 힌지로 연결된 트러스 부재(축력만 전달)로 "
@@ -150,6 +151,7 @@ class ModelingInterfacePage(QFrame):
         # would surface a spurious "불안정" if the canvas moved on at all,
         # e.g. a selection-driven property apply after coming back to edit).
         self.view_results_button = QPushButton("결과 보기")
+        self.view_results_button.setObjectName("directModelOpenButton")
         self.view_results_button.setEnabled(False)
         self.view_results_button.clicked.connect(
             lambda: self.workspace_stack.setCurrentIndex(1)
