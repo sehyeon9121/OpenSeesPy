@@ -785,7 +785,7 @@ QPushButton#directModelBackButton {
     color: #586b82; font-weight: 600;
 }
 QPushButton#directModelBackButton:hover { color: #174ea6; background: #eaf0f8; }
-QPushButton#directModelSaveButton {
+QPushButton#directModelOpenButton, QPushButton#directModelSaveButton {
     min-height: 28px; padding: 0 11px; color: #40546d; background: #ffffff;
     border: 1px solid #bdc9d8; border-radius: 3px;
 }

@@ -7,6 +7,8 @@ hinges, loads — is a property of whatever is selected, so adding a new kind of
 object never adds another button to learn.
 """
 
+import json
+from pathlib import Path
 from typing import Callable, ClassVar
 
 from PySide6.QtCore import QPropertyAnimation, QRectF, QSize, Qt
@@ -1374,6 +1376,44 @@ class ModelingInterfacePage(QFrame):
             combo.blockSignals(False)
         self._load_target_changed()
         self._refresh_member_unit_hint()
+
+    def to_project_dict(self) -> dict[str, object]:
+        """The canvas's own raw state plus the bits of UI chrome that a
+        reopened project should also come back with (unit system) — the
+        truss-mode and self-weight toggles read straight off the canvas
+        instead of duplicating that state here, since the canvas is what
+        ``load_project_dict`` restores from and stays the single source of
+        truth for both.
+        """
+        data = self.canvas.to_dict()
+        data["unit_force"] = self._unit_system.force
+        data["unit_length"] = self._unit_system.length
+        return data
+
+    def load_project_dict(self, data: dict[str, object]) -> None:
+        self.canvas.load_dict(data)
+        self.set_unit_system(
+            UnitSystem(
+                force=str(data.get("unit_force", self._unit_system.force)),
+                length=str(data.get("unit_length", self._unit_system.length)),
+            )
+        )
+        self.truss_mode_toggle.blockSignals(True)
+        self.truss_mode_toggle.setChecked(self.canvas.element_family == "truss")
+        self.truss_mode_toggle.blockSignals(False)
+        self.self_weight_toggle.blockSignals(True)
+        self.self_weight_toggle.setChecked(self.canvas.include_self_weight)
+        self.self_weight_toggle.blockSignals(False)
+        self.view_results_button.setEnabled(False)
+        self.workspace_stack.setCurrentIndex(0)
+        self._sync_property_panel()
+        self._refresh_status()
+
+    def save_to_file(self, path: Path) -> None:
+        path.write_text(json.dumps(self.to_project_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def load_from_file(self, path: Path) -> None:
+        self.load_project_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def solve(self) -> None:
         model = self.canvas.build_model()

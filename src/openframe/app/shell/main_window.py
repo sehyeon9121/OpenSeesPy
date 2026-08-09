@@ -133,9 +133,7 @@ class MainWindow(QMainWindow):
         self.start_workspace.template_requested.connect(
             lambda: self._show_pending_workflow("Template Browser")
         )
-        self.start_workspace.open_project_requested.connect(
-            lambda: self._show_pending_workflow("Open Project")
-        )
+        self.start_workspace.open_project_requested.connect(self._open_project_from_start)
         self.start_workspace.resume_workspace_requested.connect(self._resume_workspace)
         self.start_workspace.session_requested.connect(self._activate_workspace_session)
         self.navigation.current_changed.connect(self._change_workspace_section)
@@ -202,6 +200,31 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "New 3D Model · 기본 설정부터 새 모델을 작성합니다"
         )
+
+    def _open_project_from_start(self) -> None:
+        """"Open Project" on the home screen — the only "이전 작업 불러오기"
+        entry point used to be the OpenSeesPy import history list, which only
+        ever remembers a .py source path, so a hand-drawn 2D/3D project saved
+        via the canvas's own 저장 button had nowhere to be reopened from on
+        this screen. This card already existed for exactly this (its own
+        description always said "Continue a saved OpenFrame project") but was
+        left connected to a placeholder message until now.
+        """
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "프로젝트 열기", "", "OpenFrame 프로젝트 (*.ofsm);;모든 파일 (*.*)"
+        )
+        if not path_str:
+            return
+        try:
+            self.direct_model_workspace.open_project_file(Path(path_str))
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            QMessageBox.critical(self, "프로젝트 열기", f"프로젝트를 열지 못했습니다: {error}")
+            return
+        self._current_model_source = None
+        self.navigation.hide()
+        self.header.hide()
+        self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
+        self.statusBar().showMessage(f"프로젝트 열기 · {Path(path_str).name}")
 
     def _show_model_workspace(self) -> None:
         self._resume_section = "model"
