@@ -309,6 +309,95 @@ def test_splitting_a_trapezoidal_load_interpolates_each_segment_not_copies_the_w
     assert second.wy_j == pytest.approx(-20.0)
 
 
+def test_self_weight_is_off_by_default_and_absent_from_the_solved_model() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    assert canvas.include_self_weight is False
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.elements[member].properties["A"] = 2.0
+    canvas.elements[member].properties["density"] = 1.0
+
+    model = canvas.build_model()
+    assert model.element_loads == []
+
+
+def test_self_weight_reactions_match_hand_calculation_for_a_horizontal_beam() -> None:
+    """Simply-supported horizontal beam, L=4, A=2, density=1 -> total weight
+    w*L = 2*4 = 8, split evenly by symmetry: 4 at each support, matching the
+    textbook simply-supported-UDL reaction R = wL/2."""
+    from openframe.features.analysis.statics import MaterialFreeStaticsSolver
+
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.set_support(left, (True, True, False))
+    canvas.set_support(right, (False, True, False))
+    canvas.elements[member].properties["A"] = 2.0
+    canvas.elements[member].properties["density"] = 1.0
+    canvas.include_self_weight = True
+
+    result = MaterialFreeStaticsSolver().solve(canvas.build_model())
+    assert result.status.value == "completed"
+    reactions = {tag: node.reaction for tag, node in result.node_results.items()}
+    assert reactions[left] == pytest.approx((0.0, 4.0, 0.0), abs=1e-9)
+    assert reactions[right] == pytest.approx((0.0, 4.0, 0.0), abs=1e-9)
+
+
+def test_self_weight_on_a_vertical_column_is_pure_axial_with_no_bending() -> None:
+    """A column's own weight acts along its own centroidal axis, so a
+    cantilever column under self-weight alone should show zero moment and
+    zero horizontal reaction at its base - the total weight (density*A*L =
+    1*2*3 = 6) shows up entirely as vertical reaction."""
+    from openframe.features.analysis.statics import MaterialFreeStaticsSolver
+
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    base = canvas.add_node(0.0, 0.0)
+    top = canvas.add_node(0.0, 3.0)
+    member = canvas.add_member(base, top)
+    canvas.set_support(base, (True, True, True))
+    canvas.elements[member].properties["A"] = 2.0
+    canvas.elements[member].properties["density"] = 1.0
+    canvas.include_self_weight = True
+
+    result = MaterialFreeStaticsSolver().solve(canvas.build_model())
+    assert result.status.value == "completed"
+    reaction = result.node_results[base].reaction
+    assert reaction == pytest.approx((0.0, 6.0, 0.0), abs=1e-9)
+
+
+def test_self_weight_requires_both_density_and_area_or_is_silently_skipped() -> None:
+    """A member with no density set (the common case, since density defaults
+    to nothing) must not contribute a phantom load just because the global
+    checkbox is on - only members that actually opted in via the section
+    panel's density field participate."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    canvas.add_member(left, right)
+    canvas.include_self_weight = True
+
+    model = canvas.build_model()
+    assert model.element_loads == []
+
+
 def test_collinear_node_is_auto_attached_without_splitting_the_visible_member() -> None:
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()

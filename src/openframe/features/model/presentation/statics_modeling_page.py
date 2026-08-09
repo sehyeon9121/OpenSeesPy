@@ -35,6 +35,7 @@ from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
     BoundaryCondition,
     Element,
+    LoadCaseKind,
     NodalLoad,
     Node,
     StructuralModel,
@@ -106,6 +107,10 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.support_angle = 0.0
         self.pending_nodal_load = (0.0, -10.0, 0.0)
         self.pending_uniform_load = (0.0, -10.0)
+        # Off by default: a determinate textbook problem almost never wants its
+        # own member weight mixed into a hand-picked point load, and turning it
+        # on requires each member to also carry a density (see _self_weight_local).
+        self.include_self_weight = False
         self.snap_options = SnapOptions()
         self.ortho = False
         self.ortho_increment = 45.0
@@ -389,13 +394,18 @@ class StaticsDrawingCanvas(QGraphicsView):
         )
         self._changed()
 
-    def apply_section_to_selection(self, width: float, height: float, elastic: float) -> None:
+    def apply_section_to_selection(
+        self, width: float, height: float, elastic: float, density: float = 0.0
+    ) -> None:
         """Rectangular section (width x height) + elastic modulus, applied to
         every selected member — stored as A = width*height, I = width*height^3/12
         (the properties MaterialFreeStaticsSolver actually reads, per
         Element.properties["E"/"A"/"I"]) alongside the raw width/height/E so
         the property panel can re-populate its fields and its section preview
-        when a member carrying one is re-selected.
+        when a member carrying one is re-selected. ``density`` (a unit
+        *weight*, force/volume, matching every other force-based property
+        here) is what ``_self_weight_local`` reads when "자중 포함" is on —
+        left at 0 (the default), the member simply opts out of self-weight.
         """
         if not self.selected_elements:
             return
@@ -415,6 +425,7 @@ class StaticsDrawingCanvas(QGraphicsView):
                     "I": inertia,
                     "width": width,
                     "height": height,
+                    "density": density,
                 },
             )
         self._changed()
@@ -719,6 +730,50 @@ class StaticsDrawingCanvas(QGraphicsView):
         )
         self._changed()
 
+    def _self_weight_local(self, element: Element) -> tuple[float, float] | None:
+        """Self-weight of one member as a (wx, wy) uniform load in the
+        member's own local axes - ``None`` if self-weight is off or the
+        member is missing the (density, A) it needs.
+
+        Weight always acts in the global -Y direction regardless of how the
+        member is drawn, so the constant force-per-length magnitude
+        ``density * A`` (density here is a unit *weight*, force/volume - the
+        same force-based convention the rest of this app already uses for E,
+        not a mass needing a separate g factor) has to be projected onto the
+        member's own local x (axial) and y (transverse) axes: a horizontal
+        member gets it entirely as wy (bending under its own weight, exactly
+        like a plain vertical UDL), a vertical column gets it entirely as wx
+        (pure self-weight compression, no bending), and anything in between
+        is the same projection ``load_arrow_segments``/``eleLoad`` already
+        use for any other local-axis load on a sloped member.
+        """
+        # 3D distributed loads aren't solved at all yet (see solver.py) - the
+        # projection below is also a 2D in-plane one (along/normal, no z
+        # component), so self-weight quietly does nothing in 3D rather than
+        # feeding the solver a load it would reject anyway.
+        if not self.include_self_weight or self.ndm != 2:
+            return None
+        try:
+            density = float(element.properties["density"])
+            area = float(element.properties["A"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if density == 0.0 or area == 0.0:
+            return None
+        start = self.nodes[element.node_i]
+        end = self.nodes[element.node_j]
+        dx, dy = end.x - start.x, end.y - start.y
+        length = (dx * dx + dy * dy) ** 0.5
+        if length <= 0.0:
+            return None
+        weight_per_length = density * area
+        # Global weight vector (0, -w) dotted with the local x axis (dx, dy)/L
+        # and the local y axis (-dy, dx)/L - the same along/normal pair
+        # load_arrow_segments and _draw_distributed_load_box already use.
+        wx = -weight_per_length * dy / length
+        wy = -weight_per_length * dx / length
+        return wx, wy
+
     def build_model(self) -> StructuralModel:
         analysis_elements: dict[int, Element] = {}
         analysis_loads: list[UniformElementLoad] = []
@@ -744,6 +799,10 @@ class StaticsDrawingCanvas(QGraphicsView):
             segment_tags.extend(range(next_tag, next_tag + max(0, len(chain) - 2)))
             next_tag += max(0, len(chain) - 2)
             last_index = len(segment_tags) - 1
+            # Self-weight is the same (wx, wy) at every point of the *original*
+            # drawn member (density/A don't vary along it), computed once here
+            # from the member's own endpoints rather than per segment.
+            self_weight = self._self_weight_local(element)
             for index, (segment_tag, (node_i, node_j)) in enumerate(
                 zip(segment_tags, pairwise(chain), strict=True)
             ):
@@ -760,20 +819,33 @@ class StaticsDrawingCanvas(QGraphicsView):
                     moment_release_j=element.moment_release_j if index == last_index else False,
                 )
                 load = self.element_loads.get(element_tag)
-                if load is not None:
-                    start_fraction = chain_fractions[index]
-                    end_fraction = chain_fractions[index + 1]
+                start_fraction = chain_fractions[index]
+                end_fraction = chain_fractions[index + 1]
+                wx0 = _lerp(load.wx, load.wx_j, start_fraction) if load else 0.0
+                wy0 = _lerp(load.wy, load.wy_j, start_fraction) if load else 0.0
+                wz0 = _lerp(load.wz, load.wz_j, start_fraction) if load else 0.0
+                wx1 = _lerp(load.wx, load.wx_j, end_fraction) if load else 0.0
+                wy1 = _lerp(load.wy, load.wy_j, end_fraction) if load else 0.0
+                wz1 = _lerp(load.wz, load.wz_j, end_fraction) if load else 0.0
+                if self_weight is not None:
+                    # Uniform along the whole member, so it adds identically to
+                    # both ends of every segment - no interpolation needed.
+                    wx0 += self_weight[0]
+                    wx1 += self_weight[0]
+                    wy0 += self_weight[1]
+                    wy1 += self_weight[1]
+                if load is not None or self_weight is not None:
                     analysis_loads.append(
                         UniformElementLoad(
                             segment_tag,
-                            wx=_lerp(load.wx, load.wx_j, start_fraction),
-                            wy=_lerp(load.wy, load.wy_j, start_fraction),
-                            wz=_lerp(load.wz, load.wz_j, start_fraction),
-                            wx_j=_lerp(load.wx, load.wx_j, end_fraction),
-                            wy_j=_lerp(load.wy, load.wy_j, end_fraction),
-                            wz_j=_lerp(load.wz, load.wz_j, end_fraction),
-                            pattern_tag=load.pattern_tag,
-                            case_type=load.case_type,
+                            wx=wx0,
+                            wy=wy0,
+                            wz=wz0,
+                            wx_j=wx1,
+                            wy_j=wy1,
+                            wz_j=wz1,
+                            pattern_tag=load.pattern_tag if load else None,
+                            case_type=load.case_type if load else LoadCaseKind.UNCLASSIFIED,
                         )
                     )
         model = StructuralModel(

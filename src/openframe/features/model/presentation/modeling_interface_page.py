@@ -467,6 +467,13 @@ class ModelingInterfacePage(QFrame):
         )
         self.truss_mode_toggle.toggled.connect(self._toggle_truss_mode)
         layout.addWidget(self.truss_mode_toggle)
+        self.self_weight_toggle = QCheckBox("자중 포함")
+        self.self_weight_toggle.setToolTip(
+            "켜면 해석 시 부재 단위중량(부재 창의 \"단위중량 ρ\")과 단면적으로 계산한 "
+            "자중을 등분포하중처럼 더합니다. 단위중량을 입력하지 않은 부재는 빠집니다."
+        )
+        self.self_weight_toggle.toggled.connect(self._toggle_self_weight)
+        layout.addWidget(self.self_weight_toggle)
         self.solve_button = QPushButton("정정성 검사 및 해석")
         self.solve_button.setObjectName("setupContinueButton")
         self.solve_button.clicked.connect(self.solve)
@@ -1150,14 +1157,22 @@ class ModelingInterfacePage(QFrame):
         self.member_height.setRange(0.001, 100.0)
         self.member_elastic = self._number(200_000_000.0)
         self.member_elastic.setRange(0.0, 1.0e12)
+        self.member_density = self._number(0.0)
+        self.member_density.setRange(0.0, 1.0e6)
+        self.member_density.setToolTip(
+            "자중(自重) 계산에 쓰이는 단위중량. 0이면 상단 \"자중 포함\" 체크박스를 켜도 "
+            "이 부재는 자중 계산에서 빠집니다."
+        )
         self.member_width.valueChanged.connect(self._refresh_member_section_preview)
         self.member_height.valueChanged.connect(self._refresh_member_section_preview)
         width_row, self.member_width_unit = self._field_with_unit(self.member_width)
         height_row, self.member_height_unit = self._field_with_unit(self.member_height)
         elastic_row, self.member_elastic_unit = self._field_with_unit(self.member_elastic)
+        density_row, self.member_density_unit = self._field_with_unit(self.member_density)
         section_form.addRow("폭 b", width_row)
         section_form.addRow("높이 h", height_row)
         section_form.addRow("탄성계수 E", elastic_row)
+        section_form.addRow("단위중량 ρ", density_row)
         self._refresh_member_unit_hint()
         section_row.addLayout(section_form, 1)
         root.addLayout(section_row)
@@ -1202,6 +1217,7 @@ class ModelingInterfacePage(QFrame):
         self.member_width_unit.setText(self._unit_system.length)
         self.member_height_unit.setText(self._unit_system.length)
         self.member_elastic_unit.setText(self._unit_system.stress)
+        self.member_density_unit.setText(self._unit_system.volumetric_force)
 
     def _build_load_bar_content(self) -> QWidget:
         """Every applicable load component as its own field, applied together.
@@ -1380,6 +1396,12 @@ class ModelingInterfacePage(QFrame):
         drawing-time choice (pinned both ends vs moment-connected), not a
         property that can be flipped retroactively without redrawing it."""
         self.canvas.element_family = "truss" if checked else "frame"
+
+    def _toggle_self_weight(self, checked: bool) -> None:
+        """A solve-time decision, unlike truss mode — it only changes what
+        build_model() adds on top of whatever loads are already there, so
+        toggling it back and forth freely (no redraw needed) is safe."""
+        self.canvas.include_self_weight = checked
 
     def _enable_3d_mode(self) -> None:
         """Switch this page's canvas from a flat 2D sheet to a freely-orbited
@@ -1615,6 +1637,7 @@ class ModelingInterfacePage(QFrame):
         width = element.properties.get("width")
         height = element.properties.get("height")
         elastic = element.properties.get("E")
+        density = element.properties.get("density")
         if width is not None and height is not None:
             self.member_width.blockSignals(True)
             self.member_width.setValue(float(width))
@@ -1626,6 +1649,9 @@ class ModelingInterfacePage(QFrame):
             self.member_elastic.blockSignals(True)
             self.member_elastic.setValue(float(elastic))
             self.member_elastic.blockSignals(False)
+        self.member_density.blockSignals(True)
+        self.member_density.setValue(float(density) if density is not None else 0.0)
+        self.member_density.blockSignals(False)
         self._refresh_member_section_preview()
 
     def _refresh_member_section_preview(self) -> None:
@@ -1635,7 +1661,10 @@ class ModelingInterfacePage(QFrame):
 
     def _apply_member_section(self) -> None:
         self.canvas.apply_section_to_selection(
-            self.member_width.value(), self.member_height.value(), self.member_elastic.value()
+            self.member_width.value(),
+            self.member_height.value(),
+            self.member_elastic.value(),
+            self.member_density.value(),
         )
 
     def _apply_member_end_release(self, end: str, released: bool) -> None:
