@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from openframe.core.domain import DEFAULT_UNIT_SYSTEM, UnitSystem
+from openframe.core.domain import DEFAULT_UNIT_SYSTEM, FORCE_UNITS, LENGTH_UNITS, UnitSystem
 from openframe.features.analysis.statics import MaterialFreeStaticsSolver, check_determinacy
 from openframe.features.model.drawing import PlaneKind
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
@@ -1297,26 +1297,59 @@ class ModelingInterfacePage(QFrame):
         return page
 
     def _build_status_bar(self) -> QFrame:
+        """The unit selector lives here, not just in the setup wizard's first
+        step, because the 2D free-modeling path (``start_2d_model``) skips
+        that wizard entirely and jumps straight to the canvas — without this,
+        a 2D session had no way to ever leave the kN/m default. Picking a
+        unit here only changes what label is printed next to a value (E's
+        unit hint, load field tooltips, results) — it does not rescale any
+        number already typed in, the same way choosing a unit in the wizard
+        never rescaled anything either. It is meant to be set once before
+        typing values in a particular unit, not swapped mid-model."""
         bar = QFrame()
         bar.setObjectName("directModelCommandBar")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(8, 4, 8, 4)
         self.model_status = QLabel()
         self.determinacy_status = QLabel("정정성: 모델 작성 중")
-        self.unit_status = QLabel()
         layout.addWidget(self.model_status)
         layout.addStretch(1)
         layout.addWidget(self.determinacy_status)
         layout.addSpacing(16)
-        layout.addWidget(self.unit_status)
+        layout.addWidget(QLabel("단위:"))
+        self.unit_force = QComboBox()
+        self.unit_force.addItems(FORCE_UNITS)
+        self.unit_force.setCurrentText(self._unit_system.force)
+        self.unit_force.setToolTip(
+            "힘의 단위. 라벨만 바뀝니다 — 이미 입력한 숫자는 자동 환산되지 않으니, "
+            "모델을 새로 그리기 전에 정해두는 것을 권장합니다."
+        )
+        self.unit_force.currentTextChanged.connect(self._unit_selector_changed)
+        layout.addWidget(self.unit_force)
+        self.unit_length = QComboBox()
+        self.unit_length.addItems(LENGTH_UNITS)
+        self.unit_length.setCurrentText(self._unit_system.length)
+        self.unit_length.setToolTip(self.unit_force.toolTip())
+        self.unit_length.currentTextChanged.connect(self._unit_selector_changed)
+        layout.addWidget(self.unit_length)
         return bar
+
+    def _unit_selector_changed(self) -> None:
+        self.set_unit_system(UnitSystem(force=self.unit_force.currentText(), length=self.unit_length.currentText()))
 
     # --- behaviour ---------------------------------------------------------
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         self._unit_system = unit_system
         self.results.set_unit_system(unit_system)
-        self.unit_status.setText(f"단위: {unit_system.force}, {unit_system.length}")
+        # Keep the status-bar selectors in sync when the unit system is set from
+        # outside (e.g. the 3D wizard's own setup step) instead of by the user
+        # picking directly from these combo boxes — blocked so setCurrentText
+        # doesn't re-fire currentTextChanged and call back into this method.
+        for combo, value in ((self.unit_force, unit_system.force), (self.unit_length, unit_system.length)):
+            combo.blockSignals(True)
+            combo.setCurrentText(value)
+            combo.blockSignals(False)
         self._load_target_changed()
         self._refresh_member_unit_hint()
 
