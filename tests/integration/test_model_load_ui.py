@@ -32,7 +32,9 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     assert window.model_sidebar.summary_values["nodes"].text() == "4"
     assert window.model_sidebar.summary_values["elements"].text() == "3"
     assert window.model_sidebar.summary_values["supports"].text() == "2"
-    assert len(window.scene.items()) == 14
+    # +3 element-number badges (one per element), added alongside node labels but
+    # hidden by default until a truss result view turns them on.
+    assert len(window.scene.items()) == 17
     assert window.viewport.mode_label.text() == "MODEL LOADED"
     assert window.workspace_stack.currentWidget() is window.workspace
     assert not window.navigation.isHidden()

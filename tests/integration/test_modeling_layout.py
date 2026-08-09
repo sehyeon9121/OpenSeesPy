@@ -9,9 +9,9 @@ from PySide6.QtWidgets import QApplication
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
 
-def _page() -> ModelingInterfacePage:
+def _page(*, start_in_3d: bool = False) -> ModelingInterfacePage:
     QApplication.instance() or QApplication([])
-    page = ModelingInterfacePage()
+    page = ModelingInterfacePage(start_in_3d=start_in_3d)
     page.resize(1280, 800)
     page.show()
     return page
@@ -260,9 +260,9 @@ def test_load_fields_gain_fz_mx_my_once_3d_mode_is_active() -> None:
     page = _page()
     assert set(page.load_fields) == {"fx", "fy", "mz"}
 
-    page.mode_3d_toggle.setChecked(True)
+    page_3d = _page(start_in_3d=True)
 
-    assert set(page.load_fields) == {"fx", "fy", "fz", "mx", "my", "mz"}
+    assert set(page_3d.load_fields) == {"fx", "fy", "fz", "mx", "my", "mz"}
 
 
 def test_custom_support_lets_a_single_dof_be_restrained_on_its_own() -> None:
@@ -282,8 +282,7 @@ def test_custom_support_lets_a_single_dof_be_restrained_on_its_own() -> None:
 
 
 def test_custom_support_reaches_all_six_dof_in_3d() -> None:
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
     node = page.canvas.add_node(0.0, 0.0)
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
@@ -508,3 +507,111 @@ def test_vertical_roller_restrains_horizontal_movement_not_vertical() -> None:
 
     page.support_buttons[3].click()  # 수평롤러
     assert page.canvas.build_model().boundaries[0].restraints == (False, True, False)
+
+
+def test_truss_mode_toggle_governs_members_drawn_from_then_on_only() -> None:
+    """Turning 트러스 모드 on/off is a drawing-time choice, like a pen colour —
+    it must not retroactively change members already on the canvas."""
+    page = _page()
+    assert page.canvas.element_family == "frame"
+
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    frame_member = page.canvas.add_member(a, b)
+
+    page.truss_mode_toggle.setChecked(True)
+    assert page.canvas.element_family == "truss"
+
+    c = page.canvas.add_node(2.0, 3.0)
+    truss_member_1 = page.canvas.add_member(a, c)
+    truss_member_2 = page.canvas.add_member(b, c)
+
+    page.truss_mode_toggle.setChecked(False)
+    assert page.canvas.element_family == "frame"
+    d = page.canvas.add_node(2.0, -3.0)
+    frame_member_2 = page.canvas.add_member(a, d)
+
+    model = page.canvas.build_model()
+    assert model.elements[frame_member].element_type == "frame"
+    assert model.elements[truss_member_1].element_type == "truss"
+    assert model.elements[truss_member_2].element_type == "truss"
+    assert model.elements[frame_member_2].element_type == "frame"
+
+
+def test_a_determinate_truss_solves_with_one_constant_axial_value_per_member() -> None:
+    """A truss member has no bending — its N/V/M diagram is flat, which the
+    existing diagram machinery already collapses to a single labelled value
+    at the member's midpoint (see FrameDiagramRenderer._draw_values), giving
+    the 부재력 표시 a truss needs without any separate rendering path."""
+    page = _page()
+    page.truss_mode_toggle.setChecked(True)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(2.0, 3.0)
+    page.canvas.add_member(a, b)
+    page.canvas.add_member(a, c)
+    page.canvas.add_member(b, c)
+    page.canvas.selected_nodes = {a}
+    page.canvas.apply_support_to_selection((True, True, False))
+    page.canvas.selected_nodes = {b}
+    page.canvas.apply_support_to_selection((False, True, False))
+    page.canvas.selected_nodes = {c}
+    page.canvas.apply_nodal_load_to_selection((0.0, -10.0, 0.0))
+
+    page.solve()
+
+    assert page.workspace_stack.currentIndex() == 1
+    result = page.results.viewport._result
+    from openframe.features.results.diagrams.build import member_diagrams
+
+    for element_result in result.element_results.values():
+        axial, shear, moment = member_diagrams(element_result)
+        assert axial.points[0].value == pytest.approx(axial.points[-1].value)
+        assert all(point.value == pytest.approx(0.0, abs=1.0e-9) for point in shear.points)
+        assert all(point.value == pytest.approx(0.0, abs=1.0e-9) for point in moment.points)
+
+
+def test_truss_results_table_lists_joints_force_and_tension_compression_zero() -> None:
+    """부재력 표: for a truss, the TABLE tab must read as a 부재 번호 / 절점 (i-j) /
+    축력 / 인장·압축·0부재 sheet — not the frame table's N/V/M-i columns, since V
+    and M are always zero and say nothing about a two-force member."""
+    page = _page()
+    page.truss_mode_toggle.setChecked(True)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(2.0, 3.0)
+    d = page.canvas.add_node(2.0, 5.0)
+    tension_member = page.canvas.add_member(a, b)
+    compression_member = page.canvas.add_member(a, c)
+    page.canvas.add_member(b, c)
+    zero_force_member = page.canvas.add_member(c, d)
+    page.canvas.add_member(b, d)
+    page.canvas.selected_nodes = {a}
+    page.canvas.apply_support_to_selection((True, True, False))
+    page.canvas.selected_nodes = {b}
+    page.canvas.apply_support_to_selection((False, True, False))
+    page.canvas.selected_nodes = {c}
+    page.canvas.apply_nodal_load_to_selection((0.0, -10.0, 0.0))
+
+    page.solve()
+    panel = page.results.data_panel
+    panel.set_result_type("axial")
+    table = panel.result_table
+
+    assert [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())] == [
+        "부재",
+        "절점 (i-j)",
+        f"축력 N ({page._unit_system.force})",
+        "상태",
+    ]
+
+    def row_for(element_tag: int) -> list[str]:
+        for row in range(table.rowCount()):
+            if table.item(row, 0).text() == str(element_tag):
+                return [table.item(row, column).text() for column in range(table.columnCount())]
+        raise AssertionError(f"no row for element {element_tag}")
+
+    assert row_for(tension_member)[1] == f"{a}-{b}"
+    assert row_for(tension_member)[3] == "인장"
+    assert row_for(compression_member)[3] == "압축"
+    assert row_for(zero_force_member)[3] == "0부재"

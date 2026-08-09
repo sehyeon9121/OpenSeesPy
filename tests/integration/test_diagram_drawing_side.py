@@ -106,6 +106,53 @@ def test_member_carrying_no_axial_force_gets_no_sign_or_label() -> None:
     assert beam_markers == []
 
 
+def test_truss_axial_labels_are_classified_tension_compression_or_zero_force() -> None:
+    """A truss member's axial diagram is flat, so its one value label is the
+    answer a 부재력 표 needs — including a genuine 0부재, which (unlike a frame's
+    solver-noise zero) must still get a label rather than being suppressed."""
+    QApplication.instance() or QApplication([])
+    canvas = StaticsDrawingCanvas()
+    canvas.element_family = "truss"
+    a = canvas.add_node(0.0, 0.0)
+    b = canvas.add_node(4.0, 0.0)
+    c = canvas.add_node(2.0, 3.0)
+    d = canvas.add_node(2.0, 5.0)
+    tension_member = canvas.add_member(a, b)
+    compression_member_1 = canvas.add_member(a, c)
+    compression_member_2 = canvas.add_member(b, c)
+    zero_force_member_1 = canvas.add_member(c, d)
+    zero_force_member_2 = canvas.add_member(b, d)
+    canvas.selected_nodes = {a}
+    canvas.apply_support_to_selection((True, True, False))
+    canvas.selected_nodes = {b}
+    canvas.apply_support_to_selection((False, True, False))
+    canvas.selected_nodes = {c}
+    canvas.apply_nodal_load_to_selection((0.0, -10.0, 0.0))
+
+    model = canvas.build_model()
+    result = MaterialFreeStaticsSolver().solve(model)
+    assert result.status == AnalysisStatus.COMPLETED
+
+    scene = QGraphicsScene()
+    FrameDiagramRenderer().render(scene, model, result, DiagramKind.AXIAL, 50, "kN")
+
+    def label_for(element_tag: int) -> str:
+        texts = [
+            item.text()
+            for item in scene.items()
+            if isinstance(item.data(0), tuple)
+            and item.data(0) == ("result_diagram_label", element_tag)
+        ]
+        assert len(texts) == 1, f"element {element_tag} got {texts!r}"
+        return texts[0]
+
+    assert "인장" in label_for(tension_member)
+    assert "압축" in label_for(compression_member_1)
+    assert "압축" in label_for(compression_member_2)
+    assert "0부재" in label_for(zero_force_member_1)
+    assert "0부재" in label_for(zero_force_member_2)
+
+
 def test_sagging_beam_moment_is_drawn_below_the_beam() -> None:
     outlines = _outline_points(DiagramKind.MOMENT)
 

@@ -17,9 +17,9 @@ def _canvas() -> StaticsDrawingCanvas:
     return canvas
 
 
-def _page() -> ModelingInterfacePage:
+def _page(*, start_in_3d: bool = False) -> ModelingInterfacePage:
     QApplication.instance() or QApplication([])
-    page = ModelingInterfacePage()
+    page = ModelingInterfacePage(start_in_3d=start_in_3d)
     page.resize(1400, 900)
     page.show()
     return page
@@ -148,23 +148,25 @@ def test_build_model_reports_3d_dimensionality_once_in_3d_mode() -> None:
     assert canvas.build_model().ndf == 6
 
 
-def test_the_3d_toggle_switches_the_canvas_and_reveals_the_level_bar() -> None:
+def test_a_default_page_stays_2d_and_a_3d_page_starts_ready() -> None:
+    """2D and 3D are separate pages/canvases now, not a toggle on one page —
+    a default page never grows 3D UI, and a ``start_in_3d`` page begins
+    already switched over, with no way back to 2D."""
     page = _page()
     assert page.canvas.ndm == 2
     assert page.level_bar.isVisible() is False
     assert page.preview_3d.isVisible() is False
 
-    page.mode_3d_toggle.setChecked(True)
+    page_3d = _page(start_in_3d=True)
 
-    assert page.canvas.ndm == 3
-    assert page.level_bar.isVisible() is True
-    assert page.preview_3d.isVisible() is True
-    assert page.plane_selector.count() == 1  # the ground plane, seeded on entry
+    assert page_3d.canvas.ndm == 3
+    assert page_3d.level_bar.isVisible() is True
+    assert page_3d.preview_3d.isVisible() is True
+    assert page_3d.plane_selector.count() == 1  # the ground plane, seeded on entry
 
 
 def test_adding_a_level_from_the_bar_populates_both_plane_selectors() -> None:
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
 
     page.new_plane_offset.setValue(3.5)
     page.new_plane_label.setText("2F")
@@ -177,8 +179,7 @@ def test_adding_a_level_from_the_bar_populates_both_plane_selectors() -> None:
 
 
 def test_drawing_a_plan_and_extruding_a_column_reaches_the_3d_preview() -> None:
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
     page._activate_draw_tool()
     page.canvas.place_point(0.0, 0.0)
     page.canvas.place_point(4.0, 0.0)
@@ -216,8 +217,7 @@ def test_a_3d_cantilever_column_is_drawn_loaded_and_solved_entirely_through_the_
     and a correct reaction back in the results workspace — the same path a
     student clicking through the app would actually take.
     """
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
     base = page.canvas.place_point(0.0, 0.0)
     roof = page.canvas.add_level(4.0, "roof")
     page.canvas.selected_nodes = {base}
@@ -240,8 +240,7 @@ def test_a_3d_cantilever_column_is_drawn_loaded_and_solved_entirely_through_the_
 
 
 def test_the_3d_preview_gets_camera_chrome_matching_the_imported_model_viewer() -> None:
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
 
     assert page.preview_3d_panel.isVisible() is True
     assert [page.preview_3d_camera.itemData(i) for i in range(page.preview_3d_camera.count())] == [
@@ -292,20 +291,18 @@ def test_continue_chain_to_node_with_an_unknown_tag_is_a_no_op() -> None:
 def test_3d_mode_swaps_the_2d_canvas_out_for_the_3d_view_entirely() -> None:
     """No side-by-side split: the 3D view replaces the 2D plan as the primary
     surface, matching a SketchUp-style single freely-orbited viewport rather
-    than a small preview beside a dominant 2D canvas."""
+    than a small preview beside a dominant 2D canvas. A default page's canvas
+    stack never shows anything but the flat 2D plan; a 3D page's never shows
+    anything but the 3D view — they are separate canvases, not a switch."""
     page = _page()
     assert page.canvas_stack.currentWidget() is page.canvas
 
-    page.mode_3d_toggle.setChecked(True)
-    assert page.canvas_stack.currentWidget() is page.preview_3d_panel
-
-    page.mode_3d_toggle.setChecked(False)
-    assert page.canvas_stack.currentWidget() is page.canvas
+    page_3d = _page(start_in_3d=True)
+    assert page_3d.canvas_stack.currentWidget() is page_3d.preview_3d_panel
 
 
 def test_the_draw_tool_enables_plane_picking_on_the_3d_view_not_node_picking() -> None:
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
     root = page.preview_3d.quick_widget.rootObject()
 
     page._activate_draw_tool()
@@ -321,8 +318,7 @@ def test_clicking_the_active_plane_in_3d_places_a_point_through_the_same_chain_l
     """The 3D pick path and the 2D click path must produce identical model
     data — this is what lets every existing 2D drawing test's guarantees (snap,
     undo, member creation) carry over to 3D clicking for free."""
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
     page._activate_draw_tool()
 
     page._on_3d_plane_picked(0.0, 0.0, 0.0)
@@ -336,8 +332,7 @@ def test_clicking_the_active_plane_in_3d_places_a_point_through_the_same_chain_l
 
 
 def test_clicking_an_existing_node_in_3d_continues_the_chain_while_drawing() -> None:
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
     base = page.canvas.place_point(0.0, 0.0)
     roof = page.canvas.add_level(3.0, "roof")
     page.canvas.selected_nodes = {base}
@@ -355,8 +350,7 @@ def test_clicking_an_existing_node_in_3d_continues_the_chain_while_drawing() -> 
 
 
 def test_clicking_an_existing_node_in_3d_selects_it_outside_draw_mode() -> None:
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
     node = page.canvas.add_node(0.0, 0.0)
     page._activate_select_tool()
 
@@ -366,8 +360,7 @@ def test_clicking_an_existing_node_in_3d_selects_it_outside_draw_mode() -> None:
 
 
 def test_changing_the_active_plane_keeps_the_3d_view_in_sync() -> None:
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
     page.new_plane_offset.setValue(2.5)
     page.new_plane_label.setText("2F")
     page._add_plane()
@@ -380,8 +373,7 @@ def test_changing_the_active_plane_keeps_the_3d_view_in_sync() -> None:
 def test_drawing_in_3d_does_not_reset_the_orbit_camera_on_every_click() -> None:
     """Regression guard: set_model() used to always reframe to ISO, which would
     fight the student's own orbiting after every single placed point."""
-    page = _page()
-    page.mode_3d_toggle.setChecked(True)
+    page = _page(start_in_3d=True)
     root = page.preview_3d.quick_widget.rootObject()
     page.preview_3d.set_camera_preset("xy")
     assert root.property("cameraPitch") == pytest.approx(-89.0)

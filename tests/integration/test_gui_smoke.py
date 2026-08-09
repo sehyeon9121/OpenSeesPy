@@ -54,7 +54,10 @@ def test_main_window_can_be_constructed() -> None:
     window.close()
 
 
-def test_new_model_opens_at_basic_setup_step() -> None:
+def test_new_2d_model_skips_the_wizard_straight_to_its_own_canvas() -> None:
+    """2D structural-mechanics problems are usually determinate textbook
+    statics needing no material/section input, so the wizard would just be
+    friction — New 2D Model must land directly on the 2D canvas."""
     application = QApplication.instance() or QApplication([])
     window = MainWindow()
 
@@ -63,19 +66,37 @@ def test_new_model_opens_at_basic_setup_step() -> None:
 
     direct = window.direct_model_workspace
     assert window.workspace_stack.currentWidget() is direct
-    assert direct.workflow.current_step() == "setup"
-    assert direct.stage_stack.currentWidget() is direct.setup_page
+    assert direct.stage_stack.currentWidget() is direct.geometry_page
+    assert direct.workflow.isHidden()
     assert window.navigation.isHidden()
     assert window.header.isHidden()
     assert window._current_model_source is None
 
-    direct.setup_page.dimension.setCurrentIndex(1)
+    window.close()
+
+
+def test_new_3d_model_opens_the_wizard_and_ends_on_the_3d_canvas() -> None:
+    """3D models generally do need real materials/sections to mean anything,
+    the reverse of 2D — New 3D Model must open at basic setup, pre-set to
+    3D, and land on the 3D canvas (not the 2D one) once continued through."""
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    window.start_workspace.new_3d_model_button.click()
+
+    direct = window.direct_model_workspace
+    assert window.workspace_stack.currentWidget() is direct
+    assert direct.workflow.current_step() == "setup"
+    assert direct.stage_stack.currentWidget() is direct.setup_page
+    assert direct.setup_page.dimension.currentIndex() == 1
     assert "'-ndm', 3" in direct.setup_page.command_preview.text()
     assert "'-ndf', 6" in direct.setup_page.command_preview.text()
+    assert window.navigation.isHidden()
+    assert window.header.isHidden()
 
     direct.setup_page.continue_button.click()
-    assert direct.workflow.current_step() == "geometry"
-    assert direct.stage_stack.currentWidget() is direct.geometry_page
+    assert direct.stage_stack.currentWidget() is direct.geometry_page_3d
+    assert direct.geometry_page.canvas.nodes == {}
 
     direct.set_current_step("setup")
     direct.setup_page.analysis_kind.setCurrentIndex(1)

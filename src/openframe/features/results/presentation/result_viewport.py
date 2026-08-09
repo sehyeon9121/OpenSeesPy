@@ -330,15 +330,19 @@ class ResultViewport(QFrame):
         self.scene.set_model(self._model)
         magnitudes = self._member_magnitudes()
         _, peak = magnitude_range(magnitudes)
+        is_truss = self._is_truss_model()
         for item in self.scene.items():
             identity = item.data(0)
             if not isinstance(identity, tuple) or not identity:
                 continue
-            if identity[0] in {
-                "load",
-                "element_load",
-                "node_label",
-            }:
+            if identity[0] in {"node_label", "element_label"}:
+                # A truss result has no diagram to read the member number off
+                # of, and reactions/forces are only meaningful joint-by-joint
+                # and member-by-member — so both stay on there, the same way
+                # a frame result keeps them off to avoid cluttering the
+                # diagrams it does have.
+                item.setVisible(is_truss)
+            elif identity[0] in {"load", "element_load"}:
                 item.setVisible(False)
             elif identity[0] in {"node", "element"}:
                 item.setVisible(self.show_undeformed.isChecked())
@@ -421,6 +425,16 @@ class ResultViewport(QFrame):
         self.pushover_status_label.setProperty("status", "warning" if incomplete else "ok")
         self.pushover_status_label.style().unpolish(self.pushover_status_label)
         self.pushover_status_label.style().polish(self.pushover_status_label)
+
+    def _is_truss_model(self) -> bool:
+        """Whole-model, matching how ``check_determinacy``/the solver already
+        decide truss vs frame — this app has no mixed truss/frame model."""
+        if self._model is None or not self._model.elements:
+            return False
+        return all(
+            "truss" in element.element_type.lower()
+            for element in self._model.elements.values()
+        )
 
     def _member_magnitudes(self) -> dict[int, float]:
         if self._model is None or self._result is None:

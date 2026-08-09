@@ -395,9 +395,10 @@ class _FloatingPropertiesWindow(QDialog):
 class ModelingInterfacePage(QFrame):
     """One-screen workflow: draw, inspect, assign conditions, and review results."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, start_in_3d: bool = False) -> None:
         super().__init__(parent)
         self.setObjectName("modelingInterfacePage")
+        self._start_in_3d = start_in_3d
         self._unit_system = DEFAULT_UNIT_SYSTEM
         self._solver = MaterialFreeStaticsSolver()
         self.canvas = StaticsDrawingCanvas()
@@ -437,6 +438,8 @@ class ModelingInterfacePage(QFrame):
         self.fit_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.fit_shortcut.activated.connect(self.canvas.fit_model)
 
+        if self._start_in_3d:
+            self._enable_3d_mode()
         self._activate_select_tool()
         self._refresh_status()
 
@@ -448,7 +451,7 @@ class ModelingInterfacePage(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         text = QVBoxLayout()
         text.setSpacing(1)
-        title = QLabel("2D 구조 모델 작성")
+        title = QLabel("3D 구조 모델 작성" if self._start_in_3d else "2D 구조 모델 작성")
         title.setObjectName("setupTitle")
         hint = QLabel("노드, 부재, 지점과 하중을 캔버스에 직접 작성하세요.")
         hint.setObjectName("setupDescription")
@@ -456,13 +459,14 @@ class ModelingInterfacePage(QFrame):
         text.addWidget(hint)
         layout.addLayout(text)
         layout.addStretch(1)
-        self.mode_3d_toggle = QPushButton("3D 모드")
-        self.mode_3d_toggle.setCheckable(True)
-        self.mode_3d_toggle.setToolTip(
-            "평면(작업평면)을 오가며 여러 층을 그리고, 기둥으로 연결합니다."
+        self.truss_mode_toggle = QPushButton("트러스 모드")
+        self.truss_mode_toggle.setCheckable(True)
+        self.truss_mode_toggle.setToolTip(
+            "켜면 이제부터 그리는 부재가 양단 힌지로 연결된 트러스 부재(축력만 전달)로 "
+            "그려집니다. 해석 후에는 부재마다 축력 값이 하나씩 표시됩니다."
         )
-        self.mode_3d_toggle.toggled.connect(self._toggle_3d_mode)
-        layout.addWidget(self.mode_3d_toggle)
+        self.truss_mode_toggle.toggled.connect(self._toggle_truss_mode)
+        layout.addWidget(self.truss_mode_toggle)
         self.solve_button = QPushButton("정정성 검사 및 해석")
         self.solve_button.setObjectName("setupContinueButton")
         self.solve_button.clicked.connect(self.solve)
@@ -721,14 +725,14 @@ class ModelingInterfacePage(QFrame):
         return bar
 
     def _build_property_panel(self) -> QScrollArea:
-        """This panel is deliberately minimal and fixed: 좌표로 노드 추가 and
-        이동·복사·배열, both always visible, never collapsed or selection-
-        gated. Every selection-dependent editor (지점, 노드 유형, 부재 — 단면·
-        재료·핀 해제·노드 삽입·등분할, 하중) lives in the canvas-top bar's
-        accordion instead (``_build_node_property_bar``). Any new property
-        editor added later belongs there too, not here — keeping this panel's
-        contents fixed is the point, not an accident of what happened to move
-        out first.
+        """This panel is deliberately minimal and fixed: 좌표로 노드 추가,
+        이동·복사·배열, and 노드 삽입·등분할, all always visible, never
+        collapsed. Every other selection-dependent editor (지점, 노드 유형,
+        부재의 단면·재료·핀 해제, 하중) lives in the canvas-top bar's
+        accordion instead (``_build_node_property_bar``). 노드 삽입·등분할
+        moved out of that 부재 accordion and in here because it is a node/
+        geometry operation in the same family as 이동·복사·배열, not a
+        per-member property like section or material.
         """
         panel = QFrame()
         panel.setObjectName("modelingPropertyPanel")
@@ -742,6 +746,7 @@ class ModelingInterfacePage(QFrame):
 
         root.addWidget(self._build_create_section())
         root.addWidget(self._build_transform_section())
+        root.addWidget(self._build_member_edit_section())
         root.addStretch(1)
         scroll = QScrollArea()
         scroll.setObjectName("modelingInspectorScroll")
@@ -1072,13 +1077,51 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(mirror_button)
         return section
 
+    def _build_member_edit_section(self) -> QWidget:
+        """Add a node mid-span on a member, or subdivide it into equal
+        segments — geometry operations on a selected member, grouped with
+        노드 이동·복사·배열 rather than with the 부재 property window's
+        section/material fields, since these add nodes instead of setting a
+        property on the member that already exists.
+        """
+        section, root = self._section("부재 노드 삽입 · 등분할")
+        root.addWidget(QLabel("부재 위 노드 삽입 (x/L)"))
+        insert_row = QHBoxLayout()
+        self.member_station = self._number(0.5)
+        self.member_station.setRange(0.01, 0.99)
+        self.member_station.setSingleStep(0.05)
+        insert_row.addWidget(self.member_station, 1)
+        insert_button = QPushButton("삽입")
+        insert_button.clicked.connect(self._insert_member_station_node)
+        insert_row.addWidget(insert_button)
+        root.addLayout(insert_row)
+        hint = QLabel("지점을 임의 위치에 두려면 여기서 노드를 삽입한 뒤 선택하세요.")
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+
+        root.addWidget(QLabel("부재 등분할"))
+        subdivide_row = QHBoxLayout()
+        self.member_segments = SafeSpinBox()
+        self.member_segments.setRange(2, 20)
+        self.member_segments.setValue(2)
+        subdivide_row.addWidget(self.member_segments, 1)
+        subdivide_button = QPushButton("등분할")
+        subdivide_button.setToolTip("트러스 패널이나 격자보처럼 일정 간격 노드가 필요할 때 씁니다.")
+        subdivide_button.clicked.connect(self._subdivide_member)
+        subdivide_row.addWidget(subdivide_button)
+        root.addLayout(subdivide_row)
+        return section
+
     def _build_member_bar_content(self) -> QWidget:
-        """Section/material (단면·재료) plus per-end pin release and mid-span
-        node insertion, for one selected member — the content shown inside
-        the 부재 floating window (``_FloatingPropertiesWindow``), not an
-        inline canvas-top-bar slide-out like 지점/노드 유형/하중, since this
-        one stacks too many rows to slide open sideways without stretching
-        the whole bar's height.
+        """Section/material (단면·재료) plus per-end pin release, for one
+        selected member — the content shown inside the 부재 floating window
+        (``_FloatingPropertiesWindow``), not an inline canvas-top-bar slide-out
+        like 지점/노드 유형/하중, since this one stacks too many rows to slide
+        open sideways without stretching the whole bar's height. Mid-span node
+        insertion and equal subdivision live in the right panel's 노드 삽입·
+        등분할 section instead (``_build_member_edit_section``) — they add
+        nodes/geometry rather than set a property on the member itself.
 
         A member always has two ends regardless of which node tags they land on, so
         the checkboxes are labelled with the actual node numbers when the selection
@@ -1109,13 +1152,13 @@ class ModelingInterfacePage(QFrame):
         self.member_elastic.setRange(0.0, 1.0e12)
         self.member_width.valueChanged.connect(self._refresh_member_section_preview)
         self.member_height.valueChanged.connect(self._refresh_member_section_preview)
-        section_form.addRow("폭 b", self.member_width)
-        section_form.addRow("높이 h", self.member_height)
-        section_form.addRow("탄성계수 E", self.member_elastic)
-        self.member_unit_hint = QLabel()
-        self.member_unit_hint.setObjectName("setupSectionHint")
+        width_row, self.member_width_unit = self._field_with_unit(self.member_width)
+        height_row, self.member_height_unit = self._field_with_unit(self.member_height)
+        elastic_row, self.member_elastic_unit = self._field_with_unit(self.member_elastic)
+        section_form.addRow("폭 b", width_row)
+        section_form.addRow("높이 h", height_row)
+        section_form.addRow("탄성계수 E", elastic_row)
         self._refresh_member_unit_hint()
-        section_form.addRow("", self.member_unit_hint)
         section_row.addLayout(section_form, 1)
         root.addLayout(section_row)
         apply_section = QPushButton("선택 부재에 적용")
@@ -1139,37 +1182,26 @@ class ModelingInterfacePage(QFrame):
             lambda checked: self._apply_member_end_release("j", checked)
         )
         root.addWidget(self.member_end_j)
-        root.addWidget(QLabel("부재 위 노드 삽입 (x/L)"))
-        insert_row = QHBoxLayout()
-        self.member_station = self._number(0.5)
-        self.member_station.setRange(0.01, 0.99)
-        self.member_station.setSingleStep(0.05)
-        insert_row.addWidget(self.member_station, 1)
-        insert_button = QPushButton("삽입")
-        insert_button.clicked.connect(self._insert_member_station_node)
-        insert_row.addWidget(insert_button)
-        root.addLayout(insert_row)
-        hint = QLabel("지점을 임의 위치에 두려면 여기서 노드를 삽입한 뒤 왼쪽에서 선택하세요.")
-        hint.setWordWrap(True)
-        hint.setObjectName("setupSectionHint")
-        root.addWidget(hint)
-        root.addWidget(QLabel("부재 등분할"))
-        subdivide_row = QHBoxLayout()
-        self.member_segments = SafeSpinBox()
-        self.member_segments.setRange(2, 20)
-        self.member_segments.setValue(2)
-        subdivide_row.addWidget(self.member_segments, 1)
-        subdivide_button = QPushButton("등분할")
-        subdivide_button.setToolTip("트러스 패널이나 격자보처럼 일정 간격 노드가 필요할 때 씁니다.")
-        subdivide_button.clicked.connect(self._subdivide_member)
-        subdivide_row.addWidget(subdivide_button)
-        root.addLayout(subdivide_row)
         return content
 
+    def _field_with_unit(self, field: QWidget) -> tuple[QWidget, QLabel]:
+        """Pair an engineering-value field with a small, live unit label next
+        to it — reading "0.3 [m]" beside the field itself is one less lookup
+        than a single combined line below several fields at once."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(field, 1)
+        unit_label = QLabel()
+        unit_label.setObjectName("setupSectionHint")
+        layout.addWidget(unit_label)
+        return row, unit_label
+
     def _refresh_member_unit_hint(self) -> None:
-        length = self._unit_system.length
-        force = self._unit_system.force
-        self.member_unit_hint.setText(f"현재 단위계: 길이 {length} · 힘 {force} (E: {force}/{length}²)")
+        self.member_width_unit.setText(self._unit_system.length)
+        self.member_height_unit.setText(self._unit_system.length)
+        self.member_elastic_unit.setText(self._unit_system.stress)
 
     def _build_load_bar_content(self) -> QWidget:
         """Every applicable load component as its own field, applied together.
@@ -1310,32 +1342,35 @@ class ModelingInterfacePage(QFrame):
         self.view_results_button.setEnabled(True)
         self.workspace_stack.setCurrentIndex(1)
 
-    def _toggle_3d_mode(self, checked: bool) -> None:
-        """Switch between a flat 2D sheet and a freely-orbited 3D view.
+    def _toggle_truss_mode(self, checked: bool) -> None:
+        """Only affects members drawn from now on — a truss/frame member is a
+        drawing-time choice (pinned both ends vs moment-connected), not a
+        property that can be flipped retroactively without redrawing it."""
+        self.canvas.element_family = "truss" if checked else "frame"
 
-        Turning 3D on is one-way for the *data*: the canvas already carries
-        model coordinates in three dimensions the moment it is drawn (a 2D canvas
-        is just the special case where every z is 0), so nothing is lost by
-        entering 3D mode with an empty or already-drawn model. The *view* can
-        still be switched back to the flat 2D plan by unchecking the toggle —
-        useful for typing exact coordinates — without losing any 3D geometry.
+    def _enable_3d_mode(self) -> None:
+        """Switch this page's canvas from a flat 2D sheet to a freely-orbited
+        3D view, once, at construction time.
+
+        2D and 3D are separate work areas (separate ``ModelingInterfacePage``
+        instances — see ``start_in_3d``), each with its own canvas, so there is
+        no live toggle here and no way back to 2D for a page built this way.
         """
-        if checked and self.canvas.ndm != 3:
-            self.canvas.enter_3d_mode()
-            self.canvas.model_changed.connect(self._refresh_3d_preview)
-            self._refresh_plane_selectors()
-            # Not relied on to happen via the plane-selector's own signal: Qt may
-            # auto-select a combo box's first item while population is still
-            # signal-blocked, in which case the later setCurrentIndex(0) is a
-            # no-op and currentIndexChanged never fires.
-            self.preview_3d.set_active_plane(
-                str(self.canvas.work_plane.kind), self.canvas.work_plane.offset
-            )
-            self._refresh_3d_preview()
-            self._load_target_changed()
-            self._refresh_support_custom_row()
-        self.level_bar.setVisible(checked)
-        self.canvas_stack.setCurrentWidget(self.preview_3d_panel if checked else self.canvas)
+        self.canvas.enter_3d_mode()
+        self.canvas.model_changed.connect(self._refresh_3d_preview)
+        self._refresh_plane_selectors()
+        # Not relied on to happen via the plane-selector's own signal: Qt may
+        # auto-select a combo box's first item while population is still
+        # signal-blocked, in which case the later setCurrentIndex(0) is a
+        # no-op and currentIndexChanged never fires.
+        self.preview_3d.set_active_plane(
+            str(self.canvas.work_plane.kind), self.canvas.work_plane.offset
+        )
+        self._refresh_3d_preview()
+        self._load_target_changed()
+        self._refresh_support_custom_row()
+        self.level_bar.setVisible(True)
+        self.canvas_stack.setCurrentWidget(self.preview_3d_panel)
         # Whichever surface is now on screen needs its picking mode to match
         # whatever tool is already active, not just whatever it was left at.
         self._sync_picking_mode()

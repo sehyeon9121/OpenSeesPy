@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from openframe.core.domain import DEFAULT_UNIT_SYSTEM, StructuralModel, UnitSystem
+from openframe.features.viewport.items.element_label_item import ElementLabelItem
 from openframe.features.viewport.items.nodal_load_item import (
     LOAD_CASE_COLORS,
     NodalLoadItem,
@@ -125,6 +126,15 @@ class StructuralScene(QGraphicsScene):
             item.setData(0, ("element", element.tag))
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             self.addItem(item)
+
+            element_label = ElementLabelItem(element.tag)
+            element_label.setPos((start.x() + end.x()) / 2.0, (start.y() + end.y()) / 2.0)
+            # Off by default everywhere this scene is used (the imported-model
+            # viewer has no filter checkbox for it yet, and a frame result view
+            # is already dense with diagram labels) — ResultViewport turns it on
+            # itself for a truss result, where 부재 번호 is exactly what's needed.
+            element_label.setVisible(False)
+            self.addItem(element_label)
 
         for node in model.nodes.values():
             point = self.project_coordinates(node.x, node.y, node.z)

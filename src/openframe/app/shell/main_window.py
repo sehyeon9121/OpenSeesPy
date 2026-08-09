@@ -177,29 +177,31 @@ class MainWindow(QMainWindow):
         )
 
     def _start_new_model_workspace(self) -> None:
-        """Open the authoring shell at its first prerequisite step."""
+        """2D structural-mechanics problems are usually determinate textbook
+        statics that need no material or section input — jump straight to
+        the 2D canvas instead of the setup wizard."""
         self._current_model_source = None
         self.navigation.hide()
         self.header.hide()
-        self.direct_model_workspace.set_current_step("setup")
+        self.direct_model_workspace.start_2d_model()
         self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
-        self.statusBar().showMessage(
-            "New 2D Model · 기본 설정부터 새 모델을 작성합니다"
-        )
+        self.statusBar().showMessage("New 2D Model · 2D 캔버스에서 바로 시작합니다")
 
     def _start_new_3d_model_workspace(self) -> None:
-        """3D has no material-free/stiffness fork to choose and no separate
-        material or section step worth showing first — jump straight to the
-        canvas with 3D mode already on, instead of the 2D setup wizard."""
+        """3D models generally do need real materials and sections to mean
+        anything, unlike the 2D case — open the authoring shell at its first
+        prerequisite step (setup, then materials/sections) instead of jumping
+        straight to the canvas. This still lands on its own 3D canvas
+        (``geometry_3d``), a distinct page from the 2D one, so a 2D session's
+        geometry never appears here and vice versa."""
         self._current_model_source = None
         self.navigation.hide()
         self.header.hide()
-        geometry_page = self.direct_model_workspace.geometry_page
-        if not geometry_page.mode_3d_toggle.isChecked():
-            geometry_page.mode_3d_toggle.setChecked(True)
-        self.direct_model_workspace.set_current_step("geometry")
+        self.direct_model_workspace.start_3d_model()
         self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
-        self.statusBar().showMessage("New 3D Model · 3D 캔버스에서 바로 시작합니다")
+        self.statusBar().showMessage(
+            "New 3D Model · 기본 설정부터 새 모델을 작성합니다"
+        )
 
     def _show_model_workspace(self) -> None:
         self._resume_section = "model"

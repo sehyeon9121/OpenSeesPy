@@ -199,10 +199,58 @@ class ResultDataPanel(QFrame):
             "The same panel will support nonlinear increments and time-history steps."
         )
 
+    def _is_truss_model(self) -> bool:
+        if self._model is None or not self._model.elements:
+            return False
+        return all(
+            "truss" in element.element_type.lower()
+            for element in self._model.elements.values()
+        )
+
+    def _refresh_truss_axial_table(self) -> None:
+        """Member / i-j joints / axial force / 인장·압축·0부재 — what a 부재력 표
+        for a truss actually needs, instead of the frame table's N/V/M-i columns
+        (V and M are always zero for a two-force member, so they say nothing)."""
+        unit = self._unit_system
+        result = self._result
+        model = self._model
+        self.result_table.setColumnCount(4)
+        self.result_table.setHorizontalHeaderLabels(
+            ("부재", "절점 (i-j)", f"축력 N ({unit.force})", "상태")
+        )
+        elements = (
+            []
+            if result is None or model is None
+            else sorted(result.element_results.values(), key=lambda item: item.element_tag)
+        )
+        values = {}
+        for element in elements:
+            try:
+                axial = member_diagrams(element)[0]
+            except ValueError:
+                continue
+            values[element.element_tag] = axial.points[0].value
+        noise_floor = max((abs(v) for v in values.values()), default=0.0) * 1.0e-9
+
+        self.result_table.setRowCount(len(elements))
+        for row, element in enumerate(elements):
+            member = model.elements.get(element.element_tag)
+            joints = f"{member.node_i}-{member.node_j}" if member is not None else "-"
+            value = values.get(element.element_tag, 0.0)
+            is_zero = abs(value) <= noise_floor
+            status = "0부재" if is_zero else "인장" if value > 0.0 else "압축"
+            for column, text in enumerate(
+                (str(element.element_tag), joints, f"{value:.6g}", status)
+            ):
+                self.result_table.setItem(row, column, QTableWidgetItem(text))
+
     def _refresh_table(self) -> None:
         unit = self._unit_system
         result = self._result
         is_3d = self._model is not None and self._model.ndm == 3
+        if self._result_type == "axial" and self._is_truss_model() and not is_3d:
+            self._refresh_truss_axial_table()
+            return
         if self._result_type in {"axial", "shear", "moment"}:
             if is_3d:
                 self.result_table.setColumnCount(7)

@@ -84,6 +84,11 @@ class StaticsDrawingCanvas(QGraphicsView):
         self.element_loads: dict[int, UniformElementLoad] = {}
         self.embedded_nodes: dict[int, tuple[int, float]] = {}
         self.mode = "select"
+        # "frame" members carry moment/shear/axial; "truss" members are pinned at
+        # both ends and carry axial force only. This governs every member drawn
+        # from now on, not the members already on the canvas — matching how a
+        # real truss/frame is a whole-model choice, not a per-click one.
+        self.element_family = "frame"
         self.selection_filter = "all"
         self.grid = 1.0
         self._member_start: int | None = None
@@ -603,7 +608,7 @@ class StaticsDrawingCanvas(QGraphicsView):
             return None
         self._record_history()
         tag = max(self.elements, default=0) + 1
-        self.elements[tag] = Element(tag, node_i, node_j, "frame")
+        self.elements[tag] = Element(tag, node_i, node_j, self.element_family)
         for candidate_tag in self.nodes:
             if candidate_tag not in {node_i, node_j}:
                 self._attach_node_to_member(candidate_tag, preferred_member=tag)

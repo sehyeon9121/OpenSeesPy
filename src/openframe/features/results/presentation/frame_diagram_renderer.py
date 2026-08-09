@@ -137,6 +137,7 @@ class FrameDiagramRenderer:
                 maximum,
                 signed_offset,
                 unit,
+                is_truss="truss" in element.element_type.lower(),
             )
         self._bridge_junctions(scene, node_touches)
         return abs(maximum_offset)
@@ -199,6 +200,8 @@ class FrameDiagramRenderer:
         maximum: float,
         maximum_offset: float,
         unit: str,
+        *,
+        is_truss: bool = False,
     ) -> None:
         base_points: list[QPointF] = []
         diagram_points: list[QPointF] = []
@@ -245,7 +248,9 @@ class FrameDiagramRenderer:
             scene.addItem(connector)
 
         self._draw_signs(scene, element_tag, diagram, base_points, diagram_points, maximum)
-        self._draw_values(scene, element_tag, diagram, diagram_points, unit, maximum)
+        self._draw_values(
+            scene, element_tag, diagram, diagram_points, unit, maximum, is_truss=is_truss
+        )
 
     def _draw_signs(
         self,
@@ -282,6 +287,8 @@ class FrameDiagramRenderer:
         diagram_points: list[QPointF],
         unit: str,
         maximum: float,
+        *,
+        is_truss: bool = False,
     ) -> None:
         first = diagram.points[0]
         last = diagram.points[-1]
@@ -301,13 +308,21 @@ class FrameDiagramRenderer:
         if peak is not None:
             labelled.append((diagram.points[peak].value, diagram_points[peak]))
 
+        # A truss member's axial force is what tells the user 인장/압축/0부재 — a
+        # genuine zero-force member must still get a label (it's the answer, not
+        # noise), unlike a near-zero reading on a frame member's diagram.
+        truss_axial = is_truss and diagram.kind == DiagramKind.AXIAL
         noise_floor = maximum * _RELATIVE_NOISE_TOLERANCE
         for value, position in labelled:
-            if abs(value) <= noise_floor:
+            is_zero = abs(value) <= noise_floor
+            if is_zero and not truss_axial:
                 continue
+            text = f"{value:.4g} {unit}"
+            if truss_axial:
+                text += " (0부재)" if is_zero else " (인장)" if value > 0.0 else " (압축)"
             self._add_text(
                 scene,
-                f"{value:.4g} {unit}",
+                text,
                 position,
                 QColor("#66429a"),
                 8,
