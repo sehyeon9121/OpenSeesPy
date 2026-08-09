@@ -9,24 +9,14 @@ object never adds another button to learn.
 
 import json
 from pathlib import Path
-from typing import Callable, ClassVar
+from typing import ClassVar
 
-from PySide6.QtCore import QPropertyAnimation, QRectF, QSize, Qt
-from PySide6.QtGui import (
-    QColor,
-    QIcon,
-    QKeySequence,
-    QPainter,
-    QPainterPath,
-    QPen,
-    QPixmap,
-    QShortcut,
-)
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
-    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -35,7 +25,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -45,353 +34,28 @@ from PySide6.QtWidgets import (
 from openframe.core.domain import DEFAULT_UNIT_SYSTEM, FORCE_UNITS, LENGTH_UNITS, UnitSystem
 from openframe.features.analysis.statics import MaterialFreeStaticsSolver, check_determinacy
 from openframe.features.model.drawing import PlaneKind
+from openframe.features.model.presentation.canvas_glyphs import (
+    _LOAD_TARGET_OPTIONS,
+    _SUPPORT_OPTIONS,
+    _paint_load_glyph,
+    _paint_node_kind_glyph,
+    _paint_support_glyph,
+    _render_glyph_icon,
+)
+from openframe.features.model.presentation.floating_properties_window import (
+    _FloatingPropertiesWindow,
+)
+from openframe.features.model.presentation.rectangle_section_preview import (
+    _RectangleSectionPreview,
+)
+from openframe.features.model.presentation.safe_spinbox import SafeDoubleSpinBox, SafeSpinBox
+from openframe.features.model.presentation.slide_out_section import (
+    _SlideOutGroup,
+    _SlideOutSection,
+)
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
-
-
-class SafeDoubleSpinBox(QDoubleSpinBox):
-    """Prevent a scrolling gesture from silently changing an engineering value,
-    and let the user type as many decimal places as they need. ``decimals()``
-    is set generously high (see ``_number``) so Qt's input validator never
-    blocks a keystroke; ``textFromValue`` then trims the trailing zeros that
-    a high fixed ``decimals()`` would otherwise pad every displayed value
-    with, so "5" still reads as "5", not "5.0000000000"."""
-
-    def wheelEvent(self, event) -> None:
-        event.ignore()
-
-    def textFromValue(self, value: float) -> str:
-        text = f"{value:.{self.decimals()}f}"
-        if "." in text:
-            text = text.rstrip("0").rstrip(".")
-        return text or "0"
-
-
-class SafeSpinBox(QSpinBox):
-    def wheelEvent(self, event) -> None:
-        event.ignore()
-
-
-#: (button label, tooltip, glyph key, restraint preset). Restraint presets are always
-#: the 2D (Ux, Uy, Rz) triple, matching the combo box they replaced — a 3D selection
-#: never matches one of these by length and always falls through to "커스텀", exactly
-#: as before.
-_SUPPORT_OPTIONS: tuple[tuple[str, str, str, tuple[bool, bool, bool] | None], ...] = (
-    ("자유", "자유 (지점 없음)", "free", (False, False, False)),
-    ("핀", "핀 지점 (회전 자유)", "pin", (True, True, False)),
-    ("수직롤러", "수직 롤러 — 수평(X) 반력만, 수직으로 구름", "roller_v", (True, False, False)),
-    ("수평롤러", "수평 롤러 — 수직(Y) 반력만, 수평으로 구름", "roller_h", (False, True, False)),
-    ("고정", "고정 지점", "fixed", (True, True, True)),
-    ("커스텀", "커스텀 (자유도 직접 지정)", "custom", None),
-)
-
-
-def _paint_support_glyph(painter: QPainter, key: str, color: str) -> None:
-    """Draw one support symbol on a 32x32 logical canvas.
-
-    Deliberately mirrors the shapes ``SupportItem`` already draws on the canvas
-    (features/viewport/items/support_item.py) so a button's icon and the glyph it
-    places on the model are visually the same symbol, just simplified for icon size.
-    """
-    if key == "free":
-        painter.drawEllipse(QRectF(13.0, 13.0, 6.0, 6.0))
-        return
-    if key == "fixed":
-        painter.drawLine(16, 4, 16, 14)
-        ground_pen = QPen(QColor(color), 2.4)
-        ground_pen.setCosmetic(True)
-        painter.setPen(ground_pen)
-        painter.drawLine(6, 14, 26, 14)
-        painter.setPen(QPen(QColor(color), 1.6))
-        for x in range(6, 27, 5):
-            painter.drawLine(x, 15, x - 4, 21)
-        return
-    if key == "pin":
-        triangle = QPainterPath()
-        triangle.moveTo(16, 4)
-        triangle.lineTo(7, 18)
-        triangle.lineTo(25, 18)
-        triangle.closeSubpath()
-        painter.drawPath(triangle)
-        painter.drawLine(5, 19, 27, 19)
-        for x in range(5, 28, 5):
-            painter.drawLine(x, 20, x - 3, 25)
-        return
-    if key == "roller_h":
-        # Restrains Uy only -> rests on the ground, free to roll horizontally.
-        triangle = QPainterPath()
-        triangle.moveTo(16, 4)
-        triangle.lineTo(7, 16)
-        triangle.lineTo(25, 16)
-        triangle.closeSubpath()
-        painter.drawPath(triangle)
-        painter.drawEllipse(QRectF(8.0, 17.0, 6.0, 6.0))
-        painter.drawEllipse(QRectF(18.0, 17.0, 6.0, 6.0))
-        painter.drawLine(5, 25, 27, 25)
-        return
-    if key == "roller_v":
-        # Restrains Ux only -> rests against a wall, free to roll vertically.
-        triangle = QPainterPath()
-        triangle.moveTo(20, 16)
-        triangle.lineTo(8, 7)
-        triangle.lineTo(8, 25)
-        triangle.closeSubpath()
-        painter.drawPath(triangle)
-        painter.drawEllipse(QRectF(21.0, 8.0, 6.0, 6.0))
-        painter.drawEllipse(QRectF(21.0, 18.0, 6.0, 6.0))
-        painter.drawLine(29, 5, 29, 27)
-        return
-    # custom
-    painter.drawLine(16, 4, 16, 10)
-    painter.drawRect(QRectF(9.0, 10.0, 14.0, 12.0))
-    painter.drawLine(7, 24, 25, 24)
-
-
-def _paint_node_kind_glyph(painter: QPainter, hinge: bool, color: str) -> None:
-    """강결(rigid joint) vs 활절점(hinge) — a crossed solid dot versus an open
-    circle with the connecting lines stopping short of it, the standard textbook
-    distinction between a moment-continuous and a moment-released joint."""
-    if hinge:
-        painter.drawLine(4, 16, 12, 16)
-        painter.drawLine(20, 16, 28, 16)
-        painter.drawEllipse(QRectF(11.0, 11.0, 10.0, 10.0))
-        return
-    painter.drawLine(16, 4, 16, 28)
-    painter.drawLine(4, 16, 28, 16)
-    painter.setBrush(QColor(color))
-    painter.drawEllipse(QRectF(12.5, 12.5, 7.0, 7.0))
-
-
-#: (button label, tooltip, target key, glyph key) for the 하중 대상 icon row.
-_LOAD_TARGET_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
-    ("집중하중", "노드에 힘·모멘트를 직접 가하는 절점 하중", "node", "point"),
-    ("등분포하중", "부재 길이를 따라 균일하게 분포된 하중", "element", "uniform"),
-    (
-        "사다리꼴하중",
-        "부재 양 끝(i, j)에서 크기가 다른 선형변화 분포하중 — 한쪽을 0으로 두면 삼각형 하중이 됩니다.",
-        "element_trapezoid",
-        "trapezoid",
-    ),
-)
-
-
-def _paint_load_glyph(painter: QPainter, key: str, color: str) -> None:
-    """집중하중(nodal point load) vs 등분포하중(uniform element load) vs
-    사다리꼴하중(linearly-varying element load) — one arrow landing on a point,
-    several evenly spaced same-length arrows hanging from a line, or arrows
-    that grow from short to tall, the standard textbook symbols for each."""
-    if key == "point":
-        painter.drawLine(16, 3, 16, 19)
-        head = QPainterPath()
-        head.moveTo(16, 27)
-        head.lineTo(11, 18)
-        head.lineTo(21, 18)
-        head.closeSubpath()
-        painter.setBrush(QColor(color))
-        painter.drawPath(head)
-        return
-    if key == "trapezoid":
-        # a line with three arrows of increasing length hanging from it
-        painter.drawLine(4, 4, 28, 10)
-        for x, top in ((7, 8), (16, 6), (25, 4)):
-            painter.drawLine(x, top, x, 25)
-            head = QPainterPath()
-            head.moveTo(x, 29)
-            head.lineTo(x - 3, 22)
-            head.lineTo(x + 3, 22)
-            head.closeSubpath()
-            painter.setBrush(QColor(color))
-            painter.drawPath(head)
-        return
-    # uniform: a line with three evenly spaced arrows hanging from it
-    painter.drawLine(4, 6, 28, 6)
-    for x in (9, 16, 23):
-        painter.drawLine(x, 6, x, 19)
-        head = QPainterPath()
-        head.moveTo(x, 27)
-        head.lineTo(x - 3, 19)
-        head.lineTo(x + 3, 19)
-        head.closeSubpath()
-        painter.setBrush(QColor(color))
-        painter.drawPath(head)
-
-
-def _render_glyph_icon(paint: Callable[[QPainter, str], None], size: int = 32) -> QIcon:
-    """Build a QIcon with matched Off/On pixmaps (dark-slate / white) so a
-    checkable QToolButton's icon reads correctly both unchecked (light
-    background) and checked (filled accent-blue background) without any QSS
-    icon-swapping tricks."""
-    icon = QIcon()
-    for color, state in (("#35485f", QIcon.State.Off), ("#ffffff", QIcon.State.On)):
-        pixmap = QPixmap(size * 2, size * 2)
-        pixmap.setDevicePixelRatio(2.0)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        pen = QPen(QColor(color), 1.6)
-        pen.setCosmetic(True)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        paint(painter, color)
-        painter.end()
-        icon.addPixmap(pixmap, QIcon.Mode.Normal, state)
-    return icon
-
-
-class _RectangleSectionPreview(QWidget):
-    """A tiny live-rendered rectangle, scaled to the member's own width:height
-    ratio, so typing a section's dimensions gives an immediate visual instead
-    of trusting two numbers to look "right" in your head."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setFixedSize(64, 64)
-        self.setToolTip("입력한 폭·높이 비율의 단면 미리보기")
-        self._width = 0.3
-        self._height = 0.5
-
-    def set_dimensions(self, width: float, height: float) -> None:
-        self._width = max(width, 0.001)
-        self._height = max(height, 0.001)
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        margin = 8.0
-        box = QRectF(self.rect()).adjusted(margin, margin, -margin, -margin)
-        scale = min(box.width() / self._width, box.height() / self._height)
-        rect_width = self._width * scale
-        rect_height = self._height * scale
-        rect = QRectF(
-            box.center().x() - rect_width / 2.0,
-            box.center().y() - rect_height / 2.0,
-            rect_width,
-            rect_height,
-        )
-        pen = QPen(QColor("#174ea6"), 1.6)
-        painter.setPen(pen)
-        painter.setBrush(QColor(23, 78, 166, 45))
-        painter.drawRect(rect)
-
-
-class _SlideOutGroup:
-    """Accordion controller: expanding one member collapses every other one in
-    the group. 지점/노드 유형/부재/하중 all live in the same canvas-top bar, and
-    leaving more than one open at a time just recreates the "다 나열되어
-    있다" clutter this bar exists to avoid."""
-
-    def __init__(self) -> None:
-        self._sections: list[_SlideOutSection] = []
-
-    def add(self, section: "_SlideOutSection") -> None:
-        self._sections.append(section)
-
-    def notify_expanded(self, expanded: "_SlideOutSection") -> None:
-        for section in self._sections:
-            if section is not expanded:
-                section.set_expanded(False)
-
-
-class _SlideOutSection(QWidget):
-    """A "title ▸" toggle that reveals ``content`` sliding open sideways.
-
-    Used to keep the canvas-top bar (지점/노드 유형/부재/하중) compact by default
-    instead of always showing every icon and field: most of the time you are
-    drawing, not setting a support or a load, so those controls only need to
-    be one click away, not permanently taking up width.
-    """
-
-    def __init__(
-        self,
-        title: str,
-        content: QWidget,
-        group: "_SlideOutGroup | None" = None,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._title = title
-        self._content = content
-        self._expanded_width: int | None = None
-        self._group = group
-        if group is not None:
-            group.add(self)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        self.toggle_button = QToolButton()
-        self.toggle_button.setObjectName("slideOutToggle")
-        self.toggle_button.setCheckable(True)
-        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._update_toggle_text()
-        self.toggle_button.clicked.connect(self._toggle)
-        layout.addWidget(self.toggle_button)
-
-        content.setParent(self)
-        content.setMaximumWidth(0)
-        content.setMinimumWidth(0)
-        layout.addWidget(content)
-
-        self._animation = QPropertyAnimation(content, b"maximumWidth", self)
-        self._animation.setDuration(160)
-
-    def _update_toggle_text(self) -> None:
-        arrow = "▾" if self.toggle_button.isChecked() else "▸"
-        self.toggle_button.setText(f"{self._title} {arrow}")
-
-    def _toggle(self, checked: bool) -> None:
-        self.set_expanded(checked)
-
-    def set_expanded(self, expanded: bool) -> None:
-        if self._expanded_width is None:
-            # sizeHint() is only meaningful once the content has real children
-            # laid out, which is true by the time this first runs (built in
-            # the caller before wrapping it here).
-            self._expanded_width = max(self._content.sizeHint().width(), 1)
-        self.toggle_button.setChecked(expanded)
-        self._update_toggle_text()
-        self._animation.stop()
-        self._animation.setStartValue(self._content.maximumWidth())
-        self._animation.setEndValue(self._expanded_width if expanded else 0)
-        self._animation.start()
-        if expanded and self._group is not None:
-            self._group.notify_expanded(self)
-
-
-class _FloatingPropertiesWindow(QDialog):
-    """A small non-modal window for a property editor whose content is too
-    tall to sit inline in the canvas-top bar without stretching the whole
-    bar's height and shrinking the canvas — 부재 속성 (section/material + pin
-    releases + node insertion) is the one case of this so far, since it stacks
-    several rows vertically while every other top-bar section (지점/노드 유형/
-    하중) lays its content out as a single horizontal row. Non-modal so the
-    canvas stays clickable to select a different member while the window is
-    open — the fields inside it already resync to whatever is selected on
-    every ``_sync_property_panel`` call, window open or not."""
-
-    def __init__(
-        self,
-        title: str,
-        content: QWidget,
-        on_close: Callable[[], None],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent, Qt.WindowType.Tool)
-        self.setWindowTitle(title)
-        self._on_close = on_close
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.addWidget(content)
-        self.setFixedWidth(320)
-
-    def closeEvent(self, event) -> None:
-        self._on_close()
-        super().closeEvent(event)
 
 
 class ModelingInterfacePage(QFrame):
