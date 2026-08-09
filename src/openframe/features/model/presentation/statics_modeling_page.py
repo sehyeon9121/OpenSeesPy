@@ -16,24 +16,15 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
-    QComboBox,
-    QDoubleSpinBox,
-    QFrame,
     QGraphicsEllipseItem,
     QGraphicsItemGroup,
     QGraphicsLineItem,
     QGraphicsScene,
     QGraphicsView,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QStackedWidget,
-    QVBoxLayout,
     QWidget,
 )
 
 from openframe.core.domain import (
-    DEFAULT_UNIT_SYSTEM,
     BoundaryCondition,
     Element,
     LoadCaseKind,
@@ -41,9 +32,7 @@ from openframe.core.domain import (
     Node,
     StructuralModel,
     UniformElementLoad,
-    UnitSystem,
 )
-from openframe.features.analysis.statics import MaterialFreeStaticsSolver, check_determinacy
 from openframe.features.model.drawing import (
     PlaneKind,
     SnapOptions,
@@ -54,7 +43,6 @@ from openframe.features.model.drawing import (
     resolve_snap,
 )
 from openframe.features.model.drawing.coordinates import direction_degrees, distance
-from openframe.features.results.presentation.result_viewport import ResultViewport
 
 
 def _lerp(start: float, end: float, fraction: float) -> float:
@@ -2000,111 +1988,3 @@ class StaticsDrawingCanvas(QGraphicsView):
     def _member_at_view(self, position) -> int | None:
         key = self._item_key(position)
         return key[1] if key and key[0] == "element" else None
-
-
-class StaticsModelingPage(QFrame):
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._unit_system = DEFAULT_UNIT_SYSTEM
-        self._solver = MaterialFreeStaticsSolver()
-        root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 12)
-        toolbar = QHBoxLayout()
-        self.canvas = StaticsDrawingCanvas()
-        for text, mode in (("선택", "select"), ("절점", "node"), ("부재", "member")):
-            button = QPushButton(text)
-            button.clicked.connect(lambda checked=False, value=mode: self.canvas.set_mode(value))
-            toolbar.addWidget(button)
-        self.support_kind = QComboBox()
-        self.support_kind.addItem("핀", (True, True, False))
-        self.support_kind.addItem("수직 롤러", (True, False, False))
-        self.support_kind.addItem("수평 롤러", (False, True, False))
-        self.support_kind.addItem("고정", (True, True, True))
-        support = QPushButton("지점 배치")
-        support.clicked.connect(self._support_mode)
-        toolbar.addWidget(self.support_kind)
-        toolbar.addWidget(support)
-        self.fy = self._number(-10.0)
-        load = QPushButton("절점하중 배치")
-        load.clicked.connect(self._load_mode)
-        toolbar.addWidget(QLabel("Fy"))
-        toolbar.addWidget(self.fy)
-        toolbar.addWidget(load)
-        self.qy = self._number(-10.0)
-        uniform = QPushButton("분포하중 배치")
-        uniform.clicked.connect(self._uniform_mode)
-        toolbar.addWidget(QLabel("qy"))
-        toolbar.addWidget(self.qy)
-        toolbar.addWidget(uniform)
-        delete = QPushButton("삭제")
-        delete.clicked.connect(self.canvas.delete_selected)
-        toolbar.addWidget(delete)
-        toolbar.addStretch(1)
-        self.solve_button = QPushButton("해석")
-        self.solve_button.clicked.connect(self.solve)
-        toolbar.addWidget(self.solve_button)
-        root.addLayout(toolbar)
-        self.status = QLabel("절점 도구로 절점을 배치한 뒤 부재를 연결하세요.")
-        root.addWidget(self.status)
-        self.stack = QStackedWidget()
-        self.stack.addWidget(self.canvas)
-        result_page = QFrame()
-        result_layout = QVBoxLayout(result_page)
-        result_tools = QHBoxLayout()
-        back = QPushButton("모델로 돌아가기")
-        back.clicked.connect(lambda: self.stack.setCurrentWidget(self.canvas))
-        result_tools.addWidget(back)
-        for text, kind in (("반력", "reaction"), ("N", "axial"), ("V", "shear"), ("M", "moment")):
-            button = QPushButton(text)
-            button.clicked.connect(lambda checked=False, value=kind: self.viewport.set_result_type(value))
-            result_tools.addWidget(button)
-        result_tools.addStretch(1)
-        result_layout.addLayout(result_tools)
-        self.viewport = ResultViewport()
-        result_layout.addWidget(self.viewport)
-        self.stack.addWidget(result_page)
-        root.addWidget(self.stack, 1)
-        self.canvas.model_changed.connect(self._update_status)
-
-    def set_unit_system(self, unit_system: UnitSystem) -> None:
-        self._unit_system = unit_system
-        self.viewport.set_unit_system(unit_system)
-
-    def solve(self) -> None:
-        model = self.canvas.build_model()
-        check = check_determinacy(model)
-        self.status.setText(check.message)
-        result = self._solver.solve(model)
-        if result.status.value != "completed":
-            return
-        self.viewport.set_model(model)
-        self.viewport.show_result(result)
-        self.viewport.set_result_type("reaction")
-        self.stack.setCurrentIndex(1)
-
-    def _support_mode(self) -> None:
-        self.canvas.support_restraints = self.support_kind.currentData()
-        self.canvas.set_mode("support")
-
-    def _load_mode(self) -> None:
-        self.canvas.pending_nodal_load = (0.0, self.fy.value(), 0.0)
-        self.canvas.set_mode("nodal_load")
-
-    def _uniform_mode(self) -> None:
-        self.canvas.pending_uniform_load = (0.0, self.qy.value())
-        self.canvas.set_mode("uniform_load")
-
-    def _update_status(self) -> None:
-        model = self.canvas.build_model()
-        self.status.setText(
-            f"절점 {len(model.nodes)} · 부재 {len(model.elements)} · "
-            f"지점 {len(model.boundaries)} · 하중 {len(model.nodal_loads) + len(model.element_loads)}"
-        )
-
-    @staticmethod
-    def _number(value: float) -> QDoubleSpinBox:
-        field = QDoubleSpinBox()
-        field.setRange(-1_000_000.0, 1_000_000.0)
-        field.setValue(value)
-        field.setMaximumWidth(90)
-        return field
