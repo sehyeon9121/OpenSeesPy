@@ -937,7 +937,20 @@ class ModelingInterfacePage(QFrame):
         self.load_form_layout.setSpacing(6)
         self.load_fields: dict[str, QDoubleSpinBox] = {}
         root.addLayout(self.load_form_layout)
-        root.addWidget(self._build_load_polar_group())
+        polar_button = QToolButton()
+        polar_button.setObjectName("slideOutToggle")
+        polar_button.setCheckable(True)
+        polar_button.setText("각도 입력 ▸")
+        polar_button.setToolTip(
+            "크기·각도로 Fx/Fy를 계산해주는 보조 계산기를 작은 창에서 엽니다 "
+            "— 경사 하중이나 경사 부재에 수직인 하중을 넣을 때만 필요합니다."
+        )
+        polar_button.clicked.connect(self._toggle_load_polar_window)
+        root.addWidget(polar_button)
+        self.load_polar_button = polar_button
+        self.load_polar_window = _FloatingPropertiesWindow(
+            "각도로 하중 입력", self._build_load_polar_group(), self._on_load_polar_window_closed, self
+        )
         apply_button = QPushButton("적용")
         apply_button.setToolTip("선택 대상에 적용 (전체 성분)")
         apply_button.clicked.connect(self._apply_load)
@@ -953,7 +966,7 @@ class ModelingInterfacePage(QFrame):
         Fx/Fy components in most textbook figures, but not always), or a load
         perpendicular to a sloped member (e.g. wind pressure on a gable roof)
         that would otherwise mean computing sin/cos of the member's own slope
-        by hand before it could be typed in at all. Only ever visible for
+        by hand before it could be typed in at all. Only ever reachable for
         집중하중(node) — 등분포하중/사다리꼴하중 already work in the member's
         own local axes (qx/qy), so "perpendicular to a sloped member" is
         already just qy there, nothing extra needed.
@@ -961,27 +974,38 @@ class ModelingInterfacePage(QFrame):
         This never touches the model directly — it only writes into the
         existing Fx/Fy fields, so the ordinary 적용 button is still what
         actually commits anything, same as typing Fx/Fy by hand.
+
+        Laid out as a small vertical form (not another horizontal row) since
+        this now lives in its own floating window (``load_polar_window``)
+        rather than inline in the top bar — the top bar was the whole
+        problem this got pulled out of: every load-related control packed
+        into one un-wrapping ``QHBoxLayout`` eventually ran out of width and
+        started clipping/squishing fields, reported as "하중 세팅에서 글자나
+        칸이 잘리고 눌렸다".
         """
         self.load_polar_group = QWidget()
         group = self.load_polar_group
-        layout = QHBoxLayout(group)
+        layout = QVBoxLayout(group)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        layout.addWidget(QLabel("|  크기·각도"))
+        layout.setSpacing(8)
+        magnitude_row = QHBoxLayout()
+        magnitude_row.addWidget(QLabel("크기"))
         self.load_magnitude = self._number(0.0)
-        self.load_magnitude.setMaximumWidth(76)
         self.load_magnitude.setToolTip(
             "합력의 크기 — 부호를 반대로 하면 각도의 정반대 방향이 됩니다."
         )
-        layout.addWidget(self.load_magnitude)
+        magnitude_row.addWidget(self.load_magnitude, 1)
+        layout.addLayout(magnitude_row)
+        angle_row = QHBoxLayout()
+        angle_row.addWidget(QLabel("각도"))
         self.load_angle = self._number(0.0)
-        self.load_angle.setMaximumWidth(70)
         self.load_angle.setToolTip(
             "전역 +X축에서 반시계 방향으로 잰 각도(°) — 그리기 모드의 "
             "길이<각도 입력(예: 5<30)과 같은 규칙입니다."
         )
-        layout.addWidget(self.load_angle)
-        layout.addWidget(QLabel("°"))
+        angle_row.addWidget(self.load_angle, 1)
+        angle_row.addWidget(QLabel("°"))
+        layout.addLayout(angle_row)
         to_fxfy_button = QPushButton("Fx·Fy로 변환")
         to_fxfy_button.setToolTip("크기·각도를 위 Fx/Fy 칸에 채웁니다 — 적용을 눌러야 실제로 저장됩니다.")
         to_fxfy_button.clicked.connect(self._apply_magnitude_angle_to_fxfy)
@@ -1416,6 +1440,21 @@ class ModelingInterfacePage(QFrame):
         self.member_window_button.setChecked(False)
         self.member_window_button.setText("부재 ▸")
 
+    def _toggle_load_polar_window(self, checked: bool) -> None:
+        self.load_polar_button.setText("각도 입력 ▾" if checked else "각도 입력 ▸")
+        if checked:
+            button = self.load_polar_button
+            self.load_polar_window.move(button.mapToGlobal(button.rect().bottomLeft()))
+            self.load_polar_window.show()
+            self.load_polar_window.raise_()
+            self.load_polar_window.activateWindow()
+        else:
+            self.load_polar_window.hide()
+
+    def _on_load_polar_window_closed(self) -> None:
+        self.load_polar_button.setChecked(False)
+        self.load_polar_button.setText("각도 입력 ▸")
+
     def _node_selection_summary(self) -> str:
         """Count the selection as 노드 (rigid) versus 절점 (hinge) — MIDAS's split,
         not just a label swap: a 절점 is specifically where rotation is released,
@@ -1633,12 +1672,16 @@ class ModelingInterfacePage(QFrame):
             field.setToolTip(tooltip)
             self.load_form_layout.addWidget(QLabel(f"{short_label}:"))
             self.load_form_layout.addWidget(field)
-        if hasattr(self, "load_polar_group"):
+        if hasattr(self, "load_polar_button"):
             # 등분포/사다리꼴하중 already work in the member's own local axes
             # (qx/qy), so "perpendicular to a sloped member" is already just
             # qy there - the magnitude/angle calculator only has a job to do
             # for 집중하중, where Fx/Fy are always global-axis components.
-            self.load_polar_group.setVisible(target == "node")
+            is_node_target = target == "node"
+            self.load_polar_button.setVisible(is_node_target)
+            if not is_node_target and self.load_polar_button.isChecked():
+                self.load_polar_button.setChecked(False)
+                self._toggle_load_polar_window(False)
 
     def _apply_load(self) -> None:
         if self._current_load_target() == "node":
