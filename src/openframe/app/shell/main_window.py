@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QFileDialog,
     QMainWindow,
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from openframe.app.shell.analysis_progress_banner import AnalysisProgressBanner
 from openframe.app.shell.analysis_results_sidebar import AnalysisResultsSidebar
-from openframe.app.shell.app_header import AppHeader
+from openframe.app.shell.app_header import APP_ICON_PATH, AppHeader
 from openframe.app.shell.direct_model_workspace import DirectModelWorkspace
 from openframe.app.shell.start_workspace import StartWorkspace
 from openframe.app.shell.workspace_navigation import WorkspaceNavigation
@@ -66,6 +67,8 @@ class MainWindow(QMainWindow):
         self._workspace_sessions: dict[str, _WorkspaceSession] = {}
         self._current_session_key: str | None = None
         self.setWindowTitle("OpenFrame Studio")
+        if APP_ICON_PATH.exists():
+            self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.resize(1440, 860)
         self.setMinimumSize(980, 620)
 

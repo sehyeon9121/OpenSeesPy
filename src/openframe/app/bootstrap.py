@@ -12,8 +12,10 @@ def run_desktop_app() -> int:
     os.environ.setdefault("QSG_RHI_BACKEND", "opengl")
 
     # Qt imports stay at the application boundary so domain modules remain GUI-independent.
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
+    from openframe.app.shell.app_header import APP_ICON_PATH
     from openframe.app.shell.main_window import MainWindow
     from openframe.app.shell.theme import apply_application_theme
     from openframe.core.domain import AnalysisKind
@@ -27,6 +29,8 @@ def run_desktop_app() -> int:
     application = QApplication(sys.argv)
     application.setApplicationName("OpenFrame Studio")
     application.setOrganizationName("OpenFrame")
+    if APP_ICON_PATH.exists():
+        application.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     apply_application_theme(application)
 
     model_importer = OpenSeesModelImporter()

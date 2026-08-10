@@ -22,16 +22,16 @@ QPushButton#brandMark {
     max-height: 30px;
     border: 0;
     border-radius: 6px;
-    background: #174ea6;
+    background: transparent;
     color: #ffffff;
     font-weight: 700;
     padding: 0;
 }
 QPushButton#brandMark:hover {
-    background: #123f89;
+    background: #e7ecf3;
 }
 QPushButton#brandMark:pressed {
-    background: #0f3574;
+    background: #d7dee8;
 }
 QLabel#brandName {
     font-size: 12pt;
