@@ -4,6 +4,8 @@ See ``canvas_work_planes.py`` for why this is a mixin rather than a
 standalone class.
 """
 
+import math
+
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItemGroup, QGraphicsLineItem
@@ -111,6 +113,8 @@ class _RenderingMixin:
                 self._draw_support(node, self.boundaries[tag], scale)
             if tag in self.nodal_loads:
                 self._draw_nodal_load(node, self.nodal_loads[tag].values, scale)
+            if self._pending_load_preview is not None and tag in self._pending_load_preview[0]:
+                self._draw_nodal_load(node, self._pending_load_preview[1], scale, preview=True)
         if self._member_start in plane_nodes:
             node = self._projected_node(self.nodes[self._member_start])
             self.scene_model.addEllipse(
@@ -393,15 +397,46 @@ class _RenderingMixin:
         item.setPen(pen)
         return item
 
-    def _draw_nodal_load(self, node: Node, values: tuple[float, ...], scale: float) -> None:
+    def _draw_nodal_load(
+        self, node: Node, values: tuple[float, ...], scale: float, *, preview: bool = False
+    ) -> None:
         fx, fy, mz = (*values, 0.0, 0.0, 0.0)[:3]
         origin = QPointF(node.x * scale, -node.y * scale)
-        if fx:
+        suffix = " (미적용)" if preview else ""
+        if fx and fy:
+            # An inclined load (both components nonzero, e.g. from the
+            # 부재 수직 입력) reads as one arrow along the true resultant
+            # direction - drawing it as two separate axis-aligned Fx/Fy
+            # arrows crossing at the node looked like unrelated clutter
+            # rather than one inclined force. The label reads as "magnitude
+            # @ angle" rather than raw Fx/Fy too - the input side already
+            # hides Fx/Fy behind 크기/각도 for exactly this reason (most
+            # nodal loads are "perpendicular to this member, magnitude X",
+            # not something naturally known in global components), so the
+            # canvas label matching that vocabulary avoids surfacing the
+            # Fx/Fy numbers the user never typed in the first place.
+            length = math.hypot(fx, fy)
+            unit = QPointF(fx / length, -fy / length)  # scene y is flipped vs model y
+            angle = math.degrees(math.atan2(fy, fx))
+            self._draw_arrow(
+                origin - unit * 38, origin, f"P {length:g} ∠{angle:.1f}°{suffix}", preview=preview
+            )
+        elif fx:
             direction = -1.0 if fx > 0 else 1.0
-            self._draw_arrow(origin + QPointF(direction * 38, 0), origin, f"Fx {fx:g}")
-        if fy:
+            self._draw_arrow(
+                origin + QPointF(direction * 38, 0), origin, f"Fx {fx:g}{suffix}", preview=preview
+            )
+        elif fy:
             direction = 1.0 if fy > 0 else -1.0
-            self._draw_arrow(origin + QPointF(0, direction * 38), origin, f"Fy {fy:g}")
+            self._draw_arrow(
+                origin + QPointF(0, direction * 38), origin, f"Fy {fy:g}{suffix}", preview=preview
+            )
+        if preview:
+            # Mz preview isn't drawn - _apply_load's 시계방향/반시계방향 sign
+            # flip only happens at commit time (see below), so previewing it
+            # here without the flip would show the wrong rotation sense; the
+            # redesigned workflow's actual concern is the force direction.
+            return
         if mz:
             # mz itself stays the standard right-hand-rule value (+ = CCW
             # about +Z) the solver actually uses - only the printed number is
@@ -571,8 +606,16 @@ class _RenderingMixin:
         text_item.setDefaultTextColor(color)
         text_item.setPos(label_point + QPointF(4, -14))
 
-    def _draw_arrow(self, start: QPointF, end: QPointF, text: str) -> None:
-        pen = QPen(QColor("#dc2626"), 2)
+    def _draw_arrow(
+        self, start: QPointF, end: QPointF, text: str, *, preview: bool = False
+    ) -> None:
+        # A not-yet-applied preview (see set_pending_load_preview) is dashed
+        # and a lighter colour so it reads as tentative, not yet indistinguishable
+        # from a load that is actually saved on the model.
+        color = QColor("#f59e0b") if preview else QColor("#dc2626")
+        pen = QPen(color, 2)
+        if preview:
+            pen.setStyle(Qt.PenStyle.DashLine)
         self.scene_model.addLine(start.x(), start.y(), end.x(), end.y(), pen)
         delta = start - end
         length = max((delta.x() ** 2 + delta.y() ** 2) ** 0.5, 1.0)
@@ -593,7 +636,7 @@ class _RenderingMixin:
         )
         if text:
             label = self.scene_model.addText(text)
-            label.setDefaultTextColor(QColor("#dc2626"))
+            label.setDefaultTextColor(color)
             label.setPos(start + QPointF(4, -18))
 
     def _item_key(self, position) -> tuple[str, int] | None:

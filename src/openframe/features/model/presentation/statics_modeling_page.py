@@ -94,6 +94,11 @@ class StaticsDrawingCanvas(
         self.support_angle = 0.0
         self.pending_nodal_load = (0.0, -10.0, 0.0)
         self.pending_uniform_load = (0.0, -10.0)
+        # Not-yet-committed load values (from the load bar's fields) shown as
+        # a dashed preview arrow while the user is still typing/dragging
+        # magnitude+angle, before 적용 is clicked — see
+        # ``set_pending_load_preview``.
+        self._pending_load_preview: tuple[frozenset[int], tuple[float, ...]] | None = None
         # Off by default: a determinate textbook problem almost never wants its
         # own member weight mixed into a hand-picked point load, and turning it
         # on requires each member to also carry a density (see _self_weight_local).

@@ -30,7 +30,25 @@ class _PropertyApplicationMixin:
         self._record_history()
         for node_tag in self.selected_nodes:
             self.nodal_loads[node_tag] = NodalLoad(node_tag, values)
+        self.set_pending_load_preview(None)
         self._changed()
+
+    def set_pending_load_preview(self, values: tuple[float, ...] | None) -> None:
+        """A dashed preview of the load bar's *current field values*, shown at
+        the selected node(s) before 적용 is clicked — so typing a magnitude
+        and angle (or Fx/Fy directly) shows the arrow immediately instead of
+        only after committing, letting the direction be checked/corrected
+        before it is actually saved. ``None`` (or every component being 0,
+        or nothing selected) clears it. This never touches ``nodal_loads``
+        itself — only ``apply_nodal_load_to_selection`` does that.
+        """
+        if not values or not any(values) or not self.selected_nodes:
+            if self._pending_load_preview is None:
+                return
+            self._pending_load_preview = None
+        else:
+            self._pending_load_preview = (frozenset(self.selected_nodes), values)
+        self._redraw()
 
     def set_member_end_release(self, element_tag: int, end: str, released: bool) -> None:
         """Pin one end of a drawn member, independent of any node-level hinge.

@@ -77,6 +77,11 @@ class ModelingInterfacePage(QFrame):
         self._solve_thread: MaterialFreeSolveThread | None = None
         self.analysis_progress = AnalysisProgressBanner(self)
         self.canvas = StaticsDrawingCanvas()
+        # Default 집중하중 input mode - plain Fx/Fy, same as every other axis
+        # field in this app; "부재 수직" (magnitude+auto-angle, see
+        # ``_build_perpendicular_load_fields``) is an opt-in toggle for when
+        # the load is naturally given relative to a sloped member instead.
+        self.load_input_mode = "component"
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 10)
@@ -933,24 +938,25 @@ class ModelingInterfacePage(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
         root.addWidget(self._build_load_target_icon_row())
+        # 기본은 다른 축 입력과 같은 방식인 Fx/Fy 직접 입력입니다. 경사 부재에
+        # 수직인 하중(풍하중 등)처럼 각도를 직접 계산하기 번거로운 경우를 위해
+        # '부재 수직' 입력(크기 하나 + 자동 각도)으로 전환할 수 있습니다. 노드가
+        # 아닌 대상(등분포/사다리꼴 하중)이나 3D에서는 의미가 없어 숨겨집니다.
+        self.load_mode_toggle = QPushButton("부재 수직 입력으로")
+        self.load_mode_toggle.setObjectName("slideOutToggle")
+        self.load_mode_toggle.setCheckable(True)
+        self.load_mode_toggle.setToolTip(
+            "기본은 Fx/Fy 직접 입력입니다. 이 버튼을 켜면 대신 '부재 수직' 입력으로 "
+            "바뀝니다 — 하중을 받을 노드를 선택하면(그 노드에 연결된 부재가 여러 "
+            "개면 Ctrl+클릭으로 기준 부재도 함께) 그 부재에 수직인 방향으로 크기 "
+            "하나만 넣으면 되고, Fx/Fy는 내부적으로만 계산됩니다."
+        )
+        self.load_mode_toggle.toggled.connect(self._toggle_load_input_mode)
+        root.addWidget(self.load_mode_toggle)
         self.load_form_layout = QHBoxLayout()
         self.load_form_layout.setSpacing(6)
         self.load_fields: dict[str, QDoubleSpinBox] = {}
         root.addLayout(self.load_form_layout)
-        polar_button = QToolButton()
-        polar_button.setObjectName("slideOutToggle")
-        polar_button.setCheckable(True)
-        polar_button.setText("각도 입력 ▸")
-        polar_button.setToolTip(
-            "크기·각도로 Fx/Fy를 계산해주는 보조 계산기를 작은 창에서 엽니다 "
-            "— 경사 하중이나 경사 부재에 수직인 하중을 넣을 때만 필요합니다."
-        )
-        polar_button.clicked.connect(self._toggle_load_polar_window)
-        root.addWidget(polar_button)
-        self.load_polar_button = polar_button
-        self.load_polar_window = _FloatingPropertiesWindow(
-            "각도로 하중 입력", self._build_load_polar_group(), self._on_load_polar_window_closed, self
-        )
         apply_button = QPushButton("적용")
         apply_button.setToolTip("선택 대상에 적용 (전체 성분)")
         apply_button.clicked.connect(self._apply_load)
@@ -959,66 +965,76 @@ class ModelingInterfacePage(QFrame):
         self._load_target_changed()
         return content
 
-    def _build_load_polar_group(self) -> QWidget:
-        """A magnitude+angle calculator that fills in Fx/Fy, for loads that
-        are naturally given by direction and size rather than by their global
-        components directly — an inclined point load (already resolved into
-        Fx/Fy components in most textbook figures, but not always), or a load
-        perpendicular to a sloped member (e.g. wind pressure on a gable roof)
-        that would otherwise mean computing sin/cos of the member's own slope
-        by hand before it could be typed in at all. Only ever reachable for
-        집중하중(node) — 등분포하중/사다리꼴하중 already work in the member's
-        own local axes (qx/qy), so "perpendicular to a sloped member" is
-        already just qy there, nothing extra needed.
+    def _toggle_load_input_mode(self, checked: bool) -> None:
+        self.load_input_mode = "perpendicular" if checked else "component"
+        self.load_mode_toggle.setText("성분(Fx,Fy) 직접 입력으로" if checked else "부재 수직 입력으로")
+        self._load_target_changed()
 
-        This never touches the model directly — it only writes into the
-        existing Fx/Fy fields, so the ordinary 적용 button is still what
-        actually commits anything, same as typing Fx/Fy by hand.
-
-        Laid out as a small vertical form (not another horizontal row) since
-        this now lives in its own floating window (``load_polar_window``)
-        rather than inline in the top bar — the top bar was the whole
-        problem this got pulled out of: every load-related control packed
-        into one un-wrapping ``QHBoxLayout`` eventually ran out of width and
-        started clipping/squishing fields, reported as "하중 세팅에서 글자나
-        칸이 잘리고 눌렸다".
+    def _build_perpendicular_load_fields(self) -> None:
+        """The default 집중하중 input: one 크기 (magnitude) field, an 각도
+        field that follows the selected node's member automatically (see
+        ``_fill_angle_perpendicular_to_selected_member``) but can still be
+        typed over by hand, and Mz. Fx/Fy are never shown here — they exist
+        only as hidden fields (still ``self.load_fields["fx"/"fy"]``, so
+        ``_apply_load``/``_node_load_values``/the preview all keep working
+        unchanged) that ``_apply_magnitude_angle_to_fxfy`` keeps in sync
+        live. Most nodal loads in practice are "perpendicular to this
+        member, magnitude X" (wind on a rafter, a point load at a sloped
+        member's end) - asking for Fx/Fy up front made the user compute the
+        member's own slope by hand before a load could be typed in at all.
         """
-        self.load_polar_group = QWidget()
-        group = self.load_polar_group
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        magnitude_row = QHBoxLayout()
-        magnitude_row.addWidget(QLabel("크기"))
         self.load_magnitude = self._number(0.0)
+        self.load_magnitude.setRange(-1_000_000.0, 1_000_000.0)
+        self.load_magnitude.setMaximumWidth(76)
         self.load_magnitude.setToolTip(
-            "합력의 크기 — 부호를 반대로 하면 각도의 정반대 방향이 됩니다."
+            "부재에 수직인 방향으로 작용하는 힘의 크기 — 부호를 반대로 하면 "
+            "반대 방향이 됩니다."
         )
-        magnitude_row.addWidget(self.load_magnitude, 1)
-        layout.addLayout(magnitude_row)
-        angle_row = QHBoxLayout()
-        angle_row.addWidget(QLabel("각도"))
         self.load_angle = self._number(0.0)
+        self.load_angle.setRange(-1_000_000.0, 1_000_000.0)
+        self.load_angle.setMaximumWidth(76)
         self.load_angle.setToolTip(
-            "전역 +X축에서 반시계 방향으로 잰 각도(°) — 그리기 모드의 "
-            "길이<각도 입력(예: 5<30)과 같은 규칙입니다."
+            "전역 +X축에서 반시계 방향으로 잰 각도(°) — 하중을 받을 노드를 선택할 "
+            "때마다 그 노드에 연결된 부재를 기준으로 자동 채워집니다. 부재가 "
+            "여러 개(방향이 다름)면 Ctrl+클릭으로 기준 부재를 함께 선택하세요. "
+            "직접 고쳐 쓸 수도 있습니다."
         )
-        angle_row.addWidget(self.load_angle, 1)
-        angle_row.addWidget(QLabel("°"))
-        layout.addLayout(angle_row)
-        to_fxfy_button = QPushButton("Fx·Fy로 변환")
-        to_fxfy_button.setToolTip("크기·각도를 위 Fx/Fy 칸에 채웁니다 — 적용을 눌러야 실제로 저장됩니다.")
-        to_fxfy_button.clicked.connect(self._apply_magnitude_angle_to_fxfy)
-        layout.addWidget(to_fxfy_button)
-        perpendicular_button = QPushButton("선택 부재에 수직")
-        perpendicular_button.setToolTip(
-            "각도 칸을 선택된 부재의 수직 방향으로 채웁니다 — 경사 부재에 수직인 "
-            "하중(풍하중 등)을 각도를 직접 계산하지 않고 넣을 때 씁니다. 하중을 "
-            "받을 노드와 함께 기준이 될 부재도 선택하세요."
+        self.load_magnitude.valueChanged.connect(self._apply_magnitude_angle_to_fxfy)
+        self.load_angle.valueChanged.connect(self._apply_magnitude_angle_to_fxfy)
+        self.load_form_layout.addWidget(QLabel("크기:"))
+        self.load_form_layout.addWidget(self.load_magnitude)
+        self.load_form_layout.addWidget(QLabel("각도:"))
+        self.load_form_layout.addWidget(self.load_angle)
+        self.load_form_layout.addWidget(QLabel("°"))
+
+        fx_field = self._number(0.0)
+        fy_field = self._number(0.0)
+        for hidden_field in (fx_field, fy_field):
+            hidden_field.setParent(self)
+            hidden_field.hide()
+            hidden_field.valueChanged.connect(self._update_load_preview)
+        self.load_fields["fx"] = fx_field
+        self.load_fields["fy"] = fy_field
+
+        mz_field = self._number(0.0)
+        mz_field.setRange(-1_000_000.0, 1_000_000.0)
+        mz_field.setMaximumWidth(76)
+        mz_field.setToolTip(f"{self._COMPONENT_LABELS['mz']} — 시계방향(+) / 반시계방향(-)")
+        mz_field.valueChanged.connect(self._update_load_preview)
+        self.load_fields["mz"] = mz_field
+        self.load_form_layout.addWidget(QLabel("Mz:"))
+        self.load_form_layout.addWidget(mz_field)
+
+        recompute_button = QPushButton("각도 재계산")
+        recompute_button.setToolTip(
+            "각도를 선택된 노드(또는 Ctrl+클릭으로 함께 선택한 기준 부재)의 수직 "
+            "방향으로 다시 채웁니다 — 각도를 직접 고친 뒤 자동 계산값으로 되돌리고 "
+            "싶을 때 씁니다."
         )
-        perpendicular_button.clicked.connect(self._fill_angle_perpendicular_to_selected_member)
-        layout.addWidget(perpendicular_button)
-        return group
+        recompute_button.clicked.connect(lambda _checked=False: self._fill_angle_perpendicular_to_selected_member())
+        self.load_form_layout.addWidget(recompute_button)
+
+        self._fill_angle_perpendicular_to_selected_member(silent=True)
 
     def _apply_magnitude_angle_to_fxfy(self) -> None:
         magnitude = self.load_magnitude.value()
@@ -1039,9 +1055,78 @@ class ModelingInterfacePage(QFrame):
         elements = self.canvas.selected_elements
         return next(iter(elements)) if len(elements) == 1 else None
 
-    def _fill_angle_perpendicular_to_selected_member(self) -> None:
+    def _member_touching_selected_node(self) -> int | None:
+        """The one member touching the single selected (load-target) node,
+        used as a fallback reference when no member was explicitly
+        Ctrl-selected alongside it — 하중 targets a node, so a load-target
+        node with only one member at it (a rafter end, a cantilever tip, a
+        truss apex) has an unambiguous "perpendicular to the member" angle
+        without making the user hold Ctrl and click the member too.
+
+        A node touching two or more members is only genuinely ambiguous if
+        those members point in different directions. 부재 노드 삽입 (splitting
+        a drawn member at a point along its span) is a very common way to
+        get a second member at a node — both halves sit on the exact same
+        line, so "perpendicular to the member" is one unambiguous answer
+        regardless of which half is picked. Only a true corner/branch joint
+        (members at genuinely different angles) still needs an explicit
+        Ctrl-selected member.
+        """
+        nodes = self.canvas.selected_nodes
+        if len(nodes) != 1:
+            return None
+        (node_tag,) = nodes
+        node = self.canvas.nodes[node_tag]
+        touching: list[tuple[int, float, float]] = []
+        for tag, element in self.canvas.elements.items():
+            if element.node_i == node_tag:
+                other = self.canvas.nodes[element.node_j]
+            elif element.node_j == node_tag:
+                other = self.canvas.nodes[element.node_i]
+            else:
+                continue
+            touching.append((tag, other.x - node.x, other.y - node.y))
+        if not touching:
+            return None
+        first_tag, fx, fy = touching[0]
+        flen = math.hypot(fx, fy)
+        if flen == 0:
+            return None
+        for _tag, dx, dy in touching[1:]:
+            dlen = math.hypot(dx, dy)
+            if dlen == 0:
+                return None
+            # sine of the angle between the two directions, via the
+            # normalized 2D cross product - ~0 means the same line.
+            if abs((fx * dy - fy * dx) / (flen * dlen)) > 1e-6:
+                return None
+        return first_tag
+
+    def _fill_angle_perpendicular_to_selected_member(self, *, silent: bool = False) -> None:
+        """``silent`` skips the ⚠ warning — used when this runs automatically
+        on every selection change (see ``_selection_changed``), where an
+        ordinary click that doesn't happen to land on a usable reference
+        (nothing selected yet, a node with no member, mid-drawing) is not a
+        mistake worth interrupting the user about; the explicit "각도
+        재계산" button still surfaces it since there the user asked
+        specifically for this to work.
+        """
         tag = self._selected_reference_member_tag()
         if tag is None:
+            tag = self._member_touching_selected_node()
+        if tag is None:
+            if silent:
+                return
+            if len(self.canvas.selected_elements) > 1 or not self.canvas.selected_nodes:
+                self.selection_summary.setText(
+                    "⚠ 기준 부재를 정할 수 없습니다 — 하중을 받을 노드를 선택하세요 "
+                    "(그 노드에 부재가 둘 이상이면 Ctrl+클릭으로 기준 부재도 함께 선택)."
+                )
+            else:
+                self.selection_summary.setText(
+                    "⚠ 선택된 노드에 부재가 둘 이상 연결돼 있어 기준 부재를 정할 수 "
+                    "없습니다 — 기준으로 삼을 부재를 Ctrl+클릭으로 함께 선택하세요."
+                )
             return
         element = self.canvas.elements[tag]
         node_i = self.canvas.nodes[element.node_i]
@@ -1424,6 +1509,22 @@ class ModelingInterfacePage(QFrame):
 
     def _selection_changed(self) -> None:
         self._sync_property_panel()
+        if (
+            self.canvas.ndm == 2
+            and self._current_load_target() == "node"
+            and self.load_input_mode == "perpendicular"
+            and hasattr(self, "load_angle")
+        ):
+            # Follow the selection: whichever node/member is now selected
+            # becomes the new perpendicular-angle reference, silently (no ⚠
+            # warning noise on an ordinary click - see the ``silent`` docstring).
+            self._fill_angle_perpendicular_to_selected_member(silent=True)
+        # A pending (not-yet-applied) preview is keyed to whichever node(s)
+        # were selected when it was drawn - once the selection moves on, it
+        # either needs to jump to the new node(s) (if the field values are
+        # still nonzero) or disappear entirely (nothing selected any more),
+        # never linger pointing at a node that isn't selected any more.
+        self._update_load_preview()
 
     def _toggle_member_window(self, checked: bool) -> None:
         self.member_window_button.setText("부재 ▾" if checked else "부재 ▸")
@@ -1439,21 +1540,6 @@ class ModelingInterfacePage(QFrame):
     def _on_member_window_closed(self) -> None:
         self.member_window_button.setChecked(False)
         self.member_window_button.setText("부재 ▸")
-
-    def _toggle_load_polar_window(self, checked: bool) -> None:
-        self.load_polar_button.setText("각도 입력 ▾" if checked else "각도 입력 ▸")
-        if checked:
-            button = self.load_polar_button
-            self.load_polar_window.move(button.mapToGlobal(button.rect().bottomLeft()))
-            self.load_polar_window.show()
-            self.load_polar_window.raise_()
-            self.load_polar_window.activateWindow()
-        else:
-            self.load_polar_window.hide()
-
-    def _on_load_polar_window_closed(self) -> None:
-        self.load_polar_button.setChecked(False)
-        self.load_polar_button.setText("각도 입력 ▸")
 
     def _node_selection_summary(self) -> str:
         """Count the selection as 노드 (rigid) versus 절점 (hinge) — MIDAS's split,
@@ -1641,71 +1727,115 @@ class ModelingInterfacePage(QFrame):
         self.load_fields.clear()
         target = self._current_load_target()
         trapezoid = target == "element_trapezoid"
-        if target == "node":
-            components = (
-                self._NODE_LOAD_COMPONENTS_3D if self.canvas.ndm == 3 else self._NODE_LOAD_COMPONENTS_2D
-            )
+        is_node = target == "node"
+        # "부재 수직" input only makes sense for a node load in 2D - a member
+        # has one unambiguous perpendicular direction only within a plane.
+        # 등분포/사다리꼴하중 already work in the member's own local axes
+        # (qx/qy), so this mode toggle is meaningless for them too.
+        show_mode_toggle = is_node and self.canvas.ndm == 2
+        if hasattr(self, "load_mode_toggle"):
+            self.load_mode_toggle.setVisible(show_mode_toggle)
+        if show_mode_toggle and self.load_input_mode == "perpendicular":
+            self._build_perpendicular_load_fields()
         else:
-            components = ("qx", "qx_j", "qy", "qy_j") if trapezoid else ("qx", "qy")
-        for component in components:
-            field = self._number(0.0)
-            field.setRange(-1_000_000.0, 1_000_000.0)
-            field.setMaximumWidth(76)
-            unit = self._unit_system.moment if component[0] == "m" else self._unit_system.force
-            if target != "node":
-                unit = f"{self._unit_system.force}/{self._unit_system.length}"
-            self.load_fields[component] = field
-            full_label = self._COMPONENT_LABELS[component]
-            short_label = full_label.split(" ", 1)[0]
-            if trapezoid and component in ("qx", "qy"):
-                short_label += "(i)"
-            elif component.endswith("_j"):
-                short_label += "(j)"
-            tooltip = f"{full_label} ({unit})"
-            if component == "mz":
-                # Sign convention here is deliberately the opposite of the
-                # right-hand-rule value OpenSees itself receives (see
-                # _apply_load and _draw_nodal_load) - typed and displayed as
-                # 시계방향(+)/반시계방향(-), flipped at the boundary so the
-                # solver still gets the physically correct signed moment.
-                tooltip += " — 시계방향(+) / 반시계방향(-)"
-            field.setToolTip(tooltip)
-            self.load_form_layout.addWidget(QLabel(f"{short_label}:"))
-            self.load_form_layout.addWidget(field)
-        if hasattr(self, "load_polar_button"):
-            # 등분포/사다리꼴하중 already work in the member's own local axes
-            # (qx/qy), so "perpendicular to a sloped member" is already just
-            # qy there - the magnitude/angle calculator only has a job to do
-            # for 집중하중, where Fx/Fy are always global-axis components.
-            is_node_target = target == "node"
-            self.load_polar_button.setVisible(is_node_target)
-            if not is_node_target and self.load_polar_button.isChecked():
-                self.load_polar_button.setChecked(False)
-                self._toggle_load_polar_window(False)
+            if is_node:
+                components = (
+                    self._NODE_LOAD_COMPONENTS_3D if self.canvas.ndm == 3 else self._NODE_LOAD_COMPONENTS_2D
+                )
+            else:
+                components = ("qx", "qx_j", "qy", "qy_j") if trapezoid else ("qx", "qy")
+            for component in components:
+                field = self._number(0.0)
+                field.setRange(-1_000_000.0, 1_000_000.0)
+                field.setMaximumWidth(76)
+                unit = self._unit_system.moment if component[0] == "m" else self._unit_system.force
+                if not is_node:
+                    unit = f"{self._unit_system.force}/{self._unit_system.length}"
+                self.load_fields[component] = field
+                full_label = self._COMPONENT_LABELS[component]
+                short_label = full_label.split(" ", 1)[0]
+                if trapezoid and component in ("qx", "qy"):
+                    short_label += "(i)"
+                elif component.endswith("_j"):
+                    short_label += "(j)"
+                tooltip = f"{full_label} ({unit})"
+                if component == "mz":
+                    # Sign convention here is deliberately the opposite of the
+                    # right-hand-rule value OpenSees itself receives (see
+                    # _apply_load and _draw_nodal_load) - typed and displayed as
+                    # 시계방향(+)/반시계방향(-), flipped at the boundary so the
+                    # solver still gets the physically correct signed moment.
+                    tooltip += " — 시계방향(+) / 반시계방향(-)"
+                field.setToolTip(tooltip)
+                if is_node:
+                    field.valueChanged.connect(self._update_load_preview)
+                self.load_form_layout.addWidget(QLabel(f"{short_label}:"))
+                self.load_form_layout.addWidget(field)
+        if not is_node:
+            self.canvas.set_pending_load_preview(None)
+
+    def _node_load_values(self) -> tuple[float, ...]:
+        """Fx/Fy/(Fz/Mx/My/)Mz straight from the load bar's fields, in the
+        order ``apply_nodal_load_to_selection``/``NodalLoad`` expect.
+
+        Mz is typed in 시계방향(+)/반시계방향(-) - the opposite of the
+        right-hand-rule sign OpenSees itself expects for a moment about +Z -
+        so it gets negated right here, once, at the only place a user-typed
+        value turns into the values a ``NodalLoad`` actually stores. Shared
+        by ``_apply_load`` (commits it) and ``_update_load_preview`` (shows
+        it before commit) so the live preview can never disagree with what
+        적용 would actually save.
+        """
+        components = (
+            self._NODE_LOAD_COMPONENTS_3D if self.canvas.ndm == 3 else self._NODE_LOAD_COMPONENTS_2D
+        )
+        return tuple(
+            (-self.load_fields[component].value() if component == "mz" else self.load_fields[component].value())
+            for component in components
+        )
+
+    def _update_load_preview(self) -> None:
+        """Live dashed preview of the load bar's fields at the selected
+        node(s), refreshed on every keystroke/spin — so an inclined load's
+        direction can be checked (and corrected) before 적용 is even
+        clicked, instead of only finding out it was wrong after committing."""
+        if not self.load_fields or self._current_load_target() != "node":
+            return
+        self.canvas.set_pending_load_preview(self._node_load_values())
 
     def _apply_load(self) -> None:
+        """A plain click on a node or member (without holding Ctrl) clears
+        whatever was already selected — see ``_toggle_selection`` — so it is
+        easy to end up with the wrong thing (or nothing) selected right
+        before pressing 적용, e.g. after clicking a member to fill the
+        수직 각도 and forgetting that this silently dropped the node picked
+        a moment earlier. ``apply_nodal_load_to_selection``/
+        ``apply_uniform_load_to_selection`` used to no-op in that case with
+        no feedback at all, which reads as "the button doesn't work" — this
+        now says so instead of doing nothing.
+        """
         if self._current_load_target() == "node":
-            components = (
-                self._NODE_LOAD_COMPONENTS_3D if self.canvas.ndm == 3 else self._NODE_LOAD_COMPONENTS_2D
-            )
-            # Mz is typed in 시계방향(+)/반시계방향(-) - the opposite of the
-            # right-hand-rule sign OpenSees itself expects for a moment about
-            # +Z - so it gets negated right here, once, at the only place a
-            # user-typed value turns into a stored NodalLoad. Everything
-            # downstream of this (the solver, saved projects, canvas
-            # rendering) works in the standard signed convention; only the
-            # typed field and its on-canvas label (_draw_nodal_load) flip it
-            # back for display.
-            values = tuple(
-                (-self.load_fields[component].value() if component == "mz" else self.load_fields[component].value())
-                for component in components
-            )
-            self.canvas.apply_nodal_load_to_selection(values)
+            if not self.canvas.selected_nodes:
+                self.selection_summary.setText(
+                    "⚠ 선택된 노드가 없어 하중을 적용하지 못했습니다 — 하중을 받을 노드를 "
+                    "클릭하세요 (부재를 함께 선택하려면 Ctrl+클릭)."
+                )
+                return
+            self.canvas.apply_nodal_load_to_selection(self._node_load_values())
         else:
+            if not self.canvas.selected_elements:
+                self.selection_summary.setText(
+                    "⚠ 선택된 부재가 없어 하중을 적용하지 못했습니다 — 하중을 받을 부재를 클릭하세요."
+                )
+                return
             values = (self.load_fields["qx"].value(), self.load_fields["qy"].value())
             if "qx_j" in self.load_fields:
                 values += (self.load_fields["qx_j"].value(), self.load_fields["qy_j"].value())
             self.canvas.apply_uniform_load_to_selection(values)
+        # A load actually landed - replace any stale ⚠ warning (e.g. from an
+        # earlier failed attempt on this same selection) with the normal
+        # selection summary, so success doesn't still look like an error.
+        self._sync_property_panel()
 
     def _add_nodes_from_coordinates(self) -> None:
         base_x, base_y = 0.0, 0.0

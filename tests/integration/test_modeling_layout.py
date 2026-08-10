@@ -298,6 +298,7 @@ def test_magnitude_and_angle_convert_to_fx_fy_matching_standard_trig() -> None:
     """각도 uses the same convention as the draw-mode 길이<각도 entry: degrees
     counter-clockwise from global +X."""
     page = _page()
+    page.load_mode_toggle.setChecked(True)
 
     page.load_magnitude.setValue(10.0)
     page.load_angle.setValue(30.0)
@@ -313,6 +314,7 @@ def test_perpendicular_to_member_button_fills_the_angle_field_from_member_slope(
     perpendicular/parallel to the rafter) can be entered without computing
     the member's own slope angle by hand first."""
     page = _page()
+    page.load_mode_toggle.setChecked(True)
     canvas = page.canvas
     horizontal_a = canvas.add_node(0.0, 0.0)
     horizontal_b = canvas.add_node(4.0, 0.0)
@@ -330,10 +332,168 @@ def test_perpendicular_to_member_button_fills_the_angle_field_from_member_slope(
     page._fill_angle_perpendicular_to_selected_member()
     assert page.load_angle.value() == pytest.approx(135.0)
 
-    # No selected member (0 or 2+) -> leaves whatever angle was already there.
+    # No selected member and no selected node -> nothing to reference, leaves
+    # whatever angle was already there.
+    canvas.selected_elements = set()
+    canvas.selected_nodes = set()
+    page._fill_angle_perpendicular_to_selected_member()
+    assert page.load_angle.value() == pytest.approx(135.0)
+
+
+def test_perpendicular_button_auto_detects_the_member_from_a_lone_load_target_node() -> None:
+    """The common case - a load at the end of a sloped member with only one
+    member there (a rafter end, a cantilever tip, a truss apex) - must not
+    require holding Ctrl and clicking the member too just to pick an
+    unambiguous reference: selecting only the load-target node is enough."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    sloped_a = canvas.add_node(0.0, 4.0)
+    sloped_b = canvas.add_node(4.0, 8.0)  # 45 degrees
+    canvas.add_member(sloped_a, sloped_b)
+
+    canvas.selected_nodes = {sloped_a}
     canvas.selected_elements = set()
     page._fill_angle_perpendicular_to_selected_member()
     assert page.load_angle.value() == pytest.approx(135.0)
+
+
+def test_perpendicular_button_warns_when_the_load_target_node_has_two_members() -> None:
+    """A rigid-frame joint with two or more members at the load-target node
+    is genuinely ambiguous - perpendicular to which one? - so the button
+    must say so instead of guessing or silently doing nothing."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    corner = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    up = canvas.add_node(0.0, 4.0)
+    canvas.add_member(corner, right)
+    canvas.add_member(corner, up)
+
+    canvas.selected_nodes = {corner}
+    canvas.selected_elements = set()
+    page.load_angle.setValue(7.0)
+    page._fill_angle_perpendicular_to_selected_member()
+
+    assert page.load_angle.value() == pytest.approx(7.0)
+    assert "기준 부재를 정할 수 없습니다" in page.selection_summary.text()
+
+
+def test_perpendicular_button_auto_detects_at_a_node_splitting_a_straight_member() -> None:
+    """부재 노드 삽입 (splitting a drawn member partway along its span - see
+    ``add_member_station_node``) leaves two members at the new node, but
+    both halves sit on the exact same line, so this is not the ambiguous
+    two-member case: perpendicular-to-either gives the same angle."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    bottom = canvas.add_node(0.0, 0.0)
+    top = canvas.add_node(4.0, 4.0)  # 45 degrees
+    member = canvas.add_member(bottom, top)
+    split_node = canvas.add_member_station_node(member, 0.5)
+
+    canvas.selected_nodes = {split_node}
+    canvas.selected_elements = set()
+    page._fill_angle_perpendicular_to_selected_member()
+
+    assert page.load_angle.value() == pytest.approx(135.0)
+    assert "기준 부재를 정할 수 없습니다" not in page.selection_summary.text()
+
+
+def test_node_loads_default_to_component_fx_fy_input() -> None:
+    """Fx/Fy is the default 집중하중 input, same as every other axis field in
+    this app - '부재 수직' (크기+자동 각도) is opt-in via the toggle, for
+    loads naturally given relative to a sloped member instead."""
+    page = _page()
+
+    assert page.load_input_mode == "component"
+    assert set(page.load_fields) == {"fx", "fy", "mz"}
+    assert not hasattr(page, "load_magnitude")
+    assert not hasattr(page, "load_angle")
+    assert page.load_mode_toggle.isVisible()
+    visible_widgets = {
+        page.load_form_layout.itemAt(i).widget() for i in range(page.load_form_layout.count())
+    }
+    assert page.load_fields["fx"] in visible_widgets
+    assert page.load_fields["fy"] in visible_widgets
+
+
+def test_toggling_to_perpendicular_mode_hides_fx_fy() -> None:
+    page = _page()
+
+    page.load_mode_toggle.setChecked(True)
+
+    assert page.load_input_mode == "perpendicular"
+    visible_widgets = {
+        page.load_form_layout.itemAt(i).widget() for i in range(page.load_form_layout.count())
+    }
+    assert page.load_fields["fx"] not in visible_widgets
+    assert page.load_fields["fy"] not in visible_widgets
+    assert page.load_magnitude in visible_widgets
+    assert page.load_angle in visible_widgets
+
+
+def test_selecting_a_node_silently_follows_it_with_the_perpendicular_angle() -> None:
+    """The angle used to require an explicit button press per selection -
+    now it just follows whichever node/member is selected, with no ⚠
+    warning noise for an ordinary click that doesn't land on a reference."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    a = canvas.add_node(0.0, 0.0)
+    b = canvas.add_node(4.0, 4.0)  # 45 degrees
+    canvas.add_member(a, b)
+
+    canvas.selected_nodes = {b}
+    canvas.selection_changed.emit()
+    assert page.load_angle.value() == pytest.approx(135.0)
+    assert "⚠" not in page.selection_summary.text()
+
+    # Selecting something with no usable reference must not warn either -
+    # only the explicit "각도 재계산" path does that.
+    canvas.selected_nodes = set()
+    canvas.selection_changed.emit()
+    assert "⚠" not in page.selection_summary.text()
+
+
+def test_perpendicular_load_end_to_end_stores_and_previews_the_resultant() -> None:
+    """크기 + auto-angle -> 적용 must store the same Fx/Fy the old
+    magnitude/angle calculator computed, and preview it live beforehand."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    a = canvas.add_node(0.0, 4.0)
+    b = canvas.add_node(4.0, 8.0)  # 45 degrees
+    canvas.add_member(a, b)
+
+    canvas.selected_nodes = {a}
+    canvas.selection_changed.emit()
+    assert page.load_angle.value() == pytest.approx(135.0)
+
+    page.load_magnitude.setValue(10.0)
+    expected_fx = 10.0 * math.cos(math.radians(135.0))
+    expected_fy = 10.0 * math.sin(math.radians(135.0))
+    assert page.load_fields["fx"].value() == pytest.approx(expected_fx)
+    assert page.load_fields["fy"].value() == pytest.approx(expected_fy)
+    assert canvas._pending_load_preview == ({a}, pytest.approx((expected_fx, expected_fy, 0.0)))
+
+    page._apply_load()
+    assert canvas.nodal_loads[a].values == pytest.approx((expected_fx, expected_fy, 0.0))
+
+
+def test_applying_a_node_load_with_nothing_selected_warns_instead_of_silently_doing_nothing() -> None:
+    """A plain click on a member (no Ctrl) clears an already-selected node -
+    see ``_toggle_selection`` - so it is easy to reach 적용 with no node
+    selected after using 선택 부재에 수직. That used to no-op with zero
+    feedback, which reads as "the button is broken"."""
+    page = _page()
+    page.load_fields["fx"].setValue(5.0)
+
+    page._apply_load()
+
+    assert not page.canvas.build_model().nodal_loads
+    assert "선택된 노드가 없어" in page.selection_summary.text()
 
 
 def test_load_fields_gain_fz_mx_my_once_3d_mode_is_active() -> None:

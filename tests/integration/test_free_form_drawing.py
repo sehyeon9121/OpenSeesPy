@@ -1,3 +1,4 @@
+import math
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -422,6 +423,70 @@ def test_a_hinge_node_is_labelled_as_a_joint_on_the_canvas_itself() -> None:
     assert f"절점{hinge}" in labels
     assert f"N{rigid}" in labels
     assert f"N{hinge}" not in labels
+
+
+def test_an_inclined_nodal_load_draws_one_combined_arrow_not_two_crossed_ones() -> None:
+    """Fx and Fy both nonzero (e.g. from 부재 수직 입력) is one inclined force,
+    not two independent ones - drawing it as two separate axis-aligned
+    Fx/Fy arrows crossing at the node used to look like unrelated clutter
+    rather than one inclined load. The label reads as magnitude+angle, not
+    raw Fx/Fy, since the user typing a load never sees Fx/Fy either (see
+    _build_perpendicular_load_fields)."""
+    from PySide6.QtWidgets import QGraphicsTextItem
+
+    canvas = _canvas()
+    node = canvas.place_point(0.0, 0.0)
+    canvas.selected_nodes = {node}
+    canvas.apply_nodal_load_to_selection((-5.14137, 8.57708, 0.0))
+
+    labels = {
+        item.toPlainText()
+        for item in canvas.scene_model.items()
+        if isinstance(item, QGraphicsTextItem)
+    }
+    load_labels = {label for label in labels if label.startswith("P ")}
+    assert load_labels == {"P 10 ∠120.9°"}
+
+
+def test_load_fields_show_a_dashed_preview_before_apply_is_clicked() -> None:
+    """Typing Fx/Fy (directly, or via 크기·각도) must show the arrow
+    immediately, not only after 적용 — otherwise a wrong angle is only
+    discovered after it is already committed."""
+    from PySide6.QtWidgets import QGraphicsTextItem
+
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+
+    page.load_fields["fx"].setValue(3.0)
+    page.load_fields["fy"].setValue(4.0)
+
+    assert page.canvas._pending_load_preview == ({node}, (3.0, 4.0, 0.0))
+    labels = {
+        item.toPlainText()
+        for item in page.canvas.scene_model.items()
+        if isinstance(item, QGraphicsTextItem)
+    }
+    assert any("미적용" in label for label in labels)
+    # 적용 commits it and the preview - now redundant with the real arrow -
+    # is cleared rather than left drawn on top of it.
+    page._apply_load()
+    assert page.canvas._pending_load_preview is None
+    assert page.canvas.nodal_loads[node].values == (3.0, 4.0, 0.0)
+
+
+def test_magnitude_and_angle_live_update_fx_fy_without_a_separate_convert_click() -> None:
+    """Fx·Fy로 변환 used to be a manual step easy to forget, leaving 적용 to
+    silently save zero - 크기/각도 now sync into Fx/Fy on every edit."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+
+    page.load_magnitude.setValue(10.0)
+    page.load_angle.setValue(30.0)
+
+    assert page.load_fields["fx"].value() == pytest.approx(10.0 * math.cos(math.radians(30.0)))
+    assert page.load_fields["fy"].value() == pytest.approx(10.0 * math.sin(math.radians(30.0)))
 
 
 def test_the_draw_tool_and_its_entry_field_are_wired_to_the_canvas() -> None:
