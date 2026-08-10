@@ -137,7 +137,7 @@ class _InputEventsMixin:
         if self._drag_start is not None:
             current = self._drag_current or self._drag_start
             rectangle = QRectF(self._drag_start, current).normalized()
-            self._select_in_rect(rectangle, crossing=current.x() < self._drag_start.x())
+            self._select_in_rect(rectangle, crossing=self._is_crossing_drag(self._drag_start, current))
             self._drag_start = None
             self._drag_current = None
             self._selection_changed()

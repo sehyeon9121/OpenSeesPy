@@ -11,7 +11,28 @@ from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItemGroup, QGraphic
 from openframe.core.domain import BoundaryCondition, Node, UniformElementLoad
 
 
+_CROSSING_DRAG_DEAD_ZONE_PX = 4.0
+
+
 class _RenderingMixin:
+    def _is_crossing_drag(self, start: QPointF, current: QPointF) -> bool:
+        """AutoCAD-style drag-select direction: left = crossing (also grabs
+        members the box merely touches), right/straight = window (only
+        members fully enclosed).
+
+        Comparing scene coordinates directly made this flip on jitter alone:
+        a drag meant to go straight down almost never has an exactly-zero
+        horizontal delta, so a pixel or two of hand tremor left was enough to
+        flip into crossing mode and sweep in touching members the user never
+        boxed - reported as "위에서 아래로 드래그하면 노드만 선택돼야 하는데
+        부재까지 같이 선택됨". Comparing in view-pixel space (not scene
+        space, which shrinks per pixel as you zoom in) with a small dead zone
+        fixes it without weakening an intentional left-drag crossing gesture.
+        """
+        start_px = self.mapFromScene(start)
+        current_px = self.mapFromScene(current)
+        return current_px.x() < start_px.x() - _CROSSING_DRAG_DEAD_ZONE_PX
+
     def _changed(self) -> None:
         self._redraw()
         self.model_changed.emit()
@@ -138,7 +159,7 @@ class _RenderingMixin:
             hint.setDefaultTextColor(QColor("#0f766e"))
             hint.setPos(marker + QPointF(10, 2))
         if self._drag_start is not None and self._drag_current is not None:
-            crossing = self._drag_current.x() < self._drag_start.x()
+            crossing = self._is_crossing_drag(self._drag_start, self._drag_current)
             selection_color = QColor("#16a34a" if crossing else "#2563eb")
             self.scene_model.addRect(
                 QRectF(self._drag_start, self._drag_current).normalized(),
