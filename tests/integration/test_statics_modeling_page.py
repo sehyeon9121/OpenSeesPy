@@ -166,6 +166,30 @@ def test_drag_direction_and_filter_control_window_or_crossing_selection() -> Non
     assert canvas.selected_nodes == {left}
 
 
+def test_clicking_a_filtered_out_item_preserves_the_current_selection() -> None:
+    """Regression test: _toggle_selection used to clear the current selection
+    *before* checking whether the clicked item even passed the active
+    selection_filter, so clicking the wrong kind of item (e.g. a node while
+    something had narrowed the filter to elements-only) silently wiped out a
+    perfectly valid member selection instead of just being ignored - reported
+    as "부재를 선택해 둔 채로 노드를 클릭했더니 선택이 없어짐"."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.selected_elements = {member}
+    canvas.selection_filter = "elements"
+
+    canvas._toggle_selection(("node", left), Qt.KeyboardModifier.NoModifier)
+
+    assert canvas.selected_elements == {member}
+    assert canvas.selected_nodes == set()
+
+
 def test_crossing_selection_only_picks_members_the_rectangle_actually_crosses() -> None:
     """Regression test: QLineF.intersects() reports UnboundedIntersection whenever
     the two *infinite* lines would cross somewhere, even nowhere near either

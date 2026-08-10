@@ -1495,6 +1495,20 @@ class ModelingInterfacePage(QFrame):
         short "qx:"/"Fx:" labels (not the full descriptive text, kept in the
         tooltip instead) because this strip now slides open sideways above the
         canvas rather than sitting as a vertical card in the right panel.
+
+        Deliberately does NOT narrow ``selection_filter`` to match the target
+        (nodes-only for 집중하중, elements-only for 등분포/사다리꼴) — that used
+        to happen here, back when 하중 was a modal tool you "activated" and
+        later left. Now it is an always-open accordion section with no
+        "leave this tool" step to widen the filter back afterward (the
+        widening only ever happened in ``_activate_select_tool``, itself only
+        reachable via Escape-from-draw or the rail's 선택 button) — so picking
+        an element-only load target here would silently make every later
+        click on a node do nothing, with no visible reason why, until the
+        user stumbled into one of those unrelated reset paths. 적용 already
+        no-ops safely against whatever is selected (see ``_apply_load``), so
+        there was never a correctness reason to narrow the filter, only a
+        now-stale convenience one from the old modal-tool design.
         """
         if not hasattr(self, "load_form_layout"):
             return
@@ -1510,10 +1524,8 @@ class ModelingInterfacePage(QFrame):
             components = (
                 self._NODE_LOAD_COMPONENTS_3D if self.canvas.ndm == 3 else self._NODE_LOAD_COMPONENTS_2D
             )
-            filter_key = "nodes"
         else:
             components = ("qx", "qx_j", "qy", "qy_j") if trapezoid else ("qx", "qy")
-            filter_key = "elements"
         for component in components:
             field = self._number(0.0)
             field.setRange(-1_000_000.0, 1_000_000.0)
@@ -1528,18 +1540,35 @@ class ModelingInterfacePage(QFrame):
                 short_label += "(i)"
             elif component.endswith("_j"):
                 short_label += "(j)"
-            field.setToolTip(f"{full_label} ({unit})")
+            tooltip = f"{full_label} ({unit})"
+            if component == "mz":
+                # Sign convention here is deliberately the opposite of the
+                # right-hand-rule value OpenSees itself receives (see
+                # _apply_load and _draw_nodal_load) - typed and displayed as
+                # 시계방향(+)/반시계방향(-), flipped at the boundary so the
+                # solver still gets the physically correct signed moment.
+                tooltip += " — 시계방향(+) / 반시계방향(-)"
+            field.setToolTip(tooltip)
             self.load_form_layout.addWidget(QLabel(f"{short_label}:"))
             self.load_form_layout.addWidget(field)
-        if hasattr(self, "selection_filter"):
-            self.selection_filter.setCurrentIndex(self.selection_filter.findData(filter_key))
 
     def _apply_load(self) -> None:
         if self._current_load_target() == "node":
             components = (
                 self._NODE_LOAD_COMPONENTS_3D if self.canvas.ndm == 3 else self._NODE_LOAD_COMPONENTS_2D
             )
-            values = tuple(self.load_fields[component].value() for component in components)
+            # Mz is typed in 시계방향(+)/반시계방향(-) - the opposite of the
+            # right-hand-rule sign OpenSees itself expects for a moment about
+            # +Z - so it gets negated right here, once, at the only place a
+            # user-typed value turns into a stored NodalLoad. Everything
+            # downstream of this (the solver, saved projects, canvas
+            # rendering) works in the standard signed convention; only the
+            # typed field and its on-canvas label (_draw_nodal_load) flip it
+            # back for display.
+            values = tuple(
+                (-self.load_fields[component].value() if component == "mz" else self.load_fields[component].value())
+                for component in components
+            )
             self.canvas.apply_nodal_load_to_selection(values)
         else:
             values = (self.load_fields["qx"].value(), self.load_fields["qy"].value())

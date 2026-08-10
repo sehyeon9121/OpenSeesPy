@@ -60,16 +60,30 @@ def _sign_runs(diagram: MemberDiagram) -> list[tuple[int, int]]:
     return runs
 
 
-def _interior_peak_index(diagram: MemberDiagram) -> int | None:
-    """Index of the largest value strictly inside the member, if it beats both ends."""
+def _interior_peaks(diagram: MemberDiagram) -> list[int]:
+    """Indices of every point strictly inside the member where the diagram
+    genuinely turns (a local max or min - the slope changes sign there).
+
+    Deliberately not gated on beating the two end values: a span whose
+    support/end moments happen to be larger than its own interior sagging
+    peak still needs that peak labelled - it is the actual maximum *within*
+    that span, and the number an engineer reading that span looks for, not
+    noise to hide just because some other point elsewhere is bigger. Member
+    sampling already inserts each exact zero-shear (turning point) position
+    as one of ``diagram.points`` (see build.py's ``_sample_positions`` /
+    ``_shear_zero_crossings``), so this only has to notice it, not
+    re-derive it.
+    """
     if len(diagram.points) <= 2:
-        return None
-    end_peak = max(abs(diagram.points[0].value), abs(diagram.points[-1].value))
-    interior = range(1, len(diagram.points) - 1)
-    candidate = max(interior, key=lambda index: abs(diagram.points[index].value))
-    if abs(diagram.points[candidate].value) <= end_peak * (1.0 + 1.0e-9):
-        return None
-    return candidate
+        return []
+    peaks = []
+    for index in range(1, len(diagram.points) - 1):
+        previous_value = diagram.points[index - 1].value
+        value = diagram.points[index].value
+        next_value = diagram.points[index + 1].value
+        if (value - previous_value) * (next_value - value) < 0.0:
+            peaks.append(index)
+    return peaks
 
 
 class FrameDiagramRenderer:
@@ -302,10 +316,9 @@ class FrameDiagramRenderer:
                 (last.value, diagram_points[-1]),
             ]
 
-        # On a sampled member the peak sits between the ends, and it is the number the
-        # engineer is looking for, so label it as well.
-        peak = _interior_peak_index(diagram)
-        if peak is not None:
+        # On a sampled member every genuine turning point sits between the ends,
+        # and each one is a number the engineer is looking for, so label them all.
+        for peak in _interior_peaks(diagram):
             labelled.append((diagram.points[peak].value, diagram_points[peak]))
 
         # A truss member's axial force is what tells the user 인장/압축/0부재 — a

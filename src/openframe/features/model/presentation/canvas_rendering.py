@@ -252,14 +252,21 @@ class _RenderingMixin:
     def _toggle_selection(
         self, key: tuple[str, int], modifiers: Qt.KeyboardModifier
     ) -> None:
-        if not modifiers & Qt.KeyboardModifier.ControlModifier:
-            self.selected_nodes.clear()
-            self.selected_elements.clear()
+        """Clicking something the active selection filter excludes (e.g. a
+        node while 등분포하중's element-only filter is narrowed) must be a
+        true no-op — it used to clear whatever was already validly selected
+        first and only *then* discover the click didn't qualify, so picking
+        the wrong kind of item by accident silently wiped out a member
+        selection you were still in the middle of applying a load to.
+        """
         kind, tag = key
         if self.selection_filter == "nodes" and kind != "node":
             return
         if self.selection_filter == "elements" and kind != "element":
             return
+        if not modifiers & Qt.KeyboardModifier.ControlModifier:
+            self.selected_nodes.clear()
+            self.selected_elements.clear()
         target = self.selected_nodes if kind == "node" else self.selected_elements
         if tag in target and modifiers & Qt.KeyboardModifier.ControlModifier:
             target.remove(tag)
@@ -375,7 +382,14 @@ class _RenderingMixin:
             direction = 1.0 if fy > 0 else -1.0
             self._draw_arrow(origin + QPointF(0, direction * 38), origin, f"Fy {fy:g}")
         if mz:
-            label = self.scene_model.addText(f"↻ Mz {mz:g}" if mz < 0 else f"↺ Mz {mz:g}")
+            # mz itself stays the standard right-hand-rule value (+ = CCW
+            # about +Z) the solver actually uses - only the printed number is
+            # flipped to the 시계방향(+)/반시계방향(-) convention the load
+            # field is typed in (see _apply_load), so what's shown here
+            # matches what the user typed. The arrow always reflects the true
+            # physical rotation, tied to the unflipped mz.
+            arrow = "↻" if mz < 0 else "↺"
+            label = self.scene_model.addText(f"{arrow} Mz {-mz:g}")
             label.setDefaultTextColor(QColor("#dc2626"))
             label.setPos(origin + QPointF(10, -38))
 

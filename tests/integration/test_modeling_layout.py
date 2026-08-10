@@ -267,7 +267,30 @@ def test_applying_a_load_sets_every_component_at_once_without_losing_earlier_one
     page._apply_load()
 
     load = page.canvas.build_model().nodal_loads[0]
-    assert load.values == pytest.approx((5.0, -12.0, 3.0))
+    # Mz is typed 시계방향(+)/반시계방향(-) - the opposite of the stored
+    # right-hand-rule sign OpenSees itself needs - so a typed +3 stores as -3.
+    assert load.values == pytest.approx((5.0, -12.0, -3.0))
+
+
+def test_a_clockwise_moment_is_typed_positive_and_stores_as_the_right_hand_rule_negative() -> None:
+    """시계방향(clockwise) is + in the field the user types, 반시계방향
+    (counter-clockwise) is - - the opposite of the signed value OpenSees
+    itself expects for a moment about +Z (+ = CCW). The flip has to happen
+    exactly once, here, so everything downstream (the solver, saved
+    projects) keeps working in the one standard convention."""
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+
+    page.load_fields["mz"].setValue(10.0)  # 10, clockwise
+    page._apply_load()
+    assert page.canvas.build_model().nodal_loads[0].values[2] == pytest.approx(-10.0)
+
+    page.canvas.selected_nodes = {node}
+    page.load_fields["mz"].setValue(-4.0)  # 4, counter-clockwise
+    page._apply_load()
+    assert page.canvas.build_model().nodal_loads[0].values[2] == pytest.approx(4.0)
 
 
 def test_load_fields_gain_fz_mx_my_once_3d_mode_is_active() -> None:
@@ -388,12 +411,18 @@ def test_escape_while_drawing_returns_to_select_and_syncs_the_rail_button() -> N
     assert page.draw_tool.isChecked() is False
 
 
-def test_returning_to_select_widens_a_selection_filter_left_narrowed_by_a_load_target() -> None:
-    """Regression test: choosing 부재 as the load target narrows the selection
-    filter to elements-only so the load section stays relevant to what you just
-    picked — but nothing ever widened it back. A later click on a node would
-    then be silently ignored with no visible reason why, which is exactly what
-    a user reported as "nodes suddenly can't be selected"."""
+def test_choosing_a_load_target_never_narrows_what_the_canvas_can_still_select() -> None:
+    """Regression test: choosing 부재 as the load target used to narrow the
+    selection filter to elements-only, permanently, since 하중 is now an
+    always-open accordion section with no "leave this tool" step left to
+    widen it back (that widening only ever happened in
+    _activate_select_tool, reachable only via Escape-from-draw or the rail's
+    선택 button) - so a later click on a node would be silently ignored with
+    no visible reason why, reported as "노드를 선택하려고 드래그했는데 안
+    잡힘, 그리기로 갔다가 취소해야 풀림" (the Escape-from-draw path happened
+    to widen the filter back as a side effect, which is how that workaround
+    ever "worked"). Picking a load target must never touch the filter at
+    all now — 적용 already no-ops safely against whatever is selected."""
     page = _page()
     member_a = page.canvas.add_node(0.0, 0.0)
     member_b = page.canvas.add_node(4.0, 0.0)
@@ -401,9 +430,6 @@ def test_returning_to_select_widens_a_selection_filter_left_narrowed_by_a_load_t
     other_node = page.canvas.add_node(4.0, 3.0)
 
     page.load_target_group.button(1).click()  # 등분포하중 (element)
-    assert page.canvas.selection_filter == "elements"
-
-    page._activate_select_tool()
     assert page.canvas.selection_filter == "all"
 
     page.canvas.selected_nodes = set()
