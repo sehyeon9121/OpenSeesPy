@@ -1,10 +1,16 @@
 """Free-form authoring surface for 2D structural-mechanics models.
 
-The layout keeps the canvas dominant: a narrow tool rail on the left, a coordinate
-entry strip under the canvas, and a property panel on the right that follows the
-selection.  Only selecting and drawing are tools; everything else — supports,
-hinges, loads — is a property of whatever is selected, so adding a new kind of
-object never adds another button to learn.
+The layout keeps the canvas dominant: a narrow tool rail on the left (only
+선택/그리기 — the two modes a click on the canvas can mean), a coordinate
+entry strip under the canvas, and a 우측 워크트리 panel on the right. A
+single-row category bar above the canvas (``_build_category_bar`` — 노드
+추가/이동·복사·배열/노드 분할/지점/노드 유형/부재/하중) picks which
+category's settings the 워크트리 panel shows; nothing is pinned there any
+more, so the panel is empty until a category is picked and shows exactly
+one at a time (``_build_property_panel``). Only selecting and drawing are
+tools; everything else — supports, hinges, loads — is a property page one
+click away, so adding a new kind of object never adds another mode to
+learn, just another category button.
 """
 
 import json
@@ -21,6 +27,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -49,20 +56,34 @@ from openframe.features.model.presentation.canvas_glyphs import (
     _paint_support_glyph,
     _render_glyph_icon,
 )
-from openframe.features.model.presentation.floating_properties_window import (
-    _FloatingPropertiesWindow,
-)
 from openframe.features.model.presentation.rectangle_section_preview import (
     _RectangleSectionPreview,
 )
 from openframe.features.model.presentation.safe_spinbox import SafeDoubleSpinBox, SafeSpinBox
-from openframe.features.model.presentation.slide_out_section import (
-    _SlideOutGroup,
-    _SlideOutSection,
-)
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
+
+
+class _CurrentPageOnlyStack(QStackedWidget):
+    """A ``QStackedWidget`` whose size hint comes only from the page actually
+    showing, not the widest of all seven — the plain version reports
+    ``max(sizeHint() for every page)`` even though six of them are hidden,
+    so the 300px-wide 우측 워크트리 scroll area (``_build_property_panel``)
+    had to make room for whichever category page happened to be widest
+    (부재's 단면 미리보기 + form, in practice) no matter which one was
+    actually open, forcing a horizontal scrollbar even on the narrow 노드
+    분할 page. Switching pages needs an explicit ``updateGeometry()`` since
+    Qt does not know a widget's size hint changed on its own.
+    """
+
+    def sizeHint(self):  # noqa: N802 - Qt override
+        current = self.currentWidget()
+        return current.sizeHint() if current is not None else super().sizeHint()
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt override
+        current = self.currentWidget()
+        return current.minimumSizeHint() if current is not None else super().minimumSizeHint()
 
 
 class ModelingInterfacePage(QFrame):
@@ -232,7 +253,7 @@ class ModelingInterfacePage(QFrame):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self._build_node_property_bar())
+        layout.addWidget(self._build_category_bar())
         self.mode_label = QLabel()
         self.mode_label.setContentsMargins(10, 6, 10, 6)
         self.mode_label.setObjectName("setupSummaryHint")
@@ -426,15 +447,75 @@ class ModelingInterfacePage(QFrame):
         layout.addWidget(end_chain)
         return bar
 
+    #: (category key, button label) for the single-row category bar above the
+    #: canvas — order here is both the button order and the 우측 워크트리
+    #: page order. Nothing is pinned any more: every one of these, including
+    #: 노드 추가/이동·복사·배열/노드 분할 (previously always-on in the right
+    #: panel), is now an equal category that opens on click. The previous
+    #: design's problem was exactly this asymmetry - 부재 노드 삽입·등분할 sat
+    #: at the bottom of an always-visible stack, invisible below the fold
+    #: unless you already knew to scroll for it; a first-time user had no way
+    #: to discover it. A single always-visible row of buttons has no fold to
+    #: hide behind.
+    _CATEGORY_OPTIONS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("add", "노드 추가"),
+        ("move", "이동 · 복사 · 배열"),
+        ("split", "노드 분할"),
+        ("support", "지점"),
+        ("kind", "노드 유형"),
+        ("member", "부재"),
+        ("load", "하중"),
+    )
+
+    def _build_category_bar(self) -> QFrame:
+        """The single-row bar above the canvas that picks what the 우측
+        워크트리 panel shows — see ``_CATEGORY_OPTIONS``. An exclusive
+        ``QButtonGroup`` already gives exactly the interaction wanted: click
+        a category to show it, click a different one to switch, and
+        clicking the already-active one is a no-op (Qt never lets an
+        exclusive group end up with nothing checked once something has been
+        checked) — so the panel stays open on whatever was last picked
+        instead of needing an explicit close button.
+        """
+        bar = QFrame()
+        bar.setObjectName("directModelCommandBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(6)
+        self.category_group = QButtonGroup(self)
+        self.category_group.setExclusive(True)
+        self.category_buttons: dict[str, QToolButton] = {}
+        for index, (key, label) in enumerate(self._CATEGORY_OPTIONS):
+            button = QToolButton()
+            button.setObjectName("slideOutToggle")
+            button.setCheckable(True)
+            button.setText(label)
+            self.category_group.addButton(button, index)
+            self.category_buttons[key] = button
+            layout.addWidget(button)
+        self.category_group.idClicked.connect(self._show_category_by_index)
+        layout.addStretch(1)
+        return bar
+
+    def _show_category_by_index(self, index: int) -> None:
+        self._show_category(self._CATEGORY_OPTIONS[index][0])
+
+    def _show_category(self, key: str) -> None:
+        button = self.category_buttons.get(key)
+        if button is not None:
+            button.setChecked(True)
+        self.category_stack.setCurrentIndex(self.category_pages[key])
+
     def _build_property_panel(self) -> QScrollArea:
-        """This panel is deliberately minimal and fixed: 좌표로 노드 추가,
-        이동·복사·배열, and 노드 삽입·등분할, all always visible, never
-        collapsed. Every other selection-dependent editor (지점, 노드 유형,
-        부재의 단면·재료·핀 해제, 하중) lives in the canvas-top bar's
-        accordion instead (``_build_node_property_bar``). 노드 삽입·등분할
-        moved out of that 부재 accordion and in here because it is a node/
-        geometry operation in the same family as 이동·복사·배열, not a
-        per-member property like section or material.
+        """우측 워크트리: 아무 카테고리도 고르지 않았으면 비어 있고, 상단
+        카테고리 바(``_build_category_bar``)에서 하나를 고르면 그 내용만
+        여기 나타난다 — 예전엔 노드 추가·이동복사배열만 항상 떠 있고
+        나머지(지점/노드유형/부재/하중)는 캔버스 위 아코디언에 있었는데,
+        그 비대칭 자체가 발견성 문제였다(부재 노드 삽입은 스크롤해야 보이는
+        마지막 섹션이라 처음 쓰는 사람은 있는지도 몰랐다). 지금은 일곱
+        카테고리 전부 같은 자격으로, 클릭하기 전엔 아무것도 차지하지 않고
+        클릭하면 그 하나만 이 폭(300px) 안에서 세로로 펼쳐진다 — 가로 폭
+        한계 때문에 글자가 잘리던 문제도 이걸로 같이 해결된다.
         """
         panel = QFrame()
         panel.setObjectName("modelingPropertyPanel")
@@ -446,9 +527,27 @@ class ModelingInterfacePage(QFrame):
         self.selection_summary.setWordWrap(True)
         root.addWidget(self.selection_summary)
 
-        root.addWidget(self._build_create_section())
-        root.addWidget(self._build_transform_section())
-        root.addWidget(self._build_member_edit_section())
+        self.category_stack = _CurrentPageOnlyStack()
+        self.category_stack.currentChanged.connect(lambda _index: self.category_stack.updateGeometry())
+        self.category_pages: dict[str, int] = {}
+        empty = QLabel("위에서 카테고리를 고르면\n여기에 설정이 표시됩니다.")
+        empty.setObjectName("setupSectionHint")
+        empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty.setWordWrap(True)
+        self.category_pages["empty"] = self.category_stack.addWidget(empty)
+        builders = {
+            "add": self._build_create_section,
+            "move": self._build_transform_section,
+            "split": self._build_member_edit_section,
+            "support": self._build_support_category,
+            "kind": self._build_node_kind_category,
+            "member": self._build_member_category,
+            "load": self._build_load_category,
+        }
+        for key, _label in self._CATEGORY_OPTIONS:
+            self.category_pages[key] = self.category_stack.addWidget(builders[key]())
+        self.category_stack.setCurrentIndex(self.category_pages["empty"])
+        root.addWidget(self.category_stack)
         root.addStretch(1)
         scroll = QScrollArea()
         scroll.setObjectName("modelingInspectorScroll")
@@ -458,8 +557,50 @@ class ModelingInterfacePage(QFrame):
         scroll.setWidget(panel)
         return scroll
 
+    def _build_support_category(self) -> QWidget:
+        section, root = self._section("지점", show_title=False)
+        root.addWidget(self._build_support_icon_row())
+        angle_row = QHBoxLayout()
+        angle_row.addWidget(QLabel("경사각(°)"))
+        self.support_angle = self._number(0.0)
+        self.support_angle.setRange(-360.0, 360.0)
+        self.support_angle.setToolTip(
+            "지지면이 수평에서 반시계 방향으로 기울어진 각도. 0이면 보통의 수평·수직 지점입니다."
+        )
+        self.support_angle.editingFinished.connect(self._apply_support)
+        angle_row.addWidget(self.support_angle, 1)
+        root.addLayout(angle_row)
+        self.support_custom_row = QWidget()
+        custom_layout = QGridLayout(self.support_custom_row)
+        custom_layout.setContentsMargins(0, 0, 0, 0)
+        custom_layout.setSpacing(6)
+        self.support_dof_checks: dict[str, QCheckBox] = {}
+        for i, dof in enumerate(("Ux", "Uy", "Uz", "Rx", "Ry", "Rz")):
+            box = QCheckBox(dof)
+            box.toggled.connect(self._apply_support)
+            self.support_dof_checks[dof] = box
+            custom_layout.addWidget(box, i // 3, i % 3)
+        self.support_custom_row.setVisible(False)
+        root.addWidget(self.support_custom_row)
+        return section
+
+    def _build_node_kind_category(self) -> QWidget:
+        section, root = self._section("노드 유형", show_title=False)
+        root.addWidget(self._build_node_kind_icon_row())
+        return section
+
+    def _build_member_category(self) -> QWidget:
+        section, root = self._section("부재", show_title=False)
+        root.addWidget(self._build_member_bar_content())
+        return section
+
+    def _build_load_category(self) -> QWidget:
+        section, root = self._section("하중", show_title=False)
+        root.addWidget(self._build_load_bar_content())
+        return section
+
     def _build_create_section(self) -> QWidget:
-        section, root = self._section("좌표로 노드 추가")
+        section, root = self._section("좌표로 노드 추가", show_title=False)
         self.node_relative = QCheckBox("상대좌표 (선택한 노드 기준)")
         self.node_relative.toggled.connect(self._refresh_create_section_hint)
         root.addWidget(self.node_relative)
@@ -505,101 +646,27 @@ class ModelingInterfacePage(QFrame):
                 "추가됩니다. 노드를 하나만 선택하면 그 노드가 기준점이 됩니다."
             )
 
-    def _build_node_property_bar(self) -> QFrame:
-        """지점/하중 — 캔버스 바로 위, 오른쪽 패널이 아니라 여기 고정된 가로
-        막대에 둔다. 선택 여부와 무관하게 항상 사용 가능하고(오른쪽 패널의
-        다른 always-on 위젯들과 동일한 이유 — no-op이 안전하고, 학생이 뭘 먼저
-        선택할 필요 없이 바로 컨트롤을 찾을 수 있어야 함), 캔버스 폭을 그대로
-        쓸 수 있다. 다만 그리는 동안에는 계속 필요한 게 아니라서, 기본은
-        "제목 ▸"만 보이고 눌러야 옆으로 슬라이드 열리며 실제 아이콘/입력칸이
-        나온다(``_SlideOutSection``). 지점/노드 유형/하중, 세 섹션은 한
-        ``_SlideOutGroup``(아코디언)으로 묶여 있어 하나를 펼치면 나머지는
-        자동으로 접힌다 — 여러 개를 동시에 펼쳐 두면 다시 다 나열된 느낌이
-        되므로. **부재만 예외** — 단면·재료·핀 해제·노드 삽입까지 여러 줄이
-        세로로 쌓여서, 이걸 옆으로 슬라이드하는 대신 인라인으로 펼치면 그
-        높이만큼 막대 전체가 세로로 늘어나 캔버스가 줄어든다. 그래서 부재는
-        슬라이드아웃이 아니라 별도의 작은 창(``_FloatingPropertiesWindow``,
-        비모달)으로 띄운다 — 막대 높이에 영향을 주지 않고, 창이 열린 채로도
-        캔버스에서 다른 부재를 계속 선택할 수 있다."""
-        bar = QFrame()
-        bar.setObjectName("directModelCommandBar")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(10)
-        accordion = _SlideOutGroup()
-
-        support_content = QWidget()
-        support_layout = QHBoxLayout(support_content)
-        support_layout.setContentsMargins(0, 0, 0, 0)
-        support_layout.setSpacing(10)
-        support_layout.addWidget(self._build_support_icon_row())
-        support_layout.addWidget(QLabel("경사각(°)"))
-        self.support_angle = self._number(0.0)
-        self.support_angle.setRange(-360.0, 360.0)
-        self.support_angle.setMaximumWidth(90)
-        self.support_angle.setToolTip(
-            "지지면이 수평에서 반시계 방향으로 기울어진 각도. 0이면 보통의 수평·수직 지점입니다."
-        )
-        self.support_angle.editingFinished.connect(self._apply_support)
-        support_layout.addWidget(self.support_angle)
-        self.support_custom_row = QWidget()
-        custom_layout = QHBoxLayout(self.support_custom_row)
-        custom_layout.setContentsMargins(0, 0, 0, 0)
-        custom_layout.setSpacing(8)
-        self.support_dof_checks: dict[str, QCheckBox] = {}
-        for dof in ("Ux", "Uy", "Uz", "Rx", "Ry", "Rz"):
-            box = QCheckBox(dof)
-            box.toggled.connect(self._apply_support)
-            self.support_dof_checks[dof] = box
-            custom_layout.addWidget(box)
-        self.support_custom_row.setVisible(False)
-        support_layout.addWidget(self.support_custom_row)
-        support_layout.addStretch(1)
-        self.support_slide_out = _SlideOutSection("지점", support_content, group=accordion)
-        layout.addWidget(self.support_slide_out)
-
-        node_kind_content = QWidget()
-        node_kind_layout = QHBoxLayout(node_kind_content)
-        node_kind_layout.setContentsMargins(0, 0, 0, 0)
-        node_kind_layout.setSpacing(6)
-        node_kind_layout.addWidget(self._build_node_kind_icon_row())
-        node_kind_layout.addStretch(1)
-        self.node_kind_slide_out = _SlideOutSection("노드 유형", node_kind_content, group=accordion)
-        layout.addWidget(self.node_kind_slide_out)
-
-        member_button = QToolButton()
-        member_button.setObjectName("slideOutToggle")
-        member_button.setCheckable(True)
-        member_button.setText("부재 ▸")
-        member_button.setToolTip("선택한 부재의 단면·재료·핀 해제·노드 삽입을 작은 창에서 편집합니다.")
-        member_button.clicked.connect(self._toggle_member_window)
-        layout.addWidget(member_button)
-        self.member_window_button = member_button
-        self.member_window = _FloatingPropertiesWindow(
-            "부재 속성", self._build_member_bar_content(), self._on_member_window_closed, self
-        )
-
-        self.load_slide_out = _SlideOutSection(
-            "하중", self._build_load_bar_content(), group=accordion
-        )
-        layout.addWidget(self.load_slide_out)
-
-        layout.addStretch(1)
-        return bar
-
     def _build_support_icon_row(self) -> QWidget:
         """Icon buttons for 지점 조건, one per ``_SUPPORT_OPTIONS`` entry, applied
         the moment you click one — no separate 적용 button, matching the instant-
         apply feel of the 부재 단부 핀 해제 checkboxes below. Each icon mirrors the
         symbol ``SupportItem`` draws on the canvas so the button you clicked and the
-        glyph that appears on the model read as the same shape."""
+        glyph that appears on the model read as the same shape.
+
+        A 3-column grid, not one long row - six icons abreast never fit the
+        우측 패널's fixed 300px width, and this is exactly the kind of "more
+        icons added over time, no more horizontal room" clipping the
+        category bar itself used to hit. A grid just adds another row
+        instead of squeezing.
+        """
         row = QWidget()
-        layout = QHBoxLayout(row)
+        layout = QGridLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         self.support_group = QButtonGroup(self)
         self.support_group.setExclusive(True)
         self.support_buttons: dict[int, QToolButton] = {}
+        columns = 3
         for index, (label, tooltip, glyph_key, _restraints) in enumerate(_SUPPORT_OPTIONS):
             button = QToolButton()
             button.setObjectName("supportKindButton")
@@ -611,7 +678,7 @@ class ModelingInterfacePage(QFrame):
             button.setToolTip(tooltip)
             self.support_group.addButton(button, index)
             self.support_buttons[index] = button
-            layout.addWidget(button)
+            layout.addWidget(button, index // columns, index % columns)
         self.support_buttons[1].setChecked(True)  # default: 핀 지점, matches the old combo's index
         self.support_group.idClicked.connect(self._on_support_button_clicked)
         return row
@@ -732,12 +799,9 @@ class ModelingInterfacePage(QFrame):
     def _build_transform_section(self) -> QWidget:
         """Move, copy, array-copy and mirror — every operation that turns a hand-
         drawn fragment into a repeated or symmetric shape without redrawing it.
-        Always visible in the right panel, right under 좌표로 노드 추가 - not a
-        collapsible section any more, since this panel now only ever holds
-        these two always-on tools (every selection-dependent editor lives in
-        the canvas-top bar instead).
+        Its own 이동·복사·배열 category page in the 우측 워크트리 panel.
         """
-        section, root = self._section("노드 이동 · 복사 · 배열")
+        section, root = self._section("노드 이동 · 복사 · 배열", show_title=False)
         self.node_transform_operation = QComboBox()
         self.node_transform_operation.addItem("이동", "move")
         self.node_transform_operation.addItem("복사", "copy")
@@ -792,7 +856,7 @@ class ModelingInterfacePage(QFrame):
         section/material fields, since these add nodes instead of setting a
         property on the member that already exists.
         """
-        section, root = self._section("부재 노드 삽입 · 등분할")
+        section, root = self._section("부재 노드 삽입 · 등분할", show_title=False)
         root.addWidget(QLabel("부재 위 노드 삽입 (x/L)"))
         insert_row = QHBoxLayout()
         self.member_station = self._number(0.5)
@@ -823,12 +887,9 @@ class ModelingInterfacePage(QFrame):
 
     def _build_member_bar_content(self) -> QWidget:
         """Section/material (단면·재료) plus per-end pin release, for one
-        selected member — the content shown inside the 부재 floating window
-        (``_FloatingPropertiesWindow``), not an inline canvas-top-bar slide-out
-        like 지점/노드 유형/하중, since this one stacks too many rows to slide
-        open sideways without stretching the whole bar's height. Mid-span node
-        insertion and equal subdivision live in the right panel's 노드 삽입·
-        등분할 section instead (``_build_member_edit_section``) — they add
+        selected member — the content shown on the 부재 category page. Mid-
+        span node insertion and equal subdivision live on their own 노드 분할
+        category page instead (``_build_member_edit_section``) — they add
         nodes/geometry rather than set a property on the member itself.
 
         A member always has two ends regardless of which node tags they land on, so
@@ -848,9 +909,12 @@ class ModelingInterfacePage(QFrame):
         root.setSpacing(8)
 
         root.addWidget(QLabel("단면 (사각형) · 재료"))
-        section_row = QHBoxLayout()
         self.member_section_preview = _RectangleSectionPreview()
-        section_row.addWidget(self.member_section_preview)
+        preview_row = QHBoxLayout()
+        preview_row.addStretch(1)
+        preview_row.addWidget(self.member_section_preview)
+        preview_row.addStretch(1)
+        root.addLayout(preview_row)
         section_form = QFormLayout()
         self.member_width = self._number(0.3)
         self.member_width.setRange(0.001, 100.0)
@@ -875,8 +939,7 @@ class ModelingInterfacePage(QFrame):
         section_form.addRow("탄성계수 E", elastic_row)
         section_form.addRow("단위중량 ρ", density_row)
         self._refresh_member_unit_hint()
-        section_row.addLayout(section_form, 1)
-        root.addLayout(section_row)
+        root.addLayout(section_form)
         apply_section = QPushButton("선택 부재에 적용")
         apply_section.clicked.connect(self._apply_member_section)
         root.addWidget(apply_section)
@@ -929,12 +992,14 @@ class ModelingInterfacePage(QFrame):
         every component side by side and applying them all in one click removes
         the trap instead of asking the user to remember it.
 
-        This is the content a 하중 ``_SlideOutSection`` reveals in the canvas-
-        top bar — laid out horizontally, not as the vertical card it used to be
-        in the right panel.
+        Laid out as a vertical form (label above/beside its own field, one
+        row per component via ``QFormLayout``) now that this lives in the
+        우측 워크트리 panel rather than a fixed-height horizontal bar above
+        the canvas - a form just grows another row as fields are added
+        instead of running out of horizontal room and clipping text.
         """
         content = QWidget()
-        root = QHBoxLayout(content)
+        root = QVBoxLayout(content)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
         root.addWidget(self._build_load_target_icon_row())
@@ -953,7 +1018,7 @@ class ModelingInterfacePage(QFrame):
         )
         self.load_mode_toggle.toggled.connect(self._toggle_load_input_mode)
         root.addWidget(self.load_mode_toggle)
-        self.load_form_layout = QHBoxLayout()
+        self.load_form_layout = QFormLayout()
         self.load_form_layout.setSpacing(6)
         self.load_fields: dict[str, QDoubleSpinBox] = {}
         root.addLayout(self.load_form_layout)
@@ -961,7 +1026,6 @@ class ModelingInterfacePage(QFrame):
         apply_button.setToolTip("선택 대상에 적용 (전체 성분)")
         apply_button.clicked.connect(self._apply_load)
         root.addWidget(apply_button)
-        root.addStretch(1)
         self._load_target_changed()
         return content
 
@@ -985,14 +1049,12 @@ class ModelingInterfacePage(QFrame):
         """
         self.load_magnitude = self._number(0.0)
         self.load_magnitude.setRange(-1_000_000.0, 1_000_000.0)
-        self.load_magnitude.setMaximumWidth(76)
         self.load_magnitude.setToolTip(
             "부재에 수직인 방향으로 작용하는 힘의 크기 — 부호를 반대로 하면 "
             "반대 방향이 됩니다."
         )
         self.load_angle = self._number(0.0)
         self.load_angle.setRange(-1_000_000.0, 1_000_000.0)
-        self.load_angle.setMaximumWidth(76)
         self.load_angle.setToolTip(
             "전역 +X축에서 반시계 방향으로 잰 각도(°) — 하중을 받을 노드를 선택할 "
             "때마다 그 노드에 연결된 부재를 기준으로 자동 채워집니다. 부재가 "
@@ -1001,11 +1063,8 @@ class ModelingInterfacePage(QFrame):
         )
         self.load_magnitude.valueChanged.connect(self._apply_magnitude_angle_to_fxfy)
         self.load_angle.valueChanged.connect(self._apply_magnitude_angle_to_fxfy)
-        self.load_form_layout.addWidget(QLabel("크기:"))
-        self.load_form_layout.addWidget(self.load_magnitude)
-        self.load_form_layout.addWidget(QLabel("각도:"))
-        self.load_form_layout.addWidget(self.load_angle)
-        self.load_form_layout.addWidget(QLabel("°"))
+        self.load_form_layout.addRow("크기", self.load_magnitude)
+        self.load_form_layout.addRow("각도(°)", self.load_angle)
 
         fx_field = self._number(0.0)
         fy_field = self._number(0.0)
@@ -1018,12 +1077,10 @@ class ModelingInterfacePage(QFrame):
 
         mz_field = self._number(0.0)
         mz_field.setRange(-1_000_000.0, 1_000_000.0)
-        mz_field.setMaximumWidth(76)
         mz_field.setToolTip(f"{self._COMPONENT_LABELS['mz']} — 시계방향(+) / 반시계방향(-)")
         mz_field.valueChanged.connect(self._update_load_preview)
         self.load_fields["mz"] = mz_field
-        self.load_form_layout.addWidget(QLabel("Mz:"))
-        self.load_form_layout.addWidget(mz_field)
+        self.load_form_layout.addRow("Mz", mz_field)
 
         recompute_button = QPushButton("각도 재계산")
         recompute_button.setToolTip(
@@ -1032,7 +1089,7 @@ class ModelingInterfacePage(QFrame):
             "싶을 때 씁니다."
         )
         recompute_button.clicked.connect(lambda _checked=False: self._fill_angle_perpendicular_to_selected_member())
-        self.load_form_layout.addWidget(recompute_button)
+        self.load_form_layout.addRow(recompute_button)
 
         self._fill_angle_perpendicular_to_selected_member(silent=True)
 
@@ -1492,20 +1549,21 @@ class ModelingInterfacePage(QFrame):
         self._set_mode("select", "이동·복사·배열할 노드를 선택한 뒤 오른쪽 패널에서 적용하세요.")
         self.selection_filter.setCurrentIndex(self.selection_filter.findData("nodes"))
         self._sync_property_panel()
+        self._show_category("move")
 
     def _activate_support_tool(self) -> None:
         self.select_tool.setChecked(True)
-        self._set_mode("select", "지점을 적용할 노드를 선택한 뒤 위쪽 지점 막대에서 적용하세요.")
+        self._set_mode("select", "지점을 적용할 노드를 선택한 뒤 오른쪽 지점 패널에서 적용하세요.")
         self.selection_filter.setCurrentIndex(self.selection_filter.findData("nodes"))
         self._sync_property_panel()
-        self.support_slide_out.set_expanded(True)
+        self._show_category("support")
 
     def _activate_load_tool(self) -> None:
         self.select_tool.setChecked(True)
-        self._set_mode("select", "하중을 적용할 대상을 선택한 뒤 위쪽 하중 막대에서 적용하세요.")
+        self._set_mode("select", "하중을 적용할 대상을 선택한 뒤 오른쪽 하중 패널에서 적용하세요.")
         self._sync_property_panel()
         self._load_target_changed()
-        self.load_slide_out.set_expanded(True)
+        self._show_category("load")
 
     def _selection_changed(self) -> None:
         self._sync_property_panel()
@@ -1525,21 +1583,6 @@ class ModelingInterfacePage(QFrame):
         # still nonzero) or disappear entirely (nothing selected any more),
         # never linger pointing at a node that isn't selected any more.
         self._update_load_preview()
-
-    def _toggle_member_window(self, checked: bool) -> None:
-        self.member_window_button.setText("부재 ▾" if checked else "부재 ▸")
-        if checked:
-            button = self.member_window_button
-            self.member_window.move(button.mapToGlobal(button.rect().bottomLeft()))
-            self.member_window.show()
-            self.member_window.raise_()
-            self.member_window.activateWindow()
-        else:
-            self.member_window.hide()
-
-    def _on_member_window_closed(self) -> None:
-        self.member_window_button.setChecked(False)
-        self.member_window_button.setText("부재 ▸")
 
     def _node_selection_summary(self) -> str:
         """Count the selection as 노드 (rigid) versus 절점 (hinge) — MIDAS's split,
@@ -1562,13 +1605,12 @@ class ModelingInterfacePage(QFrame):
     def _sync_property_panel(self) -> None:
         """Refresh whatever depends on the current selection.
 
-        The right panel itself (좌표로 노드 추가, 이동·복사·배열) never changes
-        visibility any more — both are always shown, full stop. What still
-        needs refreshing on every selection change is the canvas-top bar's
-        부재 슬라이드아웃 fields (only meaningful once exactly one member is
-        selected), the 노드 유형/지점 icons' checked state, the create-section
-        hint (its wording depends on how many nodes are selected), and the
-        selection-summary text.
+        Which category page is showing never changes here — that is only
+        ever up to the category bar buttons. What does need refreshing on
+        every selection change is the 부재 page's fields (only meaningful
+        once exactly one member is selected), the 노드 유형/지점 icons'
+        checked state, the create-section hint (its wording depends on how
+        many nodes are selected), and the selection-summary text.
         """
         nodes = len(self.canvas.selected_nodes)
         elements = len(self.canvas.selected_elements)
@@ -1698,18 +1740,19 @@ class ModelingInterfacePage(QFrame):
         carrying dead fields. Fields are grouped by AXIS, not by end: qx next
         to qx_j, then qy next to qy_j, so the two numbers that describe the
         same direction sit side by side instead of split apart by an
-        intervening end-i/end-j boundary. Fields lay out left-to-right with
-        short "qx:"/"Fx:" labels (not the full descriptive text, kept in the
-        tooltip instead) because this strip now slides open sideways above the
-        canvas rather than sitting as a vertical card in the right panel.
+        intervening end-i/end-j boundary. Each is its own ``QFormLayout`` row
+        (short "qx"/"Fx" label beside its field, full text kept in the
+        tooltip) since this now lives in the 우측 워크트리 panel — a form
+        just grows taller as fields are added instead of running out of
+        horizontal room.
 
         Deliberately does NOT narrow ``selection_filter`` to match the target
         (nodes-only for 집중하중, elements-only for 등분포/사다리꼴) — that used
         to happen here, back when 하중 was a modal tool you "activated" and
-        later left. Now it is an always-open accordion section with no
-        "leave this tool" step to widen the filter back afterward (the
-        widening only ever happened in ``_activate_select_tool``, itself only
-        reachable via Escape-from-draw or the rail's 선택 button) — so picking
+        later left. Now it is a category page with no "leave this tool" step
+        to widen the filter back afterward (the widening only ever happened
+        in ``_activate_select_tool``, itself only reachable via
+        Escape-from-draw or the rail's 선택 button) — so picking
         an element-only load target here would silently make every later
         click on a node do nothing, with no visible reason why, until the
         user stumbled into one of those unrelated reset paths. 적용 already
@@ -1747,7 +1790,6 @@ class ModelingInterfacePage(QFrame):
             for component in components:
                 field = self._number(0.0)
                 field.setRange(-1_000_000.0, 1_000_000.0)
-                field.setMaximumWidth(76)
                 unit = self._unit_system.moment if component[0] == "m" else self._unit_system.force
                 if not is_node:
                     unit = f"{self._unit_system.force}/{self._unit_system.length}"
@@ -1769,8 +1811,7 @@ class ModelingInterfacePage(QFrame):
                 field.setToolTip(tooltip)
                 if is_node:
                     field.valueChanged.connect(self._update_load_preview)
-                self.load_form_layout.addWidget(QLabel(f"{short_label}:"))
-                self.load_form_layout.addWidget(field)
+                self.load_form_layout.addRow(f"{short_label} ({unit})", field)
         if not is_node:
             self.canvas.set_pending_load_preview(None)
 

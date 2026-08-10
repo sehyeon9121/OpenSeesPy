@@ -20,16 +20,45 @@ def _page(*, start_in_3d: bool = False) -> ModelingInterfacePage:
     return page
 
 
-def test_the_right_panel_offers_only_the_two_always_on_widgets() -> None:
-    """The right panel is deliberately fixed now: 좌표로 노드 추가 and 이동·복사·
-    배열, both always visible, nothing else, no selection-gating. Every other
-    editor (지점/노드 유형/부재/하중, 단면·재료 included) lives in the canvas-top
-    bar's accordion instead (``_build_node_property_bar``)."""
+def test_the_right_panel_starts_empty_until_a_category_is_picked() -> None:
+    """Nothing is pinned any more: 노드 추가/이동·복사·배열/노드 분할 used to
+    always occupy the 우측 패널, and 지점/노드 유형/부재/하중 lived in a
+    canvas-top accordion. Now all seven are equal category pages and the
+    panel shows none of them until a category button is clicked."""
     page = _page()
 
-    assert page.node_x.isVisible() is True
-    assert page.node_transform_operation.isVisible() is True
+    assert page.category_stack.currentIndex() == page.category_pages["empty"]
+    assert page.node_x.isVisible() is False
     assert "선택된 대상이 없습니다" in page.selection_summary.text()
+    assert {key for key, _label in page._CATEGORY_OPTIONS} == set(page.category_buttons)
+
+
+def test_clicking_a_category_button_shows_only_that_pages_content() -> None:
+    page = _page()
+
+    page.category_buttons["add"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["add"]
+    assert page.node_x.isVisible() is True
+
+    page.category_buttons["move"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["move"]
+    assert page.node_transform_operation.isVisible() is True
+    # Switching category is exclusive - the previous one's page stops being
+    # the one shown (QStackedWidget only ever shows its current widget).
+    assert page.category_stack.currentIndex() != page.category_pages["add"]
+
+
+def test_category_stays_open_until_a_different_one_is_clicked() -> None:
+    """Re-clicking the already-active category button must not close it -
+    an exclusive QButtonGroup never lets the last checked button un-check
+    itself, so the panel simply has nothing that "closes" it back to empty."""
+    page = _page()
+    page.category_buttons["add"].click()
+
+    page.category_buttons["add"].click()
+
+    assert page.category_stack.currentIndex() == page.category_pages["add"]
+    assert page.node_x.isVisible() is True
 
 
 def test_create_section_stays_visible_across_selection_changes() -> None:
@@ -37,6 +66,7 @@ def test_create_section_stays_visible_across_selection_changes() -> None:
     after picking the reference node - create must never disappear just
     because a selection was made, which is the bug this guards against."""
     page = _page()
+    page.category_buttons["add"].click()
     node = page.canvas.add_node(0.0, 0.0)
 
     page.canvas.selected_nodes = {node}
@@ -44,33 +74,36 @@ def test_create_section_stays_visible_across_selection_changes() -> None:
     assert page.node_x.isVisible() is True
 
 
-def test_the_right_panel_stays_fixed_when_a_node_is_selected() -> None:
+def test_selecting_a_node_does_not_switch_the_active_category() -> None:
     """Selecting a node used to swap the right panel to node-only properties;
-    now the panel never changes shape at all - only the top-bar accordion and
-    the selection summary respond to what is selected."""
+    selection now only ever refreshes whichever category is already showing
+    (the selection summary text included) - it never picks a category on
+    its own."""
     page = _page()
+    page.category_buttons["move"].click()
     node = page.canvas.add_node(0.0, 0.0)
 
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
 
     assert "노드 1개 선택됨" in page.selection_summary.text()
-    assert page.node_x.isVisible() is True
+    assert page.category_stack.currentIndex() == page.category_pages["move"]
     assert page.node_transform_operation.isVisible() is True
 
 
-def test_activating_a_tool_expands_its_own_slide_out_and_collapses_the_others() -> None:
-    """지점/노드 유형/부재/하중 share one accordion (``_SlideOutGroup``): opening
-    one must automatically close whichever was open before, or the top bar
-    recreates the "everything laid out at once" clutter it exists to avoid."""
+def test_activating_a_tool_shows_its_own_category_and_switches_off_the_others() -> None:
+    """지점/하중 등은 하나의 예외적 QButtonGroup으로 배타적으로 전환된다: 하나를
+    켜면 이전에 켜져 있던 다른 카테고리는 자동으로 꺼진다."""
     page = _page()
 
     page._activate_support_tool()
-    assert page.support_slide_out.toggle_button.isChecked() is True
+    assert page.category_buttons["support"].isChecked() is True
+    assert page.category_stack.currentIndex() == page.category_pages["support"]
 
     page._activate_load_tool()
-    assert page.load_slide_out.toggle_button.isChecked() is True
-    assert page.support_slide_out.toggle_button.isChecked() is False
+    assert page.category_buttons["load"].isChecked() is True
+    assert page.category_buttons["support"].isChecked() is False
+    assert page.category_stack.currentIndex() == page.category_pages["load"]
 
 
 def test_selecting_a_member_refreshes_the_member_bar_and_the_summary() -> None:
@@ -406,6 +439,7 @@ def test_node_loads_default_to_component_fx_fy_input() -> None:
     this app - '부재 수직' (크기+자동 각도) is opt-in via the toggle, for
     loads naturally given relative to a sloped member instead."""
     page = _page()
+    page.category_buttons["load"].click()
 
     assert page.load_input_mode == "component"
     assert set(page.load_fields) == {"fx", "fy", "mz"}
@@ -509,6 +543,7 @@ def test_custom_support_lets_a_single_dof_be_restrained_on_its_own() -> None:
     """None of the five presets can restrain rotation alone; the custom option
     has to reach every combination, not just the common ones."""
     page = _page()
+    page.category_buttons["support"].click()
     node = page.canvas.add_node(0.0, 0.0)
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
