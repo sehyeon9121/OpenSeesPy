@@ -65,7 +65,8 @@ class _DrawingModeMixin:
         plane is the identity ground plane, so this is exactly ``self.nodes`` and
         ``self.elements`` unchanged.
         """
-        options = replace(self.snap_options, grid=max(0.0, self.grid))
+        grid_spacing = self.grid if self.grid_snap_enabled else 0.0
+        options = replace(self.snap_options, grid=max(0.0, grid_spacing))
         plane_node_tags = self._plane_node_tags()
         plane_nodes = {tag: self._projected_node(self.nodes[tag]) for tag in plane_node_tags}
         plane_elements = {

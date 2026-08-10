@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QApplication
 from openframe.features.analysis.statics import check_determinacy
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
+from _solve_helpers import solve_and_wait
+
 
 def test_student_can_draw_and_solve_a_free_form_simply_supported_beam() -> None:
     application = QApplication.instance() or QApplication([])
@@ -23,7 +25,7 @@ def test_student_can_draw_and_solve_a_free_form_simply_supported_beam() -> None:
     canvas.set_support(left, (True, True, False))
     canvas.set_support(right, (False, True, False))
     canvas.set_uniform_load(member, (0.0, -10.0))
-    page.solve()
+    solve_and_wait(page)
 
     assert page.workspace_stack.currentIndex() == 1
     assert page.viewport._result.node_results[left].reaction[1] == pytest.approx(20.0)
@@ -51,7 +53,7 @@ def test_drawn_hinge_becomes_a_member_release_and_makes_a_gerber_beam_solvable()
     assert model.elements[suspended].moment_release_i is True
     assert check_determinacy(model).degree == 0
 
-    page.solve()
+    solve_and_wait(page)
 
     assert page.workspace_stack.currentIndex() == 1
     assert page.viewport._result.node_results[fixed].reaction[1] == pytest.approx(20.0)
@@ -481,7 +483,7 @@ def test_arbitrary_member_station_accepts_a_point_load_without_instability() -> 
     assert len(model.elements) == 2
     assert canvas.nodes[load_node].x == pytest.approx(3.0)
     assert check_determinacy(model).degree == 0
-    page.solve()
+    solve_and_wait(page)
     assert page.viewport._result.node_results[left].reaction[1] == pytest.approx(10.5)
     assert page.viewport._result.node_results[right].reaction[1] == pytest.approx(4.5)
 

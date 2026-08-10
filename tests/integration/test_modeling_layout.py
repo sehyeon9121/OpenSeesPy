@@ -8,6 +8,8 @@ from PySide6.QtWidgets import QApplication
 
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
+from _solve_helpers import solve_and_wait
+
 
 def _page(*, start_in_3d: bool = False) -> ModelingInterfacePage:
     QApplication.instance() or QApplication([])
@@ -430,7 +432,7 @@ def test_returning_to_the_model_and_back_shows_the_same_solved_results_without_r
     page.canvas.set_support(right, (False, True, False))
 
     assert not page.view_results_button.isEnabled()
-    page.solve()
+    solve_and_wait(page)
     assert page.workspace_stack.currentIndex() == 1
     assert page.view_results_button.isEnabled()
     solved_result = page.results.viewport._result
@@ -458,7 +460,7 @@ def test_2d_results_hide_the_dormant_3d_view_selector() -> None:
     page.canvas.set_support(left, (True, True, False))
     page.canvas.set_support(right, (False, True, False))
 
-    page.solve()
+    solve_and_wait(page)
 
     assert not page.results.toolbar.view_mode.parentWidget().isVisible()
 
@@ -558,7 +560,7 @@ def test_a_determinate_truss_solves_with_one_constant_axial_value_per_member() -
     page.canvas.selected_nodes = {c}
     page.canvas.apply_nodal_load_to_selection((0.0, -10.0, 0.0))
 
-    page.solve()
+    solve_and_wait(page)
 
     assert page.workspace_stack.currentIndex() == 1
     result = page.results.viewport._result
@@ -593,7 +595,7 @@ def test_truss_results_table_lists_joints_force_and_tension_compression_zero() -
     page.canvas.selected_nodes = {c}
     page.canvas.apply_nodal_load_to_selection((0.0, -10.0, 0.0))
 
-    page.solve()
+    solve_and_wait(page)
     panel = page.results.data_panel
     panel.set_result_type("axial")
     table = panel.result_table

@@ -98,6 +98,11 @@ class StaticsDrawingCanvas(
         # own member weight mixed into a hand-picked point load, and turning it
         # on requires each member to also carry a density (see _self_weight_local).
         self.include_self_weight = False
+        # On by default - a hand-drawn frame is usually meant to land on clean
+        # coordinates, so every grid line crossing already acts like a node the
+        # cursor snaps to without one having to exist yet. Toggled off when the
+        # user wants a click to land exactly where the cursor is instead.
+        self.grid_snap_enabled = True
         self.snap_options = SnapOptions()
         self.ortho = False
         self.ortho_increment = 45.0

@@ -31,8 +31,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from openframe.app.shell.analysis_progress_banner import AnalysisProgressBanner
 from openframe.core.domain import DEFAULT_UNIT_SYSTEM, FORCE_UNITS, LENGTH_UNITS, UnitSystem
-from openframe.features.analysis.statics import MaterialFreeStaticsSolver, check_determinacy
+from openframe.features.analysis.statics import (
+    MaterialFreeSolveThread,
+    MaterialFreeStaticsSolver,
+    check_determinacy,
+)
 from openframe.features.model.drawing import PlaneKind
 from openframe.features.model.presentation.canvas_glyphs import (
     _LOAD_TARGET_OPTIONS,
@@ -67,6 +72,8 @@ class ModelingInterfacePage(QFrame):
         self._start_in_3d = start_in_3d
         self._unit_system = DEFAULT_UNIT_SYSTEM
         self._solver = MaterialFreeStaticsSolver()
+        self._solve_thread: MaterialFreeSolveThread | None = None
+        self.analysis_progress = AnalysisProgressBanner(self)
         self.canvas = StaticsDrawingCanvas()
 
         root = QVBoxLayout(self)
@@ -100,6 +107,9 @@ class ModelingInterfacePage(QFrame):
         self.draw_shortcut = QShortcut(QKeySequence("L"), self.canvas)
         self.draw_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.draw_shortcut.activated.connect(self._activate_draw_tool)
+        self.draw_space_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self.canvas)
+        self.draw_space_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.draw_space_shortcut.activated.connect(self._activate_draw_tool)
         self.fit_shortcut = QShortcut(QKeySequence("F"), self.canvas)
         self.fit_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.fit_shortcut.activated.connect(self.canvas.fit_model)
@@ -179,7 +189,7 @@ class ModelingInterfacePage(QFrame):
         self.tool_group = QButtonGroup(self)
         self.tool_group.setExclusive(True)
         self.select_tool = self._rail_tool("선택", "V", self._activate_select_tool)
-        self.draw_tool = self._rail_tool("그리기", "L", self._activate_draw_tool)
+        self.draw_tool = self._rail_tool("그리기", "L / Space", self._activate_draw_tool)
         layout.addWidget(self.select_tool)
         layout.addWidget(self.draw_tool)
         layout.addSpacing(10)
@@ -354,6 +364,16 @@ class ModelingInterfacePage(QFrame):
             lambda: setattr(self.canvas, "grid", float(self.snap.currentData()))
         )
         layout.addWidget(self.snap)
+        self.grid_snap_toggle = QCheckBox("격자 스냅")
+        self.grid_snap_toggle.setChecked(True)
+        self.grid_snap_toggle.setToolTip(
+            "켜면 격자가 겹치는 모든 점이 이미 노드가 있는 것처럼 클릭·드로잉이 "
+            "자동으로 달라붙습니다. 끄면 커서가 가리키는 위치에 그대로 찍힙니다."
+        )
+        self.grid_snap_toggle.toggled.connect(
+            lambda checked: setattr(self.canvas, "grid_snap_enabled", bool(checked))
+        )
+        layout.addWidget(self.grid_snap_toggle)
         layout.addWidget(QLabel("선택 필터"))
         self.selection_filter = QComboBox()
         self.selection_filter.addItem("전체", "all")
@@ -1076,26 +1096,61 @@ class ModelingInterfacePage(QFrame):
         self.load_project_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def solve(self) -> None:
+        """Always actually calls the solver — the determinacy check below is
+        purely informational (shown in the status bar), never a separate gate
+        that blocks the attempt. The only thing that can still refuse to
+        produce a result is ``MaterialFreeStaticsSolver`` itself, for exactly
+        one reason: an indeterminate structure's internal forces genuinely
+        depend on member stiffness, so without real (E, A, I) anywhere (per-
+        member, in the 부재 속성 window) there is no physically meaningful
+        number to compute — not a redundant check to relax, since removing it
+        would mean silently reporting a stiffness-independent guess as if it
+        were the real answer for a structure whose real answer depends on
+        stiffness. That failure (or any other) still only ever reaches the
+        status bar here, never a popup — see ``_solve_completed``.
+        """
+        if self._solve_thread is not None and self._solve_thread.isRunning():
+            return
         model = self.canvas.build_model()
         check = check_determinacy(model)
         self.determinacy_status.setText(f"정정성: {check.message}")
-        # Real per-member (E, A, I) - set via the 부재 속성 section's 단면·재료
-        # fields, stored on each Element's own properties - is what makes an
-        # indeterminate 2D frame solvable at all. A determinate one solves
-        # identically either way for reactions/N/V/M (equilibrium alone
-        # already gives the exact answer), but still benefits: without any
-        # member's section set, deflection has no absolute scale to report.
-        result = self._solver.solve(model)
+        self.solve_button.setEnabled(False)
+        self.analysis_progress.show_running("정정성 해석")
+        thread = MaterialFreeSolveThread(self._solver, model)
+        thread.completed.connect(lambda result: self._solve_completed(model, check, result))
+        thread.finished.connect(self._solve_thread_finished)
+        self._solve_thread = thread
+        thread.start()
+
+    def _solve_completed(self, model, check, result) -> None:
         if result.status.value != "completed":
+            # Deliberately no QMessageBox here (unlike the OpenSeesPy-import
+            # flow's failure path) - an indeterminate structure with no
+            # material set is an expected, everyday state while authoring a
+            # model, not an error worth interrupting the user over. The
+            # status bar already says why.
+            self.analysis_progress.show_failed(
+                " ".join(result.messages) or "해석에 실패했습니다."
+            )
             self.determinacy_status.setText(
                 f"정정성: {check.message}  ·  {' '.join(result.messages)}"
             )
             return
+        self.analysis_progress.show_completed(
+            f"절점 {len(result.node_results)}개, 부재 {len(result.element_results)}개 결과가 준비되었습니다."
+        )
         self.results.set_model(model)
         self.results.show_result(result)
         self.results.set_result_type("reaction")
         self.view_results_button.setEnabled(True)
         self.workspace_stack.setCurrentIndex(1)
+
+    def _solve_thread_finished(self) -> None:
+        self.solve_button.setEnabled(True)
+        thread = self._solve_thread
+        self._solve_thread = None
+        if thread is not None:
+            thread.deleteLater()
 
     def _toggle_truss_mode(self, checked: bool) -> None:
         """Only affects members drawn from now on — a truss/frame member is a

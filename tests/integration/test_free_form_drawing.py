@@ -12,12 +12,21 @@ from openframe.features.model.drawing import PlaneKind
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 
+from _solve_helpers import solve_and_wait
+
 
 def _canvas() -> StaticsDrawingCanvas:
     QApplication.instance() or QApplication([])
     canvas = StaticsDrawingCanvas()
     canvas.set_mode("draw")
     return canvas
+
+
+def _page() -> ModelingInterfacePage:
+    QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    page.show()
+    return page
 
 
 def test_one_chain_of_clicks_creates_both_nodes_and_members() -> None:
@@ -572,3 +581,68 @@ def test_a_free_form_gable_frame_reaches_the_determinacy_check() -> None:
     canvas.set_selected_node_kind(True)
 
     assert check_determinacy(canvas.build_model()).degree == 0
+
+
+def test_grid_snap_pulls_a_click_onto_the_nearest_grid_intersection() -> None:
+    canvas = _canvas()
+    canvas.grid = 1.0
+
+    result = canvas.snap_at(1.03, -0.02)
+
+    assert result.kind == "grid"
+    assert (result.x, result.y) == pytest.approx((1.0, 0.0))
+
+
+def test_grid_snap_toggle_off_leaves_the_raw_cursor_point_untouched() -> None:
+    """The 격자 스냅 checkbox in the bottom bar has to be able to turn this off
+    entirely - otherwise there is no way to place a point at an exact
+    off-grid coordinate by clicking."""
+    canvas = _canvas()
+    canvas.grid = 1.0
+    canvas.grid_snap_enabled = False
+
+    result = canvas.snap_at(1.03, -0.02)
+
+    assert result.kind == "free"
+    assert (result.x, result.y) == pytest.approx((1.03, -0.02))
+
+
+def test_space_bar_activates_the_draw_tool() -> None:
+    """QShortcut activation depends on real window focus, which a headless
+    test window does not reliably get - the same reason the existing
+    fit_shortcut test (test_modeling_layout.py) emits .activated directly
+    instead of simulating a real key press."""
+    page = _page()
+    page._activate_select_tool()
+    assert page.canvas.mode == "select"
+
+    page.draw_space_shortcut.activated.emit()
+
+    assert page.canvas.mode == "draw"
+    assert page.draw_tool.isChecked() is True
+
+
+def test_an_indeterminate_structure_without_material_fails_quietly_not_as_a_popup() -> None:
+    """solve() must always call the solver rather than pre-emptively refusing
+    on the determinacy check alone - the check is status-bar information, not
+    a separate gate. The solver's own refusal (no way to give a meaningful
+    stiffness-dependent answer without material) still has to surface
+    somewhere, but only in the status bar, never a blocking dialog, since an
+    indeterminate structure with nothing set yet is an everyday state while
+    still authoring a model."""
+    page = _page()
+    canvas = page.canvas
+    left = canvas.add_node(0.0, 0.0)
+    mid = canvas.add_node(4.0, 0.0)
+    right = canvas.add_node(8.0, 0.0)
+    canvas.add_member(left, mid)
+    canvas.add_member(mid, right)
+    canvas.set_support(left, (True, True, True))
+    canvas.set_support(mid, (False, True, False))
+    canvas.set_support(right, (False, True, False))
+
+    solve_and_wait(page)
+
+    assert page.workspace_stack.currentIndex() == 0
+    assert "부정정" in page.determinacy_status.text()
+    assert page.analysis_progress.isVisible() is False

@@ -9,6 +9,8 @@ from openframe.features.model.drawing import PlaneKind, WorkPlane
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 
+from _solve_helpers import solve_and_wait
+
 
 def _canvas() -> StaticsDrawingCanvas:
     QApplication.instance() or QApplication([])
@@ -231,7 +233,7 @@ def test_a_3d_cantilever_column_is_drawn_loaded_and_solved_entirely_through_the_
     page.load_fields["fx"].setValue(10.0)
     page._apply_load()
 
-    page.solve()
+    solve_and_wait(page)
 
     assert page.workspace_stack.currentIndex() == 1
     reaction = page.results.viewport._result.node_results[base].reaction
