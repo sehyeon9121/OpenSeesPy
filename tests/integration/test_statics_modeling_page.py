@@ -250,7 +250,12 @@ def test_repeated_node_creation_is_one_undo_operation() -> None:
     assert not page.canvas.nodes
 
 
-def test_midpoint_snap_adds_an_analysis_node_without_splitting_the_visible_member() -> None:
+def test_midpoint_snap_splits_the_visible_member_into_two_independent_pieces() -> None:
+    """부재 위 노드 삽입 (here via the explicit midpoint shortcut) now splits
+    the member for real, immediately - not just an analysis-time embedded
+    point (canvas_geometry.py's _add_node_at) - so canvas.elements and the
+    built model agree on the member count, and a point load at the new joint
+    still reaches it correctly either way."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -265,22 +270,23 @@ def test_midpoint_snap_adds_an_analysis_node_without_splitting_the_visible_membe
     canvas.set_nodal_load(middle, (0.0, -10.0, 0.0))
 
     model = canvas.build_model()
-    assert len(canvas.elements) == 1
+    assert len(canvas.elements) == 2
     assert len(model.elements) == 2
     assert all(middle in {element.node_i, element.node_j} for element in model.elements.values())
     assert model.metadata["hinge_nodes"] == ""
-    assert model.metadata["logical_member_count"] == "1"
-    assert model.metadata["embedded_nodes"] == f"{middle}:{member}:0.5"
+    assert model.metadata["logical_member_count"] == "2"
+    assert model.metadata["embedded_nodes"] == ""
     assert check_determinacy(model).degree == 0
 
 
-def test_splitting_a_trapezoidal_load_interpolates_each_segment_not_copies_the_whole_span() -> None:
-    """Regression test: build_model() used to rebuild every analysis segment's
-    load from just (wx, wy) - the member's own *i-end* values - dropping
-    wx_j/wy_j entirely, so a triangular/trapezoidal load collapsed back into a
-    uniform one (at the i-end's value) the moment a member carrying one was
-    split by an embedded node. Each segment must instead carry its own local
-    slice of the linearly-varying load."""
+def test_splitting_a_member_that_carries_a_trapezoidal_load_interpolates_each_new_piece() -> None:
+    """Regression coverage for the same interpolation math this test always
+    checked, now exercised where it actually happens - _split_element_at,
+    called the moment an already-loaded member is explicitly split - instead
+    of build_model()'s segment-splitting path, which this scenario no longer
+    reaches (there is nothing left embedded to split at build time). Each new
+    piece must carry its own local slice of the linearly-varying load, not a
+    copy of the whole original span's i-end value."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -289,26 +295,25 @@ def test_splitting_a_trapezoidal_load_interpolates_each_segment_not_copies_the_w
     left = canvas.add_node(0.0, 0.0)
     right = canvas.add_node(8.0, 0.0)
     member = canvas.add_member(left, right)
-    canvas.add_member_midpoint_node(member)  # splits the member at fraction 0.5
     canvas.selected_elements = {member}
     canvas.apply_uniform_load_to_selection((0.0, 0.0, 0.0, -20.0))  # 0 at i -> -20 at j
 
-    model = canvas.build_model()
-    assert len(model.elements) == 2
-    loads_by_tag = {load.element_tag: load for load in model.element_loads}
-    assert len(loads_by_tag) == 2
+    canvas.add_member_midpoint_node(member)  # splits the member at fraction 0.5
 
-    # build_model() keeps the original tag for the first segment (fraction
-    # 0.0->0.5 of the original member) and mints a new tag for the second
-    # (0.5->1.0), so each one's i/j values must be the load interpolated at
-    # its own pair of fractions, not the whole member's i/j values copied twice.
-    first, second = loads_by_tag[member], next(
-        load for tag, load in loads_by_tag.items() if tag != member
+    assert len(canvas.elements) == 2
+    assert len(canvas.element_loads) == 2
+    first, second = canvas.element_loads[member], next(
+        load for tag, load in canvas.element_loads.items() if tag != member
     )
     assert first.wy == pytest.approx(0.0)
     assert first.wy_j == pytest.approx(-10.0)
     assert second.wy == pytest.approx(-10.0)
     assert second.wy_j == pytest.approx(-20.0)
+
+    # End to end: build_model() has nothing left embedded to split further,
+    # so it must simply carry the two already-split loads through unchanged.
+    model = canvas.build_model()
+    assert len(model.element_loads) == 2
 
 
 def test_self_weight_is_off_by_default_and_absent_from_the_solved_model() -> None:
@@ -442,6 +447,9 @@ def test_collinear_node_is_auto_attached_without_splitting_the_visible_member() 
 
 
 def test_midpoint_tool_snaps_near_member_center_and_is_undoable() -> None:
+    """Splitting a member via 부재 위 노드 삽입/등분할 is one undo step, same
+    as everything else _add_node_at can trigger - undo must restore the
+    original single element, not leave a half-split state behind."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -455,8 +463,11 @@ def test_midpoint_tool_snaps_near_member_center_and_is_undoable() -> None:
     assert snapped_member == member
     canvas.add_member_midpoint_node(snapped_member)
     assert len(canvas.nodes) == 3
-    assert next(iter(canvas.embedded_nodes.values())) == (member, 0.5)
-    assert len(canvas.elements) == 1
+    assert not canvas.embedded_nodes
+    assert len(canvas.elements) == 2
+    middle = next(tag for tag in canvas.nodes if tag not in (left, right))
+    spans = {(el.node_i, el.node_j) for el in canvas.elements.values()}
+    assert spans == {(left, middle), (middle, right)}
 
     canvas.undo()
     assert len(canvas.nodes) == 2
@@ -465,6 +476,11 @@ def test_midpoint_tool_snaps_near_member_center_and_is_undoable() -> None:
 
 
 def test_arbitrary_member_station_accepts_a_point_load_without_instability() -> None:
+    """A point load at an inserted station lands on a real, independent node
+    whether the member it came from stays whole or gets split for real
+    (canvas_geometry.py's _add_node_at) - the split must not introduce any
+    spurious instability, and reactions for this determinate beam must come
+    out exactly as equilibrium alone dictates either way."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -479,7 +495,7 @@ def test_arbitrary_member_station_accepts_a_point_load_without_instability() -> 
     canvas.set_nodal_load(load_node, (0.0, -15.0, 0.0))
 
     model = canvas.build_model()
-    assert len(canvas.elements) == 1
+    assert len(canvas.elements) == 2
     assert len(model.elements) == 2
     assert canvas.nodes[load_node].x == pytest.approx(3.0)
     assert check_determinacy(model).degree == 0

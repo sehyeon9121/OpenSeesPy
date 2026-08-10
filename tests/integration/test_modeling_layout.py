@@ -102,6 +102,9 @@ def test_toggling_the_member_end_checkbox_releases_that_end_only() -> None:
 
 
 def test_inserting_a_member_station_node_from_the_panel_reaches_the_canvas() -> None:
+    """An explicit 부재 위 노드 삽입 splits the member into two independent
+    elements immediately (not just an analysis-time embedded point), so each
+    side can carry its own load - see canvas_geometry.py's _add_node_at."""
     page = _page()
     first = page.canvas.add_node(0.0, 0.0)
     second = page.canvas.add_node(4.0, 0.0)
@@ -112,9 +115,12 @@ def test_inserting_a_member_station_node_from_the_panel_reaches_the_canvas() -> 
     page.member_station.setValue(0.25)
     page._insert_member_station_node()
 
-    inserted = next(iter(page.canvas.embedded_nodes))
-    assert page.canvas.embedded_nodes[inserted] == (member, pytest.approx(0.25))
+    assert len(page.canvas.embedded_nodes) == 0
+    assert len(page.canvas.elements) == 2
+    inserted = next(tag for tag, node in page.canvas.nodes.items() if tag not in (first, second))
     assert page.canvas.nodes[inserted].x == pytest.approx(1.0)
+    spans = {(el.node_i, el.node_j) for el in page.canvas.elements.values()}
+    assert spans == {(first, inserted), (inserted, second)}
 
 
 def test_the_node_transform_tool_filters_selection_to_nodes_only() -> None:
@@ -210,6 +216,9 @@ def test_the_array_copy_operation_reaches_the_canvas_and_reproduces_members() ->
 
 
 def test_the_subdivide_control_reaches_the_canvas() -> None:
+    """Equal subdivision now creates independent elements immediately (see
+    canvas_transforms.py's subdivide_member), not analysis-time embedded
+    points - each of the 3 equal pieces must be independently loadable."""
     page = _page()
     left = page.canvas.add_node(0.0, 0.0)
     right = page.canvas.add_node(6.0, 0.0)
@@ -220,8 +229,11 @@ def test_the_subdivide_control_reaches_the_canvas() -> None:
     page.member_segments.setValue(3)
     page._subdivide_member()
 
-    assert len(page.canvas.embedded_nodes) == 2
+    assert len(page.canvas.embedded_nodes) == 0
+    assert len(page.canvas.elements) == 3
     assert len(page.canvas.build_model().elements) == 3
+    xs = sorted(node.x for node in page.canvas.nodes.values())
+    assert xs == pytest.approx([0.0, 2.0, 4.0, 6.0])
 
 
 def test_the_f_shortcut_recentres_the_canvas_on_the_model() -> None:

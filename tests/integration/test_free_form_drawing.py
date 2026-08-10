@@ -154,7 +154,13 @@ def test_drawing_onto_an_existing_node_reuses_it_instead_of_stacking_a_duplicate
     assert len(canvas.elements) == 2
 
 
-def test_drawing_across_a_member_lands_on_it_and_splits_it_for_the_analysis() -> None:
+def test_drawing_across_a_member_lands_on_it_and_splits_it_for_real() -> None:
+    """Starting a new chain point on an existing member is a deliberate
+    request for a joint there (unlike drawing a brand-new member *through* an
+    already-existing, unrelated node - see test_collinear_node_is_auto_
+    attached_without_splitting_the_visible_member) - it splits the member
+    into two independent elements immediately, not just an analysis-time
+    embedded point."""
     canvas = _canvas()
     canvas.place_point(0.0, 0.0)
     canvas.place_point(4.0, 0.0)
@@ -163,9 +169,9 @@ def test_drawing_across_a_member_lands_on_it_and_splits_it_for_the_analysis() ->
     snap = canvas.snap_at(1.4, 0.03)
     tag = canvas.place_point(snap.x, snap.y, snap=snap)
 
-    assert canvas.embedded_nodes[tag] == (1, pytest.approx(0.35))
+    assert tag not in canvas.embedded_nodes
     assert canvas.nodes[tag].x == pytest.approx(1.4)
-    assert len(canvas.elements) == 1
+    assert len(canvas.elements) == 2
     assert len(canvas.build_model().elements) == 2
 
 

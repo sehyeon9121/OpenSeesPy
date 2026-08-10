@@ -177,14 +177,26 @@ class _TransformMixin:
         return created_members
 
     def subdivide_member(self, element_tag: int, segments: int) -> list[int]:
-        """Insert nodes splitting a member into ``segments`` equal-length pieces."""
+        """Insert nodes splitting a member into ``segments`` equal, independent
+        pieces. Each station node lands on and splits whatever piece remains
+        of the original span (see ``_insert_station_node``) — after the first
+        split, ``element_tag`` itself only names the first (shortest) piece,
+        so every later station has to be re-measured as a *local* fraction of
+        the remaining tail, not the original element_tag again.
+        """
         if element_tag not in self.elements or segments < 2:
             return []
         created: list[int] = []
         self.begin_history_group()
         try:
+            remaining_tag = element_tag
+            consumed_fraction = 0.0
             for step in range(1, segments):
-                created.append(self.add_member_station_node(element_tag, step / segments))
+                global_fraction = step / segments
+                local_fraction = (global_fraction - consumed_fraction) / (1.0 - consumed_fraction)
+                node, remaining_tag = self._insert_station_node(remaining_tag, local_fraction)
+                created.append(node)
+                consumed_fraction = global_fraction
         finally:
             self.end_history_group()
         return created

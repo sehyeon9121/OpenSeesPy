@@ -122,19 +122,26 @@ def test_mirroring_on_a_vertical_elevation_plane_reflects_along_its_local_axis()
     assert zs == [0.0, 2.0, 4.0, 6.0]
 
 
-def test_a_node_dropped_mid_height_on_a_column_embeds_in_true_3d() -> None:
-    """Colinearity is a real 3D fact — it must hold on an elevation view too."""
+def test_a_node_dropped_mid_height_on_a_column_splits_it_in_true_3d() -> None:
+    """Colinearity is a real 3D fact — it must hold on an elevation view too.
+    A brand-new node landing exactly on an existing member now splits it into
+    two independent elements (see canvas_geometry.py's _add_node_at) rather
+    than only marking an embedded pass-through point, so each half can carry
+    its own load - this must work identically off the ground plane."""
     canvas = _canvas()
     canvas.enter_3d_mode()
     base = canvas.place_point(0.0, 0.0)
     roof = canvas.add_level(6.0, "roof")
     canvas.selected_nodes = {base}
     canvas.extrude_selection_to_plane(roof)
-    column = next(iter(canvas.elements))
+    top = next(node.tag for node in canvas.nodes.values() if node.tag != base)
 
     mid = canvas._add_node_at((0.0, 0.0, 3.0))
 
-    assert canvas.embedded_nodes[mid] == (column, pytest.approx(0.5))
+    assert mid not in canvas.embedded_nodes
+    assert len(canvas.elements) == 2
+    spans = {(el.node_i, el.node_j) for el in canvas.elements.values()}
+    assert spans == {(base, mid), (mid, top)}
 
 
 def test_build_model_reports_3d_dimensionality_once_in_3d_mode() -> None:
