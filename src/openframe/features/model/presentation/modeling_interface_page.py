@@ -450,17 +450,18 @@ class ModelingInterfacePage(QFrame):
     #: (category key, button label) for the single-row category bar above the
     #: canvas — order here is both the button order and the 우측 워크트리
     #: page order. Nothing is pinned any more: every one of these, including
-    #: 노드 추가/이동·복사·배열/노드 분할 (previously always-on in the right
-    #: panel), is now an equal category that opens on click. The previous
-    #: design's problem was exactly this asymmetry - 부재 노드 삽입·등분할 sat
-    #: at the bottom of an always-visible stack, invisible below the fold
-    #: unless you already knew to scroll for it; a first-time user had no way
-    #: to discover it. A single always-visible row of buttons has no fold to
-    #: hide behind.
+    #: 노드 추가/이동·복사·배열 (previously always-on in the right panel), is
+    #: now an equal category that opens on click. The previous design's
+    #: problem was exactly this asymmetry - 부재 노드 삽입·등분할 sat at the
+    #: bottom of an always-visible stack, invisible below the fold unless you
+    #: already knew to scroll for it; a first-time user had no way to
+    #: discover it. It got its own category briefly, then folded into 노드
+    #: 추가 (``_build_add_category``) since both are "make a new node" in the
+    #: same breath - a single always-visible row of buttons has no fold to
+    #: hide behind either way.
     _CATEGORY_OPTIONS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("add", "노드 추가"),
         ("move", "이동 · 복사 · 배열"),
-        ("split", "노드 분할"),
         ("support", "지점"),
         ("kind", "노드 유형"),
         ("member", "부재"),
@@ -512,8 +513,8 @@ class ModelingInterfacePage(QFrame):
         여기 나타난다 — 예전엔 노드 추가·이동복사배열만 항상 떠 있고
         나머지(지점/노드유형/부재/하중)는 캔버스 위 아코디언에 있었는데,
         그 비대칭 자체가 발견성 문제였다(부재 노드 삽입은 스크롤해야 보이는
-        마지막 섹션이라 처음 쓰는 사람은 있는지도 몰랐다). 지금은 일곱
-        카테고리 전부 같은 자격으로, 클릭하기 전엔 아무것도 차지하지 않고
+        마지막 섹션이라 처음 쓰는 사람은 있는지도 몰랐다). 지금은 카테고리
+        전부 같은 자격으로, 클릭하기 전엔 아무것도 차지하지 않고
         클릭하면 그 하나만 이 폭(300px) 안에서 세로로 펼쳐진다 — 가로 폭
         한계 때문에 글자가 잘리던 문제도 이걸로 같이 해결된다.
         """
@@ -536,9 +537,8 @@ class ModelingInterfacePage(QFrame):
         empty.setWordWrap(True)
         self.category_pages["empty"] = self.category_stack.addWidget(empty)
         builders = {
-            "add": self._build_create_section,
+            "add": self._build_add_category,
             "move": self._build_transform_section,
-            "split": self._build_member_edit_section,
             "support": self._build_support_category,
             "kind": self._build_node_kind_category,
             "member": self._build_member_category,
@@ -598,6 +598,22 @@ class ModelingInterfacePage(QFrame):
         section, root = self._section("하중", show_title=False)
         root.addWidget(self._build_load_bar_content())
         return section
+
+    def _build_add_category(self) -> QWidget:
+        """좌표로 노드 추가 + 부재 노드 삽입·등분할, 한 카테고리 페이지에 같이.
+
+        둘 다 "새 노드를 만든다"는 점에서 한 갈래이고, 부재 등분할처럼
+        모델링 초반에 격자보·트러스 패널을 준비할 때 좌표 입력과 번갈아
+        쓰는 경우가 많아 카테고리를 오가게 두는 것보다 한 페이지에 있는
+        편이 낫다.
+        """
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
+        root.addWidget(self._build_create_section())
+        root.addWidget(self._build_member_edit_section())
+        return page
 
     def _build_create_section(self) -> QWidget:
         section, root = self._section("좌표로 노드 추가", show_title=False)
@@ -852,9 +868,10 @@ class ModelingInterfacePage(QFrame):
     def _build_member_edit_section(self) -> QWidget:
         """Add a node mid-span on a member, or subdivide it into equal
         segments — geometry operations on a selected member, grouped with
-        노드 이동·복사·배열 rather than with the 부재 property window's
-        section/material fields, since these add nodes instead of setting a
-        property on the member that already exists.
+        좌표로 노드 추가 on the 노드 추가 category page (``_build_add_category``)
+        rather than with the 부재 category's section/material fields, since
+        these add nodes instead of setting a property on the member that
+        already exists.
         """
         section, root = self._section("부재 노드 삽입 · 등분할", show_title=False)
         root.addWidget(QLabel("부재 위 노드 삽입 (x/L)"))
