@@ -8,6 +8,7 @@ object never adds another button to learn.
 """
 
 import json
+import math
 from pathlib import Path
 from typing import ClassVar
 
@@ -39,6 +40,7 @@ from openframe.features.analysis.statics import (
     check_determinacy,
 )
 from openframe.features.model.drawing import PlaneKind
+from openframe.features.model.drawing.coordinates import direction_degrees
 from openframe.features.model.presentation.canvas_glyphs import (
     _LOAD_TARGET_OPTIONS,
     _SUPPORT_OPTIONS,
@@ -935,6 +937,7 @@ class ModelingInterfacePage(QFrame):
         self.load_form_layout.setSpacing(6)
         self.load_fields: dict[str, QDoubleSpinBox] = {}
         root.addLayout(self.load_form_layout)
+        root.addWidget(self._build_load_polar_group())
         apply_button = QPushButton("적용")
         apply_button.setToolTip("선택 대상에 적용 (전체 성분)")
         apply_button.clicked.connect(self._apply_load)
@@ -942,6 +945,85 @@ class ModelingInterfacePage(QFrame):
         root.addStretch(1)
         self._load_target_changed()
         return content
+
+    def _build_load_polar_group(self) -> QWidget:
+        """A magnitude+angle calculator that fills in Fx/Fy, for loads that
+        are naturally given by direction and size rather than by their global
+        components directly — an inclined point load (already resolved into
+        Fx/Fy components in most textbook figures, but not always), or a load
+        perpendicular to a sloped member (e.g. wind pressure on a gable roof)
+        that would otherwise mean computing sin/cos of the member's own slope
+        by hand before it could be typed in at all. Only ever visible for
+        집중하중(node) — 등분포하중/사다리꼴하중 already work in the member's
+        own local axes (qx/qy), so "perpendicular to a sloped member" is
+        already just qy there, nothing extra needed.
+
+        This never touches the model directly — it only writes into the
+        existing Fx/Fy fields, so the ordinary 적용 button is still what
+        actually commits anything, same as typing Fx/Fy by hand.
+        """
+        self.load_polar_group = QWidget()
+        group = self.load_polar_group
+        layout = QHBoxLayout(group)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(QLabel("|  크기·각도"))
+        self.load_magnitude = self._number(0.0)
+        self.load_magnitude.setMaximumWidth(76)
+        self.load_magnitude.setToolTip(
+            "합력의 크기 — 부호를 반대로 하면 각도의 정반대 방향이 됩니다."
+        )
+        layout.addWidget(self.load_magnitude)
+        self.load_angle = self._number(0.0)
+        self.load_angle.setMaximumWidth(70)
+        self.load_angle.setToolTip(
+            "전역 +X축에서 반시계 방향으로 잰 각도(°) — 그리기 모드의 "
+            "길이<각도 입력(예: 5<30)과 같은 규칙입니다."
+        )
+        layout.addWidget(self.load_angle)
+        layout.addWidget(QLabel("°"))
+        to_fxfy_button = QPushButton("Fx·Fy로 변환")
+        to_fxfy_button.setToolTip("크기·각도를 위 Fx/Fy 칸에 채웁니다 — 적용을 눌러야 실제로 저장됩니다.")
+        to_fxfy_button.clicked.connect(self._apply_magnitude_angle_to_fxfy)
+        layout.addWidget(to_fxfy_button)
+        perpendicular_button = QPushButton("선택 부재에 수직")
+        perpendicular_button.setToolTip(
+            "각도 칸을 선택된 부재의 수직 방향으로 채웁니다 — 경사 부재에 수직인 "
+            "하중(풍하중 등)을 각도를 직접 계산하지 않고 넣을 때 씁니다. 하중을 "
+            "받을 노드와 함께 기준이 될 부재도 선택하세요."
+        )
+        perpendicular_button.clicked.connect(self._fill_angle_perpendicular_to_selected_member)
+        layout.addWidget(perpendicular_button)
+        return group
+
+    def _apply_magnitude_angle_to_fxfy(self) -> None:
+        magnitude = self.load_magnitude.value()
+        angle = math.radians(self.load_angle.value())
+        if "fx" in self.load_fields:
+            self.load_fields["fx"].setValue(magnitude * math.cos(angle))
+        if "fy" in self.load_fields:
+            self.load_fields["fy"].setValue(magnitude * math.sin(angle))
+
+    def _selected_reference_member_tag(self) -> int | None:
+        """Whichever single member is selected, regardless of whether a node
+        is *also* selected — unlike ``_selected_member_tag`` (which decides
+        what the 부재 window shows, and deliberately returns ``None`` the
+        moment any node joins the selection), this is for reading a member's
+        own geometry as an angle reference while a node stays the actual load
+        target, so selecting both at once must not disqualify it.
+        """
+        elements = self.canvas.selected_elements
+        return next(iter(elements)) if len(elements) == 1 else None
+
+    def _fill_angle_perpendicular_to_selected_member(self) -> None:
+        tag = self._selected_reference_member_tag()
+        if tag is None:
+            return
+        element = self.canvas.elements[tag]
+        node_i = self.canvas.nodes[element.node_i]
+        node_j = self.canvas.nodes[element.node_j]
+        angle = direction_degrees((node_i.x, node_i.y), (node_j.x, node_j.y))
+        self.load_angle.setValue(angle + 90.0)
 
     def _build_load_target_icon_row(self) -> QWidget:
         """집중하중(node)/등분포하중(element)/사다리꼴하중(element_trapezoid) icon
@@ -1551,6 +1633,12 @@ class ModelingInterfacePage(QFrame):
             field.setToolTip(tooltip)
             self.load_form_layout.addWidget(QLabel(f"{short_label}:"))
             self.load_form_layout.addWidget(field)
+        if hasattr(self, "load_polar_group"):
+            # 등분포/사다리꼴하중 already work in the member's own local axes
+            # (qx/qy), so "perpendicular to a sloped member" is already just
+            # qy there - the magnitude/angle calculator only has a job to do
+            # for 집중하중, where Fx/Fy are always global-axis components.
+            self.load_polar_group.setVisible(target == "node")
 
     def _apply_load(self) -> None:
         if self._current_load_target() == "node":

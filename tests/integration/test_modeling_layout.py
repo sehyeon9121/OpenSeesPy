@@ -1,3 +1,4 @@
+import math
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -291,6 +292,48 @@ def test_a_clockwise_moment_is_typed_positive_and_stores_as_the_right_hand_rule_
     page.load_fields["mz"].setValue(-4.0)  # 4, counter-clockwise
     page._apply_load()
     assert page.canvas.build_model().nodal_loads[0].values[2] == pytest.approx(4.0)
+
+
+def test_magnitude_and_angle_convert_to_fx_fy_matching_standard_trig() -> None:
+    """각도 uses the same convention as the draw-mode 길이<각도 entry: degrees
+    counter-clockwise from global +X."""
+    page = _page()
+
+    page.load_magnitude.setValue(10.0)
+    page.load_angle.setValue(30.0)
+    page._apply_magnitude_angle_to_fxfy()
+
+    assert page.load_fields["fx"].value() == pytest.approx(10.0 * math.cos(math.radians(30.0)))
+    assert page.load_fields["fy"].value() == pytest.approx(10.0 * math.sin(math.radians(30.0)))
+
+
+def test_perpendicular_to_member_button_fills_the_angle_field_from_member_slope() -> None:
+    """A load perpendicular to a sloped member (e.g. wind pressure on a
+    gable roof, textbook figures resolving a force into components
+    perpendicular/parallel to the rafter) can be entered without computing
+    the member's own slope angle by hand first."""
+    page = _page()
+    canvas = page.canvas
+    horizontal_a = canvas.add_node(0.0, 0.0)
+    horizontal_b = canvas.add_node(4.0, 0.0)
+    horizontal_member = canvas.add_member(horizontal_a, horizontal_b)
+    sloped_a = canvas.add_node(0.0, 4.0)
+    sloped_b = canvas.add_node(4.0, 8.0)  # 45 degrees
+    sloped_member = canvas.add_member(sloped_a, sloped_b)
+
+    canvas.selected_elements = {horizontal_member}
+    canvas.selected_nodes = {horizontal_a}  # the load's actual target node
+    page._fill_angle_perpendicular_to_selected_member()
+    assert page.load_angle.value() == pytest.approx(90.0)
+
+    canvas.selected_elements = {sloped_member}
+    page._fill_angle_perpendicular_to_selected_member()
+    assert page.load_angle.value() == pytest.approx(135.0)
+
+    # No selected member (0 or 2+) -> leaves whatever angle was already there.
+    canvas.selected_elements = set()
+    page._fill_angle_perpendicular_to_selected_member()
+    assert page.load_angle.value() == pytest.approx(135.0)
 
 
 def test_load_fields_gain_fz_mx_my_once_3d_mode_is_active() -> None:
