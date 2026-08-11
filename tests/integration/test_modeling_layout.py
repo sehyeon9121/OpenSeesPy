@@ -949,7 +949,7 @@ def test_truss_results_table_lists_joints_force_and_tension_compression_zero() -
     page.canvas.apply_nodal_load_to_selection((0.0, -10.0, 0.0))
 
     solve_and_wait(page)
-    table = page.results.tables_panel.member_force_table
+    table = page.results.tables_panel.member_force_truss_table
 
     assert [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())] == [
         "부재",

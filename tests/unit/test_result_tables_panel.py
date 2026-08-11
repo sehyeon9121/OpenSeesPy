@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from openframe.core.domain import (
@@ -25,9 +26,11 @@ def _row_texts(table, row: int) -> list[str]:
     return [table.item(row, column).text() for column in range(table.columnCount())]
 
 
-def test_member_force_table_shows_both_end_forces_unlike_the_old_i_end_only_view() -> None:
+def test_member_force_tables_split_i_and_j_ends_into_separate_stacked_tables() -> None:
     """The narrow per-diagram table this panel replaces only ever showed the
-    i-end (N-i/V-i/M-i) - a real spreadsheet view needs both ends."""
+    i-end (N-i/V-i/M-i) - a real spreadsheet view needs both ends, and i/j are
+    a genuinely different category so they get their own table rather than
+    doubling the column count of one wide row."""
     panel = _panel()
     model = StructuralModel(
         ndm=2,
@@ -43,14 +46,20 @@ def test_member_force_table_shows_both_end_forces_unlike_the_old_i_end_only_view
         )
     )
 
-    table = panel.member_force_table
-    headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
-    assert headers[0] == "ELEMENT"
-    assert any(header.startswith("N-i") for header in headers)
-    assert any(header.startswith("N-j") for header in headers)
-    row = _row_texts(table, 0)
-    assert row[0] == "1"
-    assert [float(value) for value in row[1:]] == [10.0, 20.0, 30.0, -10.0, -20.0, 40.0]
+    assert panel.member_force_stack.currentWidget() is panel.member_force_i_table.parentWidget()
+
+    i_table = panel.member_force_i_table
+    j_table = panel.member_force_j_table
+    i_headers = [i_table.horizontalHeaderItem(c).text() for c in range(i_table.columnCount())]
+    j_headers = [j_table.horizontalHeaderItem(c).text() for c in range(j_table.columnCount())]
+    assert i_headers == ["ELEMENT", "N (kN)", "V (kN)", "M (kN·m)"]
+    assert j_headers == i_headers
+
+    i_row = _row_texts(i_table, 0)
+    j_row = _row_texts(j_table, 0)
+    assert i_row[0] == j_row[0] == "1"
+    assert [float(value) for value in i_row[1:]] == [10.0, 20.0, 30.0]
+    assert [float(value) for value in j_row[1:]] == [-10.0, -20.0, 40.0]
 
 
 def test_modal_tab_is_hidden_without_mode_shapes_and_shown_once_present() -> None:
@@ -76,13 +85,22 @@ def test_modal_tab_is_hidden_without_mode_shapes_and_shown_once_present() -> Non
     )
     assert panel.tabs.isTabVisible(panel._modal_tab_index) is True
 
-    table = panel.modal_table
-    assert table.rowCount() == 1
-    assert table.item(0, 0).text() == "1"
-    # 참여율 columns come right after MODE/PERIOD/FREQUENCY (3 columns).
-    assert float(table.item(0, 3).text()) == 75.0
-    assert float(table.item(0, 4).text()) == 10.0
-    assert float(table.item(0, 5).text()) == 15.0
+    properties = panel.modal_properties_table
+    assert properties.rowCount() == 1
+    assert properties.item(0, 0).text() == "1"
+    assert float(properties.item(0, 1).text()) == pytest.approx(3.141592653589793, rel=1e-5)
+
+    participation = panel.modal_participation_table
+    assert participation.item(0, 0).text() == "1"
+    assert float(participation.item(0, 1).text()) == 75.0
+    assert float(participation.item(0, 2).text()) == 10.0
+    assert float(participation.item(0, 3).text()) == 15.0
+
+    # A single mode's cumulative participation equals its own participation.
+    cumulative = panel.modal_cumulative_table
+    assert float(cumulative.item(0, 1).text()) == 75.0
+    assert float(cumulative.item(0, 2).text()) == 10.0
+    assert float(cumulative.item(0, 3).text()) == 15.0
 
 
 def test_displacement_table_lists_every_node_regardless_of_selected_result_type() -> None:

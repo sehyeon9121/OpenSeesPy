@@ -1,7 +1,10 @@
 """Comprehensive, Midas-style spreadsheet view of every computed result quantity.
 
-This panel lays out every node/member/mode at once across dedicated tabs, wide
-enough to actually read as a data export.
+This panel lays out every node/member/mode across dedicated tabs. Within a tab,
+columns that mix genuinely different categories (a member's i-end vs j-end, or
+a mode's period/frequency vs its per-direction mass participation) are split
+into their own stacked tables rather than crammed side by side into one wide
+row - each block stays narrow enough to read without horizontal scrolling.
 """
 
 from PySide6.QtWidgets import (
@@ -9,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -58,18 +62,56 @@ class ResultTablesPanel(QFrame):
         self.tabs.setObjectName("resultTablesTabs")
         layout.addWidget(self.tabs, 1)
 
-        self.displacement_table = self._add_table_tab("절점 변위")
-        self.reaction_table = self._add_table_tab("지점 반력")
-        self.member_force_table = self._add_table_tab("부재력")
-        self.modal_table = self._add_table_tab("고유주기 · 질량참여율")
-        self._modal_tab_index = self.tabs.indexOf(self.modal_table.parentWidget())
+        displacement_layout = self._new_tab_page("절점 변위")
+        self.displacement_table = self._add_table_section(displacement_layout)
+
+        reaction_layout = self._new_tab_page("지점 반력")
+        self.reaction_table = self._add_table_section(reaction_layout)
+
+        member_force_layout = self._new_tab_page("부재력")
+        self.member_force_stack = QStackedWidget()
+        member_force_layout.addWidget(self.member_force_stack)
+
+        truss_page = QWidget()
+        truss_layout = QVBoxLayout(truss_page)
+        truss_layout.setContentsMargins(0, 0, 0, 0)
+        self.member_force_truss_table = self._add_table_section(truss_layout)
+        self.member_force_stack.addWidget(truss_page)
+
+        frame_page = QWidget()
+        frame_layout = QVBoxLayout(frame_page)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(10)
+        self.member_force_i_table = self._add_table_section(frame_layout, "i단 (시작단)")
+        self.member_force_j_table = self._add_table_section(frame_layout, "j단 (끝단)")
+        self.member_force_stack.addWidget(frame_page)
+
+        modal_layout = self._new_tab_page("고유주기 · 질량참여율")
+        self._modal_tab_index = self.tabs.count() - 1
+        self.modal_properties_table = self._add_table_section(modal_layout, "모드 특성")
+        self.modal_participation_table = self._add_table_section(
+            modal_layout, "방향별 질량참여율 (%)"
+        )
+        self.modal_cumulative_table = self._add_table_section(
+            modal_layout, "누적 질량참여율 (%)"
+        )
 
         self._refresh()
 
-    def _add_table_tab(self, title: str) -> QTableWidget:
+    def _new_tab_page(self, title: str) -> QVBoxLayout:
         page = QWidget()
-        page_layout = QVBoxLayout(page)
-        page_layout.setContentsMargins(6, 6, 6, 6)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(10)
+        self.tabs.addTab(page, title)
+        return layout
+
+    @staticmethod
+    def _add_table_section(layout: QVBoxLayout, title: str | None = None) -> QTableWidget:
+        if title is not None:
+            caption = QLabel(title)
+            caption.setObjectName("resultGroupLabel")
+            layout.addWidget(caption)
         table = QTableWidget(0, 0)
         table.setObjectName("resultTablesGrid")
         table.verticalHeader().setVisible(False)
@@ -78,8 +120,7 @@ class ResultTablesPanel(QFrame):
         header_view = table.horizontalHeader()
         header_view.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header_view.setDefaultSectionSize(108)
-        page_layout.addWidget(table)
-        self.tabs.addTab(page, title)
+        layout.addWidget(table, 1)
         return table
 
     def set_model(self, model: StructuralModel) -> None:
@@ -200,45 +241,54 @@ class ResultTablesPanel(QFrame):
         model = self._model
         is_3d = model is not None and model.ndm == 3
         if not is_3d and self._is_truss_model():
+            self.member_force_stack.setCurrentIndex(0)
             self._refresh_truss_member_forces()
             return
+        self.member_force_stack.setCurrentIndex(1)
 
         unit = self._unit_system
         result = self._result
-        table = self.member_force_table
         if is_3d:
             width = 6
-            ends = (
-                (f"N-i ({unit.force})", f"Vy-i ({unit.force})", f"Vz-i ({unit.force})",
-                 f"T-i ({unit.moment})", f"My-i ({unit.moment})", f"Mz-i ({unit.moment})"),
-                (f"N-j ({unit.force})", f"Vy-j ({unit.force})", f"Vz-j ({unit.force})",
-                 f"T-j ({unit.moment})", f"My-j ({unit.moment})", f"Mz-j ({unit.moment})"),
-            )
+            headers = [
+                "ELEMENT",
+                f"N ({unit.force})",
+                f"Vy ({unit.force})",
+                f"Vz ({unit.force})",
+                f"T ({unit.moment})",
+                f"My ({unit.moment})",
+                f"Mz ({unit.moment})",
+            ]
         else:
             width = 3
-            ends = (
-                (f"N-i ({unit.force})", f"V-i ({unit.force})", f"M-i ({unit.moment})"),
-                (f"N-j ({unit.force})", f"V-j ({unit.force})", f"M-j ({unit.moment})"),
-            )
-        headers = ["ELEMENT", *ends[0], *ends[1]]
-        table.setColumnCount(len(headers))
-        table.setHorizontalHeaderLabels(headers)
+            headers = ["ELEMENT", f"N ({unit.force})", f"V ({unit.force})", f"M ({unit.moment})"]
+
         elements = (
             []
             if result is None
             else sorted(result.element_results.values(), key=lambda item: item.element_tag)
         )
-        table.setRowCount(len(elements))
+        for table in (self.member_force_i_table, self.member_force_j_table):
+            table.setColumnCount(len(headers))
+            table.setHorizontalHeaderLabels(headers)
+            table.setRowCount(len(elements))
+
         required = width * 2
         for row, element in enumerate(elements):
-            table.setItem(row, 0, QTableWidgetItem(str(element.element_tag)))
             values = (
                 element.local_forces
                 if len(element.local_forces) >= required
                 else (0.0,) * required
             )
-            for column, value in enumerate(values[:required], start=1):
-                table.setItem(row, column, QTableWidgetItem(f"{value:.6g}"))
+            self.member_force_i_table.setItem(row, 0, QTableWidgetItem(str(element.element_tag)))
+            self.member_force_j_table.setItem(row, 0, QTableWidgetItem(str(element.element_tag)))
+            for column in range(width):
+                self.member_force_i_table.setItem(
+                    row, column + 1, QTableWidgetItem(f"{values[column]:.6g}")
+                )
+                self.member_force_j_table.setItem(
+                    row, column + 1, QTableWidgetItem(f"{values[width + column]:.6g}")
+                )
 
     def _refresh_truss_member_forces(self) -> None:
         """Member / i-j joints / axial force / tension-compression-zero — what a
@@ -247,7 +297,7 @@ class ResultTablesPanel(QFrame):
         unit = self._unit_system
         result = self._result
         model = self._model
-        table = self.member_force_table
+        table = self.member_force_truss_table
         table.setColumnCount(4)
         table.setHorizontalHeaderLabels(
             ("부재", "절점 (i-j)", f"축력 N ({unit.force})", "상태")
@@ -281,31 +331,42 @@ class ResultTablesPanel(QFrame):
     def _refresh_modal(self) -> None:
         model = self._model
         result = self._result
-        table = self.modal_table
         modes = () if result is None else result.mode_shapes
         is_3d = model is not None and model.ndm == 3
         labels = _DOF_LABELS_3D if is_3d else _DOF_LABELS_2D
         dof_count = len(labels)
 
-        headers = ["MODE", "PERIOD (s)", "FREQUENCY (Hz)"]
-        headers += [f"{label} 참여율 (%)" for label in labels]
-        headers += [f"{label} 누적 (%)" for label in labels]
-        table.setColumnCount(len(headers))
-        table.setHorizontalHeaderLabels(headers)
-        table.setRowCount(len(modes))
+        properties_headers = ["MODE", "PERIOD (s)", "FREQUENCY (Hz)"]
+        direction_headers = ["MODE"] + [f"{label} (%)" for label in labels]
+
+        for table, headers in (
+            (self.modal_properties_table, properties_headers),
+            (self.modal_participation_table, direction_headers),
+            (self.modal_cumulative_table, direction_headers),
+        ):
+            table.setColumnCount(len(headers))
+            table.setHorizontalHeaderLabels(headers)
+            table.setRowCount(len(modes))
 
         cumulative = [0.0] * dof_count
         for row, mode in enumerate(modes):
             ratios = (*mode.mass_participation_ratio, *([0.0] * dof_count))[:dof_count]
-            table.setItem(row, 0, QTableWidgetItem(str(mode.mode_number)))
-            table.setItem(row, 1, QTableWidgetItem(f"{mode.period:.6g}"))
-            table.setItem(row, 2, QTableWidgetItem(f"{mode.frequency_hz:.6g}"))
+            self.modal_properties_table.setItem(row, 0, QTableWidgetItem(str(mode.mode_number)))
+            self.modal_properties_table.setItem(row, 1, QTableWidgetItem(f"{mode.period:.6g}"))
+            self.modal_properties_table.setItem(
+                row, 2, QTableWidgetItem(f"{mode.frequency_hz:.6g}")
+            )
+            self.modal_participation_table.setItem(
+                row, 0, QTableWidgetItem(str(mode.mode_number))
+            )
+            self.modal_cumulative_table.setItem(row, 0, QTableWidgetItem(str(mode.mode_number)))
             for index, ratio in enumerate(ratios):
                 cumulative[index] += ratio
-                table.setItem(row, 3 + index, QTableWidgetItem(f"{ratio * 100.0:.3g}"))
-            for index, total in enumerate(cumulative):
-                table.setItem(
-                    row, 3 + dof_count + index, QTableWidgetItem(f"{total * 100.0:.3g}")
+                self.modal_participation_table.setItem(
+                    row, 1 + index, QTableWidgetItem(f"{ratio * 100.0:.3g}")
+                )
+                self.modal_cumulative_table.setItem(
+                    row, 1 + index, QTableWidgetItem(f"{cumulative[index] * 100.0:.3g}")
                 )
 
         if self._modal_tab_index >= 0:
