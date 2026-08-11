@@ -678,3 +678,38 @@ def test_modal_solve_button_reports_missing_material_without_a_popup() -> None:
     assert application is QApplication.instance()
     assert page.workspace_stack.currentIndex() == 0
     assert "재료" in page.determinacy_status.text()
+
+
+def test_pdelta_toggle_amplifies_deflection_on_a_real_material_cantilever() -> None:
+    """End-to-end through the actual UI trigger (solve(), not the solver
+    directly): a cantilever with real section/material carrying a lateral load
+    plus a large compressive axial load - the pdelta_toggle checkbox must
+    change the result (larger deflection than the linear solve), and toggling
+    it off again must reproduce the exact linear result."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    base = canvas.add_node(0.0, 0.0)
+    tip = canvas.add_node(0.0, 4.0)
+    member = canvas.add_member(base, tip)
+    canvas.set_support(base, (True, True, True))
+    canvas.selected_elements = {member}
+    canvas.apply_section_to_selection(width=0.3, height=0.5, elastic=200_000.0)
+    canvas.set_nodal_load(tip, (1.0, -2.0, 0.0))
+
+    solve_and_wait(page)
+    linear_ux = page.viewport._result.node_results[tip].displacement[0]
+
+    page.pdelta_toggle.setChecked(True)
+    solve_and_wait(page)
+
+    assert application is QApplication.instance()
+    result = page.viewport._result
+    assert result.status.value == "completed"
+    assert result.node_results[tip].displacement[0] > linear_ux
+
+    page.pdelta_toggle.setChecked(False)
+    solve_and_wait(page)
+    assert page.viewport._result.node_results[tip].displacement[0] == pytest.approx(
+        linear_ux, abs=1.0e-9
+    )

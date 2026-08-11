@@ -184,6 +184,13 @@ class ModelingInterfacePage(QFrame):
         )
         self.self_weight_toggle.toggled.connect(self._toggle_self_weight)
         layout.addWidget(self.self_weight_toggle)
+        self.pdelta_toggle = QCheckBox("P-Delta 포함")
+        self.pdelta_toggle.setToolTip(
+            "켜면 2차효과(P-Delta, 기하비선형)를 포함해 해석합니다. 정정성과 무관하게 "
+            "모든 부재에 실제 재료·단면(E/A/I)이 필요합니다. 부재 하나로 그려진 기둥의 "
+            "축하중이 좌굴하중에 가까울수록(대략 30% 초과) 오차가 커질 수 있습니다."
+        )
+        layout.addWidget(self.pdelta_toggle)
         self.solve_button = QPushButton("정정성 검사 및 해석")
         self.solve_button.setObjectName("setupContinueButton")
         self.solve_button.clicked.connect(self.solve)
@@ -1478,7 +1485,10 @@ class ModelingInterfacePage(QFrame):
         self.determinacy_status.setText(f"정정성: {check.message}")
         self.solve_button.setEnabled(False)
         self.analysis_progress.show_running("정정성 해석")
-        thread = MaterialFreeSolveThread(self._solver, model)
+        geometric_nonlinearity = "PDelta" if self.pdelta_toggle.isChecked() else "Linear"
+        thread = MaterialFreeSolveThread(
+            self._solver, model, geometric_nonlinearity=geometric_nonlinearity
+        )
         thread.completed.connect(lambda result: self._solve_completed(model, check, result))
         thread.finished.connect(self._solve_thread_finished)
         self._solve_thread = thread

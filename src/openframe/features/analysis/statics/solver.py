@@ -148,18 +148,43 @@ class MaterialFreeStaticsSolver:
     """
 
     def solve(
-        self, model: StructuralModel, material: tuple[float, float, float] | None = None
+        self,
+        model: StructuralModel,
+        material: tuple[float, float, float] | None = None,
+        geometric_nonlinearity: str = "Linear",
     ) -> AnalysisResult:
         """``material`` is a (E, A, I) fallback applied to any 2D frame member
         that doesn't carry its own E/A/I in ``properties`` - real values here
         (per element or as this fallback) also give real (not unit-normalised)
         deflection for determinate structures, since deflection, unlike
         reactions and N/V/M, does scale with EI even when it is determinate.
+
+        ``geometric_nonlinearity`` ("Linear" or "PDelta") switches every
+        member's ``geomTransf`` between the ordinary linear one and OpenSees'
+        native P-Delta transformation, which is the second-order (P-Delta)
+        effect: unlike a determinate structure's *first-order* reactions and
+        member forces (equilibrium alone, independent of stiffness), a P-Delta
+        amplification is intrinsically stiffness-dependent even on an
+        otherwise-determinate structure, so it always needs real E/A/I - there
+        is no unit-placeholder shortcut for it the way there is for the
+        first-order case.
         """
+        if geometric_nonlinearity not in ("Linear", "PDelta"):
+            return AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=[f"지원하지 않는 기하비선형 설정입니다: {geometric_nonlinearity}"],
+            )
         check = check_determinacy(model)
-        if not check.can_solve_without_materials:
+        needs_material = not check.can_solve_without_materials or geometric_nonlinearity != "Linear"
+        if needs_material:
             if material is None and not self._has_material_everywhere(model, check.system):
-                return AnalysisResult(status=AnalysisStatus.FAILED, messages=[check.message])
+                messages = [] if check.can_solve_without_materials else [check.message]
+                if geometric_nonlinearity != "Linear":
+                    messages.append(
+                        "P-Delta(기하비선형) 해석에는 모든 부재의 실제 재료·단면(E/A/I)이 "
+                        "필요합니다 - 정정구조라도 2차효과는 강성에 좌우됩니다."
+                    )
+                return AnalysisResult(status=AnalysisStatus.FAILED, messages=messages)
             if check.system != "frame" or model.ndm != 2:
                 return AnalysisResult(
                     status=AnalysisStatus.FAILED,
@@ -171,9 +196,9 @@ class MaterialFreeStaticsSolver:
 
         ops.wipe()
         try:
-            self._build(model, check.system, material)
+            self._build(model, check.system, material, geometric_nonlinearity)
             self._apply_loads(model, check.system)
-            self._analyze()
+            self._analyze(geometric_nonlinearity)
             return self._collect(model, check.system, check.message, material)
         except (RuntimeError, ValueError, ops.OpenSeesError) as error:
             return AnalysisResult(
@@ -224,6 +249,7 @@ class MaterialFreeStaticsSolver:
         model: StructuralModel,
         system: str,
         material: tuple[float, float, float] | None = None,
+        geometric_nonlinearity: str = "Linear",
     ) -> None:
         ndm = model.ndm
         ndf = (2 if system == "truss" else 3) if ndm == 2 else (3 if system == "truss" else 6)
@@ -256,7 +282,7 @@ class MaterialFreeStaticsSolver:
             return
 
         if ndm == 2:
-            ops.geomTransf("Linear", 1)
+            ops.geomTransf(geometric_nonlinearity, 1)
             trapezoid_loads = {
                 load.element_tag: load for load in model.element_loads if not load.is_uniform
             }
@@ -523,15 +549,26 @@ class MaterialFreeStaticsSolver:
                 ops.eleLoad("-ele", sub_tag, "-type", "-beamUniform", wy_mid, wx_mid)
 
     @staticmethod
-    def _analyze() -> None:
+    def _analyze(geometric_nonlinearity: str = "Linear") -> None:
         ops.system("BandGeneral")
         ops.numberer("Plain")
         ops.constraints("Plain")
         ops.integrator("LoadControl", 1.0)
-        ops.algorithm("Linear")
+        if geometric_nonlinearity == "Linear":
+            ops.algorithm("Linear")
+        else:
+            # P-Delta is a genuine geometric nonlinearity - unlike the ordinary
+            # linear case, equilibrium depends on the (unknown) deformed shape,
+            # so a single un-iterated pass is not enough; Newton needs to
+            # actually converge on it, even for a "single step" analysis.
+            ops.test("NormDispIncr", 1.0e-8, 30)
+            ops.algorithm("Newton")
         ops.analysis("Static")
         if ops.analyze(1) != 0:
-            raise RuntimeError("구조가 불안정하거나 지점 조건이 충분하지 않습니다.")
+            message = "구조가 불안정하거나 지점 조건이 충분하지 않습니다."
+            if geometric_nonlinearity != "Linear":
+                message += " P-Delta 해석이 수렴하지 않았다면 축력이 좌굴하중에 가까울 수 있습니다."
+            raise RuntimeError(message)
         ops.reactions()
 
     @staticmethod

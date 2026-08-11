@@ -15,14 +15,23 @@ from openframe.features.analysis.statics.solver import MaterialFreeStaticsSolver
 class MaterialFreeSolveThread(QThread):
     completed = Signal(object)
 
-    def __init__(self, solver: MaterialFreeStaticsSolver, model: StructuralModel) -> None:
+    def __init__(
+        self,
+        solver: MaterialFreeStaticsSolver,
+        model: StructuralModel,
+        *,
+        geometric_nonlinearity: str = "Linear",
+    ) -> None:
         super().__init__()
         self._solver = solver
         self._model = model
+        self._geometric_nonlinearity = geometric_nonlinearity
 
     def run(self) -> None:
         try:
-            result = self._solver.solve(self._model)
+            result = self._solver.solve(
+                self._model, geometric_nonlinearity=self._geometric_nonlinearity
+            )
         except Exception as error:  # noqa: BLE001 - never crash the GUI event loop.
             result = AnalysisResult(
                 status=AnalysisStatus.FAILED,
