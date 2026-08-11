@@ -8,7 +8,7 @@ from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
 from openframe.app.shell.main_window import MainWindow
-from openframe.core.domain import AnalysisKind
+from openframe.core.domain import AnalysisKind, UnitSystem
 from openframe.features.analysis.application.run_analysis import RunAnalysisService
 from openframe.features.analysis.linear_static.module import LinearStaticAnalysis
 from openframe.features.model.application.open_model import OpenModelService
@@ -36,7 +36,11 @@ def test_run_button_flow_populates_results_workspace(information: MagicMock) -> 
     analysis_service = RunAnalysisService(
         {AnalysisKind.LINEAR_STATIC: LinearStaticAnalysis(runner)}
     )
-    window = MainWindow(open_model_service=model_service, run_analysis_service=analysis_service)
+    window = MainWindow(
+        open_model_service=model_service,
+        run_analysis_service=analysis_service,
+        imported_unit_resolver=lambda _source: UnitSystem("kN", "m"),
+    )
 
     window._start_model_load(EXAMPLE_MODEL)
     _run_thread_to_completion(window._model_load_thread)
@@ -56,7 +60,7 @@ def test_run_button_flow_populates_results_workspace(information: MagicMock) -> 
 
     assert window._analysis_run_thread is None
     assert window.results_workspace.summary.status_badge.text() == "COMPLETED"
-    assert window.results_workspace.data_panel.result_table.rowCount() == 4
+    assert window.results_workspace.tables_panel.displacement_table.rowCount() == 4
     assert window.results_workspace.summary.member_selector.count() == 3
     assert window.analysis_progress.isHidden()
     information.assert_called_once()
@@ -67,8 +71,8 @@ def test_run_button_flow_populates_results_workspace(information: MagicMock) -> 
     assert window.navigation.current_section() == "results"
 
     node_column_values = {
-        window.results_workspace.data_panel.result_table.item(row, 0).text()
-        for row in range(window.results_workspace.data_panel.result_table.rowCount())
+        window.results_workspace.tables_panel.displacement_table.item(row, 0).text()
+        for row in range(window.results_workspace.tables_panel.displacement_table.rowCount())
     }
     assert node_column_values == {"1", "2", "3", "4"}
 
@@ -113,7 +117,11 @@ def test_loading_a_second_model_clears_results_and_allows_a_new_run(
     )
     original_execute = analysis_service.execute
     analysis_service.execute = MagicMock(wraps=original_execute)
-    window = MainWindow(open_model_service=model_service, run_analysis_service=analysis_service)
+    window = MainWindow(
+        open_model_service=model_service,
+        run_analysis_service=analysis_service,
+        imported_unit_resolver=lambda _source: UnitSystem("kN", "m"),
+    )
     workspace = window.results_workspace
 
     window._start_model_load(EXAMPLE_MODEL)
@@ -133,7 +141,7 @@ def test_loading_a_second_model_clears_results_and_allows_a_new_run(
     assert workspace.summary.status_badge.text() == "WAITING"
     assert workspace.summary.member_selector.count() == 0
     assert workspace.data_panel.member_selector.count() == 0
-    assert workspace.data_panel.result_table.rowCount() == 0
+    assert workspace.tables_panel.displacement_table.rowCount() == 0
     assert not [
         item
         for item in workspace.viewport.scene.items()
@@ -150,7 +158,7 @@ def test_loading_a_second_model_clears_results_and_allows_a_new_run(
     application.processEvents()
 
     assert workspace.summary.status_badge.text() == "COMPLETED"
-    assert workspace.data_panel.result_table.rowCount() == 3
+    assert workspace.tables_panel.displacement_table.rowCount() == 3
     assert workspace.summary.member_selector.count() == 2
     assert information.call_count == 2
     window.close()

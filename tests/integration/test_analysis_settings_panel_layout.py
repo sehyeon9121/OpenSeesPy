@@ -37,6 +37,8 @@ def test_nonlinear_settings_move_to_a_dialog_and_keep_the_sidebar_short() -> Non
         settings.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
     )
     application.processEvents()
+
+    assert settings.num_steps.maximum() >= 3_240
     application.processEvents()
 
     assert settings.open_nonlinear_settings_button.isVisible()

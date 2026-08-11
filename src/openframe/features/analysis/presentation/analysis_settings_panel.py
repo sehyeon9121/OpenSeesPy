@@ -15,7 +15,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from openframe.core.domain import AnalysisKind, StructuralModel
+from openframe.core.domain import (
+    DEFAULT_UNIT_SYSTEM,
+    AnalysisKind,
+    StructuralModel,
+    UnitSystem,
+)
 
 #: DOF labels by ndm, matching the order OpenSeesPy reports node results in.
 _DOF_LABELS_2D = ("UX", "UY", "RZ")
@@ -29,6 +34,7 @@ class AnalysisSettingsPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("analysisSettingsPanel")
         self._model: StructuralModel | None = None
+        self._unit_system = DEFAULT_UNIT_SYSTEM
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -172,11 +178,15 @@ class AnalysisSettingsPanel(QFrame):
         target_displacement_layout = QVBoxLayout(self.target_displacement_group)
         target_displacement_layout.setContentsMargins(0, 0, 0, 0)
         target_displacement_layout.setSpacing(4)
-        target_displacement_layout.addWidget(self._field_label("TARGET DISPLACEMENT"))
+        self.target_displacement_label = self._field_label(
+            f"TARGET DISPLACEMENT ({self._unit_system.length})"
+        )
+        target_displacement_layout.addWidget(self.target_displacement_label)
         self.target_displacement = QDoubleSpinBox()
         self.target_displacement.setDecimals(6)
         self.target_displacement.setRange(-1.0e6, 1.0e6)
         self.target_displacement.setSingleStep(0.01)
+        self.target_displacement.setSuffix(f" {self._unit_system.length}")
         target_displacement_layout.addWidget(self.target_displacement)
         dialog_layout.addWidget(self.target_displacement_group)
 
@@ -274,6 +284,14 @@ class AnalysisSettingsPanel(QFrame):
         self._update_gravity_visibility()
         self._update_integrator_visibility()
         self._nonlinear_dialog = dialog
+
+    def set_unit_system(self, unit_system: UnitSystem) -> None:
+        """Show the imported model's native length beside dimensional inputs."""
+        self._unit_system = unit_system
+        self.target_displacement_label.setText(
+            f"TARGET DISPLACEMENT ({unit_system.length})"
+        )
+        self.target_displacement.setSuffix(f" {unit_system.length}")
 
     def _update_gravity_visibility(self) -> None:
         self.gravity_steps_group.setVisible(self.gravity_pattern.currentData() is not None)

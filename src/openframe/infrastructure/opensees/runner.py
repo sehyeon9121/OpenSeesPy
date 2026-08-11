@@ -243,6 +243,9 @@ class OpenSeesProcessRunner:
                     )
                     for node in item.get("node_results", [])
                 },
+                mass_participation_ratio=tuple(
+                    float(value) for value in item.get("mass_participation_ratio", [])
+                ),
             )
             for item in payload.get("mode_shapes", [])
         )

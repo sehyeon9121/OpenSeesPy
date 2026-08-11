@@ -34,7 +34,7 @@ class StartWorkspace(QFrame):
         title = QLabel("Start or continue a project")
         title.setObjectName("startPageTitle")
         description = QLabel(
-            "Create a 2D structural model, import OpenSeesPy, or continue your current work."
+            "Create a structural model, import OpenSeesPy, or continue your current work."
         )
         description.setObjectName("startPageDescription")
         description.setWordWrap(True)

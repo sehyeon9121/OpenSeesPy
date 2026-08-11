@@ -31,6 +31,7 @@ from openframe.core.domain.units import (
     DEFAULT_UNIT_SYSTEM,
     FORCE_UNITS,
     LENGTH_UNITS,
+    TIME_UNITS,
     UnitSystem,
 )
 
@@ -38,6 +39,7 @@ __all__ = [
     "DEFAULT_UNIT_SYSTEM",
     "FORCE_UNITS",
     "LENGTH_UNITS",
+    "TIME_UNITS",
     "AnalysisKind",
     "AnalysisRequest",
     "AnalysisResult",

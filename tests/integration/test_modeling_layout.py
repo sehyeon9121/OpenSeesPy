@@ -926,9 +926,10 @@ def test_a_determinate_truss_solves_with_one_constant_axial_value_per_member() -
 
 
 def test_truss_results_table_lists_joints_force_and_tension_compression_zero() -> None:
-    """부재력 표: for a truss, the TABLE tab must read as a 부재 번호 / 절점 (i-j) /
-    축력 / 인장·압축·0부재 sheet — not the frame table's N/V/M-i columns, since V
-    and M are always zero and say nothing about a two-force member."""
+    """부재력 표: for a truss, the Result Tables member-force sheet must read as a
+    부재 번호 / 절점 (i-j) / 축력 / 인장·압축·0부재 sheet — not the frame table's
+    N/V/M-i-j columns, since V and M are always zero and say nothing about a
+    two-force member."""
     page = _page()
     page.truss_mode_toggle.setChecked(True)
     a = page.canvas.add_node(0.0, 0.0)
@@ -948,9 +949,7 @@ def test_truss_results_table_lists_joints_force_and_tension_compression_zero() -
     page.canvas.apply_nodal_load_to_selection((0.0, -10.0, 0.0))
 
     solve_and_wait(page)
-    panel = page.results.data_panel
-    panel.set_result_type("axial")
-    table = panel.result_table
+    table = page.results.tables_panel.member_force_table
 
     assert [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())] == [
         "부재",

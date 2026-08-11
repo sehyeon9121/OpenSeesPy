@@ -631,19 +631,27 @@ QComboBox#resultDataMemberSelector, QComboBox#resultMemberSelector {
     padding: 0 6px;
     font-size: 8pt;
 }
-QTabWidget#workspaceResultTabs::pane { border: 0; border-top: 1px solid #dbe3ec; }
-QTabWidget#workspaceResultTabs QTabBar::tab {
+QTabWidget#resultTablesTabs::pane {
+    border: 0;
+    border-top: 1px solid #dbe3ec;
+}
+QTabWidget#resultTablesTabs QTabBar::tab {
     min-width: 74px;
     padding: 6px 8px;
     color: #738195;
     background: #f6f8fb;
     border-bottom: 2px solid transparent;
 }
-QTabWidget#workspaceResultTabs QTabBar::tab:selected {
+QTabWidget#resultTablesTabs QTabBar::tab:selected {
     color: #174ea6;
     background: #ffffff;
     border-bottom-color: #174ea6;
     font-weight: 700;
+}
+QFrame#resultTablesPanel { background: #ffffff; }
+QFrame#resultTablesHeader {
+    background: #f6f8fb;
+    border-bottom: 1px solid #dbe3ec;
 }
 QFrame#resultSummaryPanel {
     background: #ffffff;
@@ -666,7 +674,8 @@ QProgressBar#resultLegend::chunk {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
         stop:0 #2563eb, stop:0.5 #f7d154, stop:1 #e5484d);
 }
-QTableWidget#resultEndForceTable, QTableWidget#workspaceResultTable {
+QTableWidget#resultEndForceTable, QTableWidget#workspaceResultTable,
+QTableWidget#resultTablesGrid {
     font-family: "Consolas";
     font-size: 8pt;
 }

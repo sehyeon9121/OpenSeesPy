@@ -25,7 +25,9 @@ from PySide6.QtWidgets import (
 from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
     AnalysisResult,
+    AnalysisStatus,
     LoadDisplacementPoint,
+    ModeShape,
     NodeResult,
     StructuralModel,
     UnitSystem,
@@ -70,6 +72,7 @@ RESULT_TYPE_NAMES = {
     "moment": "BENDING MOMENT (M)",
     "pushover": "PUSHOVER CURVE",
     "tables": "RESULT TABLES",
+    "mode_shapes": "MODE SHAPES",
 }
 
 
@@ -108,6 +111,15 @@ class ResultViewport(QFrame):
         self.view_selector.currentIndexChanged.connect(self._projection_changed)
         self.view_selector.hide()
         header_layout.addWidget(self.view_selector)
+        self.mode_shape_label = QLabel("MODE")
+        header_layout.addWidget(self.mode_shape_label)
+        self.mode_shape_selector = QComboBox()
+        self.mode_shape_selector.setObjectName("resultModeShapeSelector")
+        self.mode_shape_selector.setMaximumWidth(160)
+        self.mode_shape_selector.currentIndexChanged.connect(self._redraw)
+        header_layout.addWidget(self.mode_shape_selector)
+        self.mode_shape_label.hide()
+        self.mode_shape_selector.hide()
         zoom_out = self._tool_button("−")
         zoom_in = self._tool_button("+")
         fit = self._tool_button("FIT")
@@ -203,12 +215,14 @@ class ResultViewport(QFrame):
 
     def show_result(self, result: AnalysisResult) -> None:
         self._result = result
+        self._fill_mode_shape_selector(result.mode_shapes)
         self._redraw()
         self.fit_model()
 
     def clear_result(self) -> None:
         """Drop the drawn result so a new model never shows the previous one."""
         self._result = None
+        self._fill_mode_shape_selector(())
         self._redraw()
         self.fit_model()
 
@@ -220,9 +234,29 @@ class ResultViewport(QFrame):
     def set_result_type(self, result_type: str) -> None:
         self._result_type = result_type
         self.mode_badge.setText(RESULT_TYPE_NAMES.get(result_type, result_type.upper()))
+        is_mode_shapes = result_type == "mode_shapes"
+        self.mode_shape_label.setVisible(is_mode_shapes)
+        self.mode_shape_selector.setVisible(is_mode_shapes)
         self._update_picking_mode()
         self._redraw()
         self.fit_model()
+
+    def _fill_mode_shape_selector(self, mode_shapes: tuple[ModeShape, ...]) -> None:
+        self.mode_shape_selector.blockSignals(True)
+        self.mode_shape_selector.clear()
+        for index, mode in enumerate(mode_shapes):
+            self.mode_shape_selector.addItem(
+                f"Mode {mode.mode_number}  (T={mode.period:.4g}s)", index
+            )
+        self.mode_shape_selector.blockSignals(False)
+
+    def _current_mode_shape(self) -> ModeShape | None:
+        if self._result is None:
+            return None
+        index = self.mode_shape_selector.currentData()
+        if index is None or not (0 <= index < len(self._result.mode_shapes)):
+            return None
+        return self._result.mode_shapes[index]
 
     def _update_picking_mode(self) -> None:
         enabled = (
@@ -302,6 +336,9 @@ class ResultViewport(QFrame):
     def _redraw(self) -> None:
         if self._result_type == "pushover":
             self._redraw_pushover()
+            return
+        if self._result_type == "mode_shapes":
+            self._redraw_mode_shape()
             return
 
         self.controls_stack.setCurrentIndex(0)
@@ -425,6 +462,44 @@ class ResultViewport(QFrame):
         self.pushover_status_label.setProperty("status", "warning" if incomplete else "ok")
         self.pushover_status_label.style().unpolish(self.pushover_status_label)
         self.pushover_status_label.style().polish(self.pushover_status_label)
+
+    def _redraw_mode_shape(self) -> None:
+        """A mode shape has displacements but no forces/reactions - it is drawn
+        with exactly the ordinary "nodal displacements" pipeline (2D coloured
+        members + deflection curve, or the 3D quick view), just fed the picked
+        mode's own eigenvector instead of a real analysis result. Swapping
+        ``self._result``/``self._result_type`` for the duration of one
+        synchronous ``_redraw()`` call is simpler and less risky than threading
+        a second result source through every drawing helper in this class."""
+        mode = self._current_mode_shape()
+        if self._model is None or mode is None:
+            self.controls_stack.setCurrentIndex(0)
+            self.scale_caption.setText("MODE SHAPE SCALE")
+            self.scale_value.setText(f"x{self.deformation_scale.value()}")
+            if self._model is None:
+                self.scene.clear()
+                self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))
+                return
+            self.canvas_stack.setCurrentWidget(
+                self.quick3d_view if self._model.ndm == 3 else self.view
+            )
+            self.view_selector.setVisible(self._model.ndm == 3)
+            if self._model.ndm == 3:
+                self.quick3d_view.clear_result()
+            else:
+                self.scene.set_model(self._model)
+            return
+
+        synthetic_result = AnalysisResult(
+            status=AnalysisStatus.COMPLETED, node_results=mode.node_results
+        )
+        saved_result, saved_type = self._result, self._result_type
+        self._result, self._result_type = synthetic_result, "displacement"
+        try:
+            self._redraw()
+        finally:
+            self._result, self._result_type = saved_result, saved_type
+        self.scale_caption.setText("MODE SHAPE SCALE")
 
     def _is_truss_model(self) -> bool:
         """Whole-model, matching how ``check_determinacy``/the solver already

@@ -35,12 +35,20 @@ def run_modal_analysis(source: Path, *, num_modes: int = 3) -> dict[str, Any]:
     if num_modes <= 0:
         raise RuntimeError("계산할 모드 수는 1 이상이어야 합니다.")
 
-    total_mass = sum(sum(abs(value) for value in ops.nodeMass(tag)) for tag in node_tags)
+    node_masses = {tag: [float(value) for value in ops.nodeMass(tag)] for tag in node_tags}
+    total_mass = sum(sum(abs(value) for value in masses) for masses in node_masses.values())
     if total_mass <= 0.0:
         raise RuntimeError(
             "절점 질량이 정의되어 있지 않습니다. 고유치 해석에는 ops.mass(...)로 "
             "정의된 질량이 필요합니다."
         )
+    ndf = max((len(masses) for masses in node_masses.values()), default=0)
+    #: Total mass lumped in each DOF direction, independent of mode - the
+    #: denominator every mode's effective modal mass is measured against.
+    total_mass_per_dof = [
+        sum(masses[dof] if dof < len(masses) else 0.0 for masses in node_masses.values())
+        for dof in range(ndf)
+    ]
 
     ops.wipeAnalysis()
     ops.constraints("Transformation")
@@ -78,6 +86,9 @@ def run_modal_analysis(source: Path, *, num_modes: int = 3) -> dict[str, Any]:
         angular_frequency = math.sqrt(eigenvalue)
         frequency_hz = angular_frequency / (2.0 * math.pi)
         period = 1.0 / frequency_hz if frequency_hz > 0.0 else 0.0
+        node_eigenvectors = {
+            tag: [float(v) for v in ops.nodeEigenvector(tag, index)] for tag in node_tags
+        }
         mode_shapes.append(
             {
                 "mode_number": index,
@@ -86,12 +97,12 @@ def run_modal_analysis(source: Path, *, num_modes: int = 3) -> dict[str, Any]:
                 "frequency_hz": frequency_hz,
                 "period": period,
                 "node_results": [
-                    {
-                        "node_tag": tag,
-                        "displacement": [float(v) for v in ops.nodeEigenvector(tag, index)],
-                    }
-                    for tag in node_tags
+                    {"node_tag": tag, "displacement": vector}
+                    for tag, vector in node_eigenvectors.items()
                 ],
+                "mass_participation_ratio": _mass_participation_ratios(
+                    node_masses, node_eigenvectors, ndf, total_mass_per_dof
+                ),
             }
         )
 
@@ -103,3 +114,40 @@ def run_modal_analysis(source: Path, *, num_modes: int = 3) -> dict[str, Any]:
         "mode_shapes": mode_shapes,
         "messages": [],
     }
+
+
+def _mass_participation_ratios(
+    node_masses: dict[int, list[float]],
+    node_eigenvectors: dict[int, list[float]],
+    ndf: int,
+    total_mass_per_dof: list[float],
+) -> list[float]:
+    """Fraction of each DOF direction's total mass this mode's effective modal
+    mass accounts for.
+
+    Computed straight from the lumped mass matrix and the raw eigenvector rather
+    than assumed from how ``ops.eigen`` happens to normalize it (mass-normalized
+    vs. unit-max-entry differs by solver/version), so the result stays correct
+    either way:  generalized modal mass ``m* = phi^T * M * phi``, participation
+    factor ``L_d = phi_d^T * M_d`` per direction, effective mass ``L_d^2 / m*``.
+    """
+    modal_mass = 0.0
+    participation = [0.0] * ndf
+    for tag, masses in node_masses.items():
+        vector = node_eigenvectors.get(tag, [])
+        for dof in range(ndf):
+            mass = masses[dof] if dof < len(masses) else 0.0
+            value = vector[dof] if dof < len(vector) else 0.0
+            modal_mass += mass * value * value
+            participation[dof] += mass * value
+    if modal_mass <= 0.0:
+        return [0.0] * ndf
+    ratios = []
+    for dof in range(ndf):
+        total = total_mass_per_dof[dof]
+        if total <= 0.0:
+            ratios.append(0.0)
+            continue
+        effective_mass = participation[dof] ** 2 / modal_mass
+        ratios.append(effective_mass / total)
+    return ratios

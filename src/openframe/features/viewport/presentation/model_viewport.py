@@ -135,14 +135,18 @@ class ModelViewport(QFrame):
         self.force_unit_selector = QComboBox()
         self.force_unit_selector.setObjectName("forceUnitSelector")
         self.force_unit_selector.setMaximumWidth(64)
-        self.force_unit_selector.setToolTip("Declare the force unit used by the OpenSees model.")
+        self.force_unit_selector.setToolTip(
+            "Declare the native force unit used by the OpenSees model. Values are not converted."
+        )
         self.force_unit_selector.addItems(FORCE_UNITS)
         controls_layout.addWidget(self.force_unit_selector)
         controls_layout.addWidget(QLabel("LENGTH"))
         self.length_unit_selector = QComboBox()
         self.length_unit_selector.setObjectName("lengthUnitSelector")
         self.length_unit_selector.setMaximumWidth(64)
-        self.length_unit_selector.setToolTip("Declare the length unit used by the OpenSees model.")
+        self.length_unit_selector.setToolTip(
+            "Declare the native length unit used by the OpenSees model. Values are not converted."
+        )
         self.length_unit_selector.addItems(LENGTH_UNITS)
         controls_layout.addWidget(self.length_unit_selector)
         layout.addWidget(controls)
@@ -236,6 +240,21 @@ class ModelViewport(QFrame):
     @property
     def unit_system(self) -> UnitSystem:
         return self._unit_system
+
+    def set_unit_system(self, unit_system: UnitSystem, *, emit: bool = True) -> None:
+        """Apply a model's native units to selectors and every display consumer."""
+        self.force_unit_selector.blockSignals(True)
+        self.length_unit_selector.blockSignals(True)
+        self.force_unit_selector.setCurrentText(unit_system.force)
+        self.length_unit_selector.setCurrentText(unit_system.length)
+        self.force_unit_selector.blockSignals(False)
+        self.length_unit_selector.blockSignals(False)
+        self._unit_system = unit_system
+        self.scene.set_unit_system(unit_system)
+        if self._sample_load_text is not None:
+            self._sample_load_text.setPlainText(f"10 {unit_system.force}")
+        if emit:
+            self.unit_system_changed.emit(unit_system)
 
     def fit_model(self) -> None:
         if self.canvas_stack.currentWidget() is self.quick3d_view:
@@ -445,15 +464,11 @@ class ModelViewport(QFrame):
 
     def _change_unit_system(self, index: int) -> None:
         del index
-        unit_system = UnitSystem(
+        self.set_unit_system(UnitSystem(
             force=self.force_unit_selector.currentText(),
             length=self.length_unit_selector.currentText(),
-        )
-        self._unit_system = unit_system
-        self.scene.set_unit_system(unit_system)
-        if self._sample_load_text is not None:
-            self._sample_load_text.setPlainText(f"10 {unit_system.force}")
-        self.unit_system_changed.emit(unit_system)
+            time=self._unit_system.time,
+        ))
 
     def _show_sample_beam(self) -> None:
         self.view_selector.hide()

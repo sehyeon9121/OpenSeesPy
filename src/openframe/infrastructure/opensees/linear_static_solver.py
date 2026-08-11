@@ -68,7 +68,12 @@ def run_linear_static_analysis(source: Path) -> dict[str, Any]:
     ops.wipeAnalysis()
     ops.system("BandGeneral")
     ops.numberer("Plain")
-    ops.constraints("Plain")
+    # Imported sources may contain MP constraints such as rigidDiaphragm,
+    # equalDOF, or rigidLink.  PlainHandler only enforces homogeneous SP
+    # constraints, which silently lets a diaphragm's retained and constrained
+    # nodes move independently.  Transformation handles both ordinary fixities
+    # and those source-defined MP constraints.
+    ops.constraints("Transformation")
     ops.integrator("LoadControl", 1.0)
     ops.algorithm("Linear")
     ops.analysis("Static")

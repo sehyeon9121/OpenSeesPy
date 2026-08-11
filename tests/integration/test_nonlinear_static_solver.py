@@ -146,6 +146,48 @@ def test_rejects_control_dof_beyond_the_model_ndf(tmp_path: Path) -> None:
         ops.wipe()
 
 
+def test_base_shear_includes_coincident_node_below_a_rotational_spring(
+    tmp_path: Path,
+) -> None:
+    """An equalDOF-connected zeroLength hinge reports horizontal reaction on its
+    coincident member node rather than the fixed joint. Both nodes define the same
+    support location and their reactions must contribute to base shear."""
+    source = tmp_path / "hinged_base_frame.py"
+    source.write_text(
+        """
+import openseespy.opensees as ops
+ops.wipe()
+ops.model('basic', '-ndm', 2, '-ndf', 3)
+ops.node(1, 0.0, 0.0)
+ops.node(2, 0.0, 0.0)
+ops.node(3, 0.0, 120.0)
+ops.fix(1, 1, 1, 1)
+ops.equalDOF(1, 2, 1, 2)
+ops.uniaxialMaterial('Elastic', 1, 1.0e7)
+ops.element('zeroLength', 1, 1, 2, '-mat', 1, '-dir', 6)
+ops.geomTransf('Linear', 1)
+ops.element('elasticBeamColumn', 2, 2, 3, 10.0, 29000.0, 1000.0, 1)
+ops.timeSeries('Linear', 1)
+ops.pattern('Plain', 1, 1)
+ops.load(3, 10.0, 0.0, 0.0)
+""",
+        encoding="utf-8",
+    )
+    try:
+        result = run_nonlinear_static_analysis(
+            source,
+            control_node=3,
+            control_dof=1,
+            num_steps=10,
+            constraints_type="Plain",
+        )
+    finally:
+        ops.wipe()
+
+    assert result["status"] == "completed"
+    assert result["load_displacement_curve"][-1]["base_shear"] == pytest.approx(10.0)
+
+
 #: Two patterns on the same DOF - pattern 1 (80, "gravity") and pattern 2 (60,
 #: "lateral") - so combined-ramp vs. gravity-held-constant produce a measurably
 #: different curve even though both are just Steel01 in one direction.
@@ -304,6 +346,53 @@ def test_replaying_a_3d_pattern_after_a_gravity_phase_reapplies_the_right_compon
     expected_tip_deflection = w * length**4 / (8 * e * iy)
 
     assert curve[-1]["control_displacement"] == pytest.approx(expected_tip_deflection, rel=1e-3)
+
+
+def test_3d_six_dof_pushover_traces_biaxial_hinges_and_pdelta_descending_branch() -> None:
+    """The application must solve a genuinely spatial nonlinear model, not merely
+    accept ndm=3 syntax.  The example combines six-DOF nodes, two yielding
+    rotational hinges, a 3D PDelta column, gravity, and a diagonal X/Y push."""
+    source = Path(__file__).parents[2] / "examples" / "nonlinear_cantilever_3d.py"
+
+    try:
+        result = run_nonlinear_static_analysis(
+            source,
+            control_node=20,
+            control_dof=1,
+            num_steps=80,
+            gravity_pattern=101,
+            lateral_pattern=201,
+            gravity_steps=10,
+            integrator_type="DisplacementControl",
+            target_displacement=0.4,
+            constraints_type="Transformation",
+            test_type="NormUnbalance",
+            tolerance=1.0e-8,
+            max_iterations=100,
+            max_bisections=6,
+        )
+
+        # Equal X/Y loading and properties make the spatial diagonal response
+        # symmetric.  Both hinge rotations are well beyond My/K0=0.003 rad.
+        assert ops.nodeDisp(20, 1) == pytest.approx(0.4, rel=1e-9)
+        assert ops.nodeDisp(20, 2) == pytest.approx(0.4, rel=1e-9)
+        hinge_rotations = ops.eleResponse(101, "deformation")
+        assert abs(hinge_rotations[0]) > 0.003
+        assert abs(hinge_rotations[1]) > 0.003
+    finally:
+        ops.wipe()
+
+    assert result["status"] == "completed"
+    assert result["messages"] == []
+    curve = result["load_displacement_curve"]
+    assert len(curve) == 80
+    assert result["convergence"]["recovered_steps"] == []
+
+    # Heavy gravity plus yielded hinges produces negative post-peak tangent
+    # stiffness.  DisplacementControl must retain the complete descending branch.
+    peak_shear = max(point["base_shear"] for point in curve)
+    assert peak_shear > curve[-1]["base_shear"]
+    assert curve[-1]["control_displacement"] == pytest.approx(0.4, rel=1e-9)
 
 
 def test_rejects_unknown_gravity_pattern(tmp_path: Path) -> None:

@@ -72,7 +72,7 @@ def test_reaction_table_lists_hand_calculated_values() -> None:
     workspace = _workspace()
     workspace.result_types.select_result_type("reaction")
 
-    table = workspace.data_panel.result_table
+    table = workspace.tables_panel.reaction_table
     headers = [table.horizontalHeaderItem(column).text() for column in range(4)]
     assert headers[0] == "NODE"
     assert headers[1].startswith("RX")

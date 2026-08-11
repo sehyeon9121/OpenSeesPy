@@ -53,7 +53,7 @@ class AppHeader(QFrame):
 
     def set_welcome_mode(self, welcome: bool) -> None:
         """Keep the first-run screen focused on project entry choices."""
-        self.status_label.setText("2D STRUCTURAL MODELING & ANALYSIS" if welcome else "●  READY")
+        self.status_label.setText("STRUCTURAL MODELING & ANALYSIS" if welcome else "●  READY")
         self.status_label.setObjectName("welcomeHeaderLabel" if welcome else "readyBadge")
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)

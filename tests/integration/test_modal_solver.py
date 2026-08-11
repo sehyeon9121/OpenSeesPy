@@ -72,6 +72,8 @@ def test_single_dof_mode_matches_the_spring_mass_hand_calculation(tmp_path: Path
     assert mode["angular_frequency"] == pytest.approx(10.0, rel=1e-9)
     assert mode["frequency_hz"] == pytest.approx(10.0 / (2 * math.pi), rel=1e-9)
     assert mode["period"] == pytest.approx(2 * math.pi / 10.0, rel=1e-9)
+    # A single mode on a single mass always carries the whole mass.
+    assert mode["mass_participation_ratio"] == pytest.approx([1.0], rel=1e-9)
 
 
 def test_two_dof_shear_building_matches_the_golden_ratio_closed_form(tmp_path: Path) -> None:
@@ -103,6 +105,20 @@ def test_two_dof_shear_building_matches_the_golden_ratio_closed_form(tmp_path: P
     # Node 1 is fixed - its eigenvector entry is always zero, in every mode.
     assert mode1_by_node[1] == pytest.approx(0.0, abs=1e-12)
     assert mode2_by_node[1] == pytest.approx(0.0, abs=1e-12)
+
+    # Mass participation ratio: hand-derived from the same closed-form eigenvectors
+    # (phi1 = [1, phi], phi2 = [1, -1/phi] with phi the golden ratio), independent of
+    # this codebase - L_d^2/m* over each mode's own generalized mass, normalized by
+    # the 2*mass total. The two modes exhaust a 2-DOF system, so they must sum to 1.
+    golden_ratio = (1 + math.sqrt(5)) / 2
+    expected_ratio_1 = (1 + golden_ratio) ** 2 / (1 + golden_ratio**2) / 2
+    expected_ratio_2 = (1 - 1 / golden_ratio) ** 2 / (1 + (1 / golden_ratio) ** 2) / 2
+    assert modes[0]["mass_participation_ratio"] == pytest.approx([expected_ratio_1], rel=1e-6)
+    assert modes[1]["mass_participation_ratio"] == pytest.approx([expected_ratio_2], rel=1e-6)
+    assert (
+        modes[0]["mass_participation_ratio"][0] + modes[1]["mass_participation_ratio"][0]
+        == pytest.approx(1.0, rel=1e-9)
+    )
 
 
 def test_rejects_a_model_with_no_mass(tmp_path: Path) -> None:

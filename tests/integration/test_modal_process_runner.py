@@ -45,6 +45,9 @@ def test_runs_modal_analysis_in_subprocess_and_matches_hand_calculation(
         1.0 / math.sqrt(10.0), rel=1e-6
     )
     assert mode.node_results[1].displacement[0] == pytest.approx(0.0, abs=1e-9)
+    # Round-tripped through JSON by _to_domain_result - the field is easy to miss
+    # when adding a new payload key there (it silently defaults to empty).
+    assert mode.mass_participation_ratio == pytest.approx((1.0,), rel=1e-6)
 
 
 def test_modal_analysis_reports_missing_mass_as_a_failure(tmp_path: Path) -> None:

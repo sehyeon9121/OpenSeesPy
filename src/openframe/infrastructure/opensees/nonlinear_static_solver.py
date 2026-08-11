@@ -66,6 +66,40 @@ def _element_length(element_tag: int) -> float:
     return math.sqrt(sum(value * value for value in deltas))
 
 
+def _support_reaction_nodes(
+    node_tags: list[int], fixed_nodes: list[int], control_dof: int
+) -> list[int]:
+    """Return nodes whose reactions make up the structural base shear.
+
+    Concentrated-plasticity frame models commonly put a zeroLength rotational
+    spring between a fixed joint and the first beam-column node.  Translational
+    DOFs are tied with ``equalDOF``; OpenSees then reports the member's horizontal
+    reaction on the coincident constrained node, not necessarily on the node that
+    owns the SP fixity.  Summing only ``getFixedNodes()`` therefore drops the frame
+    columns entirely (the official two-story benchmark records nodes 117/217 for
+    exactly this reason).  Include coincident nodes at every fixed support while
+    retaining the old behavior for ordinary non-spring supports.
+    """
+    support_coordinates = [tuple(float(value) for value in ops.nodeCoord(tag)) for tag in fixed_nodes]
+
+    def is_at_support(tag: int) -> bool:
+        coordinates = tuple(float(value) for value in ops.nodeCoord(tag))
+        return any(
+            len(coordinates) == len(support)
+            and all(
+                math.isclose(value, reference, rel_tol=1.0e-12, abs_tol=1.0e-9)
+                for value, reference in zip(coordinates, support, strict=True)
+            )
+            for support in support_coordinates
+        )
+
+    return [
+        tag
+        for tag in node_tags
+        if is_at_support(tag) and len(ops.nodeReaction(tag)) >= control_dof
+    ]
+
+
 def _flexural_rigidity(collector: ModelCommandCollector, element_tag: int) -> float:
     properties = collector.elements.get(element_tag, {}).get("properties", {})
     try:
@@ -370,9 +404,7 @@ def run_nonlinear_static_analysis(
     # per-node overrides), so a fixed node's reaction vector is not guaranteed to be
     # as long as control_node's - skip any that are too short instead of indexing
     # past the end of the array.
-    reaction_nodes = [
-        tag for tag in fixed_nodes if len(ops.nodeReaction(tag)) >= control_dof
-    ]
+    reaction_nodes = _support_reaction_nodes(node_tags, fixed_nodes, control_dof)
 
     def _base_shear() -> float:
         ops.reactions()

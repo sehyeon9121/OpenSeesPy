@@ -87,6 +87,10 @@ class ModeShape:
     frequency_hz: float
     period: float
     node_results: dict[int, NodeResult] = field(default_factory=dict)
+    #: Fraction (0..1) of the total mass in each DOF direction this mode accounts
+    #: for - one entry per DOF (2D: Ux,Uy,Rz; 3D: Ux,Uy,Uz,Rx,Ry,Rz), computed from
+    #: the model's own lumped mass rather than assumed from solver normalization.
+    mass_participation_ratio: tuple[float, ...] = ()
 
 
 @dataclass(slots=True)

@@ -74,6 +74,12 @@ class ResultTypeSidebar(QFrame):
             "Numerical verification",
             (("tables", "Result Tables"),),
         )
+        self._add_group(
+            layout,
+            "MODAL RESPONSE",
+            "Natural mode shapes",
+            (("mode_shapes", "Mode Shapes"),),
+        )
         layout.addStretch(1)
         self.select_result_type("overview")
 
