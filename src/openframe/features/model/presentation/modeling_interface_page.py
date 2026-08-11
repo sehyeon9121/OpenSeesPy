@@ -570,6 +570,16 @@ class ModelingInterfacePage(QFrame):
         self.support_angle.editingFinished.connect(self._apply_support)
         angle_row.addWidget(self.support_angle, 1)
         root.addLayout(angle_row)
+        rotate_row = QHBoxLayout()
+        cw_button = QPushButton("↻ 시계 30°")
+        cw_button.setToolTip("경사각을 시계 방향으로 30°씩 돌리고 바로 적용합니다.")
+        cw_button.clicked.connect(lambda: self._rotate_support_angle(-30.0))
+        rotate_row.addWidget(cw_button)
+        ccw_button = QPushButton("↺ 반시계 30°")
+        ccw_button.setToolTip("경사각을 반시계 방향으로 30°씩 돌리고 바로 적용합니다.")
+        ccw_button.clicked.connect(lambda: self._rotate_support_angle(30.0))
+        rotate_row.addWidget(ccw_button)
+        root.addLayout(rotate_row)
         self.support_custom_row = QWidget()
         custom_layout = QGridLayout(self.support_custom_row)
         custom_layout.setContentsMargins(0, 0, 0, 0)
@@ -799,6 +809,14 @@ class ModelingInterfacePage(QFrame):
             for dof_name, value in zip(order, restraints, strict=True):
                 self.support_dof_checks[dof_name].setChecked(value)
         self._refresh_support_custom_row()
+
+    def _rotate_support_angle(self, delta: float) -> None:
+        """Nudge 경사각 by ``delta`` degrees (wrapping into [0, 360)) and apply
+        immediately - unlike typing into the field, a button click never
+        fires ``editingFinished`` on its own, so this calls ``_apply_support``
+        itself rather than relying on that signal."""
+        self.support_angle.setValue((self.support_angle.value() + delta) % 360.0)
+        self._apply_support()
 
     def _apply_support(self) -> None:
         checked = self.support_group.checkedButton()

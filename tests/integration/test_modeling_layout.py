@@ -556,6 +556,32 @@ def test_custom_support_lets_a_single_dof_be_restrained_on_its_own() -> None:
     assert boundary.restraints == (False, False, True)
 
 
+def test_rotate_support_angle_buttons_step_30_degrees_and_apply() -> None:
+    """A button click never fires editingFinished on its own the way typing
+    into the field and tabbing away does, so the rotate buttons must apply
+    the new angle themselves rather than silently changing the field."""
+    page = _page()
+    page.category_buttons["support"].click()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+    page.support_buttons[1].click()  # 핀
+
+    page._rotate_support_angle(30.0)
+    assert page.support_angle.value() == pytest.approx(30.0)
+    assert page.canvas.boundaries[node].angle == pytest.approx(30.0)
+
+    page._rotate_support_angle(-30.0)
+    assert page.support_angle.value() == pytest.approx(0.0)
+    assert page.canvas.boundaries[node].angle == pytest.approx(0.0)
+
+    # Wraps around both ends of the range instead of clamping dead at ±360,
+    # which would make the button stop doing anything near the boundary.
+    page._rotate_support_angle(-30.0)
+    assert page.support_angle.value() == pytest.approx(330.0)
+    assert page.canvas.boundaries[node].angle == pytest.approx(330.0)
+
+
 def test_custom_support_reaches_all_six_dof_in_3d() -> None:
     page = _page(start_in_3d=True)
     node = page.canvas.add_node(0.0, 0.0)
