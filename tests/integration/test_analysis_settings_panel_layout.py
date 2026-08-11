@@ -8,7 +8,7 @@ holds: the sidebar stays short and uncompressed, and the dialog itself lays its
 fields out without overlap regardless of the sidebar's size."""
 
 import os
-from itertools import pairwise
+from itertools import combinations, pairwise
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -67,6 +67,10 @@ def test_nonlinear_settings_move_to_a_dialog_and_keep_the_sidebar_short() -> Non
 
 
 def test_nonlinear_dialog_fields_do_not_overlap() -> None:
+    """The dialog lays fields out in two columns (left: how the push is applied,
+    right: how the solver converges) rather than one long column, so two fields
+    can legitimately share a row as long as their columns differ - only a real
+    2D bounding-box overlap (both axes intersecting) counts as a layout bug."""
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
 
@@ -91,15 +95,23 @@ def test_nonlinear_dialog_fields_do_not_overlap() -> None:
         settings.algorithm,
         settings.test_type,
     ]
-    ranges = [
+    rects = [
         (
+            widget.mapTo(dialog, widget.rect().topLeft()).x(),
             widget.mapTo(dialog, widget.rect().topLeft()).y(),
+            widget.mapTo(dialog, widget.rect().bottomRight()).x(),
             widget.mapTo(dialog, widget.rect().bottomRight()).y(),
         )
         for widget in fields
     ]
+
+    def _overlaps(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        return ax1 < bx2 and bx1 < ax2 and ay1 < by2 and by1 < ay2
+
     overlaps = [
-        (earlier, later) for earlier, later in pairwise(ranges) if later[0] < earlier[1]
+        (i, j) for i, j in combinations(range(len(rects)), 2) if _overlaps(rects[i], rects[j])
     ]
     assert overlaps == []
 

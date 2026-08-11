@@ -599,6 +599,12 @@ QPushButton#resultCanvasButton {
     border: 1px solid #c7d2df;
     border-radius: 2px;
 }
+QPushButton#resultCanvasButton:checked {
+    background: #e7effb;
+    border-color: #174ea6;
+    color: #174ea6;
+    font-weight: 700;
+}
 QGraphicsView#resultGraphicsView { background: #fbfcfe; border: 0; }
 QLabel#resultScaleValue { color: #174ea6; font-weight: 700; min-width: 30px; }
 QLabel#resultPushoverStat { color: #40536b; font-size: 8pt; font-weight: 600; }

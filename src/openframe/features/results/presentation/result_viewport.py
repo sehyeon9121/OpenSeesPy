@@ -151,6 +151,22 @@ class ResultViewport(QFrame):
         self.show_undeformed.toggled.connect(self._redraw)
         controls_layout.addWidget(self.show_undeformed)
         controls_layout.addStretch(1)
+        self.real_deform = self._tool_button("REAL DEFORM")
+        self.real_deform.setCheckable(True)
+        self.real_deform.setToolTip(
+            "Draw the deformed shape at true (x1) scale instead of an exaggerated "
+            "multiplier - real displacements are usually too small to see against "
+            "the model, so this is normally off."
+        )
+        self.real_deform.toggled.connect(self._real_deform_toggled)
+        controls_layout.addWidget(self.real_deform)
+        self.auto_scale_button = self._tool_button("AUTO")
+        self.auto_scale_button.setToolTip(
+            "Pick a multiplier that draws the largest displacement at roughly 8% of "
+            "the model's own size, instead of guessing a value by hand."
+        )
+        self.auto_scale_button.clicked.connect(self._auto_scale_clicked)
+        controls_layout.addWidget(self.auto_scale_button)
         self.scale_caption = QLabel("DEFORMATION SCALE")
         controls_layout.addWidget(self.scale_caption)
         self.deformation_scale = QSlider(Qt.Orientation.Horizontal)
@@ -258,6 +274,65 @@ class ResultViewport(QFrame):
             return None
         return self._result.mode_shapes[index]
 
+    def _scale_value_text(self, force_diagram: bool) -> str:
+        if force_diagram:
+            return f"{self.deformation_scale.value()}%"
+        if self.real_deform.isChecked():
+            return "x1 (REAL)"
+        return f"x{self.deformation_scale.value()}"
+
+    def _deformation_multiplier(self) -> float:
+        """The actual multiplier a draw call should use - real, physical scale
+        (x1) once REAL DEFORM is on, ignoring wherever the slider happens to be
+        left, since it is disabled (and stale) in that state anyway."""
+        return 1.0 if self.real_deform.isChecked() else float(self.deformation_scale.value())
+
+    def _real_deform_toggled(self) -> None:
+        self.deformation_scale.setEnabled(not self.real_deform.isChecked())
+        self.auto_scale_button.setEnabled(not self.real_deform.isChecked())
+        self._redraw()
+
+    def _active_node_results(self) -> dict[int, NodeResult]:
+        """Whatever node displacements are actually on screen right now - the
+        real result normally, or the picked mode's own eigenvector for the mode
+        shapes view (the top-level result carries no node_results of its own)."""
+        if self._result_type == "mode_shapes":
+            mode = self._current_mode_shape()
+            return {} if mode is None else mode.node_results
+        return {} if self._result is None else self._result.node_results
+
+    def _compute_auto_scale(self) -> int | None:
+        """A multiplier that draws the largest displacement at roughly this
+        fraction of the model's own span - visible without dwarfing the model,
+        the same rule of thumb most FE post-processors use for "auto" scaling."""
+        target_fraction = 0.08
+        if self._model is None or not self._model.nodes:
+            return None
+        node_results = self._active_node_results()
+        if not node_results:
+            return None
+        is_3d = self._model.ndm == 3
+        max_displacement = 0.0
+        for node_result in node_results.values():
+            displacement = node_result.displacement
+            ux = displacement[0] if len(displacement) > 0 else 0.0
+            uy = displacement[1] if len(displacement) > 1 else 0.0
+            uz = displacement[2] if is_3d and len(displacement) > 2 else 0.0
+            max_displacement = max(max_displacement, math.sqrt(ux * ux + uy * uy + uz * uz))
+        if max_displacement <= 0.0:
+            return None
+        xs = [node.x for node in self._model.nodes.values()]
+        ys = [node.y for node in self._model.nodes.values()]
+        zs = [node.z for node in self._model.nodes.values()] if is_3d else [0.0]
+        span = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs), 1.0)
+        scale = (span * target_fraction) / max_displacement
+        return max(self.deformation_scale.minimum(), min(self.deformation_scale.maximum(), round(scale)))
+
+    def _auto_scale_clicked(self) -> None:
+        scale = self._compute_auto_scale()
+        if scale is not None:
+            self.deformation_scale.setValue(scale)
+
     def _update_picking_mode(self) -> None:
         enabled = (
             self._result_type == "displacement"
@@ -350,11 +425,11 @@ class ResultViewport(QFrame):
 
         force_diagram = self._result_type in {"axial", "shear", "moment"}
         self.scale_caption.setText("DIAGRAM SCALE" if force_diagram else "DEFORMATION SCALE")
-        self.scale_value.setText(
-            f"{self.deformation_scale.value()}%"
-            if force_diagram
-            else f"x{self.deformation_scale.value()}"
-        )
+        self.scale_value.setText(self._scale_value_text(force_diagram))
+        # REAL DEFORM/AUTO only mean anything for an actual displacement multiplier -
+        # a force-diagram's "scale" is just visual amplitude, not a physical quantity.
+        self.real_deform.setVisible(not force_diagram)
+        self.auto_scale_button.setVisible(not force_diagram)
         if self._model is None:
             self.scene.clear()
             self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))
@@ -424,7 +499,7 @@ class ResultViewport(QFrame):
             self.quick3d_view.show_result(
                 self._model,
                 self._result,
-                float(self.deformation_scale.value()),
+                self._deformation_multiplier(),
                 self.show_undeformed.isChecked(),
             )
         else:
@@ -472,10 +547,12 @@ class ResultViewport(QFrame):
         synchronous ``_redraw()`` call is simpler and less risky than threading
         a second result source through every drawing helper in this class."""
         mode = self._current_mode_shape()
+        self.real_deform.setVisible(True)
+        self.auto_scale_button.setVisible(True)
         if self._model is None or mode is None:
             self.controls_stack.setCurrentIndex(0)
             self.scale_caption.setText("MODE SHAPE SCALE")
-            self.scale_value.setText(f"x{self.deformation_scale.value()}")
+            self.scale_value.setText(self._scale_value_text(force_diagram=False))
             if self._model is None:
                 self.scene.clear()
                 self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))
@@ -524,7 +601,7 @@ class ResultViewport(QFrame):
         if self._result_type not in {"overview", "deformation", "displacement"}:
             return
 
-        scale = float(self.deformation_scale.value())
+        scale = self._deformation_multiplier()
         pen = QPen(QColor("#e5484d"), 2.4)
         pen.setCosmetic(True)
         for element_tag in self._model.elements:
@@ -569,7 +646,7 @@ class ResultViewport(QFrame):
         peak = largest_displacement(displacements)
         label_all = len(moving) <= self._LABEL_ALL_LIMIT
 
-        scale = float(self.deformation_scale.value())
+        scale = self._deformation_multiplier()
         connector_pen = QPen(QColor("#b4530a"), 1.2, Qt.PenStyle.DashLine)
         connector_pen.setCosmetic(True)
 
