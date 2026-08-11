@@ -350,6 +350,7 @@ class MainWindow(QMainWindow):
         names = {
             AnalysisKind.LINEAR_STATIC: "Linear Static",
             AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
+            AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
         }
         self.results_workspace.set_analysis_kind(kind)
@@ -381,6 +382,7 @@ class MainWindow(QMainWindow):
         analysis_name = {
             AnalysisKind.LINEAR_STATIC: "Linear Static",
             AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
+            AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
         }[kind]
         self.analysis_progress.show_running(analysis_name)

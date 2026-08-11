@@ -15,6 +15,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 import openseespy.opensees as ops
 
 from openframe.infrastructure.opensees.linear_static_solver import run_linear_static_analysis
+from openframe.infrastructure.opensees.modal_solver import run_modal_analysis
 from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
 from openframe.infrastructure.opensees.nonlinear_static_solver import (
     run_nonlinear_static_analysis,
@@ -70,6 +71,8 @@ def run_analysis(
             **options,
             progress_callback=progress_callback,
         )
+    if kind == "modal":
+        return run_modal_analysis(source, **options)
     return run_linear_static_analysis(source)
 
 

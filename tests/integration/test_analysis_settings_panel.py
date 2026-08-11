@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from openframe.core.domain import AnalysisKind
 from openframe.features.analysis.presentation.analysis_settings_panel import (
     AnalysisSettingsPanel,
 )
@@ -165,4 +166,33 @@ def test_build_options_includes_gravity_and_target_displacement_when_selected() 
     assert options["gravity_steps"] == 7
     assert options["integrator_type"] == "DisplacementControl"
     assert options["target_displacement"] == 0.5
+    application.processEvents()
+
+
+def test_selecting_modal_shows_its_own_settings_and_hides_nonlinear() -> None:
+    # isVisible() is always False for a widget that was never shown - offscreen or
+    # not - regardless of its own visibility flag, so the panel must be shown first
+    # to tell "hidden because never shown" apart from "hidden because not selected".
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.show()
+
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.MODAL))
+
+    assert panel.modal_group.isVisible()
+    assert not panel.nonlinear_group.isVisible()
+    application.processEvents()
+
+
+def test_modal_build_options_is_just_the_mode_count() -> None:
+    """The modal solver's own kwargs (run_modal_analysis) are only num_modes - handing
+    it the nonlinear-shaped dict (system/num_steps/tolerance/...) would raise a
+    TypeError on the unexpected keyword arguments, so this must be a clean, separate
+    shape rather than the nonlinear dict with modal fields merged in."""
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.MODAL))
+    panel.num_modes.setValue(6)
+
+    assert panel.build_options() == {"num_modes": 6}
     application.processEvents()

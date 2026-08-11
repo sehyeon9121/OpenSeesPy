@@ -23,6 +23,7 @@ from openframe.core.domain.results import (
     AnalysisStatus,
     ElementResult,
     LoadDisplacementPoint,
+    ModeShape,
     NodeResult,
     NonlinearConvergence,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "MaterialDefinition",
     "MaterialFamily",
     "MaterialSource",
+    "ModeShape",
     "NodalLoad",
     "Node",
     "NodeResult",

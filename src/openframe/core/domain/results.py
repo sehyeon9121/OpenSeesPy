@@ -70,6 +70,25 @@ class ElementResult:
     flexural_rigidity: float = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class ModeShape:
+    """One natural mode from an eigenvalue (modal) analysis.
+
+    ``node_results`` reuses ``NodeResult`` for its displacement field so the mode
+    shape can be rendered by the same deflected-shape viewer a static result
+    uses - a mode shape carries no reactions or forces, so ``reaction`` stays empty
+    on every entry.
+    """
+
+    mode_number: int
+    #: Raw eigenvalue from ``ops.eigen`` (rad/s)^2 - kept for reference/debugging.
+    eigenvalue: float
+    angular_frequency: float
+    frequency_hz: float
+    period: float
+    node_results: dict[int, NodeResult] = field(default_factory=dict)
+
+
 @dataclass(slots=True)
 class AnalysisResult:
     status: AnalysisStatus = AnalysisStatus.NOT_RUN
@@ -81,3 +100,5 @@ class AnalysisResult:
     #: nonlinear static analysis, one point per converged load step.
     load_displacement_curve: tuple[LoadDisplacementPoint, ...] = ()
     convergence: NonlinearConvergence | None = None
+    #: Empty except for modal analysis, one entry per computed natural mode.
+    mode_shapes: tuple[ModeShape, ...] = ()

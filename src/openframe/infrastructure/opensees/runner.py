@@ -16,6 +16,7 @@ from openframe.core.domain import (
     AnalysisStatus,
     ElementResult,
     LoadDisplacementPoint,
+    ModeShape,
     NodeResult,
     NonlinearConvergence,
 )
@@ -228,6 +229,23 @@ class OpenSeesProcessRunner:
             if isinstance(convergence_payload, dict)
             else None
         )
+        mode_shapes = tuple(
+            ModeShape(
+                mode_number=int(item["mode_number"]),
+                eigenvalue=float(item["eigenvalue"]),
+                angular_frequency=float(item["angular_frequency"]),
+                frequency_hz=float(item["frequency_hz"]),
+                period=float(item["period"]),
+                node_results={
+                    int(node["node_tag"]): NodeResult(
+                        node_tag=int(node["node_tag"]),
+                        displacement=tuple(float(value) for value in node.get("displacement", [])),
+                    )
+                    for node in item.get("node_results", [])
+                },
+            )
+            for item in payload.get("mode_shapes", [])
+        )
         try:
             status = AnalysisStatus(str(payload.get("status", "completed")))
         except ValueError:
@@ -239,4 +257,5 @@ class OpenSeesProcessRunner:
             messages=[str(message) for message in payload.get("messages", [])],
             load_displacement_curve=curve,
             convergence=convergence,
+            mode_shapes=mode_shapes,
         )

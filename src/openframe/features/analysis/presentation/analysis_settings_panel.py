@@ -45,6 +45,7 @@ class AnalysisSettingsPanel(QFrame):
         self.analysis_type = QComboBox()
         self.analysis_type.addItem("Linear Static", AnalysisKind.LINEAR_STATIC)
         self.analysis_type.addItem("Nonlinear Static", AnalysisKind.NONLINEAR_STATIC)
+        self.analysis_type.addItem("Modal (Eigenvalue)", AnalysisKind.MODAL)
         self.analysis_type.addItem("Time History", AnalysisKind.TIME_HISTORY)
         self.analysis_type.currentIndexChanged.connect(self._analysis_type_changed)
         settings_layout.addWidget(self.analysis_type)
@@ -73,6 +74,24 @@ class AnalysisSettingsPanel(QFrame):
         self.nonlinear_summary.setWordWrap(True)
         nonlinear_layout.addWidget(self.nonlinear_summary)
         settings_layout.addWidget(self.nonlinear_group)
+
+        # Modal analysis only needs how many modes to compute - no dialog needed,
+        # unlike nonlinear's seven interdependent fields.
+        self.modal_group = QFrame()
+        modal_layout = QVBoxLayout(self.modal_group)
+        modal_layout.setContentsMargins(0, 8, 0, 0)
+        modal_layout.setSpacing(4)
+        modal_layout.addWidget(self._field_label("NUMBER OF MODES"))
+        self.num_modes = QSpinBox()
+        self.num_modes.setRange(1, 200)
+        self.num_modes.setValue(3)
+        self.num_modes.setToolTip(
+            "The model's own script must define nodal mass (ops.mass(...)) - modal "
+            "analysis has no natural frequency to find without it."
+        )
+        modal_layout.addWidget(self.num_modes)
+        settings_layout.addWidget(self.modal_group)
+
         settings_layout.addStretch(1)
         layout.addWidget(settings)
 
@@ -142,7 +161,10 @@ class AnalysisSettingsPanel(QFrame):
 
         dialog_layout.addWidget(self._field_label("LOAD STEPS"))
         self.num_steps = QSpinBox()
-        self.num_steps.setRange(1, 1000)
+        # Published nonlinear benchmarks commonly need several thousand small
+        # displacement increments (the official OpenSees two-story moment frame
+        # uses 3,240), so the old 1,000-step ceiling prevented exact reproduction.
+        self.num_steps.setRange(1, 100_000)
         self.num_steps.setValue(10)
         dialog_layout.addWidget(self.num_steps)
 
@@ -391,7 +413,11 @@ class AnalysisSettingsPanel(QFrame):
         """Return the settings this panel controls, in the shape
         ``run_nonlinear_static_analysis`` (and its worker.py/runner.py plumbing)
         expects. Only meaningful when ``selected_analysis_kind()`` is nonlinear
-        static; other analysis kinds ignore ``AnalysisRequest.options`` entirely."""
+        static; other analysis kinds ignore ``AnalysisRequest.options`` entirely -
+        except modal, whose solver takes different keyword arguments and would
+        raise ``TypeError`` if handed this shape, so it gets its own early return."""
+        if self.selected_analysis_kind() == AnalysisKind.MODAL:
+            return {"num_modes": self.num_modes.value()}
         options: dict[str, float | int | str | bool] = {
             "system": self.solver.currentText(),
             "num_steps": self.num_steps.value(),
@@ -430,6 +456,7 @@ class AnalysisSettingsPanel(QFrame):
         self.nonlinear_group.setVisible(
             self.selected_analysis_kind() == AnalysisKind.NONLINEAR_STATIC
         )
+        self.modal_group.setVisible(self.selected_analysis_kind() == AnalysisKind.MODAL)
 
     def _update_nonlinear_summary(self) -> None:
         """Keep a short readout of the dialog's current values visible in the

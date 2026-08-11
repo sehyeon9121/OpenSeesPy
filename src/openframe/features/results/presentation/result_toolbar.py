@@ -39,6 +39,7 @@ class ResultToolbar(QFrame):
         labels = {
             AnalysisKind.LINEAR_STATIC: "Linear Static 01",
             AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
+            AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
         }
         self.result_case.setText(labels[kind])

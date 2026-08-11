@@ -9,6 +9,7 @@ class AnalysisKind(StrEnum):
     LINEAR_STATIC = "linear_static"
     NONLINEAR_STATIC = "nonlinear_static"
     TIME_HISTORY = "time_history"
+    MODAL = "modal"
 
 
 @dataclass(frozen=True, slots=True)
