@@ -26,6 +26,7 @@ from openframe.core.domain.results import (
     ModeShape,
     NodeResult,
     NonlinearConvergence,
+    TimeHistoryStep,
 )
 from openframe.core.domain.units import (
     DEFAULT_UNIT_SYSTEM,
@@ -61,6 +62,7 @@ __all__ = [
     "ShearModulusMode",
     "StructuralModel",
     "SupportKind",
+    "TimeHistoryStep",
     "UniformElementLoad",
     "UnitSystem",
 ]

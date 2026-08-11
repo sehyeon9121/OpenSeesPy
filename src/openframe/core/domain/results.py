@@ -93,6 +93,20 @@ class ModeShape:
     mass_participation_ratio: tuple[float, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class TimeHistoryStep:
+    """One recorded time step of a transient (time-history) analysis.
+
+    ``node_results`` reuses ``NodeResult`` the same way ``ModeShape`` does -
+    ``displacement`` is populated for every node (needed for the deformed-shape
+    animation), ``reaction`` only for restrained nodes (a free node's reaction
+    is always zero and not worth carrying at every step).
+    """
+
+    time: float
+    node_results: dict[int, NodeResult] = field(default_factory=dict)
+
+
 @dataclass(slots=True)
 class AnalysisResult:
     status: AnalysisStatus = AnalysisStatus.NOT_RUN
@@ -106,3 +120,5 @@ class AnalysisResult:
     convergence: NonlinearConvergence | None = None
     #: Empty except for modal analysis, one entry per computed natural mode.
     mode_shapes: tuple[ModeShape, ...] = ()
+    #: Empty except for time-history analysis, one entry per recorded time step.
+    time_history: tuple[TimeHistoryStep, ...] = ()
