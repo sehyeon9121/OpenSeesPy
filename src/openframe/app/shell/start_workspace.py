@@ -1,4 +1,4 @@
-"""Clear, large-format home screen for OpenFrame Studio."""
+"""Compact Stitch-matched project hub for OpenFrame Studio."""
 
 from collections.abc import Callable
 
@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLay
 
 
 class StartWorkspace(QFrame):
-    """Project entry points and the current-session summary."""
+    """Project entry points and resumable sessions without changing app behavior."""
 
     new_model_requested = Signal()
     new_3d_model_requested = Signal()
@@ -22,163 +22,150 @@ class StartWorkspace(QFrame):
         self.setObjectName("startWorkspace")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 24, 28, 26)
+        outer.setContentsMargins(32, 26, 32, 18)
         outer.setSpacing(0)
 
         content = QFrame()
         content.setObjectName("startContent")
+        content.setMaximumWidth(1152)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(22)
+        layout.setSpacing(0)
 
-        title = QLabel("Start or continue a project")
+        header = QFrame()
+        header.setObjectName("startHubHeader")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 14)
+        header_layout.setSpacing(3)
+        title = QLabel("PROJECTS")
         title.setObjectName("startPageTitle")
-        description = QLabel(
-            "Create a 2D structural model, import OpenSeesPy, or continue your current work."
-        )
+        description = QLabel("Start a new structural model or continue your recent work.")
         description.setObjectName("startPageDescription")
-        description.setWordWrap(True)
-        layout.addWidget(title)
-        layout.addWidget(description)
+        header_layout.addWidget(title)
+        header_layout.addWidget(description)
+        layout.addWidget(header)
 
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(22)
-        body.addWidget(self._build_start_panel(), 5)
-        body.addWidget(self._build_continue_panel(), 6)
-        layout.addLayout(body)
+        columns = QHBoxLayout()
+        columns.setContentsMargins(0, 24, 0, 0)
+        columns.setSpacing(32)
+        columns.addWidget(self._build_start_panel(), 1)
+        columns.addWidget(self._build_continue_panel(), 1)
+        layout.addLayout(columns, 1)
+        layout.addSpacing(24)
+        layout.addWidget(self._build_workflow_panel())
 
-        outer.addWidget(content, 1)
+        outer.addWidget(content, 1, Qt.AlignmentFlag.AlignHCenter)
+
+    @staticmethod
+    def _section_heading(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("startSectionHeading")
+        return label
 
     def _build_start_panel(self) -> QWidget:
+        column = QFrame()
+        column.setObjectName("startColumn")
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        layout.addWidget(self._section_heading("NEW PROJECT"))
+
         panel = QFrame()
         panel.setObjectName("startActionPanel")
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(20, 18, 20, 20)
-        layout.setSpacing(11)
+        actions = QVBoxLayout(panel)
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(0)
 
-        title = QLabel("START NEW")
-        title.setObjectName("startColumnTitle")
-        hint = QLabel("Choose one way to begin")
-        hint.setObjectName("startSectionHint")
-        layout.addWidget(title)
-        layout.addWidget(hint)
+        self.new_model_button = self._add_action_row(
+            actions, "2D", "New 2D Model",
+            "Create a 2D structural frame from a blank workspace", "NEW",
+            self.new_model_requested.emit, "action_new_model", first=True,
+        )
+        self.new_3d_model_button = self._add_action_row(
+            actions, "3D", "New 3D Model", "Create a 3D structural model", "NEW",
+            self.new_3d_model_requested.emit, "action_new_3d_model",
+        )
+        self.import_button = self._add_action_row(
+            actions, "PY", "Import OpenSeesPy",
+            "Import an existing .py structural model for analysis", "IMPORT",
+            self.import_opensees_requested.emit, "action_import_openseespy",
+        )
+        self.open_project_button = self._add_action_row(
+            actions, "▣", "Open Project", "Browse local files for an existing project", "OPEN",
+            self.open_project_requested.emit, "action_open_project",
+        )
+        self.template_button = self._add_action_row(
+            actions, "▦", "Templates", "Start from a beam, frame, truss, arch, or example model",
+            "BROWSE", self.template_requested.emit, "action_browse_templates", last=True,
+        )
+        layout.addWidget(panel)
+        layout.addStretch(1)
+        return column
 
-        self.new_model_button = self._add_action_card(
-            layout,
-            icon="+",
-            title="New 2D Model",
-            description="Create a structural frame from a blank canvas.",
-            action_text="START",
-            primary=True,
-            callback=self.new_model_requested.emit,
-            action_id="action_new_model",
-        )
-        self.new_3d_model_button = self._add_action_card(
-            layout,
-            icon="3D",
-            title="New 3D Model",
-            description="Create a space frame from a blank 3D canvas.",
-            action_text="START",
-            primary=False,
-            callback=self.new_3d_model_requested.emit,
-            action_id="action_new_3d_model",
-        )
-        self.import_button = self._add_action_card(
-            layout,
-            icon="PY",
-            title="Import OpenSeesPy",
-            description="Open an existing Python model for analysis.",
-            action_text="START",
-            primary=False,
-            callback=self.import_opensees_requested.emit,
-            action_id="action_import_openseespy",
-        )
-        self.open_project_button = self._add_action_card(
-            layout,
-            icon="O",
-            title="Open Project",
-            description="Continue a saved OpenFrame project.",
-            action_text="OPEN",
-            primary=False,
-            callback=self.open_project_requested.emit,
-            action_id="action_open_project",
-        )
-        self.template_button = self._add_action_card(
-            layout,
-            icon="T",
-            title="Use Template",
-            description="Start from a beam, frame, truss, or arch.",
-            action_text="BROWSE",
-            primary=False,
-            callback=self.template_requested.emit,
-            action_id="action_browse_templates",
-        )
-        return panel
-
-    def _add_action_card(
+    def _add_action_row(
         self,
         parent_layout: QVBoxLayout,
-        *,
         icon: str,
         title: str,
         description: str,
         action_text: str,
-        primary: bool,
         callback: Callable[[], None],
         action_id: str,
+        *,
+        first: bool = False,
+        last: bool = False,
     ) -> QPushButton:
-        card = QFrame()
-        card.setObjectName("startPrimaryCard" if primary else "startOptionCard")
-        card.setMinimumHeight(84)
-        layout = QHBoxLayout(card)
-        layout.setContentsMargins(15, 12, 13, 12)
-        layout.setSpacing(12)
+        row = QFrame()
+        row.setObjectName("startActionRow")
+        row.setProperty("first", first)
+        row.setProperty("last", last)
+        row.setMinimumHeight(68)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(12, 10, 12, 10)
+        row_layout.setSpacing(12)
 
         icon_label = QLabel(icon)
-        icon_label.setObjectName("startPrimaryIcon" if primary else "startOptionIcon")
+        icon_label.setObjectName("startActionIcon")
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(icon_label)
+        row_layout.addWidget(icon_label)
 
         copy = QVBoxLayout()
-        copy.setSpacing(3)
+        copy.setSpacing(1)
         heading = QLabel(title)
         heading.setObjectName("startCardTitle")
         body = QLabel(description)
         body.setObjectName("startCardDescription")
-        body.setWordWrap(True)
+        body.setWordWrap(False)
         copy.addWidget(heading)
         copy.addWidget(body)
-        layout.addLayout(copy, 1)
+        row_layout.addLayout(copy, 1)
 
         button = QPushButton(action_text)
-        button.setObjectName("startPrimaryButton" if primary else "startSecondaryButton")
+        button.setObjectName("startActionButton")
+        button.setProperty("primary", first)
         button.setProperty("actionId", action_id)
         button.clicked.connect(callback)
-        layout.addWidget(button)
-        parent_layout.addWidget(card, 1)
+        row_layout.addWidget(button)
+        parent_layout.addWidget(row)
         return button
 
     def _build_continue_panel(self) -> QWidget:
-        panel = QFrame()
-        panel.setObjectName("startContinueColumn")
-        layout = QVBoxLayout(panel)
+        column = QFrame()
+        column.setObjectName("startContinueColumn")
+        layout = QVBoxLayout(column)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(16)
-
-        heading = QLabel("CONTINUE WORK")
-        heading.setObjectName("startColumnTitle")
-        layout.addWidget(heading)
+        layout.setSpacing(12)
+        layout.addWidget(self._section_heading("RECENT PROJECTS"))
 
         session = QFrame()
         session.setObjectName("startSessionPanel")
         session_layout = QVBoxLayout(session)
-        session_layout.setContentsMargins(18, 16, 18, 18)
-        session_layout.setSpacing(9)
+        session_layout.setContentsMargins(0, 0, 0, 0)
+        session_layout.setSpacing(0)
 
-        self.session_title = QLabel("RECENT WORKSPACES")
-        self.session_title.setObjectName("startFooterTitle")
-        session_layout.addWidget(self.session_title)
+        self.session_title = QLabel("RECENT PROJECTS")
+        self.session_title.setObjectName("startCurrentSessionBadge")
+        self.session_title.hide()
         self._session_keys = ["", "", "", ""]
         self._session_rows: list[QFrame] = []
         self._session_names: list[QLabel] = []
@@ -190,59 +177,37 @@ class StartWorkspace(QFrame):
             self._session_names.append(name_label)
             self._session_details.append(detail_label)
             self._session_buttons.append(button)
-            session_layout.addWidget(row, 1)
+            session_layout.addWidget(row)
 
         self.session_name = self._session_names[0]
         self.session_detail = self._session_details[0]
         self.resume_button = self._session_buttons[0]
         self._show_empty_sessions()
-        layout.addWidget(session, 1)
+        layout.addWidget(session)
+        layout.addStretch(1)
+        return column
 
-        workflow = QFrame()
-        workflow.setObjectName("startWorkflowPanel")
-        workflow_layout = QVBoxLayout(workflow)
-        workflow_layout.setContentsMargins(22, 18, 22, 20)
-        workflow_layout.setSpacing(13)
-        workflow_title = QLabel("WORKFLOW")
-        workflow_title.setObjectName("startFooterTitle")
-        workflow_layout.addWidget(workflow_title)
-
-        steps = QHBoxLayout()
-        steps.setSpacing(10)
-        for number, name in (("01", "MODEL"), ("02", "ANALYSIS"), ("03", "RESULTS")):
-            step = QFrame()
-            step.setObjectName("startWorkflowStep")
-            step_layout = QVBoxLayout(step)
-            step_layout.setContentsMargins(14, 12, 14, 12)
-            step_layout.setSpacing(3)
-            number_label = QLabel(number)
-            number_label.setObjectName("startStepNumber")
-            name_label = QLabel(name)
-            name_label.setObjectName("startStepName")
-            step_layout.addWidget(number_label)
-            step_layout.addWidget(name_label)
-            steps.addWidget(step, 1)
-        workflow_layout.addLayout(steps)
-        layout.addWidget(workflow)
-        return panel
-
-    def _build_session_row(
-        self, index: int
-    ) -> tuple[QFrame, QLabel, QLabel, QPushButton]:
+    def _build_session_row(self, index: int) -> tuple[QFrame, QLabel, QLabel, QPushButton]:
         row = QFrame()
         row.setObjectName("startSessionRow")
+        row.setProperty("active", index == 0)
+        row.setMinimumHeight(64 if index else 86)
         row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(14, 10, 12, 10)
-        row_layout.setSpacing(12)
+        row_layout.setContentsMargins(12, 10, 12, 10)
+        row_layout.setSpacing(10)
 
         copy = QVBoxLayout()
         copy.setSpacing(2)
+        badge = QLabel("CURRENT SESSION")
+        badge.setObjectName("startCurrentSessionBadge")
+        badge.setVisible(index == 0)
         name_label = QLabel()
         name_label.setObjectName("startSessionRowName")
-        name_label.setWordWrap(True)
+        name_label.setWordWrap(False)
         detail_label = QLabel()
         detail_label.setObjectName("startSessionRowDetail")
-        detail_label.setWordWrap(True)
+        detail_label.setWordWrap(False)
+        copy.addWidget(badge)
         copy.addWidget(name_label)
         copy.addWidget(detail_label)
         row_layout.addLayout(copy, 1)
@@ -253,6 +218,47 @@ class StartWorkspace(QFrame):
         row_layout.addWidget(button)
         return row, name_label, detail_label, button
 
+    def _build_workflow_panel(self) -> QFrame:
+        wrapper = QFrame()
+        wrapper.setObjectName("startWorkflowWrapper")
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(self._section_heading("WORKFLOW"))
+
+        panel = QFrame()
+        panel.setObjectName("startWorkflowPanel")
+        steps = QHBoxLayout(panel)
+        steps.setContentsMargins(12, 8, 12, 8)
+        steps.setSpacing(6)
+        for index, (name, detail) in enumerate((
+            ("01 MODEL", "Inspect model"),
+            ("02 SETUP", "Configure analysis"),
+            ("03 RESULTS", "Review responses"),
+        )):
+            step = QFrame()
+            step.setObjectName("startWorkflowStep")
+            step_layout = QVBoxLayout(step)
+            step_layout.setContentsMargins(8, 4, 8, 4)
+            step_layout.setSpacing(1)
+            name_label = QLabel(name)
+            name_label.setObjectName("startStepName")
+            name_label.setProperty("active", index == 0)
+            name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            detail_label = QLabel(detail)
+            detail_label.setObjectName("startStepDetail")
+            detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            step_layout.addWidget(name_label)
+            step_layout.addWidget(detail_label)
+            steps.addWidget(step, 1)
+            if index < 2:
+                arrow = QLabel("→")
+                arrow.setObjectName("startWorkflowArrow")
+                arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                steps.addWidget(arrow)
+        layout.addWidget(panel)
+        return wrapper
+
     def _request_session(self, index: int) -> None:
         key = self._session_keys[index]
         if key:
@@ -262,12 +268,13 @@ class StartWorkspace(QFrame):
 
     def _show_empty_sessions(self) -> None:
         self._session_keys = ["", "", "", ""]
+        self.session_title.setText("RECENT PROJECTS")
+        self.session_title.hide()
         for index, row in enumerate(self._session_rows):
             if index == 0:
-                self._session_names[index].setText("No active project")
-                self._session_details[index].setText(
-                    "Import a model or create a project to begin."
-                )
+                row.setProperty("active", False)
+                self._session_names[index].setText("No recent projects.")
+                self._session_details[index].setText("Create or import a model to begin.")
                 self._session_buttons[index].hide()
                 row.show()
             else:
@@ -283,7 +290,6 @@ class StartWorkspace(QFrame):
         if active_key:
             ordered.sort(key=lambda item: item[0] != active_key)
         if not ordered:
-            self.session_title.setText("RECENT WORKSPACES")
             self._show_empty_sessions()
             return
 
@@ -295,6 +301,9 @@ class StartWorkspace(QFrame):
                 continue
             key, name, detail = ordered[index]
             self._session_keys[index] = key
+            row.setProperty("active", index == 0 and key == active_key)
+            row.style().unpolish(row)
+            row.style().polish(row)
             self._session_names[index].setText(name)
             self._session_details[index].setText(detail)
             self._session_buttons[index].setText("RETURN" if key != active_key else "RESUME")
@@ -309,9 +318,11 @@ class StartWorkspace(QFrame):
 
         self.session_title.setText("CURRENT SESSION")
         self._session_keys = ["", "", "", ""]
+        self._session_rows[0].setProperty("active", True)
+        self._session_rows[0].style().unpolish(self._session_rows[0])
+        self._session_rows[0].style().polish(self._session_rows[0])
         self.session_name.setText(name)
-        detail = f"{name}  ·  {source}" if source else name
-        self.session_detail.setText(detail)
+        self.session_detail.setText(f"{name}  ·  {source}" if source else name)
         self.resume_button.show()
         self._session_rows[0].show()
         for row in self._session_rows[1:]:

@@ -14,8 +14,8 @@ class AppHeader(QFrame):
         self.setObjectName("appHeader")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(18, 10, 18, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(12, 4, 14, 4)
+        layout.setSpacing(8)
         self.brand_button = QPushButton("OF")
         self.brand_button.setObjectName("brandMark")
         self.brand_button.setToolTip("Go to Home")
@@ -43,13 +43,13 @@ class AppHeader(QFrame):
 
     def set_welcome_mode(self, welcome: bool) -> None:
         """Keep the first-run screen focused on project entry choices."""
-        self.status_label.setText("2D STRUCTURAL MODELING & ANALYSIS" if welcome else "●  READY")
+        self.status_label.setText("STRUCTURAL MODELING & ANALYSIS" if welcome else "●  READY")
         self.status_label.setObjectName("welcomeHeaderLabel" if welcome else "readyBadge")
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
         self.home_button.setVisible(not welcome)
         self.upload_button.setVisible(not welcome)
-        self.run_button.setVisible(not welcome)
+        self.run_button.setVisible(True)
 
     def set_busy(self, busy: bool, label: str | None = "READING MODEL") -> None:
         self.status_label.setText(f"●  {label}" if busy and label else "●  READY")

@@ -1,11 +1,12 @@
-"""Regression coverage for the nonlinear settings dialog split.
+"""Regression coverage for the MODEL/SETUP split and the nonlinear dialog.
 
-The AnalysisSettingsPanel used to inline all seven nonlinear fields directly into
-AnalysisResultsSidebar's layout, which overlapped or got squeezed to nothing in a
-short sidebar. They now live in a separate QDialog opened on demand, so the sidebar
-only ever needs to fit a button and a one-line summary - this test checks that split
-holds: the sidebar stays short and uncompressed, and the dialog itself lays its
-fields out without overlap regardless of the sidebar's size."""
+MODEL's AnalysisResultsSidebar used to hold the full AnalysisSettingsPanel
+(solver, nonlinear dialog button, summary) stacked above the model inspector -
+short on space, since the panel's fields could grow. The full panel now lives
+in SETUP's SetupWorkspace instead; MODEL's sidebar only holds the lightweight
+AnalysisTypeSelector, so it stays short by construction and the inspector
+keeps real space. The nonlinear dialog itself is unchanged - these fields
+still must not overlap regardless of which page hosts the panel."""
 
 import os
 from itertools import pairwise
@@ -16,64 +17,81 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from openframe.app.shell.analysis_results_sidebar import AnalysisResultsSidebar
+from openframe.app.shell.setup_workspace import SetupWorkspace
 from openframe.core.domain import AnalysisKind
+from openframe.features.analysis.presentation.analysis_config_store import (
+    AnalysisConfigStore,
+)
 from openframe.infrastructure.opensees.model_importer import OpenSeesModelImporter
 
 EXAMPLE_MODEL = Path(__file__).parents[2] / "examples" / "nonlinear_spring_pushover_1d.py"
 
 
-def test_nonlinear_settings_move_to_a_dialog_and_keep_the_sidebar_short() -> None:
+def test_model_sidebar_only_holds_the_type_selector_and_stays_short() -> None:
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
 
-    # Deliberately shorter than the settings panel used to need before the dialog split.
-    sidebar = AnalysisResultsSidebar()
+    store = AnalysisConfigStore()
+    sidebar = AnalysisResultsSidebar(store)
     sidebar.resize(300, 480)
     sidebar.show()
 
-    settings = sidebar.settings
+    sidebar.inspector.set_model(model)
+    store.set_kind(AnalysisKind.NONLINEAR_STATIC)
+    application.processEvents()
+    application.processEvents()
+
+    # Three option buttons + summary + button is taller than the old combo box, but
+    # still nowhere near the 400px+ the nonlinear fields needed inline before they
+    # moved to a dialog - the height floor here is just "no deep fields leaked back in".
+    assert sidebar.type_selector.height() < 260
+    assert sidebar.inspector.height() > 0
+
+    sidebar.close()
+
+
+def test_nonlinear_settings_button_and_summary_live_in_the_setup_panel() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
+
+    store = AnalysisConfigStore()
+    setup = SetupWorkspace(store)
+    setup.show()
+    settings = setup.settings_panel
     settings.set_model(model)
-    settings.analysis_type.setCurrentIndex(
-        settings.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
-    )
+    store.set_kind(AnalysisKind.NONLINEAR_STATIC)
     application.processEvents()
     application.processEvents()
 
     assert settings.open_nonlinear_settings_button.isVisible()
     assert "Node" in settings.nonlinear_summary.text() or "not set" in settings.nonlinear_summary.text()
-    # None of the nonlinear fields live in the sidebar's layout any more, so the
-    # panel only has to fit a combo, a button and a short summary - nowhere near the
-    # ~230px floor the old scroll-area workaround needed - and the model inspector
-    # below it keeps real space instead of getting squeezed to nothing.
-    assert settings.height() < 300
-    assert sidebar.inspector.height() > 0
 
     fields = [settings.analysis_type, settings.solver, settings.open_nonlinear_settings_button]
     ranges = [
         (
-            widget.mapTo(sidebar, widget.rect().topLeft()).y(),
-            widget.mapTo(sidebar, widget.rect().bottomRight()).y(),
+            widget.mapTo(settings, widget.rect().topLeft()).y(),
+            widget.mapTo(settings, widget.rect().bottomRight()).y(),
         )
         for widget in fields
     ]
     overlaps = [
-        (earlier, later) for earlier, later in pairwise(ranges) if later[0] < earlier[1]
+        (earlier, later)
+        for earlier, later in pairwise(sorted(ranges))
+        if later[0] < earlier[1]
     ]
     assert overlaps == []
-
-    sidebar.close()
+    setup.close()
 
 
 def test_nonlinear_dialog_fields_do_not_overlap() -> None:
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
 
-    sidebar = AnalysisResultsSidebar()
-    settings = sidebar.settings
+    store = AnalysisConfigStore()
+    setup = SetupWorkspace(store)
+    settings = setup.settings_panel
     settings.set_model(model)
-    settings.analysis_type.setCurrentIndex(
-        settings.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
-    )
+    store.set_kind(AnalysisKind.NONLINEAR_STATIC)
 
     dialog = settings._nonlinear_dialog
     dialog.show()
@@ -102,4 +120,3 @@ def test_nonlinear_dialog_fields_do_not_overlap() -> None:
     assert overlaps == []
 
     dialog.close()
-    sidebar.close()

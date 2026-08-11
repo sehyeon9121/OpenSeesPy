@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
     QMainWindow,
     QMessageBox,
     QSplitter,
@@ -19,17 +21,21 @@ from openframe.app.shell.analysis_progress_banner import AnalysisProgressBanner
 from openframe.app.shell.analysis_results_sidebar import AnalysisResultsSidebar
 from openframe.app.shell.app_header import AppHeader
 from openframe.app.shell.direct_model_workspace import DirectModelWorkspace
+from openframe.app.shell.page_header import PageHeader
+from openframe.app.shell.setup_workspace import SetupWorkspace
 from openframe.app.shell.start_workspace import StartWorkspace
 from openframe.app.shell.workspace_navigation import WorkspaceNavigation
 from openframe.core.domain import (
     AnalysisKind,
-    AnalysisRequest,
     AnalysisResult,
     AnalysisStatus,
     StructuralModel,
     UnitSystem,
 )
 from openframe.features.analysis.application.run_analysis import RunAnalysisService
+from openframe.features.analysis.presentation.analysis_config_store import (
+    AnalysisConfigStore,
+)
 from openframe.features.analysis.presentation.analysis_run_thread import AnalysisRunThread
 from openframe.features.model.application.open_model import OpenModelService
 from openframe.features.model.presentation.model_load_thread import ModelLoadThread
@@ -82,9 +88,15 @@ class MainWindow(QMainWindow):
         self.direct_model_workspace = DirectModelWorkspace()
         self.model_sidebar = ModelSidebar()
         self.viewport = ModelViewport()
-        self.analysis_sidebar = AnalysisResultsSidebar()
-        self.analysis_settings = self.analysis_sidebar.settings
+        # The single source of truth for the selected analysis kind and its options -
+        # MODEL's type selector, SETUP's settings panel and the Nonlinear Settings
+        # dialog all read and write through this one instance.
+        self.config_store = AnalysisConfigStore()
+        self.analysis_sidebar = AnalysisResultsSidebar(self.config_store)
+        self.analysis_type_selector = self.analysis_sidebar.type_selector
         self.model_inspector = self.analysis_sidebar.inspector
+        self.setup_workspace = SetupWorkspace(self.config_store, run_analysis_service)
+        self.analysis_settings = self.setup_workspace.settings_panel
         self.results_workspace = ResultsWorkspace()
         self.view = self.viewport.view
         self.scene = self.viewport.scene
@@ -100,14 +112,31 @@ class MainWindow(QMainWindow):
         self.workspace.setStretchFactor(2, 0)
         self.workspace.setSizes((255, 850, 300))
 
+        self.model_page_header = PageHeader(
+            title="MODEL WORKSPACE",
+            subtitle="Import, inspect, and prepare the structural model before analysis.",
+            action_text="Proceed to Setup  →",
+        )
+        self.model_page_header.action_requested.connect(self._open_setup_workspace)
+        self.model_page_header.set_status("Model Status:  ● READY", "ready")
+        self.model_workspace_page = QFrame()
+        self.model_workspace_page.setObjectName("modelWorkspacePage")
+        model_page_layout = QVBoxLayout(self.model_workspace_page)
+        model_page_layout.setContentsMargins(0, 0, 0, 0)
+        model_page_layout.setSpacing(0)
+        model_page_layout.addWidget(self.model_page_header)
+        model_page_layout.addWidget(self.workspace, 1)
+
         self.workspace_stack = QStackedWidget()
         self.workspace_stack.setObjectName("workspaceStack")
         self.workspace_stack.addWidget(self.start_workspace)
         self.workspace_stack.addWidget(self.direct_model_workspace)
-        self.workspace_stack.addWidget(self.workspace)
+        self.workspace_stack.addWidget(self.model_workspace_page)
+        self.workspace_stack.addWidget(self.setup_workspace)
         self.workspace_stack.addWidget(self.results_workspace)
         self.workspace_stack.setCurrentWidget(self.start_workspace)
 
+        self._build_menu_bar()
         root_layout.addWidget(self.header)
         root_layout.addWidget(self.navigation)
         root_layout.addWidget(self.workspace_stack, 1)
@@ -119,13 +148,76 @@ class MainWindow(QMainWindow):
 
     def _build_status_bar(self) -> None:
         status = QStatusBar(self)
-        status.showMessage("Ready · Sample preview · Units: kN, m")
+        status.setObjectName("applicationStatusBar")
+        status.setProperty("mode", "home")
+        status.showMessage("OpenFrame Studio v2.4.1  |  Ready  |  No project loaded")
         self.setStatusBar(status)
+
+    def _set_status_mode(self, mode: str) -> None:
+        status = self.statusBar()
+        status.setProperty("mode", mode)
+        status.style().unpolish(status)
+        status.style().polish(status)
+
+    def _build_menu_bar(self) -> None:
+        menu_bar = self.menuBar()
+
+        file_menu = menu_bar.addMenu("File")
+        upload_action = QAction("Upload .py…", self)
+        upload_action.triggered.connect(self._choose_model_file)
+        file_menu.addAction(upload_action)
+        save_action = QAction("Save Project", self)
+        save_action.triggered.connect(lambda: self._show_pending_workflow("Save Project"))
+        file_menu.addAction(save_action)
+        file_menu.addSeparator()
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        edit_menu = menu_bar.addMenu("Edit")
+        edit_menu.addAction(self._pending_action("Undo", "Undo"))
+        edit_menu.addAction(self._pending_action("Redo", "Redo"))
+
+        view_menu = menu_bar.addMenu("View")
+        for key, text in (
+            ("model", "MODEL"),
+            ("setup", "SETUP"),
+            ("results", "RESULTS"),
+            ("viewport", "VIEWPORT"),
+        ):
+            action = QAction(text.title(), self)
+            action.triggered.connect(
+                lambda checked=False, section=key: self.navigation.set_current_section(
+                    section, emit=True
+                )
+            )
+            view_menu.addAction(action)
+
+        window_menu = menu_bar.addMenu("Window")
+        window_menu.addAction(self._pending_action("Reset Layout", "Reset Layout"))
+
+        help_menu = menu_bar.addMenu("Help")
+        about_action = QAction("About OpenFrame Studio", self)
+        about_action.triggered.connect(self._show_about_dialog)
+        help_menu.addAction(about_action)
+
+    def _pending_action(self, text: str, workflow: str) -> QAction:
+        action = QAction(text, self)
+        action.triggered.connect(lambda: self._show_pending_workflow(workflow))
+        return action
+
+    def _show_about_dialog(self) -> None:
+        QMessageBox.information(
+            self,
+            "About OpenFrame Studio",
+            "OpenFrame Studio\nOpenSeesPy 2D/3D structural model visualization and analysis.",
+        )
 
     def _connect_actions(self) -> None:
         self.header.upload_requested.connect(self._choose_model_file)
         self.header.run_requested.connect(self._run_analysis)
         self.header.home_requested.connect(self._show_start_workspace)
+        self.setup_workspace.back_to_model_requested.connect(self._show_model_workspace)
         self.start_workspace.import_opensees_requested.connect(self._start_import_workspace)
         self.start_workspace.new_model_requested.connect(self._start_new_model_workspace)
         self.start_workspace.new_3d_model_requested.connect(self._start_new_3d_model_workspace)
@@ -139,7 +231,9 @@ class MainWindow(QMainWindow):
         self.start_workspace.resume_workspace_requested.connect(self._resume_workspace)
         self.start_workspace.session_requested.connect(self._activate_workspace_session)
         self.navigation.current_changed.connect(self._change_workspace_section)
-        self.analysis_settings.analysis_kind_changed.connect(self._set_analysis_kind)
+        self.config_store.kind_changed.connect(self._set_analysis_kind)
+        self.analysis_type_selector.open_setup_requested.connect(self._open_setup_workspace)
+        self.setup_workspace.run_requested.connect(self._run_analysis)
         self.viewport.unit_system_changed.connect(self._set_unit_system)
         self.viewport.entity_selected.connect(self._entity_selected_from_viewport)
         self.model_sidebar.entity_selected.connect(self._entity_selected_from_tree)
@@ -156,9 +250,11 @@ class MainWindow(QMainWindow):
         self._refresh_start_sessions()
         self.workspace_stack.setCurrentWidget(self.start_workspace)
         self.header.show()
-        self.navigation.hide()
+        self.navigation.set_home_mode(True)
+        self.navigation.show()
         self.header.set_welcome_mode(True)
-        self.statusBar().showMessage("Choose how to start a project")
+        self._set_status_mode("home")
+        self.statusBar().showMessage("OpenFrame Studio v2.4.1  |  Ready  |  No project loaded")
 
     def _show_pending_workflow(self, workflow: str) -> None:
         self.statusBar().showMessage(f"{workflow} interface is ready for feature connection")
@@ -205,11 +301,13 @@ class MainWindow(QMainWindow):
 
     def _show_model_workspace(self) -> None:
         self._resume_section = "model"
+        self.navigation.set_home_mode(False)
         self.navigation.set_current_section("model")
         self.navigation.show()
         self.header.show()
         self.header.set_welcome_mode(False)
-        self.workspace_stack.setCurrentWidget(self.workspace)
+        self.workspace_stack.setCurrentWidget(self.model_workspace_page)
+        self._set_status_mode("model")
 
     def _resume_workspace(self) -> None:
         if not self._has_active_workspace:
@@ -222,10 +320,19 @@ class MainWindow(QMainWindow):
 
     def _open_results_workspace(self) -> None:
         self.analysis_progress.hide()
+        self.navigation.set_home_mode(False)
         self.navigation.show()
         self.header.show()
         self.header.set_welcome_mode(False)
         self.navigation.set_current_section("results", emit=True)
+
+    def _open_setup_workspace(self) -> None:
+        self.navigation.set_home_mode(False)
+        self.navigation.show()
+        self.header.show()
+        self.header.set_welcome_mode(False)
+        self.navigation.set_current_section("setup", emit=True)
+        self._set_status_mode("setup")
 
     def _choose_model_file(self) -> None:
         source, _ = QFileDialog.getOpenFileName(
@@ -270,9 +377,12 @@ class MainWindow(QMainWindow):
         self.model_sidebar.set_model(model)
         self.viewport.set_model(model)
         self.model_inspector.set_model(model)
-        self.analysis_settings.set_model(model)
+        self.setup_workspace.set_model(model)
+        self.setup_workspace.set_source_path(source_path)
         self.results_workspace.set_model(model)
         self.results_workspace.clear_result()
+        self.navigation.set_breadcrumb(source_path.stem)
+        self.navigation.set_breadcrumb_status("READY")
         key = str(source_path)
         self._remember_session(
             _WorkspaceSession(
@@ -302,21 +412,30 @@ class MainWindow(QMainWindow):
 
     def _change_workspace_section(self, section: str) -> None:
         self._store_current_session_section(section)
+        self.navigation.set_home_mode(False)
         labels = {
             "model": "Model workspace",
-            "analysis": "Analysis configuration",
+            "setup": "Analysis setup",
             "results": "Analysis results",
             "viewport": "Viewport focus",
         }
         if section == "results":
             self.workspace_stack.setCurrentWidget(self.results_workspace)
+            self._set_status_mode("setup")
             self.statusBar().showMessage("Results workspace | Ready")
             return
+        if section == "setup":
+            self.workspace_stack.setCurrentWidget(self.setup_workspace)
+            self._set_status_mode("setup")
+            self.statusBar().showMessage("Analysis setup | Ready")
+            return
 
-        self.workspace_stack.setCurrentWidget(self.workspace)
+        self.workspace_stack.setCurrentWidget(self.model_workspace_page)
         focus_viewport = section == "viewport"
         self.model_sidebar.setVisible(not focus_viewport)
         self.analysis_sidebar.setVisible(not focus_viewport)
+        self.model_page_header.setVisible(not focus_viewport)
+        self._set_status_mode("model")
         self.statusBar().showMessage(f"{labels[section]} · Ready")
 
     def _set_analysis_kind(self, kind: AnalysisKind) -> None:
@@ -329,7 +448,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Analysis type · {names[kind]}")
 
     def _run_analysis(self) -> None:
-        kind = self.analysis_settings.selected_analysis_kind()
+        kind = self.config_store.kind
         self._set_analysis_kind(kind)
 
         if self._run_analysis_service is None:
@@ -341,11 +460,7 @@ class MainWindow(QMainWindow):
         if self._analysis_run_thread and self._analysis_run_thread.isRunning():
             return
 
-        request = AnalysisRequest(
-            source_path=self._current_model_source,
-            kind=kind,
-            options=self.analysis_settings.build_options(),
-        )
+        request = self.config_store.to_request(self._current_model_source)
         run_generation = self._model_generation
         run_session_key = self._current_session_key
 
@@ -473,9 +588,12 @@ class MainWindow(QMainWindow):
         self.model_sidebar.set_model(session.model)
         self.viewport.set_model(session.model)
         self.model_inspector.set_model(session.model)
-        self.analysis_settings.set_model(session.model)
+        self.setup_workspace.set_model(session.model)
+        self.setup_workspace.set_source_path(session.source_path)
         self.results_workspace.set_model(session.model)
         self.results_workspace.clear_result()
+        self.navigation.set_breadcrumb(session.source_path.stem)
+        self.navigation.set_breadcrumb_status("READY")
         if session.result is not None:
             self.results_workspace.show_result(session.result)
 

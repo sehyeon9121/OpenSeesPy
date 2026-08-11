@@ -1,6 +1,6 @@
 """Application shell theme shared by all feature presentation components."""
 
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
 
 APPLICATION_STYLE = """
@@ -1023,10 +1023,383 @@ QFrame#materialFooter {
 }
 QPushButton#materialContinueButton { min-height: 30px; }
 QSplitter#materialEditorSplitter::handle { width: 1px; background: #d5deea; }
+
+/* Menu bar */
+QMenuBar {
+    background: #ffffff;
+    border-bottom: 1px solid #d8dde4;
+    padding: 2px 8px;
+    color: #3c4a5e;
+    font-size: 8pt;
+}
+QMenuBar::item {
+    padding: 5px 10px;
+    background: transparent;
+    border-radius: 3px;
+}
+QMenuBar::item:selected { background: #eef2f7; color: #174ea6; }
+QMenuBar::item:pressed { background: #e7effb; color: #174ea6; }
+QMenu {
+    background: #ffffff;
+    border: 1px solid #d8dde4;
+    padding: 4px;
+}
+QMenu::item { padding: 6px 24px 6px 12px; border-radius: 3px; font-size: 8pt; }
+QMenu::item:selected { background: #eef2f7; color: #174ea6; }
+QMenu::item:disabled { color: #b3bdca; }
+QMenu::separator { height: 1px; background: #e5e9ee; margin: 4px 6px; }
+
+/* Breadcrumb / project bar, prepended to the section tabs */
+QFrame#navigationBreadcrumb { background: transparent; }
+QLabel#breadcrumbIcon { color: #8a97a6; font-size: 9pt; }
+QLabel#breadcrumbName { color: #2d4059; font-size: 8pt; font-weight: 600; }
+QLabel#breadcrumbStatus {
+    color: #2e7048;
+    font-size: 7pt;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 8px;
+    background: #e4f4ea;
+}
+QFrame#navigationDivider { background: #dce3eb; max-width: 1px; min-width: 1px; }
+
+QFrame#modelWorkspacePage { background: #f5f7fa; }
+
+/* Reusable page header (MODEL workspace wrapper, SETUP page) */
+QFrame#pageHeader {
+    background: #ffffff;
+    border-bottom: 1px solid #d8dde4;
+}
+QLabel#pageTitle { color: #142b49; font-size: 13pt; font-weight: 700; }
+QLabel#pageSubtitle { color: #778193; font-size: 8pt; }
+QPushButton#pageActionButton {
+    border: 0;
+    background: transparent;
+    color: #174ea6;
+    font-size: 8pt;
+    font-weight: 700;
+    padding: 0 4px;
+}
+QPushButton#pageActionButton:hover { text-decoration: underline; }
+QLabel#pageStatusBadge {
+    border-radius: 9px;
+    padding: 3px 10px;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QLabel#pageStatusBadge[state="ready"] { color: #2e7048; background: #e4f4ea; }
+QLabel#pageStatusBadge[state="running"] { color: #925c1a; background: #fff1cf; }
+QLabel#pageStatusBadge[state="error"] { color: #a42f36; background: #fde7e8; }
+
+/* MODEL's ANALYSIS PREPARATION list (replaces a plain combo box) */
+QToolButton#analysisTypeOption {
+    min-height: 34px;
+    padding: 0 10px;
+    text-align: left;
+    background: #ffffff;
+    border: 1px solid #d8e1eb;
+    border-radius: 4px;
+    color: #35485f;
+    font-size: 8pt;
+    font-weight: 600;
+}
+QToolButton#analysisTypeOption:hover { border-color: #9ebbe3; background: #f5f8fc; }
+QToolButton#analysisTypeOption:checked {
+    background: #eaf1fb;
+    border: 1px solid #174ea6;
+    color: #123f89;
+}
+QToolButton#analysisTypeOption:disabled {
+    color: #a7b2c0;
+    background: #f4f6f8;
+    border-color: #e1e6ec;
+}
+QPushButton#openSetupButton {
+    min-height: 36px;
+    margin-top: 6px;
+    border-radius: 4px;
+    color: #ffffff;
+    background: #174ea6;
+    border: 1px solid #174ea6;
+    font-weight: 700;
+}
+QPushButton#openSetupButton:hover { background: #123f89; }
+
+/* SETUP pre-check chips */
+QFrame#precheckRow { background: #ffffff; border-top: 1px solid #dce3eb; }
+QLabel#precheckChip {
+    border-radius: 3px;
+    padding: 3px 8px;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QLabel#precheckChip[state="ok"] { color: #2e7048; background: #e4f4ea; }
+QLabel#precheckChip[state="warn"] { color: #926117; background: #fff1cf; }
+QLabel#precheckChip[state="error"] { color: #a42f36; background: #fde7e8; }
+QLabel#precheckSummary { color: #7b899a; font-size: 8pt; }
+QLabel#precheckSummary[state="warn"] { color: #926117; font-weight: 600; }
+QLabel#precheckSummary[state="error"] { color: #a42f36; font-weight: 600; }
+
+/* SETUP's ANALYSIS FLOW list */
+QFrame#setupFlowPanel { background: #f8fafc; border-right: 1px solid #dce3eb; }
+QListWidget#setupFlowList {
+    background: transparent;
+    border: 0;
+    outline: 0;
+    padding: 6px;
+}
+QListWidget#setupFlowList::item {
+    min-height: 30px;
+    padding: 0 8px;
+    margin: 1px 0;
+    border-radius: 4px;
+    color: #5c6b7f;
+    font-size: 8pt;
+}
+QFrame#setupCenterColumn { background: #eef2f6; }
+QFrame#setupGuidePanel { background: #f8fafc; border-left: 1px solid #dce3eb; }
+
+/* Stitch project hub — compact engineering launcher. */
+QFrame#startWorkspace { background: #ffffff; }
+QFrame#startContent { background: transparent; }
+QFrame#startHubHeader {
+    background: transparent;
+    border-bottom: 1px solid #c4c5d5;
+}
+QLabel#startPageTitle {
+    color: #191c1d;
+    font-size: 14pt;
+    font-weight: 600;
+}
+QLabel#startPageDescription {
+    color: #555f6d;
+    font-size: 9pt;
+}
+QLabel#startSectionHeading {
+    color: #555f6d;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QFrame#startColumn, QFrame#startContinueColumn, QFrame#startWorkflowWrapper {
+    background: transparent;
+}
+QFrame#startActionPanel, QFrame#startSessionPanel, QFrame#startWorkflowPanel {
+    background: #f8f9fa;
+    border: 1px solid #c4c5d5;
+    border-radius: 2px;
+}
+QFrame#startActionRow {
+    background: #f8f9fa;
+    border: 0;
+    border-bottom: 1px solid #c4c5d5;
+}
+QFrame#startActionRow[last="true"] {
+    background: #f3f4f5;
+    border-bottom: 0;
+}
+QLabel#startActionIcon {
+    min-width: 38px;
+    min-height: 38px;
+    max-width: 38px;
+    max-height: 38px;
+    color: #00288e;
+    background: #edeeef;
+    border: 1px solid #c4c5d5;
+    border-radius: 3px;
+    font-family: "JetBrains Mono", "Consolas";
+    font-size: 8pt;
+    font-weight: 700;
+}
+QLabel#startCardTitle {
+    color: #191c1d;
+    font-size: 10pt;
+    font-weight: 500;
+}
+QLabel#startCardDescription {
+    color: #555f6d;
+    font-size: 8pt;
+}
+QPushButton#startActionButton {
+    min-width: 66px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0 10px;
+    color: #555f6d;
+    background: #ffffff;
+    border: 1px solid #c4c5d5;
+    border-radius: 2px;
+    font-size: 8pt;
+    font-weight: 600;
+}
+QPushButton#startActionButton:hover {
+    color: #00288e;
+    background: #edeeef;
+    border-color: #00288e;
+}
+QPushButton#startActionButton[primary="true"] { color: #00288e; }
+QFrame#startSessionRow {
+    background: #f8f9fa;
+    border: 0;
+    border-bottom: 1px solid #c4c5d5;
+    border-radius: 0;
+}
+QFrame#startSessionRow[active="true"] {
+    background: #ffffff;
+    border: 2px solid #1e40af;
+    border-radius: 2px;
+}
+QLabel#startCurrentSessionBadge {
+    color: #ffffff;
+    background: #1e40af;
+    border-radius: 2px;
+    padding: 2px 6px;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QLabel#startSessionRowName {
+    color: #191c1d;
+    font-family: "JetBrains Mono", "Consolas";
+    font-size: 9pt;
+    font-weight: 500;
+}
+QLabel#startSessionRowDetail { color: #555f6d; font-size: 8pt; }
+QPushButton#startSessionReturnButton {
+    min-width: 70px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0 10px;
+    color: #ffffff;
+    background: #00288e;
+    border: 1px solid #00288e;
+    border-radius: 2px;
+    font-size: 8pt;
+    font-weight: 600;
+}
+QPushButton#startSessionReturnButton:hover { background: #1e40af; }
+QFrame#startWorkflowStep { background: transparent; border: 0; }
+QLabel#startStepName {
+    color: #555f6d;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QLabel#startStepName[active="true"] { color: #00288e; }
+QLabel#startStepDetail { color: #757684; font-size: 8pt; }
+QLabel#startWorkflowArrow { color: #c4c5d5; font-size: 13pt; }
+
+/* Stitch shell density and 1 px engineering borders. */
+QFrame#appHeader { min-height: 34px; max-height: 34px; }
+QLabel#brandName { color: #00288e; font-size: 10pt; }
+QPushButton#brandMark {
+    min-width: 24px; min-height: 24px; max-width: 24px; max-height: 24px;
+    border-radius: 2px; background: #00288e; font-size: 7pt;
+}
+QPushButton#uploadButton, QPushButton#runButton {
+    min-height: 26px; max-height: 26px; border-radius: 2px; padding: 0 11px;
+    font-size: 8pt;
+}
+QPushButton#runButton { background: #00288e; border-color: #00288e; }
+QPushButton#runButton:hover { background: #1e40af; }
+QFrame#workspaceNavigation { min-height: 32px; max-height: 32px; }
+QFrame#workspaceNavigation QToolButton {
+    min-width: 72px; min-height: 30px; max-height: 30px;
+    border-bottom-width: 2px; color: #555f6d; font-size: 8pt;
+}
+QFrame#workspaceNavigation QToolButton:checked {
+    color: #00288e; border-bottom-color: #00288e;
+}
+QFrame#pageHeader { background: #f8f9fa; border-bottom-color: #c4c5d5; }
+QLabel#pageTitle { color: #191c1d; font-size: 14pt; font-weight: 700; }
+QLabel#pageSubtitle { color: #555f6d; font-size: 8pt; }
+QPushButton#pageActionButton { color: #00288e; }
+QLabel#pageStatusBadge[state="ready"] { color: #006a61; background: #dff7f2; }
+QSplitter#workspaceSplitter::handle, QSplitter#setupWorkspaceSplitter::handle {
+    background: #c4c5d5; width: 1px;
+}
+QStatusBar {
+    min-height: 22px; max-height: 22px;
+    background: #e7e8e9; border-top: 1px solid #c4c5d5;
+    color: #555f6d; font-family: "JetBrains Mono", "Consolas"; font-size: 7pt;
+}
+QStatusBar[mode="model"] {
+    background: #2e3132; border-top: 0; color: #f0f1f2;
+}
+QStatusBar[mode="setup"] { background: #ffffff; color: #555f6d; }
+
+/* Stitch target panel widths and setup density. */
+QFrame#modelSidebar { min-width: 250px; max-width: 280px; background: #f8f9fa; }
+QFrame#analysisSidebar { min-width: 300px; max-width: 340px; background: #f8f9fa; }
+QFrame#setupFlowPanel { min-width: 210px; max-width: 230px; background: #f8f9fa; }
+QFrame#setupGuidePanel { min-width: 280px; max-width: 310px; background: #f8f9fa; }
+QFrame#setupCenterColumn { background: #f3f4f5; }
+QListWidget#setupFlowList { padding: 8px; }
+QListWidget#setupFlowList::item {
+    min-height: 34px; padding: 0 8px; margin: 1px 0; border-radius: 2px;
+    color: #555f6d; font-size: 8pt;
+}
+QToolButton#analysisTypeOption { border-radius: 2px; border-color: #c4c5d5; }
+QToolButton#analysisTypeOption:checked {
+    background: #eef0ff; border: 2px solid #1e40af; color: #00288e;
+}
+QPushButton#openSetupButton { min-height: 32px; border-radius: 2px; background: #00288e; }
+QFrame#precheckRow { min-height: 52px; border-top-color: #c4c5d5; }
+QFrame#analysisSettingsPanel { background: #ffffff; }
+QFrame#setupConfigBar, QFrame#setupConfigCard {
+    background: #f8f9fa;
+    border: 1px solid #c4c5d5;
+    border-radius: 2px;
+}
+QFrame#setupConfigCard[highlighted="true"] {
+    background: #ffffff;
+    border: 2px solid #1e40af;
+}
+QLabel#setupConfigTitle {
+    color: #191c1d;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QFrame#setupBehaviorTile {
+    background: #ffffff;
+    border: 1px solid #c4c5d5;
+    border-radius: 2px;
+}
+QLabel#setupMetricLabel { color: #555f6d; font-size: 7pt; font-weight: 700; }
+QLabel#setupMetricValue {
+    color: #191c1d;
+    font-family: "JetBrains Mono", "Consolas";
+    font-size: 8pt;
+    font-weight: 600;
+}
+QLabel#setupBehaviorValue {
+    color: #555f6d; font-family: "JetBrains Mono", "Consolas"; font-size: 8pt;
+}
+QLabel#setupBehaviorValue[state="ok"] { color: #087f5b; }
+QLabel#setupNotice {
+    color: #555f6d;
+    background: #e1e3e4;
+    border-left: 2px solid #757684;
+    padding: 7px 9px;
+    font-size: 8pt;
+}
+QLabel#setupConvergenceChart {
+    color: #00288e;
+    font-family: "JetBrains Mono", "Consolas";
+    font-size: 11pt;
+}
+QFrame#setupConfigBar QComboBox { min-height: 27px; max-height: 27px; }
+QFrame#setupConfigCard QComboBox { min-height: 25px; max-height: 25px; }
+QFrame#setupConfigCard QPushButton#nonlinearSettingsButton {
+    min-height: 27px; padding: 0 10px; border-radius: 2px;
+    color: #00288e; background: #ffffff; border: 1px solid #1e40af;
+}
 """
 
 
 def apply_application_theme(application: QApplication) -> None:
     application.setStyle("Fusion")
-    application.setFont(QFont("Malgun Gothic", 9))
+    families = set(QFontDatabase.families())
+    family = next(
+        (name for name in ("Noto Sans", "Segoe UI", "Malgun Gothic") if name in families),
+        application.font().family(),
+    )
+    application.setFont(QFont(family, 9))
     application.setStyleSheet(APPLICATION_STYLE)

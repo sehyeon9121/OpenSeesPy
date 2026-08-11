@@ -43,6 +43,6 @@ def test_recent_workspace_button_restores_the_selected_model() -> None:
     application.processEvents()
 
     assert window._current_model_source == first.resolve()
-    assert window.workspace_stack.currentWidget() is window.workspace
+    assert window.workspace_stack.currentWidget() is window.model_workspace_page
     assert window.start_workspace._session_names[0].text() == first.name
     window.close()

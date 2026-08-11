@@ -36,7 +36,7 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     # hidden by default until a truss result view turns them on.
     assert len(window.scene.items()) == 17
     assert window.viewport.mode_label.text() == "MODEL LOADED"
-    assert window.workspace_stack.currentWidget() is window.workspace
+    assert window.workspace_stack.currentWidget() is window.model_workspace_page
     assert not window.navigation.isHidden()
     assert not window.header.home_button.isHidden()
     assert window.start_workspace.session_title.text() == "CURRENT SESSION"
@@ -48,13 +48,13 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     assert not window.start_workspace.resume_button.isHidden()
 
     window.start_workspace.resume_button.click()
-    assert window.workspace_stack.currentWidget() is window.workspace
+    assert window.workspace_stack.currentWidget() is window.model_workspace_page
     assert not window.navigation.isHidden()
 
     window.header.home_button.click()
     assert window.workspace_stack.currentWidget() is window.start_workspace
     window.start_workspace.resume_button.click()
-    assert window.workspace_stack.currentWidget() is window.workspace
+    assert window.workspace_stack.currentWidget() is window.model_workspace_page
 
     load_items = [
         item

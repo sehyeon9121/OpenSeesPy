@@ -18,13 +18,13 @@ def test_main_window_can_be_constructed() -> None:
     assert window.view is window.viewport.view
     assert window.navigation.current_section() == "model"
     assert window.workspace_stack.currentWidget() is window.start_workspace
-    assert window.navigation.isHidden()
+    assert not window.navigation.isHidden()
     assert window.header.home_button.isHidden()
     assert window.start_workspace.resume_button.isHidden()
-    assert window.start_workspace.import_button.text() == "START"
+    assert window.start_workspace.import_button.text() == "IMPORT"
 
     window.start_workspace.import_button.click()
-    assert window.workspace_stack.currentWidget() is window.workspace
+    assert window.workspace_stack.currentWidget() is window.model_workspace_page
     assert window._current_model_source is None
     assert not window.header.upload_button.isHidden()
 
@@ -32,7 +32,7 @@ def test_main_window_can_be_constructed() -> None:
     assert window.workspace_stack.currentWidget() is window.start_workspace
     assert not window.start_workspace.resume_button.isHidden()
     window.start_workspace.resume_button.click()
-    assert window.workspace_stack.currentWidget() is window.workspace
+    assert window.workspace_stack.currentWidget() is window.model_workspace_page
 
     window.navigation._buttons["results"].click()
     assert window.navigation.current_section() == "results"
@@ -79,7 +79,7 @@ def test_new_3d_model_opens_the_wizard_and_ends_on_the_3d_canvas() -> None:
     """3D models generally do need real materials/sections to mean anything,
     the reverse of 2D — New 3D Model must open at basic setup, pre-set to
     3D, and land on the 3D canvas (not the 2D one) once continued through."""
-    application = QApplication.instance() or QApplication([])
+    _application = QApplication.instance() or QApplication([])
     window = MainWindow()
 
     window.start_workspace.new_3d_model_button.click()

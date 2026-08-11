@@ -32,7 +32,10 @@ openframe = "openframe.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-openframe = ["features/viewport/presentation/qml/*.qml"]
+openframe = [
+  "features/viewport/presentation/qml/*.qml",
+  "infrastructure/ground_motions/data/*.AT2",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -13,6 +13,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from openframe.core.domain import AnalysisKind
+from openframe.features.analysis.presentation.analysis_config_store import (
+    AnalysisConfigStore,
+)
 from openframe.features.analysis.presentation.analysis_settings_panel import (
     AnalysisSettingsPanel,
 )
@@ -145,3 +149,51 @@ def test_build_options_includes_gravity_and_target_displacement_when_selected() 
     assert options["integrator_type"] == "DisplacementControl"
     assert options["target_displacement"] == 0.5
     application.processEvents()
+
+
+def test_panel_without_an_explicit_store_still_defaults_to_linear_static() -> None:
+    panel = AnalysisSettingsPanel()
+
+    assert panel.config_store.kind == AnalysisKind.LINEAR_STATIC
+    assert panel.selected_analysis_kind() == AnalysisKind.LINEAR_STATIC
+
+
+def test_changing_the_combo_pushes_the_new_kind_into_the_shared_store() -> None:
+    store = AnalysisConfigStore()
+    panel = AnalysisSettingsPanel(store=store)
+
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+
+    assert store.kind == AnalysisKind.NONLINEAR_STATIC
+
+
+def test_changing_the_store_from_outside_updates_the_combo() -> None:
+    store = AnalysisConfigStore()
+    panel = AnalysisSettingsPanel(store=store)
+
+    store.set_kind(AnalysisKind.TIME_HISTORY)
+
+    assert panel.analysis_type.currentData() == AnalysisKind.TIME_HISTORY
+
+
+def test_two_panels_sharing_a_store_stay_in_sync() -> None:
+    store = AnalysisConfigStore()
+    first = AnalysisSettingsPanel(store=store)
+    second = AnalysisSettingsPanel(store=store)
+
+    first.analysis_type.setCurrentIndex(
+        first.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+
+    assert second.analysis_type.currentData() == AnalysisKind.NONLINEAR_STATIC
+
+
+def test_solver_change_is_reflected_in_the_store_options() -> None:
+    store = AnalysisConfigStore()
+    panel = AnalysisSettingsPanel(store=store)
+
+    panel.solver.setCurrentText("UmfPack")
+
+    assert store.options["system"] == "UmfPack"

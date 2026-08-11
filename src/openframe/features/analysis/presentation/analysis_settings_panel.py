@@ -1,12 +1,13 @@
 """Analysis type and solver settings panel."""
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -16,6 +17,9 @@ from PySide6.QtWidgets import (
 )
 
 from openframe.core.domain import AnalysisKind, StructuralModel
+from openframe.features.analysis.presentation.analysis_config_store import (
+    AnalysisConfigStore,
+)
 
 #: DOF labels by ndm, matching the order OpenSeesPy reports node results in.
 _DOF_LABELS_2D = ("UX", "UY", "RZ")
@@ -25,60 +29,184 @@ _DOF_LABELS_3D = ("UX", "UY", "UZ", "RX", "RY", "RZ")
 class AnalysisSettingsPanel(QFrame):
     analysis_kind_changed = Signal(object)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, store: AnalysisConfigStore | None = None
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("analysisSettingsPanel")
         self._model: StructuralModel | None = None
+        # No store given -> this panel is its own source of truth, exactly like before
+        # the store existed. Given one (SETUP's real usage), MODEL's AnalysisTypeSelector
+        # and this panel share it, so neither can drift out of sync with the other.
+        self.config_store = store if store is not None else AnalysisConfigStore()
+        self.config_store.kind_changed.connect(self._on_store_kind_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self._header("ANALYSIS SETTINGS"))
+        layout.addWidget(self._header("CURRENT CONFIGURATION"))
 
         settings = QFrame()
         settings.setObjectName("rightSection")
         settings_layout = QVBoxLayout(settings)
-        settings_layout.setContentsMargins(14, 12, 14, 14)
-        settings_layout.setSpacing(7)
+        settings_layout.setContentsMargins(16, 14, 16, 14)
+        settings_layout.setSpacing(12)
 
-        settings_layout.addWidget(self._field_label("ANALYSIS TYPE"))
+        kind_row = QFrame()
+        kind_row.setObjectName("setupConfigBar")
+        kind_layout = QHBoxLayout(kind_row)
+        kind_layout.setContentsMargins(12, 7, 12, 7)
+        kind_layout.addWidget(self._field_label("ANALYSIS TYPE"))
         self.analysis_type = QComboBox()
         self.analysis_type.addItem("Linear Static", AnalysisKind.LINEAR_STATIC)
         self.analysis_type.addItem("Nonlinear Static", AnalysisKind.NONLINEAR_STATIC)
         self.analysis_type.addItem("Time History", AnalysisKind.TIME_HISTORY)
+        self.analysis_type.setCurrentIndex(self.analysis_type.findData(self.config_store.kind))
         self.analysis_type.currentIndexChanged.connect(self._analysis_type_changed)
-        settings_layout.addWidget(self.analysis_type)
+        kind_layout.addWidget(self.analysis_type, 1)
+        settings_layout.addWidget(kind_row)
 
-        settings_layout.addWidget(self._field_label("SOLVER"))
+        load_card, load_layout = self._config_card("1. LOAD & CONTROL")
+        load_grid = QGridLayout()
+        load_grid.setHorizontalSpacing(24)
+        load_grid.setVerticalSpacing(5)
+        for row, (name, value) in enumerate((
+            ("Gravity", "NONE"),
+            ("Lateral", "ALL NON-GRAVITY"),
+            ("Control", "Load Control"),
+            ("Steps", "10"),
+        )):
+            key = QLabel(f"{name}:")
+            key.setObjectName("setupMetricLabel")
+            metric = QLabel(value)
+            metric.setObjectName("setupMetricValue")
+            load_grid.addWidget(key, row, 0)
+            load_grid.addWidget(metric, row, 1)
+            if name == "Control":
+                self.load_control_value = metric
+            elif name == "Steps":
+                self.load_steps_value = metric
+        load_layout.addLayout(load_grid)
+        settings_layout.addWidget(load_card)
+
+        self.nonlinear_group = QFrame()
+        self.nonlinear_group.setObjectName("setupConfigCard")
+        self.nonlinear_group.setProperty("highlighted", True)
+        nonlinear_layout = QVBoxLayout(self.nonlinear_group)
+        nonlinear_layout.setContentsMargins(12, 10, 12, 10)
+        nonlinear_layout.setSpacing(8)
+        nonlinear_title = QLabel("2. NONLINEAR BEHAVIOR")
+        nonlinear_title.setObjectName("setupConfigTitle")
+        nonlinear_layout.addWidget(nonlinear_title)
+
+        behavior_row = QHBoxLayout()
+        behavior_row.setSpacing(8)
+        for title, value, state in (
+            ("MATERIAL NONLINEARITY", "✓  Detected in Model", "ok"),
+            ("GEOMETRIC NONLINEARITY", "○  Not Enabled", "off"),
+        ):
+            tile = QFrame()
+            tile.setObjectName("setupBehaviorTile")
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(10, 7, 10, 7)
+            tile_layout.setSpacing(2)
+            tile_title = QLabel(title)
+            tile_title.setObjectName("setupMetricLabel")
+            tile_value = QLabel(value)
+            tile_value.setObjectName("setupBehaviorValue")
+            tile_value.setProperty("state", state)
+            tile_layout.addWidget(tile_title)
+            tile_layout.addWidget(tile_value)
+            behavior_row.addWidget(tile, 1)
+        nonlinear_layout.addLayout(behavior_row)
+
+        warning = QLabel(
+            "ⓘ  Geometric nonlinearity is currently disabled. P-Delta or "
+            "large-displacement effects will not be considered."
+        )
+        warning.setObjectName("setupNotice")
+        warning.setWordWrap(True)
+        nonlinear_layout.addWidget(warning)
         self.solver = QComboBox()
         self.solver.addItems(("BandGeneral", "UmfPack", "ProfileSPD"))
-        settings_layout.addWidget(self.solver)
+        self.solver.currentIndexChanged.connect(self._sync_store_options)
 
-        # Nonlinear static has seven extra fields - crammed into this narrow sidebar
-        # they either overlapped or forced a scrollbar over everything below them.
-        # They matter more than the linear settings above (they control whether the
-        # analysis converges at all), so they get their own dialog instead, opened
-        # on demand via the button below and pre-filled from the same widgets every
-        # time - nothing here is duplicated or re-created per open.
-        self.nonlinear_group = QFrame()
-        nonlinear_layout = QVBoxLayout(self.nonlinear_group)
-        nonlinear_layout.setContentsMargins(0, 8, 0, 0)
-        nonlinear_layout.setSpacing(4)
-        self.open_nonlinear_settings_button = QPushButton("NONLINEAR SETTINGS…")
+        self.open_nonlinear_settings_button = QPushButton("Review Nonlinearity Settings")
         self.open_nonlinear_settings_button.setObjectName("nonlinearSettingsButton")
         self.open_nonlinear_settings_button.clicked.connect(self._open_nonlinear_settings)
-        nonlinear_layout.addWidget(self.open_nonlinear_settings_button)
         self.nonlinear_summary = QLabel()
         self.nonlinear_summary.setObjectName("nonlinearSettingsSummary")
         self.nonlinear_summary.setWordWrap(True)
         nonlinear_layout.addWidget(self.nonlinear_summary)
+        nonlinear_layout.addWidget(
+            self.open_nonlinear_settings_button, 0, Qt.AlignmentFlag.AlignRight
+        )
         settings_layout.addWidget(self.nonlinear_group)
+
+        solution_card, solution_layout = self._config_card("3. SOLUTION METHOD")
+        solution_grid = QGridLayout()
+        solution_grid.setHorizontalSpacing(18)
+        solution_grid.setVerticalSpacing(4)
+        for column, title in enumerate(("ALGORITHM", "CONSTRAINT", "NUMBERER", "SOLVER")):
+            label = QLabel(title)
+            label.setObjectName("setupMetricLabel")
+            solution_grid.addWidget(label, 0, column)
+        self.solution_algorithm = QLabel("Newton")
+        self.solution_algorithm.setObjectName("setupMetricValue")
+        plain = QLabel("Plain")
+        plain.setObjectName("setupMetricValue")
+        numberer = QLabel("RCM")
+        numberer.setObjectName("setupMetricValue")
+        solution_grid.addWidget(self.solution_algorithm, 1, 0)
+        solution_grid.addWidget(plain, 1, 1)
+        solution_grid.addWidget(numberer, 1, 2)
+        solution_grid.addWidget(self.solver, 1, 3)
+        solution_layout.addLayout(solution_grid)
+        settings_layout.addWidget(solution_card)
+
+        convergence_card, convergence_layout = self._config_card("4. CONVERGENCE")
+        convergence_row = QHBoxLayout()
+        convergence_row.setSpacing(18)
+        self.convergence_test = QLabel("NormDispIncr")
+        self.convergence_tolerance = QLabel("1.0E-6")
+        self.convergence_iterations = QLabel("25")
+        for title, value in (
+            ("TEST", self.convergence_test),
+            ("TOLERANCE", self.convergence_tolerance),
+            ("MAX ITER", self.convergence_iterations),
+        ):
+            block = QVBoxLayout()
+            block.setSpacing(2)
+            label = QLabel(title)
+            label.setObjectName("setupMetricLabel")
+            value.setObjectName("setupMetricValue")
+            block.addWidget(label)
+            block.addWidget(value)
+            convergence_row.addLayout(block)
+        chart = QLabel("▇  ▅  ▂   ┄┄┄")
+        chart.setObjectName("setupConvergenceChart")
+        convergence_row.addWidget(chart, 1, Qt.AlignmentFlag.AlignRight)
+        convergence_layout.addLayout(convergence_row)
+        settings_layout.addWidget(convergence_card)
         settings_layout.addStretch(1)
         layout.addWidget(settings)
 
         self._build_nonlinear_dialog()
+        self.solver.currentIndexChanged.connect(self._update_nonlinear_summary)
         self._update_nonlinear_visibility()
         self._update_nonlinear_summary()
+
+    @staticmethod
+    def _config_card(title: str) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("setupConfigCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+        heading = QLabel(title)
+        heading.setObjectName("setupConfigTitle")
+        layout.addWidget(heading)
+        return card, layout
 
     def _build_nonlinear_dialog(self) -> None:
         dialog = QDialog(self)
@@ -353,7 +481,20 @@ class AnalysisSettingsPanel(QFrame):
 
     def _analysis_type_changed(self) -> None:
         self._update_nonlinear_visibility()
-        self.analysis_kind_changed.emit(self.selected_analysis_kind())
+        kind = self.selected_analysis_kind()
+        self.config_store.set_kind(kind)
+        self._sync_store_options()
+        self.analysis_kind_changed.emit(kind)
+
+    def _on_store_kind_changed(self, kind: AnalysisKind) -> None:
+        """The store changed from outside this panel (e.g. MODEL's analysis-type
+        selector) - mirror it into the combo. If the combo is already showing
+        ``kind`` (this panel was the one that set it) Qt does not re-fire
+        ``currentIndexChanged``, so this never loops back into ``config_store``."""
+        self.analysis_type.setCurrentIndex(self.analysis_type.findData(kind))
+
+    def _sync_store_options(self) -> None:
+        self.config_store.set_options(self.build_options())
 
     def _update_nonlinear_visibility(self) -> None:
         self.nonlinear_group.setVisible(
@@ -371,6 +512,13 @@ class AnalysisSettingsPanel(QFrame):
             f"Steps: {self.num_steps.value()}  ·  Algorithm: {self.algorithm.currentText()}\n"
             f"{integrator}  ·  Gravity: {gravity}"
         )
+        self.load_control_value.setText(integrator)
+        self.load_steps_value.setText(str(self.num_steps.value()))
+        self.solution_algorithm.setText(self.algorithm.currentText())
+        self.convergence_test.setText(self.test_type.currentText())
+        self.convergence_tolerance.setText(f"{self.tolerance.value():.1E}")
+        self.convergence_iterations.setText(str(self.max_iterations.value()))
+        self._sync_store_options()
 
     def _header(self, text: str) -> QFrame:
         frame = QFrame()
