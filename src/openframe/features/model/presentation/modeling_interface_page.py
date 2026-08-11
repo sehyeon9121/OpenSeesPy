@@ -462,6 +462,7 @@ class ModelingInterfacePage(QFrame):
     _CATEGORY_OPTIONS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("add", "노드 추가"),
         ("move", "이동 · 복사 · 배열"),
+        ("arch", "아치"),
         ("support", "지점"),
         ("kind", "노드 유형"),
         ("member", "부재"),
@@ -539,6 +540,7 @@ class ModelingInterfacePage(QFrame):
         builders = {
             "add": self._build_add_category,
             "move": self._build_transform_section,
+            "arch": self._build_arch_category,
             "support": self._build_support_category,
             "kind": self._build_node_kind_category,
             "member": self._build_member_category,
@@ -624,6 +626,64 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(self._build_create_section())
         root.addWidget(self._build_member_edit_section())
         return page
+
+    def _build_arch_category(self) -> QWidget:
+        """A circular arch generated from just its span (start point + L)
+        and rise — most textbook arch problems keep the same rise/shape and
+        only vary the span, so the four numbers below plus 아치 생성 is the
+        whole job; nobody has to work out a radius by hand.
+
+        The result (``StaticsDrawingCanvas.add_arch``) is nothing but
+        ordinary straight 노드/부재 stepping along the arc, so every other
+        category — 지점, 노드 유형, 부재, 하중, and 노드 추가's 부재 노드
+        삽입·등분할 for splitting one of the straight facets further — already
+        works on it with no special case at all.
+        """
+        section, root = self._section("아치", show_title=False)
+        form = QFormLayout()
+        self.arch_start_x = self._number(0.0)
+        self.arch_start_y = self._number(0.0)
+        self.arch_span = self._number(8.0)
+        self.arch_span.setRange(0.01, 1_000_000.0)
+        self.arch_rise = self._number(1.6)
+        self.arch_rise.setRange(0.0, 1_000_000.0)
+        self.arch_rise.setToolTip(
+            "시작점 높이(시작 Y) 기준으로 스팬 중앙이 올라간 높이 — 곡률(라이즈/"
+            "스팬 비)은 대부분의 문제에서 일정하고 스팬만 바뀌므로, 기본값을 "
+            "그대로 두고 스팬만 바꿔도 됩니다."
+        )
+        self.arch_segments = SafeSpinBox()
+        self.arch_segments.setRange(2, 200)
+        self.arch_segments.setValue(12)
+        self.arch_segments.setToolTip(
+            "아치를 몇 개의 직선 부재로 근사할지 — 많을수록 곡선에 가까워집니다."
+        )
+        form.addRow("시작 X", self.arch_start_x)
+        form.addRow("시작 Y", self.arch_start_y)
+        form.addRow("스팬 L", self.arch_span)
+        form.addRow("라이즈 h", self.arch_rise)
+        form.addRow("분할 개수", self.arch_segments)
+        root.addLayout(form)
+        generate = QPushButton("아치 생성")
+        generate.clicked.connect(self._generate_arch)
+        root.addWidget(generate)
+        hint = QLabel(
+            "생성된 절점·부재는 다른 카테고리(지점/노드 유형/부재/하중)에서 그대로 "
+            "다룰 수 있습니다 — 아치도 결국 직선 부재들의 모임입니다."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        return section
+
+    def _generate_arch(self) -> None:
+        self.canvas.add_arch(
+            self.arch_start_x.value(),
+            self.arch_start_y.value(),
+            self.arch_span.value(),
+            self.arch_rise.value(),
+            self.arch_segments.value(),
+        )
 
     def _build_create_section(self) -> QWidget:
         section, root = self._section("좌표로 노드 추가", show_title=False)

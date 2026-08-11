@@ -61,6 +61,56 @@ def test_category_stays_open_until_a_different_one_is_clicked() -> None:
     assert page.node_x.isVisible() is True
 
 
+def test_arch_category_button_generates_an_arch_from_typed_span_and_rise() -> None:
+    page = _page()
+    page.category_buttons["arch"].click()
+
+    page.arch_start_x.setValue(0.0)
+    page.arch_start_y.setValue(0.0)
+    page.arch_span.setValue(8.0)
+    page.arch_rise.setValue(1.6)
+    page.arch_segments.setValue(12)
+    page._generate_arch()
+
+    assert len(page.canvas.nodes) == 13
+    assert len(page.canvas.elements) == 12
+    assert page.canvas.selected_nodes  # ready to immediately add supports at the ends
+
+
+def test_generated_arch_members_take_a_support_and_a_uniform_load_like_any_other_member() -> None:
+    """The whole point of building an arch out of ordinary straight
+    Nodes/Elements is that 지점 and 하중 need no arch-specific code at all -
+    this is the end-to-end proof, not just a unit check on the geometry."""
+    page = _page()
+    page.category_buttons["arch"].click()
+    page.arch_span.setValue(8.0)
+    page.arch_rise.setValue(1.6)
+    page.arch_segments.setValue(4)
+    page._generate_arch()
+    left_foot, *_middle, right_foot = sorted(page.canvas.nodes)
+    first_member = next(iter(page.canvas.elements))
+
+    page.category_buttons["support"].click()
+    page.canvas.selected_nodes = {left_foot, right_foot}
+    page.canvas.selection_changed.emit()
+    page.support_buttons[4].click()  # 고정
+
+    page.category_buttons["load"].click()
+    page.canvas.selected_nodes = set()
+    page.canvas.selected_elements = {first_member}
+    page.canvas.selection_changed.emit()
+    page.load_target_group.button(1).click()  # 등분포하중 (element)
+    page.load_fields["qy"].setValue(-5.0)
+    page._apply_load()
+
+    model = page.canvas.build_model()
+    boundaries_by_node = {boundary.node_tag: boundary for boundary in model.boundaries}
+    assert boundaries_by_node[left_foot].restraints == (True, True, True)
+    assert boundaries_by_node[right_foot].restraints == (True, True, True)
+    element_loads_by_tag = {load.element_tag: load for load in model.element_loads}
+    assert element_loads_by_tag[first_member].wy == pytest.approx(-5.0)
+
+
 def test_create_section_stays_visible_across_selection_changes() -> None:
     """The relative-offset workflow needs the fields to stay reachable right
     after picking the reference node - create must never disappear just

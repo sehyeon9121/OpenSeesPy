@@ -4,6 +4,8 @@ See ``canvas_work_planes.py`` for why this is a mixin rather than a
 standalone class.
 """
 
+import math
+
 from openframe.core.domain import BoundaryCondition, Element, NodalLoad, Node, UniformElementLoad
 from openframe.features.model.presentation.canvas_model_build import _lerp
 
@@ -149,6 +151,63 @@ class _GeometryMixin:
                 self._attach_node_to_member(candidate_tag, preferred_member=tag)
         self._changed()
         return tag
+
+    def add_arch(
+        self, start_x: float, start_y: float, span: float, rise: float, segments: int
+    ) -> tuple[int, ...]:
+        """A circular arch from just its span endpoints and rise, as
+        ``segments`` straight facets — most textbook arch problems keep the
+        same rise/shape (curvature) and only vary the span, so the whole
+        job is these four numbers, not a radius the user would otherwise
+        have to compute by hand.
+
+        The result is nothing but ordinary ``add_node``/``add_member`` calls
+        along the arc, so every other tool (지점/노드 유형/부재/하중, and
+        노드 분할 for adding still more nodes along one straight facet)
+        already works on it without any special case - an arch is just a
+        frame whose nodes happen to lie on a circle.
+
+        ``rise`` is measured from the chord (the straight line between the
+        two span endpoints, both at ``start_y``) to the arc's highest point
+        at midspan - the standard circular-segment construction: a circle
+        of radius ``R = (half_span² + rise²) / (2·rise)`` through both
+        endpoints and the midspan crown, centred on the perpendicular
+        bisector of the chord.
+        """
+        if span <= 0.0 or segments < 1:
+            return ()
+        half_span = span / 2.0
+        if rise <= 0.0:
+            # A degenerate/non-positive rise has no circle to speak of
+            # (division by zero below) - fall back to a straight chord of
+            # evenly spaced points rather than reject the request outright.
+            points = [(start_x + span * i / segments, start_y) for i in range(segments + 1)]
+        else:
+            radius = (half_span**2 + rise**2) / (2.0 * rise)
+            center_x = start_x + half_span
+            center_y = start_y + rise - radius
+            theta0 = math.atan2(start_y - center_y, start_x - center_x)
+            theta1 = math.atan2(start_y - center_y, start_x + span - center_x)
+            points = [
+                (
+                    center_x + radius * math.cos(theta0 + (theta1 - theta0) * i / segments),
+                    center_y + radius * math.sin(theta0 + (theta1 - theta0) * i / segments),
+                )
+                for i in range(segments + 1)
+            ]
+        self.begin_history_group()
+        created: list[int] = []
+        try:
+            for x, y in points:
+                created.append(self.add_node(x, y))
+            for node_i, node_j in zip(created, created[1:]):
+                self.add_member(node_i, node_j)
+        finally:
+            self.end_history_group()
+        self.selected_nodes = set(created)
+        self.selected_elements.clear()
+        self._selection_changed()
+        return tuple(created)
 
     def add_member_midpoint_node(self, element_tag: int) -> int:
         return self.add_member_station_node(element_tag, 0.5)

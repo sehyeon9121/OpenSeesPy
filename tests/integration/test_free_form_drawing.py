@@ -43,6 +43,59 @@ def test_one_chain_of_clicks_creates_both_nodes_and_members() -> None:
     assert canvas.chain_anchor == pytest.approx((5.0, 4.0))
 
 
+def test_add_arch_places_endpoints_and_crown_on_a_circular_arc() -> None:
+    """The whole point is that a user only ever types span + rise, not a
+    radius - so what actually gets verified here is that the generated
+    facet nodes are truly points on the circle those two numbers imply:
+    both span endpoints back at (start_x, start_y)/(start_x+span, start_y),
+    and the midspan node exactly ``rise`` above the chord."""
+    canvas = _canvas()
+
+    created = canvas.add_arch(start_x=0.0, start_y=0.0, span=8.0, rise=1.6, segments=12)
+
+    assert len(created) == 13  # segments + 1 nodes
+    assert len(canvas.elements) == 12
+    start_node = canvas.nodes[created[0]]
+    end_node = canvas.nodes[created[-1]]
+    assert (start_node.x, start_node.y) == pytest.approx((0.0, 0.0))
+    assert (end_node.x, end_node.y) == pytest.approx((8.0, 0.0))
+    crown = canvas.nodes[created[6]]  # segments/2 -> midspan
+    assert (crown.x, crown.y) == pytest.approx((4.0, 1.6))
+    # Every generated element joins two consecutive facet nodes - a simple
+    # open chain, not e.g. a closed loop or skipped points.
+    for element, node_i, node_j in zip(canvas.elements.values(), created, created[1:]):
+        assert (element.node_i, element.node_j) == (node_i, node_j)
+
+
+def test_add_arch_selects_the_generated_nodes() -> None:
+    canvas = _canvas()
+
+    created = canvas.add_arch(start_x=0.0, start_y=0.0, span=6.0, rise=1.0, segments=6)
+
+    assert canvas.selected_nodes == set(created)
+    assert not canvas.selected_elements
+
+
+def test_add_arch_rejects_a_non_positive_span_or_too_few_segments() -> None:
+    canvas = _canvas()
+
+    assert canvas.add_arch(start_x=0.0, start_y=0.0, span=0.0, rise=1.0, segments=8) == ()
+    assert canvas.add_arch(start_x=0.0, start_y=0.0, span=8.0, rise=1.0, segments=0) == ()
+    assert not canvas.nodes
+
+
+def test_add_arch_falls_back_to_a_straight_chord_when_rise_is_zero() -> None:
+    """A zero/negative rise has no circle to fit (division by zero in the
+    circular-segment formula) - rather than reject the call outright, this
+    degrades to evenly spaced points on the straight chord."""
+    canvas = _canvas()
+
+    created = canvas.add_arch(start_x=0.0, start_y=2.0, span=4.0, rise=0.0, segments=4)
+
+    ys = {round(canvas.nodes[tag].y, 9) for tag in created}
+    assert ys == {2.0}
+
+
 def test_escape_ends_the_chain_so_the_next_click_starts_a_new_run() -> None:
     canvas = _canvas()
     canvas.place_point(0.0, 0.0)
