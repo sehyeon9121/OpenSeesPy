@@ -10,7 +10,6 @@ from openframe.core.domain import (
     StructuralModel,
     UnitSystem,
 )
-from openframe.features.results.presentation.result_data_panel import ResultDataPanel
 from openframe.features.results.presentation.result_summary_panel import (
     ResultSummaryPanel,
 )
@@ -37,18 +36,8 @@ class ResultsWorkspace(QFrame):
 
         self.result_types = ResultTypeSidebar()
         self.viewport = ResultViewport()
-        self.data_panel = ResultDataPanel()
         self.summary = ResultSummaryPanel()
         self.tables_panel = ResultTablesPanel()
-
-        center = QSplitter(Qt.Orientation.Vertical)
-        center.setObjectName("resultCenterSplitter")
-        center.setChildrenCollapsible(False)
-        center.addWidget(self.viewport)
-        center.addWidget(self.data_panel)
-        center.setStretchFactor(0, 1)
-        center.setStretchFactor(1, 0)
-        center.setSizes((520, 225))
 
         # The graphics/graph view and its summary sidebar make no sense once the
         # user has switched to the tables result type: a Midas-style data export
@@ -56,7 +45,7 @@ class ResultsWorkspace(QFrame):
         normal_page = QSplitter(Qt.Orientation.Horizontal)
         normal_page.setObjectName("resultNormalSplitter")
         normal_page.setChildrenCollapsible(False)
-        normal_page.addWidget(center)
+        normal_page.addWidget(self.viewport)
         normal_page.addWidget(self.summary)
         normal_page.setStretchFactor(0, 1)
         normal_page.setStretchFactor(1, 0)
@@ -77,8 +66,6 @@ class ResultsWorkspace(QFrame):
         layout.addWidget(body, 1)
 
         self.result_types.result_type_changed.connect(self._set_result_type)
-        self.summary.member_changed.connect(self.data_panel.select_member)
-        self.data_panel.member_changed.connect(self.summary.select_member)
         self.set_unit_system(DEFAULT_UNIT_SYSTEM)
         self._set_result_type("overview")
 
@@ -87,26 +74,22 @@ class ResultsWorkspace(QFrame):
         self.clear_result()
         self.toolbar.set_dimension(model.ndm)
         self.viewport.set_model(model)
-        self.data_panel.set_model(model)
         self.summary.set_model(model)
         self.tables_panel.set_model(model)
 
     def show_result(self, result: AnalysisResult) -> None:
         self.viewport.show_result(result)
-        self.data_panel.show_result(result)
         self.summary.show_result(result)
         self.tables_panel.show_result(result)
 
     def clear_result(self) -> None:
         """Return the workspace to its waiting state, keeping the drawn model."""
         self.viewport.clear_result()
-        self.data_panel.clear_result()
         self.summary.clear_result()
         self.tables_panel.clear_result()
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         self.viewport.set_unit_system(unit_system)
-        self.data_panel.set_unit_system(unit_system)
         self.summary.set_unit_system(unit_system)
         self.tables_panel.set_unit_system(unit_system)
 
@@ -126,5 +109,4 @@ class ResultsWorkspace(QFrame):
             return
         self.content_stack.setCurrentWidget(self.content_stack.widget(0))
         self.viewport.set_result_type(result_type)
-        self.data_panel.set_result_type(result_type)
         self.summary.set_result_type(result_type)

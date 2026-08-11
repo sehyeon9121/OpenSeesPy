@@ -577,8 +577,7 @@ QToolButton#resultTypeButton:checked {
     font-weight: 700;
 }
 QFrame#resultViewport { background: #ffffff; }
-QFrame#resultCanvasHeader, QFrame#resultViewportControls,
-QFrame#resultDataHeader {
+QFrame#resultCanvasHeader, QFrame#resultViewportControls {
     background: #f6f8fb;
     border-bottom: 1px solid #dbe3ec;
 }
@@ -600,32 +599,13 @@ QPushButton#resultCanvasButton {
     border: 1px solid #c7d2df;
     border-radius: 2px;
 }
-QToolButton#resultGraphToolButton {
-    min-width: 25px;
-    min-height: 22px;
-    padding: 0 4px;
-    color: #40536b;
-    background: #ffffff;
-    border: 1px solid #c7d2df;
-    border-radius: 2px;
-    font-weight: 700;
-}
-QToolButton#resultGraphToolButton:hover {
-    color: #174ea6;
-    border-color: #8faed8;
-    background: #edf3fa;
-}
 QGraphicsView#resultGraphicsView { background: #fbfcfe; border: 0; }
 QLabel#resultScaleValue { color: #174ea6; font-weight: 700; min-width: 30px; }
 QLabel#resultPushoverStat { color: #40536b; font-size: 8pt; font-weight: 600; }
 QLabel#resultPushoverStat[status="ok"] { color: #1a7f37; }
 QLabel#resultPushoverStat[status="warning"] { color: #b93815; }
-QFrame#resultDataPanel {
-    background: #ffffff;
-    border-top: 1px solid #cfd8e3;
-}
 QLabel#resultDataTitle { color: #314863; font-size: 8pt; font-weight: 700; }
-QComboBox#resultDataMemberSelector, QComboBox#resultMemberSelector {
+QComboBox#resultMemberSelector {
     min-height: 24px;
     max-height: 24px;
     padding: 0 6px;
@@ -757,7 +737,7 @@ QLabel#readinessMissing { color: #926117; background: #fff1cf; }
 QLabel#readinessError { color: #a42f36; background: #fde7e8; }
 QLabel#readinessWaiting { color: #69778a; background: #eceff3; }
 QSplitter#resultWorkspaceSplitter::handle,
-QSplitter#resultCenterSplitter::handle { background: #d7e0ea; }
+QSplitter#resultNormalSplitter::handle { background: #d7e0ea; }
 QSplitter#workspaceSplitter::handle { background: #dce3eb; width: 1px; }
 QStatusBar {
     background: #ffffff;

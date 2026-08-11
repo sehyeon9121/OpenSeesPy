@@ -80,11 +80,13 @@ def test_run_button_flow_populates_results_workspace(information: MagicMock) -> 
         text = window.results_workspace.summary.metric_values[key].text()
         assert not text.startswith("—"), f"{key} value was left as the placeholder: {text}"
 
-    selected_tag = window.results_workspace.data_panel.member_selector.currentData()
+    selected_tag = window.results_workspace.summary.member_selector.currentData()
     assert selected_tag in {1, 2, 3}
-    plot = window.results_workspace.data_panel.diagram_plot
-    assert plot._diagram is not None
-    assert plot._diagram.element_tag == selected_tag
+    end_force_values = [
+        window.results_workspace.summary.end_force_table.item(0, column).text()
+        for column in range(1, window.results_workspace.summary.end_force_table.columnCount())
+    ]
+    assert all(value != "—" for value in end_force_values)
 
     window.results_workspace.result_types.select_result_type("moment")
     diagram_items = [
@@ -140,7 +142,6 @@ def test_loading_a_second_model_clears_results_and_allows_a_new_run(
     # The previous run's numbers must not survive next to a different model.
     assert workspace.summary.status_badge.text() == "WAITING"
     assert workspace.summary.member_selector.count() == 0
-    assert workspace.data_panel.member_selector.count() == 0
     assert workspace.tables_panel.displacement_table.rowCount() == 0
     assert not [
         item

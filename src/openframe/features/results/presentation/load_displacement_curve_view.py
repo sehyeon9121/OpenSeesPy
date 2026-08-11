@@ -1,9 +1,8 @@
 """Base-shear-vs-control-displacement (pushover) curve plot.
 
-Unlike DiagramPlot (a value sampled along one member's normalized length, centred on
-a zero baseline), this is a genuine X/Y chart: both axes carry real, independent
-units, the origin sits at the plot's bottom-left corner, and the curve is a sequence
-of converged load steps rather than samples along a length.
+This is a genuine X/Y chart: both axes carry real, independent units, the origin
+sits at the plot's bottom-left corner, and the curve is a sequence of converged
+load steps rather than samples along a length.
 """
 
 from PySide6.QtCore import QRectF, Qt

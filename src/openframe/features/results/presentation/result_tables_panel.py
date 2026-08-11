@@ -1,8 +1,7 @@
 """Comprehensive, Midas-style spreadsheet view of every computed result quantity.
 
-Unlike the small per-quantity table embedded in ``ResultDataPanel`` (one force
-diagram at a time, i-end only), this panel lays out every node/member/mode at
-once across dedicated tabs, wide enough to actually read as a data export.
+This panel lays out every node/member/mode at once across dedicated tabs, wide
+enough to actually read as a data export.
 """
 
 from PySide6.QtWidgets import (
