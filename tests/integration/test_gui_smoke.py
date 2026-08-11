@@ -48,6 +48,7 @@ def test_main_window_can_be_constructed() -> None:
         "pushover",
         "tables",
         "mode_shapes",
+        "time_history",
     }
     assert window.analysis_settings.analysis_type.currentText() == "Linear Static"
     assert window.header.run_button.text() == "▶  RUN ANALYSIS"

@@ -80,6 +80,12 @@ class ResultTypeSidebar(QFrame):
             "Natural mode shapes",
             (("mode_shapes", "Mode Shapes"),),
         )
+        self._add_group(
+            layout,
+            "TIME HISTORY RESPONSE",
+            "Displacement/rotation vs. time",
+            (("time_history", "Response History"),),
+        )
         layout.addStretch(1)
         self.select_result_type("overview")
 
