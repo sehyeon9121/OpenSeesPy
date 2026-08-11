@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 
 # Set before any user script gets a chance to `import matplotlib.pyplot`: this
@@ -41,9 +42,34 @@ def collect_model(source: Path) -> dict[str, object]:
         collector.restore()
 
 
-def run_analysis(source: Path, kind: str, options: dict[str, object]) -> dict[str, object]:
+def _progress_writer(path: Path | None) -> Callable[[int | None, str], None] | None:
+    if path is None:
+        return None
+
+    def write(value: int | None, stage: str) -> None:
+        # A partially-read JSON update is harmless (the runner retries on its next
+        # poll); direct writes avoid Windows replace failures if the runner happens
+        # to have the previous update open at the same instant.
+        path.write_text(
+            json.dumps({"value": value, "stage": stage}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    return write
+
+
+def run_analysis(
+    source: Path,
+    kind: str,
+    options: dict[str, object],
+    progress_callback: Callable[[int | None, str], None] | None = None,
+) -> dict[str, object]:
     if kind == "nonlinear_static":
-        return run_nonlinear_static_analysis(source, **options)
+        return run_nonlinear_static_analysis(
+            source,
+            **options,
+            progress_callback=progress_callback,
+        )
     return run_linear_static_analysis(source)
 
 
@@ -54,6 +80,7 @@ def main() -> int:
     parser.add_argument("--mode", choices=("model", "analysis"), default="model")
     parser.add_argument("--kind", default="linear_static")
     parser.add_argument("--options", default="{}")
+    parser.add_argument("--progress", type=Path)
     arguments = parser.parse_args()
 
     try:
@@ -63,7 +90,12 @@ def main() -> int:
             options = json.loads(arguments.options)
             payload = {
                 "ok": True,
-                "results": run_analysis(arguments.source, arguments.kind, options),
+                "results": run_analysis(
+                    arguments.source,
+                    arguments.kind,
+                    options,
+                    _progress_writer(arguments.progress),
+                ),
             }
         exit_code = 0
     except BaseException as error:  # noqa: BLE001 - user-script failures become JSON data.

@@ -3,7 +3,6 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest
 from PySide6.QtWidgets import QApplication
 
 from openframe.core.domain import AnalysisResult, AnalysisStatus, NodeResult, StructuralModel
@@ -51,6 +50,20 @@ def test_max_rotation_combines_three_rotational_dof_in_3d() -> None:
 
     expected_degrees = math.degrees(math.hypot(0.03, 0.04, 0.0))
     assert panel.metric_values["rotation"].text() == f"{expected_degrees:.4g}  °"
+
+
+def test_partial_nonlinear_result_remains_visible_and_is_not_labeled_completed() -> None:
+    panel = _panel()
+    panel.set_model(StructuralModel(ndm=2))
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.PARTIAL,
+            node_results={1: NodeResult(1, displacement=(0.02, 0.0, 0.0))},
+        )
+    )
+
+    assert panel.status_badge.text() == "PARTIAL"
+    assert panel.metric_values["displacement"].text().startswith("0.02")
 
 
 def test_max_rotation_placeholder_before_any_result() -> None:

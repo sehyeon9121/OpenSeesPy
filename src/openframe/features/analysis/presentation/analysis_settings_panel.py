@@ -119,6 +119,15 @@ class AnalysisSettingsPanel(QFrame):
         gravity_steps_layout.addWidget(self.gravity_steps)
         dialog_layout.addWidget(self.gravity_steps_group)
 
+        dialog_layout.addWidget(self._field_label("LATERAL LOAD PATTERN"))
+        self.lateral_pattern = QComboBox()
+        self.lateral_pattern.addItem("ALL NON-GRAVITY PATTERNS", None)
+        self.lateral_pattern.setToolTip(
+            "Choose one load pattern for the pushover. The default pushes every "
+            "active pattern except the selected gravity pattern."
+        )
+        dialog_layout.addWidget(self.lateral_pattern)
+
         dialog_layout.addWidget(self._field_label("INTEGRATOR"))
         self.integrator_type = QComboBox()
         self.integrator_type.addItem("Load Control", "LoadControl")
@@ -163,6 +172,40 @@ class AnalysisSettingsPanel(QFrame):
         self.max_iterations.setValue(25)
         dialog_layout.addWidget(self.max_iterations)
 
+        dialog_layout.addWidget(self._field_label("MAX STEP BISECTIONS"))
+        self.max_bisections = QSpinBox()
+        self.max_bisections.setRange(0, 10)
+        self.max_bisections.setValue(4)
+        self.max_bisections.setToolTip(
+            "When an increment does not converge, halve it this many times before "
+            "marking the run as partially converged."
+        )
+        dialog_layout.addWidget(self.max_bisections)
+
+        dialog_layout.addWidget(self._field_label("MAX RUNTIME (SECONDS)"))
+        self.execution_timeout = QSpinBox()
+        self.execution_timeout.setRange(10, 86_400)
+        self.execution_timeout.setValue(600)
+        self.execution_timeout.setToolTip(
+            "Maximum wall-clock time for this nonlinear run. Large models commonly "
+            "need more than the 30-second linear-analysis default."
+        )
+        dialog_layout.addWidget(self.execution_timeout)
+
+        dialog_layout.addWidget(self._field_label("CONSTRAINT HANDLER"))
+        self.constraints_type = QComboBox()
+        self.constraints_type.addItems(("Plain", "Transformation"))
+        self.constraints_type.setToolTip(
+            "Transformation is appropriate when the model contains equalDOF, "
+            "rigidLink, or rigidDiaphragm multi-point constraints."
+        )
+        dialog_layout.addWidget(self.constraints_type)
+
+        dialog_layout.addWidget(self._field_label("DOF NUMBERER"))
+        self.numberer = QComboBox()
+        self.numberer.addItems(("RCM", "Plain", "AMD"))
+        dialog_layout.addWidget(self.numberer)
+
         dialog_layout.addWidget(self._field_label("ALGORITHM"))
         self.algorithm = QComboBox()
         self.algorithm.addItems(
@@ -189,13 +232,18 @@ class AnalysisSettingsPanel(QFrame):
             self.algorithm,
             self.test_type,
             self.gravity_pattern,
+            self.lateral_pattern,
             self.integrator_type,
+            self.constraints_type,
+            self.numberer,
         ):
             combo.currentIndexChanged.connect(self._update_nonlinear_summary)
         for spinner in (
             self.num_steps,
             self.tolerance,
             self.max_iterations,
+            self.max_bisections,
+            self.execution_timeout,
             self.gravity_steps,
             self.target_displacement,
         ):
@@ -230,11 +278,16 @@ class AnalysisSettingsPanel(QFrame):
             "control_dof": self.control_dof.currentIndex(),
             "gravity_pattern": self.gravity_pattern.currentIndex(),
             "gravity_steps": self.gravity_steps.value(),
+            "lateral_pattern": self.lateral_pattern.currentIndex(),
             "integrator_type": self.integrator_type.currentIndex(),
             "num_steps": self.num_steps.value(),
             "target_displacement": self.target_displacement.value(),
             "tolerance": self.tolerance.value(),
             "max_iterations": self.max_iterations.value(),
+            "max_bisections": self.max_bisections.value(),
+            "execution_timeout": self.execution_timeout.value(),
+            "constraints_type": self.constraints_type.currentIndex(),
+            "numberer": self.numberer.currentIndex(),
             "algorithm": self.algorithm.currentIndex(),
             "test_type": self.test_type.currentIndex(),
         }
@@ -244,11 +297,16 @@ class AnalysisSettingsPanel(QFrame):
         self.control_dof.setCurrentIndex(int(snapshot["control_dof"]))
         self.gravity_pattern.setCurrentIndex(int(snapshot["gravity_pattern"]))
         self.gravity_steps.setValue(int(snapshot["gravity_steps"]))
+        self.lateral_pattern.setCurrentIndex(int(snapshot["lateral_pattern"]))
         self.integrator_type.setCurrentIndex(int(snapshot["integrator_type"]))
         self.num_steps.setValue(int(snapshot["num_steps"]))
         self.target_displacement.setValue(float(snapshot["target_displacement"]))
         self.tolerance.setValue(float(snapshot["tolerance"]))
         self.max_iterations.setValue(int(snapshot["max_iterations"]))
+        self.max_bisections.setValue(int(snapshot["max_bisections"]))
+        self.execution_timeout.setValue(int(snapshot["execution_timeout"]))
+        self.constraints_type.setCurrentIndex(int(snapshot["constraints_type"]))
+        self.numberer.setCurrentIndex(int(snapshot["numberer"]))
         self.algorithm.setCurrentIndex(int(snapshot["algorithm"]))
         self.test_type.setCurrentIndex(int(snapshot["test_type"]))
 
@@ -287,6 +345,12 @@ class AnalysisSettingsPanel(QFrame):
         for tag in self._pattern_tags(model):
             self.gravity_pattern.addItem(f"Pattern {tag}", tag)
         self.gravity_pattern.blockSignals(False)
+        self.lateral_pattern.blockSignals(True)
+        self.lateral_pattern.clear()
+        self.lateral_pattern.addItem("ALL NON-GRAVITY PATTERNS", None)
+        for tag in self._pattern_tags(model):
+            self.lateral_pattern.addItem(f"Pattern {tag}", tag)
+        self.lateral_pattern.blockSignals(False)
         self._update_gravity_visibility()
         self._update_nonlinear_summary()
 
@@ -333,6 +397,10 @@ class AnalysisSettingsPanel(QFrame):
             "num_steps": self.num_steps.value(),
             "tolerance": self.tolerance.value(),
             "max_iterations": self.max_iterations.value(),
+            "max_bisections": self.max_bisections.value(),
+            "execution_timeout_seconds": self.execution_timeout.value(),
+            "constraints_type": self.constraints_type.currentText(),
+            "numberer": self.numberer.currentText(),
             "algorithm": self.algorithm.currentText(),
             "test_type": self.test_type.currentText(),
             "integrator_type": self.integrator_type.currentData(),
@@ -347,6 +415,9 @@ class AnalysisSettingsPanel(QFrame):
         if gravity_pattern is not None:
             options["gravity_pattern"] = int(gravity_pattern)
             options["gravity_steps"] = self.gravity_steps.value()
+        lateral_pattern = self.lateral_pattern.currentData()
+        if lateral_pattern is not None:
+            options["lateral_pattern"] = int(lateral_pattern)
         if self.integrator_type.currentData() == "DisplacementControl":
             options["target_displacement"] = self.target_displacement.value()
         return options
@@ -365,11 +436,13 @@ class AnalysisSettingsPanel(QFrame):
         sidebar, so checking them doesn't require reopening the dialog every time."""
         control_node = self.control_node.currentText() or "not set"
         gravity = self.gravity_pattern.currentText() if self.gravity_pattern.count() else "NONE"
+        lateral = self.lateral_pattern.currentText() if self.lateral_pattern.count() else "ALL"
         integrator = self.integrator_type.currentText()
         self.nonlinear_summary.setText(
             f"Control: {control_node} / {self.control_dof.currentText()}\n"
             f"Steps: {self.num_steps.value()}  ·  Algorithm: {self.algorithm.currentText()}\n"
-            f"{integrator}  ·  Gravity: {gravity}"
+            f"{integrator}  ·  Gravity: {gravity}\n"
+            f"Lateral: {lateral}"
         )
 
     def _header(self, text: str) -> QFrame:

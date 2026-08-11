@@ -8,6 +8,8 @@ class AnalysisStatus(StrEnum):
     NOT_RUN = "not_run"
     RUNNING = "running"
     COMPLETED = "completed"
+    PARTIAL = "partial"
+    CANCELLED = "cancelled"
     FAILED = "failed"
 
 
@@ -26,6 +28,31 @@ class LoadDisplacementPoint:
     step: int
     control_displacement: float
     base_shear: float
+    attempts: int = 1
+    substeps: int = 1
+    iterations: int = 0
+    recovered_with: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class NonlinearConvergence:
+    """Execution summary for an incremental nonlinear-static solve.
+
+    A run may have useful committed results without reaching every requested
+    increment.  Keeping that state separate from a plain success/failure flag lets
+    the UI show the converged branch without calling a truncated curve complete.
+    """
+
+    requested_steps: int
+    completed_steps: int
+    failed_step: int | None = None
+    total_attempts: int = 0
+    total_substeps: int = 0
+    recovered_steps: tuple[int, ...] = ()
+
+    @property
+    def converged(self) -> bool:
+        return self.failed_step is None and self.completed_steps == self.requested_steps
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,4 +80,4 @@ class AnalysisResult:
     #: Empty for analyses that are not incremental (linear static, ...). Populated by
     #: nonlinear static analysis, one point per converged load step.
     load_displacement_curve: tuple[LoadDisplacementPoint, ...] = ()
-
+    convergence: NonlinearConvergence | None = None

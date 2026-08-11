@@ -13,9 +13,11 @@ from unittest.mock import call, patch
 
 import openseespy.opensees as ops
 
+from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
 from openframe.infrastructure.opensees.nonlinear_static_solver import (
     _advance_one_step,
     _analyze_with_fallback,
+    _model_nonlinearity_warnings,
 )
 
 
@@ -86,3 +88,14 @@ def test_step_gives_up_after_the_bisection_limit() -> None:
         )
 
     assert result is False
+
+
+def test_apparently_elastic_model_gets_a_nonlinearity_warning() -> None:
+    collector = ModelCommandCollector()
+    collector.material_types.add("Elastic")
+    collector.elements[1] = {"element_type": "Truss"}
+
+    assert _model_nonlinearity_warnings(collector)
+
+    collector.material_types.add("Steel01")
+    assert _model_nonlinearity_warnings(collector) == []

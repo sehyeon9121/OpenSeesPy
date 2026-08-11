@@ -1,6 +1,8 @@
 """Run an incremental nonlinear static (pushover) analysis for an OpenSeesPy source."""
 
 import math
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,27 @@ _MAX_BISECTIONS = 4
 #: Reserved timeSeries/pattern tag offset used when a lateral pattern is torn down
 #: for the gravity phase and rebuilt afterwards, kept clear of the user's own tags.
 _REPLAY_TAG_OFFSET = 900_000_000
+
+
+@dataclass(slots=True)
+class _StepDiagnostics:
+    """Solver work needed to commit one user-visible increment."""
+
+    attempts: int = 0
+    substeps: int = 0
+    iterations: int = 0
+    bisections: int = 0
+
+
+def _record_test_iterations(diagnostics: _StepDiagnostics | None) -> None:
+    if diagnostics is None:
+        return
+    try:
+        diagnostics.iterations += max(int(ops.testIter()), 0)
+    except (AttributeError, TypeError, ValueError):
+        # Some OpenSees builds/equation tests do not expose an iteration count.
+        # Attempts and substeps still provide deterministic convergence diagnostics.
+        pass
 
 
 def _local_forces(element_tag: int) -> list[float]:
@@ -65,6 +88,45 @@ def _load_warnings(collector: ElementLoadCollector, element_tags: list[int]) -> 
     ]
 
 
+def _model_nonlinearity_warnings(collector: ModelCommandCollector) -> list[str]:
+    """Warn when a nonlinear solve is requested for an apparently linear model."""
+    linear_materials = {"elastic", "elasticisotropic", "elasticorthotropic"}
+    has_nonlinear_material = any(
+        material.lower() not in linear_materials for material in collector.material_types
+    )
+    nonlinear_elements = {
+        "forcebeamcolumn",
+        "dispbeamcolumn",
+        "displacementbeamcolumn",
+        "corottruss",
+        "corottrusssection",
+    }
+    has_nonlinear_element = any(
+        str(item.get("element_type", "")).lower() in nonlinear_elements
+        for item in collector.elements.values()
+    )
+    has_fiber_section = any("fiber" in section.lower() for section in collector.section_types)
+    has_geometric_nonlinearity = any(
+        transformation.lower() in {"pdelta", "corotational", "corot"}
+        for transformation in collector.geom_transf_types
+    )
+    if any(
+        (
+            has_nonlinear_material,
+            has_nonlinear_element,
+            has_fiber_section,
+            has_geometric_nonlinearity,
+        )
+    ):
+        return []
+    return [
+        (
+            "비선형 재료, Fiber section 또는 기하비선형 변환을 찾지 못했습니다. "
+            "현재 모델은 비선형 해석기를 사용하더라도 탄성 증분해석으로 거동할 수 있습니다."
+        )
+    ]
+
+
 def _all_pattern_tags(
     property_collector: ModelCommandCollector, load_collector: ElementLoadCollector
 ) -> set[int]:
@@ -97,9 +159,15 @@ def _replay_patterns(
     and rebuilt afterwards with a clean pseudo-time - OpenSees has no "pause this
     pattern" command, only remove-and-redefine."""
     for pattern_tag in sorted(pattern_tags):
-        replay_tag = _REPLAY_TAG_OFFSET + pattern_tag
-        ops.timeSeries("Linear", replay_tag)
-        ops.pattern("Plain", pattern_tag, replay_tag)
+        definition = property_collector.pattern_definitions.get(pattern_tag)
+        if definition is not None and definition[0].lower() == "plain":
+            # Removing a pattern leaves its TimeSeries in the domain. Reuse the
+            # original arguments so Constant/Path series do not become Linear.
+            ops.pattern(definition[0], pattern_tag, *definition[1])
+        else:
+            replay_tag = _REPLAY_TAG_OFFSET + pattern_tag
+            ops.timeSeries("Linear", replay_tag)
+            ops.pattern("Plain", pattern_tag, replay_tag)
         for item in property_collector.loads:
             if item.get("pattern_tag") == pattern_tag:
                 ops.load(int(item["node_tag"]), *[float(v) for v in item["values"]])
@@ -122,17 +190,31 @@ def _set_integrator(
         ops.integrator("LoadControl", increment)
 
 
-def _analyze_with_fallback(primary_algorithm: str, recovered_with: set[str]) -> bool:
+def _analyze_with_fallback(
+    primary_algorithm: str,
+    recovered_with: set[str],
+    diagnostics: _StepDiagnostics | None = None,
+) -> bool:
+    if diagnostics is not None:
+        diagnostics.attempts += 1
     if ops.analyze(1) == 0:
+        if diagnostics is not None:
+            diagnostics.substeps += 1
+        _record_test_iterations(diagnostics)
         return True
     for candidate in _FALLBACK_ALGORITHMS:
         if candidate == primary_algorithm:
             continue
         ops.algorithm(candidate)
+        if diagnostics is not None:
+            diagnostics.attempts += 1
         converged = ops.analyze(1) == 0
         ops.algorithm(primary_algorithm)
         if converged:
             recovered_with.add(candidate)
+            if diagnostics is not None:
+                diagnostics.substeps += 1
+            _record_test_iterations(diagnostics)
             return True
     return False
 
@@ -145,6 +227,8 @@ def _advance_one_step(
     control_dof: int,
     algorithm: str,
     recovered_with: set[str],
+    max_bisections: int = _MAX_BISECTIONS,
+    diagnostics: _StepDiagnostics | None = None,
 ) -> bool:
     """Cover one reporting step's worth of pseudo-time/displacement, retrying with
     algorithm fallback and (if that alone isn't enough) a halved increment - applied
@@ -156,12 +240,14 @@ def _advance_one_step(
     while fraction_remaining > 1.0e-9:
         step_fraction = min(sub_fraction, fraction_remaining)
         _set_integrator(integrator_type, control_node, control_dof, nominal_increment * step_fraction)
-        if _analyze_with_fallback(algorithm, recovered_with):
+        if _analyze_with_fallback(algorithm, recovered_with, diagnostics):
             fraction_remaining -= step_fraction
             continue
         depth += 1
-        if depth > _MAX_BISECTIONS:
+        if depth > max_bisections:
             return False
+        if diagnostics is not None:
+            diagnostics.bisections += 1
         sub_fraction = step_fraction / 2.0
     return True
 
@@ -177,10 +263,15 @@ def run_nonlinear_static_analysis(
     algorithm: str = "Newton",
     test_type: str = "NormDispIncr",
     system: str = "BandGeneral",
+    constraints_type: str = "Plain",
+    numberer: str = "RCM",
     gravity_pattern: int | None = None,
+    lateral_pattern: int | None = None,
     gravity_steps: int = 5,
     integrator_type: str = "LoadControl",
     target_displacement: float | None = None,
+    max_bisections: int = _MAX_BISECTIONS,
+    progress_callback: Callable[[int | None, str], None] | None = None,
 ) -> dict[str, Any]:
     """Build the model by executing ``source``, then push it in ``num_steps`` equal
     increments, tracking base shear vs. ``control_node``'s ``control_dof``
@@ -202,17 +293,31 @@ def run_nonlinear_static_analysis(
     increment, before finally stopping the curve there and reporting why - the curve
     up to that point, and the last converged state, are still meaningful results.
     """
-    load_collector = ElementLoadCollector()
+    def _report_progress(value: int | None, stage: str) -> None:
+        if progress_callback is not None:
+            progress_callback(value, stage)
+
+    _report_progress(0, "Building the nonlinear OpenSees model...")
     # The section properties are only knowable from the element() call itself, and the
-    # deflected shape between two nodes cannot be rebuilt without EI.
+    # deflected shape between two nodes cannot be rebuilt without EI. Its own nested
+    # ``element_loads`` (not a second, standalone ``ElementLoadCollector``) is what
+    # records -beamUniform loads here — it already knows the model's real ndm (it
+    # also wraps ``ops.model()``), whereas a standalone collector's ``eleLoad`` wrap
+    # has no way to find that out and silently defaults to 2D, misreading a 3D call's
+    # (Wy, Wz, Wx) as 2D's (Wy, Wx) - Wz read as Wx, Wx dropped entirely. That would
+    # not just mislabel a value in the returned payload: ``_replay_patterns`` below
+    # re-issues ``ops.eleLoad`` from exactly this collector's ``uniform_load_cases``
+    # to restore the push pattern after the gravity-only phase, so a 3D model run
+    # with ``gravity_pattern`` set would have actually pushed with the wrong
+    # distributed load, not merely reported one.
     property_collector = ModelCommandCollector()
-    load_collector.install()
     property_collector.install()
     try:
         run_model_script(source)
     finally:
-        load_collector.restore()
         property_collector.restore()
+    load_collector = property_collector.element_loads
+    _report_progress(5, "Model built; preparing nonlinear solution strategy...")
 
     node_tags = [int(tag) for tag in ops.getNodeTags()]
     element_tags = [int(tag) for tag in ops.getEleTags()]
@@ -225,6 +330,22 @@ def run_nonlinear_static_analysis(
         raise RuntimeError(f"CONTROL NODE {control_node}가 모델에 존재하지 않습니다.")
     if num_steps <= 0:
         raise RuntimeError("LOAD STEPS는 1 이상이어야 합니다.")
+    if max_bisections < 0:
+        raise RuntimeError("MAX BISECTIONS는 0 이상이어야 합니다.")
+    supported_settings = {
+        "INTEGRATOR": (integrator_type, {"LoadControl", "DisplacementControl"}),
+        "ALGORITHM": (algorithm, set(_FALLBACK_ALGORITHMS)),
+        "CONVERGENCE TEST": (
+            test_type,
+            {"NormDispIncr", "EnergyIncr", "NormUnbalance"},
+        ),
+        "SYSTEM": (system, {"BandGeneral", "UmfPack", "ProfileSPD"}),
+        "CONSTRAINT HANDLER": (constraints_type, {"Plain", "Transformation"}),
+        "NUMBERER": (numberer, {"RCM", "Plain", "AMD"}),
+    }
+    for label, (value, supported) in supported_settings.items():
+        if value not in supported:
+            raise RuntimeError(f"지원하지 않는 {label} 설정입니다: {value}")
     control_node_dof_count = len(ops.nodeDisp(control_node))
     if not 1 <= control_dof <= control_node_dof_count:
         raise RuntimeError(
@@ -237,6 +358,10 @@ def run_nonlinear_static_analysis(
     all_pattern_tags = _all_pattern_tags(property_collector, load_collector)
     if gravity_pattern is not None and gravity_pattern not in all_pattern_tags:
         raise RuntimeError(f"GRAVITY PATTERN {gravity_pattern}가 모델에 존재하지 않습니다.")
+    if lateral_pattern is not None and lateral_pattern not in all_pattern_tags:
+        raise RuntimeError(f"LATERAL PATTERN {lateral_pattern}가 모델에 존재하지 않습니다.")
+    if lateral_pattern is not None and lateral_pattern == gravity_pattern:
+        raise RuntimeError("GRAVITY PATTERN과 LATERAL PATTERN은 서로 달라야 합니다.")
     if gravity_pattern is not None and gravity_steps <= 0:
         raise RuntimeError("GRAVITY STEPS는 1 이상이어야 합니다.")
 
@@ -257,30 +382,64 @@ def run_nonlinear_static_analysis(
         return -sum(float(ops.nodeReaction(tag)[control_dof - 1]) for tag in reaction_nodes)
 
     ops.wipeAnalysis()
-    ops.constraints("Plain")
-    ops.numberer("RCM")
+    ops.constraints(constraints_type)
+    ops.numberer(numberer)
     ops.system(system)
     ops.test(test_type, tolerance, max_iterations)
     ops.algorithm(algorithm)
 
     messages: list[str] = []
     baseline_base_shear = 0.0
+    total_attempts = 0
+    total_substeps = 0
+
+    push_pattern_tags = (
+        {lateral_pattern}
+        if lateral_pattern is not None
+        else all_pattern_tags - ({gravity_pattern} if gravity_pattern is not None else set())
+    )
+    if not push_pattern_tags:
+        raise RuntimeError("푸시오버에 사용할 횡하중 패턴이 없습니다.")
 
     if gravity_pattern is not None:
-        lateral_pattern_tags = all_pattern_tags - {gravity_pattern}
-        _remove_patterns(lateral_pattern_tags)
+        non_gravity_pattern_tags = all_pattern_tags - {gravity_pattern}
+        _remove_patterns(non_gravity_pattern_tags)
         ops.integrator("LoadControl", 1.0 / gravity_steps)
         ops.analysis("Static")
         for step in range(1, gravity_steps + 1):
-            if ops.analyze(1) != 0:
+            gravity_diagnostics = _StepDiagnostics()
+            recovered_with: set[str] = set()
+            if not _advance_one_step(
+                1.0 / gravity_steps,
+                integrator_type="LoadControl",
+                control_node=control_node,
+                control_dof=control_dof,
+                algorithm=algorithm,
+                recovered_with=recovered_with,
+                max_bisections=max_bisections,
+                diagnostics=gravity_diagnostics,
+            ):
                 raise RuntimeError(
                     f"중력 하중(GRAVITY PATTERN {gravity_pattern}) 적용 중 {step}번째 스텝에서 "
                     "수렴하지 않았습니다. GRAVITY STEPS를 늘려보세요."
                 )
+            total_attempts += gravity_diagnostics.attempts
+            total_substeps += gravity_diagnostics.substeps
+            if recovered_with or gravity_diagnostics.bisections:
+                methods = ", ".join(sorted(recovered_with)) or "step bisection"
+                messages.append(
+                    f"중력 단계 {step}은 {methods} 복구 전략으로 수렴했습니다."
+                )
+            _report_progress(
+                5 + round(20 * step / gravity_steps),
+                f"Gravity step {step}/{gravity_steps} converged",
+            )
         ops.loadConst("-time", 0.0)
         baseline_base_shear = _base_shear()
         ndm = property_collector.ndm
-        _replay_patterns(lateral_pattern_tags, ndm, property_collector, load_collector)
+        _replay_patterns(push_pattern_tags, ndm, property_collector, load_collector)
+    elif lateral_pattern is not None:
+        _remove_patterns(all_pattern_tags - push_pattern_tags)
 
     nominal_increment = (
         (target_displacement or 0.0) / num_steps
@@ -293,10 +452,14 @@ def run_nonlinear_static_analysis(
     _set_integrator(integrator_type, control_node, control_dof, nominal_increment)
     ops.analysis("Static")
 
-    curve: list[dict[str, float | int]] = []
+    curve: list[dict[str, Any]] = []
     recovered_steps: dict[int, set[str]] = {}
+    failed_step: int | None = None
+    pushover_progress_start = 25 if gravity_pattern is not None else 5
+    pushover_progress_span = 100 - pushover_progress_start
     for step in range(1, num_steps + 1):
         recovered_with: set[str] = set()
+        diagnostics = _StepDiagnostics()
         if not _advance_one_step(
             nominal_increment,
             integrator_type=integrator_type,
@@ -304,18 +467,42 @@ def run_nonlinear_static_analysis(
             control_dof=control_dof,
             algorithm=algorithm,
             recovered_with=recovered_with,
+            max_bisections=max_bisections,
+            diagnostics=diagnostics,
         ):
+            total_attempts += diagnostics.attempts
+            total_substeps += diagnostics.substeps
+            failed_step = step
             messages.append(
                 f"{step}번째 스텝에서 수렴하지 않았습니다 (총 {num_steps}스텝 중). "
                 "그 이전까지 수렴한 결과만 표시됩니다."
             )
+            _report_progress(
+                pushover_progress_start
+                + round(pushover_progress_span * (step - 1) / num_steps),
+                f"Pushover stopped at step {step}/{num_steps}: not converged",
+            )
             break
-        if recovered_with:
+        total_attempts += diagnostics.attempts
+        total_substeps += diagnostics.substeps
+        if recovered_with or diagnostics.bisections:
             recovered_steps[step] = recovered_with
         base_shear = _base_shear() - baseline_base_shear
         displacement = float(ops.nodeDisp(control_node, control_dof))
         curve.append(
-            {"step": step, "control_displacement": displacement, "base_shear": base_shear}
+            {
+                "step": step,
+                "control_displacement": displacement,
+                "base_shear": base_shear,
+                "attempts": diagnostics.attempts,
+                "substeps": diagnostics.substeps,
+                "iterations": diagnostics.iterations,
+                "recovered_with": sorted(recovered_with),
+            }
+        )
+        _report_progress(
+            pushover_progress_start + round(pushover_progress_span * step / num_steps),
+            f"Pushover step {step}/{num_steps} converged",
         )
 
     if not curve:
@@ -327,10 +514,11 @@ def run_nonlinear_static_analysis(
             f"{step_list}번째 스텝은 기본 알고리즘으로 수렴하지 않아 대체 알고리즘 또는 "
             "축소된 증분으로 재시도해 수렴했습니다."
         )
+    messages.extend(_model_nonlinearity_warnings(property_collector))
     messages.extend(_load_warnings(load_collector, element_tags))
 
     return {
-        "status": "completed",
+        "status": "completed" if failed_step is None else "partial",
         "node_results": [
             {
                 "node_tag": tag,
@@ -350,5 +538,13 @@ def run_nonlinear_static_analysis(
             for tag in element_tags
         ],
         "load_displacement_curve": curve,
+        "convergence": {
+            "requested_steps": num_steps,
+            "completed_steps": len(curve),
+            "failed_step": failed_step,
+            "total_attempts": total_attempts,
+            "total_substeps": total_substeps,
+            "recovered_steps": sorted(recovered_steps),
+        },
         "messages": messages,
     }

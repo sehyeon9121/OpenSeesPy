@@ -24,6 +24,7 @@ from openframe.core.domain.results import (
     ElementResult,
     LoadDisplacementPoint,
     NodeResult,
+    NonlinearConvergence,
 )
 from openframe.core.domain.units import (
     DEFAULT_UNIT_SYSTEM,
@@ -51,6 +52,7 @@ __all__ = [
     "NodalLoad",
     "Node",
     "NodeResult",
+    "NonlinearConvergence",
     "ShearDeformationSettings",
     "ShearModulusMode",
     "StructuralModel",

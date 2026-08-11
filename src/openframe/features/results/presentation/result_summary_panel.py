@@ -196,7 +196,8 @@ class ResultSummaryPanel(QFrame):
             ("END", f"N ({unit.force})", f"V ({unit.force})", f"M ({unit.moment})")
         )
         result = self._result
-        if result is None or result.status != AnalysisStatus.COMPLETED:
+        usable_statuses = {AnalysisStatus.COMPLETED, AnalysisStatus.PARTIAL}
+        if result is None or result.status not in usable_statuses:
             self.status_badge.setText("WAITING")
             self.metric_values["displacement"].setText(f"—  {unit.length}")
             self.metric_values["rotation"].setText("—  °")
@@ -207,7 +208,9 @@ class ResultSummaryPanel(QFrame):
             self._refresh_end_forces()
             return
 
-        self.status_badge.setText("COMPLETED")
+        self.status_badge.setText(
+            "PARTIAL" if result.status == AnalysisStatus.PARTIAL else "COMPLETED"
+        )
         max_displacement = max(
             (
                 math.hypot(
@@ -288,7 +291,7 @@ class ResultSummaryPanel(QFrame):
         if (
             self._model is None
             or result is None
-            or result.status != AnalysisStatus.COMPLETED
+            or result.status not in {AnalysisStatus.COMPLETED, AnalysisStatus.PARTIAL}
             or self._result_type not in self._LEGEND_CAPTIONS
         ):
             self.legend_minimum.setText("MIN")

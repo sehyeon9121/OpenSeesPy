@@ -144,6 +144,7 @@ class MainWindow(QMainWindow):
         self.viewport.unit_system_changed.connect(self._set_unit_system)
         self.viewport.entity_selected.connect(self._entity_selected_from_viewport)
         self.model_sidebar.entity_selected.connect(self._entity_selected_from_tree)
+        self.analysis_progress.cancel_requested.connect(self._cancel_analysis)
 
     def _set_unit_system(self, unit_system: UnitSystem) -> None:
         self.model_inspector.set_unit_system(unit_system)
@@ -393,6 +394,7 @@ class MainWindow(QMainWindow):
                 run_session_key=run_session_key,
             )
         )
+        thread.progress_changed.connect(self.analysis_progress.set_progress)
         thread.finished.connect(self._analysis_run_finished)
         self._analysis_run_thread = thread
         thread.start()
@@ -436,6 +438,30 @@ class MainWindow(QMainWindow):
                 f"부재 결과: {len(result.element_results)}개\n\n"
                 "RESULTS 탭에서 결과를 확인할 수 있습니다.",
             )
+        elif result.status == AnalysisStatus.PARTIAL:
+            convergence = result.convergence
+            progress = (
+                f"{convergence.completed_steps}/{convergence.requested_steps} steps converged"
+                if convergence is not None
+                else "The nonlinear curve is truncated at the last converged step"
+            )
+            detail = "\n".join(result.messages) or progress
+            self.analysis_progress.show_failed(f"Partial convergence: {progress}")
+            self.statusBar().showMessage(f"Analysis partially converged | {progress}")
+            QMessageBox.warning(
+                self,
+                "비선형해석 부분 수렴",
+                f"해석이 마지막 목표 스텝까지 수렴하지 않았습니다.\n\n{progress}\n\n{detail}\n\n"
+                "마지막 수렴 스텝까지의 결과는 RESULTS 탭에서 확인할 수 있습니다.",
+            )
+        elif result.status == AnalysisStatus.CANCELLED:
+            self.analysis_progress.show_failed("Analysis cancelled")
+            self.statusBar().showMessage("Analysis cancelled")
+            QMessageBox.warning(
+                self,
+                "해석 취소",
+                "사용자 요청으로 해석을 취소했습니다.",
+            )
         else:
             self.analysis_progress.show_failed(
                 " ".join(result.messages) or "The solver returned an unknown error."
@@ -444,6 +470,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self, "해석 실행 실패", "\n".join(result.messages) or "알 수 없는 해석 오류"
             )
+
+    def _cancel_analysis(self) -> None:
+        thread = self._analysis_run_thread
+        if thread is None or not thread.isRunning():
+            return
+        self.analysis_progress.show_cancelling()
+        thread.request_cancel()
 
     def _entity_selected_from_viewport(self, kind: str, tag: int) -> None:
         self.model_sidebar.select_entity(kind, tag)

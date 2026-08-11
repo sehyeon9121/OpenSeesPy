@@ -20,6 +20,10 @@ class ModelCommandCollector:
         self.boundaries: dict[int, tuple[bool, ...]] = {}
         self.loads: list[dict[str, Any]] = []
         self.current_pattern_tag: int | None = None
+        self.pattern_definitions: dict[int, tuple[str, tuple[Any, ...]]] = {}
+        self.material_types: set[str] = set()
+        self.section_types: set[str] = set()
+        self.geom_transf_types: set[str] = set()
         self.element_loads = ElementLoadCollector()
         self._originals: dict[str, Callable[..., Any]] = {}
         self._tracker: AnalysisStageTracker | None = None
@@ -34,6 +38,22 @@ class ModelCommandCollector:
         self._patch("pattern", self._wrap_pattern)
         self._patch("load", self._wrap_load)
         self._patch("eleLoad", self._wrap_ele_load)
+        self._patch(
+            "uniaxialMaterial",
+            lambda original: self._wrap_typed_command(original, self.material_types),
+        )
+        self._patch(
+            "nDMaterial",
+            lambda original: self._wrap_typed_command(original, self.material_types),
+        )
+        self._patch(
+            "section",
+            lambda original: self._wrap_typed_command(original, self.section_types),
+        )
+        self._patch(
+            "geomTransf",
+            lambda original: self._wrap_typed_command(original, self.geom_transf_types),
+        )
 
     def restore(self) -> None:
         """Put the real OpenSees commands back once the script has finished."""
@@ -73,6 +93,10 @@ class ModelCommandCollector:
                 self.boundaries.clear()
                 self.loads.clear()
                 self.current_pattern_tag = None
+                self.pattern_definitions.clear()
+                self.material_types.clear()
+                self.section_types.clear()
+                self.geom_transf_types.clear()
                 self.element_loads.uniform_loads.clear()
                 self.element_loads.uniform_loads_3d.clear()
                 self.element_loads.uniform_load_cases.clear()
@@ -195,6 +219,7 @@ class ModelCommandCollector:
         def wrapped(pattern_type: str, pattern_tag: int, *arguments: Any, **kwargs: Any) -> Any:
             result = original(pattern_type, pattern_tag, *arguments, **kwargs)
             self.current_pattern_tag = int(pattern_tag)
+            self.pattern_definitions[int(pattern_tag)] = (str(pattern_type), tuple(arguments))
             return result
 
         return wrapped
@@ -206,6 +231,17 @@ class ModelCommandCollector:
                 self.element_loads.record(args, self.ndm, self.current_pattern_tag)
             except (ValueError, IndexError, TypeError):
                 pass
+            return result
+
+        return wrapped
+
+    @staticmethod
+    def _wrap_typed_command(
+        original: Callable[..., Any], destination: set[str]
+    ) -> Callable[..., Any]:
+        def wrapped(command_type: str, *arguments: Any, **kwargs: Any) -> Any:
+            result = original(command_type, *arguments, **kwargs)
+            destination.add(str(command_type))
             return result
 
         return wrapped

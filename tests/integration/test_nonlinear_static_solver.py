@@ -81,7 +81,7 @@ def test_stops_at_first_non_convergent_step_and_keeps_partial_curve(
     finally:
         ops.wipe()
 
-    assert result["status"] == "completed"
+    assert result["status"] == "partial"
     assert len(result["messages"]) == 1
     assert "수렴하지 않았습니다" in result["messages"][0]
 
@@ -90,6 +90,10 @@ def test_stops_at_first_non_convergent_step_and_keeps_partial_curve(
     # first step past capacity - only steps 1-3 converge.
     assert len(curve) == 3
     assert curve[-1]["base_shear"] == pytest.approx(90.0, rel=1e-6)
+    assert result["convergence"]["requested_steps"] == 10
+    assert result["convergence"]["completed_steps"] == 3
+    assert result["convergence"]["failed_step"] == 4
+    assert result["convergence"]["total_attempts"] > 3
 
 
 def test_rejects_unknown_control_node(tmp_path: Path) -> None:
@@ -160,6 +164,12 @@ ops.load(2, 80.0)
 ops.timeSeries('Linear', 2)
 ops.pattern('Plain', 2, 2)
 ops.load(2, 60.0)
+"""
+
+_THREE_PATTERN_SPRING_MODEL = _TWO_PATTERN_SPRING_MODEL + """
+ops.timeSeries('Linear', 3)
+ops.pattern('Plain', 3, 3)
+ops.load(2, 40.0)
 """
 
 #: A softening (strength-degrading) spring: rises to a peak at e=0.2, then the
@@ -241,6 +251,40 @@ def test_rejects_unknown_gravity_pattern(tmp_path: Path) -> None:
             )
     finally:
         ops.wipe()
+
+
+def test_selected_lateral_pattern_excludes_other_non_gravity_patterns(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "three_pattern.py"
+    source.write_text(_THREE_PATTERN_SPRING_MODEL, encoding="utf-8")
+
+    try:
+        all_lateral = run_nonlinear_static_analysis(
+            source,
+            control_node=2,
+            gravity_pattern=1,
+            num_steps=20,
+        )
+        ops.wipe()
+        selected = run_nonlinear_static_analysis(
+            source,
+            control_node=2,
+            gravity_pattern=1,
+            lateral_pattern=2,
+            num_steps=20,
+        )
+    finally:
+        ops.wipe()
+
+    assert all_lateral["status"] == "completed"
+    assert selected["status"] == "completed"
+    assert all_lateral["load_displacement_curve"][-1]["base_shear"] == pytest.approx(
+        100.0, rel=1e-6
+    )
+    assert selected["load_displacement_curve"][-1]["base_shear"] == pytest.approx(
+        60.0, rel=1e-6
+    )
 
 
 def test_load_control_cannot_trace_the_post_peak_softening_branch(

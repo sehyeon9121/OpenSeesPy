@@ -87,6 +87,22 @@ def test_gravity_pattern_combo_lists_patterns_found_in_the_model() -> None:
     application.processEvents()
 
 
+def test_lateral_pattern_combo_lists_patterns_and_builds_explicit_selection() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.set_model(model)
+
+    labels = [
+        panel.lateral_pattern.itemText(index)
+        for index in range(panel.lateral_pattern.count())
+    ]
+    assert labels == ["ALL NON-GRAVITY PATTERNS", "Pattern 1"]
+    panel.lateral_pattern.setCurrentIndex(panel.lateral_pattern.findData(1))
+    assert panel.build_options()["lateral_pattern"] == 1
+    application.processEvents()
+
+
 def test_gravity_steps_hidden_until_a_gravity_pattern_is_chosen() -> None:
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
@@ -124,6 +140,11 @@ def test_build_options_omits_gravity_and_target_displacement_by_default() -> Non
     assert "gravity_pattern" not in options
     assert "gravity_steps" not in options
     assert "target_displacement" not in options
+    assert "lateral_pattern" not in options
+    assert options["max_bisections"] == 4
+    assert options["execution_timeout_seconds"] == 600
+    assert options["constraints_type"] == "Plain"
+    assert options["numberer"] == "RCM"
 
 
 def test_build_options_includes_gravity_and_target_displacement_when_selected() -> None:
