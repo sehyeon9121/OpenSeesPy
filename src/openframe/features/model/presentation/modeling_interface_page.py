@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -44,6 +45,8 @@ from openframe.core.domain import DEFAULT_UNIT_SYSTEM, FORCE_UNITS, LENGTH_UNITS
 from openframe.features.analysis.statics import (
     MaterialFreeSolveThread,
     MaterialFreeStaticsSolver,
+    ModalSolveThread,
+    ModalStaticsSolver,
     check_determinacy,
 )
 from openframe.features.model.drawing import PlaneKind
@@ -96,6 +99,8 @@ class ModelingInterfacePage(QFrame):
         self._unit_system = DEFAULT_UNIT_SYSTEM
         self._solver = MaterialFreeStaticsSolver()
         self._solve_thread: MaterialFreeSolveThread | None = None
+        self._modal_solver = ModalStaticsSolver()
+        self._modal_solve_thread: ModalSolveThread | None = None
         self.analysis_progress = AnalysisProgressBanner(self)
         self.canvas = StaticsDrawingCanvas()
         # Default 집중하중 input mode - plain Fx/Fy, same as every other axis
@@ -183,6 +188,20 @@ class ModelingInterfacePage(QFrame):
         self.solve_button.setObjectName("setupContinueButton")
         self.solve_button.clicked.connect(self.solve)
         layout.addWidget(self.solve_button)
+        self.modal_num_modes = QSpinBox()
+        self.modal_num_modes.setRange(1, 50)
+        self.modal_num_modes.setValue(3)
+        self.modal_num_modes.setToolTip("계산할 모드 수")
+        self.modal_num_modes.setMaximumWidth(56)
+        layout.addWidget(self.modal_num_modes)
+        self.modal_solve_button = QPushButton("모드해석 실행")
+        self.modal_solve_button.setToolTip(
+            "고유치(모드) 해석 - 2D 프레임 모델만 지원하며, 모든 부재에 실제 "
+            "재료·단면(E/A/I)과 단위중량(밀도)이 입력되어 있어야 합니다. 질량은 "
+            "부재 자중(단위중량 x 단면적)에서 절점으로 환산해 계산됩니다."
+        )
+        self.modal_solve_button.clicked.connect(self.solve_modal)
+        layout.addWidget(self.modal_solve_button)
         # Re-running solve() re-checks determinacy against whatever the canvas
         # holds *right now* — if the user only wants to look at the results
         # they already computed, that must not require a fresh solve (which
@@ -1492,6 +1511,48 @@ class ModelingInterfacePage(QFrame):
         self.solve_button.setEnabled(True)
         thread = self._solve_thread
         self._solve_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def solve_modal(self) -> None:
+        """Same no-popup, status-bar-only failure philosophy as ``solve()`` -
+        modal analysis has real, everyday reasons to fail early while a model is
+        still being authored (2D only, needs real E/A/I and unit weight
+        everywhere), not just genuine errors."""
+        if self._modal_solve_thread is not None and self._modal_solve_thread.isRunning():
+            return
+        model = self.canvas.build_model()
+        self.modal_solve_button.setEnabled(False)
+        self.analysis_progress.show_running("모드해석")
+        thread = ModalSolveThread(
+            self._modal_solver,
+            model,
+            num_modes=self.modal_num_modes.value(),
+            length_unit=self._unit_system.length,
+        )
+        thread.completed.connect(lambda result: self._modal_solve_completed(model, result))
+        thread.finished.connect(self._modal_solve_thread_finished)
+        self._modal_solve_thread = thread
+        thread.start()
+
+    def _modal_solve_completed(self, model, result) -> None:
+        if result.status.value != "completed":
+            self.analysis_progress.show_failed(
+                " ".join(result.messages) or "모드해석에 실패했습니다."
+            )
+            self.determinacy_status.setText(f"모드해석: {' '.join(result.messages)}")
+            return
+        self.analysis_progress.show_completed(f"모드 {len(result.mode_shapes)}개가 계산되었습니다.")
+        self.results.set_model(model)
+        self.results.show_result(result)
+        self.results.set_result_type("mode_shapes")
+        self.view_results_button.setEnabled(True)
+        self.workspace_stack.setCurrentIndex(1)
+
+    def _modal_solve_thread_finished(self) -> None:
+        self.modal_solve_button.setEnabled(True)
+        thread = self._modal_solve_thread
+        self._modal_solve_thread = None
         if thread is not None:
             thread.deleteLater()
 

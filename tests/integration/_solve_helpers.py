@@ -17,3 +17,12 @@ def solve_and_wait(page) -> None:
         thread.wait()
     for _ in range(5):
         QApplication.processEvents()
+
+
+def solve_modal_and_wait(page) -> None:
+    page.solve_modal()
+    thread = page._modal_solve_thread
+    if thread is not None:
+        thread.wait()
+    for _ in range(5):
+        QApplication.processEvents()

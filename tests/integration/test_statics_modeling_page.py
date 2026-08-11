@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication
 from openframe.features.analysis.statics import check_determinacy
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
-from _solve_helpers import solve_and_wait
+from _solve_helpers import solve_and_wait, solve_modal_and_wait
 
 
 def test_student_can_draw_and_solve_a_free_form_simply_supported_beam() -> None:
@@ -632,3 +632,49 @@ def test_node_transform_tool_activates_node_drag_selection_without_support_tool(
     page._activate_node_transform_tool()
     assert page.canvas.mode == "select"
     assert page.canvas.selection_filter == "nodes"
+
+
+def test_modal_solve_button_runs_an_eigenvalue_analysis_on_a_real_material_cantilever() -> None:
+    """End-to-end through the actual UI trigger (solve_modal), not just the
+    solver directly - a cantilever with a real section/material and nonzero
+    density (so it has both stiffness and mass), matching this app's own
+    apply_section_to_selection API a user would actually click through."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    base = canvas.add_node(0.0, 0.0)
+    tip = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(base, tip)
+    canvas.set_support(base, (True, True, True))
+    canvas.selected_elements = {member}
+    canvas.apply_section_to_selection(width=0.3, height=0.5, elastic=200_000.0, density=10.0)
+
+    solve_modal_and_wait(page)
+
+    assert application is QApplication.instance()
+    assert page.workspace_stack.currentIndex() == 1
+    result = page.viewport._result
+    assert result.status.value == "completed"
+    assert len(result.mode_shapes) == page.modal_num_modes.value()
+    assert all(mode.angular_frequency > 0.0 for mode in result.mode_shapes)
+    # Ascending order: fundamental (softest, longest period) mode first.
+    periods = [mode.period for mode in result.mode_shapes]
+    assert periods == sorted(periods, reverse=True)
+
+
+def test_modal_solve_button_reports_missing_material_without_a_popup() -> None:
+    """No section/density applied - the same everyday-not-an-error philosophy
+    solve() already has for an indeterminate structure with no material."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    base = canvas.add_node(0.0, 0.0)
+    tip = canvas.add_node(4.0, 0.0)
+    canvas.add_member(base, tip)
+    canvas.set_support(base, (True, True, True))
+
+    solve_modal_and_wait(page)
+
+    assert application is QApplication.instance()
+    assert page.workspace_stack.currentIndex() == 0
+    assert "재료" in page.determinacy_status.text()
