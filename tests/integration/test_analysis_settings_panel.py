@@ -195,4 +195,57 @@ def test_modal_build_options_is_just_the_mode_count() -> None:
     panel.num_modes.setValue(6)
 
     assert panel.build_options() == {"num_modes": 6}
+
+
+def test_selecting_time_history_shows_its_own_settings_and_hides_the_others() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.show()
+
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+
+    assert panel.time_history_group.isVisible()
+    assert not panel.modal_group.isVisible()
+    assert not panel.nonlinear_group.isVisible()
+    application.processEvents()
+
+
+def test_time_history_build_options_matches_the_solvers_own_keyword_arguments() -> None:
+    """run_time_history_analysis's kwargs are ground_motion_path/direction/
+    damping_ratio/scale_factor - a different shape from both nonlinear's and
+    modal's, so this needs its own early return too."""
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+    panel._ground_motion_path = Path("C:/motions/el_centro.AT2")
+    panel.time_history_direction.addItem("UY", 2)
+    panel.time_history_direction.setCurrentIndex(
+        panel.time_history_direction.findData(2)
+    )
+    panel.damping_ratio.setValue(0.02)
+    panel.ground_motion_scale.setValue(9.81)
+
+    options = panel.build_options()
+
+    assert options == {
+        "ground_motion_path": "C:\\motions\\el_centro.AT2",
+        "direction": 2,
+        "damping_ratio": 0.02,
+        "scale_factor": 9.81,
+    }
+    application.processEvents()
+
+
+def test_time_history_build_options_defaults_to_direction_1_with_no_model_loaded() -> None:
+    """set_model() is what normally populates time_history_direction - a panel
+    used before any model is loaded must not crash build_options()."""
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+
+    options = panel.build_options()
+
+    assert options["ground_motion_path"] == ""
+    assert options["direction"] == 1
+    application.processEvents()
     application.processEvents()

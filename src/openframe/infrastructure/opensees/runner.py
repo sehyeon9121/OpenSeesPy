@@ -19,6 +19,7 @@ from openframe.core.domain import (
     ModeShape,
     NodeResult,
     NonlinearConvergence,
+    TimeHistoryStep,
 )
 
 
@@ -53,7 +54,11 @@ class OpenSeesProcessRunner:
         requested_timeout = solver_options.pop("execution_timeout_seconds", None)
         if requested_timeout is not None:
             timeout_seconds = max(1.0, min(float(requested_timeout), 86_400.0))
-        elif str(request.kind) == "nonlinear_static":
+        elif str(request.kind) in ("nonlinear_static", "time_history"):
+            # A time-history run repeats the same per-step solve as many times
+            # as the ground motion has points (often thousands) - the same
+            # "this can genuinely take a while" reasoning as the nonlinear
+            # pushover's own extended timeout, not the plain 30s default.
             timeout_seconds = self._nonlinear_timeout_seconds
         else:
             timeout_seconds = self._timeout_seconds
@@ -249,6 +254,20 @@ class OpenSeesProcessRunner:
             )
             for item in payload.get("mode_shapes", [])
         )
+        time_history = tuple(
+            TimeHistoryStep(
+                time=float(item["time"]),
+                node_results={
+                    int(node["node_tag"]): NodeResult(
+                        node_tag=int(node["node_tag"]),
+                        displacement=tuple(float(value) for value in node.get("displacement", [])),
+                        reaction=tuple(float(value) for value in node.get("reaction", [])),
+                    )
+                    for node in item.get("node_results", [])
+                },
+            )
+            for item in payload.get("time_history", [])
+        )
         try:
             status = AnalysisStatus(str(payload.get("status", "completed")))
         except ValueError:
@@ -261,4 +280,5 @@ class OpenSeesProcessRunner:
             load_displacement_curve=curve,
             convergence=convergence,
             mode_shapes=mode_shapes,
+            time_history=time_history,
         )

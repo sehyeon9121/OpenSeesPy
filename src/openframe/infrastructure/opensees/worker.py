@@ -25,6 +25,7 @@ from openframe.infrastructure.opensees.script_execution import (
     run_model_definition_only,
     run_model_script,
 )
+from openframe.infrastructure.opensees.time_history_solver import run_time_history_analysis
 
 
 def collect_model(source: Path) -> dict[str, object]:
@@ -73,6 +74,16 @@ def run_analysis(
         )
     if kind == "modal":
         return run_modal_analysis(source, **options)
+    if kind == "time_history":
+        time_history_options = dict(options)
+        time_history_options["ground_motion_path"] = Path(
+            time_history_options["ground_motion_path"]
+        )
+        return run_time_history_analysis(
+            source,
+            **time_history_options,
+            progress_callback=progress_callback,
+        )
     return run_linear_static_analysis(source)
 
 
