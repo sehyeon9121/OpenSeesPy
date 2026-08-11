@@ -241,6 +241,71 @@ def test_gravity_pattern_is_held_constant_instead_of_ramping_with_the_push(
     assert separated["load_displacement_curve"][0]["base_shear"] == pytest.approx(3.0, rel=1e-6)
 
 
+#: A 3D cantilever (fixed at node 1, free at node 2, 4m along global X). The gravity
+#: pattern carries a tiny axial nudge only (decoupled from Z-bending, so it cannot
+#: mask the effect under test); the push pattern carries a pure local-Wz distributed
+#: load. geomTransf's vecxz=(0,0,1) makes local z coincide with global Z, so bending
+#: is governed by Iy and the tip deflects along global DOF 3 (Uz).
+_CANTILEVER_3D_TRANSVERSE_Z_MODEL = """
+import openseespy.opensees as ops
+ops.wipe()
+ops.model('basic', '-ndm', 3, '-ndf', 6)
+ops.node(1, 0.0, 0.0, 0.0)
+ops.node(2, 4.0, 0.0, 0.0)
+ops.fix(1, 1, 1, 1, 1, 1, 1)
+ops.geomTransf('Linear', 1, 0.0, 0.0, 1.0)
+ops.element(
+    'elasticBeamColumn', 1, 1, 2,
+    0.01, 200000000.0, 80000000.0, 0.0001, 0.0002, 0.0002, 1,
+)
+ops.timeSeries('Linear', 1)
+ops.pattern('Plain', 1, 1)
+ops.load(2, -0.001, 0.0, 0.0, 0.0, 0.0, 0.0)
+ops.timeSeries('Linear', 2)
+ops.pattern('Plain', 2, 2)
+ops.eleLoad('-ele', 1, '-type', '-beamUniform', 0.0, 6.0, 0.0)
+"""
+
+
+def test_replaying_a_3d_pattern_after_a_gravity_phase_reapplies_the_right_component(
+    tmp_path: Path,
+) -> None:
+    """Regression for the ndm-tracking bug: whenever gravity_pattern is set, the push
+    pattern is torn down and replayed from the collector's recorded uniform_load_cases.
+    A collector that always assumed ndm=2 read the 3D form (Wy, Wz, Wx) as if it were
+    2D's (Wy, Wx) - a pure Wz transverse load got replayed as Wx (axial) instead, which
+    barely moves the tip. With ndm tracked correctly, the replayed load is still a pure
+    Wz UDL, so the tip deflection at full load must match the closed-form cantilever
+    formula w*L**4/(8*E*Iy), not the near-zero axial-stretch value the bug produced."""
+    source = tmp_path / "cantilever_3d.py"
+    source.write_text(_CANTILEVER_3D_TRANSVERSE_Z_MODEL, encoding="utf-8")
+
+    try:
+        result = run_nonlinear_static_analysis(
+            source,
+            control_node=2,
+            control_dof=3,
+            num_steps=4,
+            gravity_pattern=1,
+            gravity_steps=2,
+        )
+    finally:
+        ops.wipe()
+
+    assert result["status"] == "completed"
+    # elasticBeamColumn has no nonlinear material to detect - the solver correctly
+    # flags that it cannot tell this apart from a linear-elastic model, which is
+    # exactly what this model is; that diagnostic is expected here, not a failure.
+    assert len(result["messages"]) == 1
+    curve = result["load_displacement_curve"]
+    assert len(curve) == 4
+
+    w, length, e, iy = 6.0, 4.0, 200000000.0, 0.0002
+    expected_tip_deflection = w * length**4 / (8 * e * iy)
+
+    assert curve[-1]["control_displacement"] == pytest.approx(expected_tip_deflection, rel=1e-3)
+
+
 def test_rejects_unknown_gravity_pattern(tmp_path: Path) -> None:
     source = tmp_path / "spring.py"
     source.write_text(_TWO_PATTERN_SPRING_MODEL, encoding="utf-8")
