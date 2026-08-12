@@ -32,6 +32,9 @@ class NonlinearStaticAnalysis(AnalysisModule):
             "max_iterations": "MAX ITERATIONS",
             "gravity_steps": "GRAVITY STEPS",
             "execution_timeout_seconds": "MAX RUNTIME",
+            "target_load_factor": "TARGET LOAD FACTOR",
+            "min_increment": "MIN INCREMENT",
+            "max_increment": "MAX INCREMENT",
         }
         for field, label in positive_fields.items():
             value = options.get(field)
@@ -40,6 +43,14 @@ class NonlinearStaticAnalysis(AnalysisModule):
         max_bisections = options.get("max_bisections")
         if max_bisections is not None and int(max_bisections) < 0:
             errors.append("MAX BISECTIONS 값은 0 이상이어야 합니다.")
+        min_increment = options.get("min_increment")
+        max_increment = options.get("max_increment")
+        if (
+            min_increment is not None
+            and max_increment is not None
+            and float(min_increment) > float(max_increment)
+        ):
+            errors.append("MIN INCREMENT는 MAX INCREMENT보다 클 수 없습니다.")
         if (
             options.get("gravity_pattern") is not None
             and options.get("lateral_pattern") == options.get("gravity_pattern")
@@ -53,6 +64,7 @@ class NonlinearStaticAnalysis(AnalysisModule):
             "system": {"BandGeneral", "UmfPack", "ProfileSPD"},
             "constraints_type": {"Plain", "Transformation"},
             "numberer": {"RCM", "Plain", "AMD"},
+            "geometric_transform_type": {"Linear", "PDelta", "Corotational"},
         }
         for field, allowed in allowed_values.items():
             value = options.get(field)

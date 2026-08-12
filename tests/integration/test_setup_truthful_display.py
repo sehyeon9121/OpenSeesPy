@@ -155,9 +155,8 @@ def test_switching_kinds_back_and_forth_restores_the_correct_solver_editability(
 
     settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
     application.processEvents()
-    assert not settings.solver.isVisible()
-    settings.nonlinear_advanced_toggle.setChecked(True)
-    application.processEvents()
+    # Advanced Solution & Convergence now starts expanded for Nonlinear Static,
+    # so SOLVER is reachable immediately - no manual expand step needed.
     assert settings.solver.isVisible()
     assert not settings.solver_fixed_value.isVisible()
 
@@ -175,9 +174,8 @@ def test_switching_kinds_back_and_forth_restores_the_correct_solver_editability(
 
     settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
     application.processEvents()
-    assert not settings.solver.isVisible()
-    settings.nonlinear_advanced_toggle.setChecked(True)
-    application.processEvents()
+    # Advanced Solution & Convergence now starts expanded for Nonlinear Static,
+    # so SOLVER is reachable immediately - no manual expand step needed.
     assert settings.solver.isVisible()
     assert not settings.solver_fixed_value.isVisible()
 
@@ -476,7 +474,8 @@ def test_nonlinear_static_load_control_shows_only_relevant_inline_inputs() -> No
     assert not settings.control_dof_group.isVisible()
     assert not settings.target_displacement_group.isVisible()
     assert settings.nonlinear_advanced_toggle.isVisible()
-    assert not settings.nonlinear_advanced_body.isVisible()
+    # Starts expanded now - the collapsed toggle was easy to miss entirely.
+    assert settings.nonlinear_advanced_body.isVisible()
 
     setup.close()
 
@@ -518,10 +517,22 @@ def test_nonlinear_static_material_nonlinearity_tile_reflects_the_model() -> Non
     assert settings.material_nonlinearity_value.property("state") == "off"
     assert "✓" not in settings.material_nonlinearity_value.text()
 
-    # Geometric nonlinearity is not knowable from StructuralModel (the
-    # imported script's own geomTransf choice never reaches it) - it must not
-    # claim a specific state either way.
-    assert "Not tracked" in settings.geometric_nonlinearity_value.text()
+    # Geometric nonlinearity is not derived from StructuralModel (the imported
+    # script's own geomTransf choice never reaches it) - it mirrors Setup's own
+    # GEOMETRIC TRANSFORMATION selection instead, which the solver applies by
+    # overriding every ops.geomTransf(...) call the script makes (see
+    # ModelCommandCollector.install(geom_transf_override=...)), so this tile is
+    # a real, editable state rather than an unknowable guess.
+    assert settings.geometric_transformation.currentData() == "Linear"
+    assert settings.geometric_nonlinearity_value.property("state") == "off"
+    assert "Linear" in settings.geometric_nonlinearity_value.text()
+
+    settings.geometric_transformation.setCurrentIndex(
+        settings.geometric_transformation.findData("PDelta")
+    )
+    assert settings.geometric_nonlinearity_value.property("state") == "ok"
+    assert "P-Delta" in settings.geometric_nonlinearity_value.text()
+    assert settings.build_options()["geometric_transform_type"] == "PDelta"
 
     setup.close()
 
@@ -532,10 +543,7 @@ def test_nonlinear_static_advanced_solution_and_convergence_are_collapsible() ->
 
     settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
     application.processEvents()
-    assert not settings.nonlinear_advanced_body.isVisible()
-
-    settings.nonlinear_advanced_toggle.setChecked(True)
-    application.processEvents()
+    # Starts expanded now - the collapsed toggle was easy to miss entirely.
     assert settings.nonlinear_advanced_body.isVisible()
     for widget in (
         settings.solver,
@@ -548,6 +556,11 @@ def test_nonlinear_static_advanced_solution_and_convergence_are_collapsible() ->
         settings.execution_timeout,
     ):
         assert widget.isVisible()
+
+    # Still collapsible on demand.
+    settings.nonlinear_advanced_toggle.setChecked(False)
+    application.processEvents()
+    assert not settings.nonlinear_advanced_body.isVisible()
 
     # Time History has its own "4. SOLUTION / CONVERGENCE" card now (Phase
     # 3-E) - the shared card (and this recovery summary, which only makes
@@ -590,7 +603,8 @@ def test_switching_between_nonlinear_static_and_other_kinds_leaves_no_residue() 
         application.processEvents()
         assert settings.nonlinear_group.isVisible()
         assert settings.integrator_type.isVisible()
-        assert not settings.nonlinear_advanced_body.isVisible()
+        # Starts expanded now - the collapsed toggle was easy to miss entirely.
+        assert settings.nonlinear_advanced_body.isVisible()
 
         settings.config_store.set_kind(other_kind)
         application.processEvents()

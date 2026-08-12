@@ -348,8 +348,10 @@ class SetupWorkspace(QFrame):
 
     def _status_chips(self) -> list[tuple[str, str]]:
         """Booleans this page can actually vouch for - kept honest by only
-        reporting state this class already tracks, never a feature (like
-        geometric nonlinearity) the solver doesn't implement yet."""
+        reporting state this class already tracks, never a feature the solver
+        doesn't implement (geometric nonlinearity used to be exactly that kind
+        of example; it is real now - see run_nonlinear_static_analysis's
+        geometric_transform_type - so it is reported here like any other)."""
         has_model = self._source_path is not None
         chips: list[tuple[str, str]] = [
             ("Model Valid" if has_model else "No Model", "ok" if has_model else "error")
@@ -359,6 +361,9 @@ class SetupWorkspace(QFrame):
             chips.append(("Loads Detected", "ok" if has_loads else "warn"))
         solver = self.config_store.options.get("system", "BandGeneral")
         chips.append((f"Solver: {solver}", "ok"))
+        if self.config_store.kind == AnalysisKind.NONLINEAR_STATIC:
+            transform = self.config_store.options.get("geometric_transform_type", "Linear")
+            chips.append((f"Geometric: {transform}", "ok"))
         return chips
 
     @staticmethod

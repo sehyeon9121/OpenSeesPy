@@ -365,6 +365,7 @@ def test_3d_six_dof_pushover_traces_biaxial_hinges_and_pdelta_descending_branch(
             gravity_steps=10,
             integrator_type="DisplacementControl",
             target_displacement=0.4,
+            geometric_transform_type="PDelta",
             constraints_type="Transformation",
             test_type="NormUnbalance",
             tolerance=1.0e-8,
@@ -530,3 +531,311 @@ def test_truss_pushover_reaches_full_applied_load(tmp_path: Path) -> None:
     assert curve[-1]["base_shear"] == pytest.approx(160.0, rel=1e-6)
     displacements = [point["control_displacement"] for point in curve]
     assert all(later > earlier for earlier, later in pairwise(displacements))
+
+
+#: A single elasticBeamColumn cantilever with a constant compressive axial load
+#: (gravity_pattern, held constant) plus a small lateral push (lateral_pattern).
+#: Euler buckling load for a fixed-free cantilever is pi**2*E*I/(2L)**2 =
+#: 9.8696*200000*0.0002/36 ~= 10.97; the P=3.0 axial load is ~27% of that, high
+#: enough for P-Delta's amplification to be clearly measurable but far from
+#: instability. The script's own ops.geomTransf('Linear', 1) is deliberately
+#: "wrong" for the PDelta/Corotational cases below - proving Setup's own
+#: selection, not the script's, is what actually reaches OpenSees.
+_PDELTA_CANTILEVER_MODEL = """
+import openseespy.opensees as ops
+ops.wipe()
+ops.model('basic', '-ndm', 2, '-ndf', 3)
+ops.node(1, 0.0, 0.0)
+ops.node(2, 0.0, 3.0)
+ops.fix(1, 1, 1, 1)
+ops.geomTransf('Linear', 1)
+ops.element('elasticBeamColumn', 1, 1, 2, 0.01, 200000.0, 0.0002, 1)
+ops.timeSeries('Linear', 1)
+ops.pattern('Plain', 1, 1)
+ops.load(2, 0.0, -3.0, 0.0)
+ops.timeSeries('Linear', 2)
+ops.pattern('Plain', 2, 2)
+ops.load(2, 1.0, 0.0, 0.0)
+"""
+
+
+def _write_pdelta_cantilever(tmp_path: Path) -> Path:
+    source = tmp_path / "pdelta_cantilever.py"
+    source.write_text(_PDELTA_CANTILEVER_MODEL, encoding="utf-8")
+    return source
+
+
+class TestGeometricTransformType:
+    """Setup's GEOMETRIC TRANSFORMATION selection must override every
+    ops.geomTransf(...) call the model script makes (see
+    ModelCommandCollector.install(geom_transf_override=...)), not merely be
+    displayed - these compare the same script run under different selections."""
+
+    def test_default_is_linear_and_overrides_the_scripts_own_choice(
+        self, tmp_path: Path
+    ) -> None:
+        source = _write_pdelta_cantilever(tmp_path)
+        try:
+            result = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=10,
+                gravity_pattern=1,
+                lateral_pattern=2,
+                gravity_steps=5,
+            )
+        finally:
+            ops.wipe()
+
+        assert result["status"] == "completed"
+        assert result["nonlinearity"]["geometric_transform_type"] == "Linear"
+        # The lack of geometric nonlinearity is exactly why this otherwise-elastic
+        # model still gets the "might behave elastically" advisory - proof the
+        # override, not the script's own PDelta-shaped intent, is what ran.
+        assert any("탄성 증분해석" in message for message in result["messages"])
+
+    def test_pdelta_amplifies_lateral_displacement_versus_linear(
+        self, tmp_path: Path
+    ) -> None:
+        source = _write_pdelta_cantilever(tmp_path)
+        try:
+            linear = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=10,
+                gravity_pattern=1,
+                lateral_pattern=2,
+                gravity_steps=5,
+                geometric_transform_type="Linear",
+            )
+            ops.wipe()
+            pdelta = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=10,
+                gravity_pattern=1,
+                lateral_pattern=2,
+                gravity_steps=5,
+                geometric_transform_type="PDelta",
+            )
+        finally:
+            ops.wipe()
+
+        assert linear["status"] == pdelta["status"] == "completed"
+        assert pdelta["nonlinearity"]["geometric_transform_type"] == "PDelta"
+        # PDelta correctly registers as real geometric nonlinearity - the
+        # "might behave elastically" advisory must not fire for it.
+        assert pdelta["messages"] == []
+
+        linear_tip = linear["load_displacement_curve"][-1]["control_displacement"]
+        pdelta_tip = pdelta["load_displacement_curve"][-1]["control_displacement"]
+        # Same script, same lateral load - only Setup's selection differs. The
+        # classic P-Delta amplification factor here is ~1/(1-0.27) ~= 1.37;
+        # asserting a conservative >=10% increase keeps this robust while still
+        # being a real, direction-correct physical check, not just "it ran".
+        assert pdelta_tip > linear_tip * 1.10
+
+    def test_corotational_is_accepted_and_also_amplifies_versus_linear(
+        self, tmp_path: Path
+    ) -> None:
+        source = _write_pdelta_cantilever(tmp_path)
+        try:
+            linear = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=10,
+                gravity_pattern=1,
+                lateral_pattern=2,
+                gravity_steps=5,
+                geometric_transform_type="Linear",
+            )
+            ops.wipe()
+            corotational = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=10,
+                gravity_pattern=1,
+                lateral_pattern=2,
+                gravity_steps=5,
+                geometric_transform_type="Corotational",
+            )
+        finally:
+            ops.wipe()
+
+        assert linear["status"] == "completed"
+        assert corotational["status"] == "completed"
+        assert corotational["nonlinearity"]["geometric_transform_type"] == "Corotational"
+        assert corotational["messages"] == []
+        linear_tip = linear["load_displacement_curve"][-1]["control_displacement"]
+        corotational_tip = corotational["load_displacement_curve"][-1]["control_displacement"]
+        assert corotational_tip > linear_tip * 1.10
+
+    def test_rejects_unsupported_geometric_transform_type(self, tmp_path: Path) -> None:
+        source = _write_pdelta_cantilever(tmp_path)
+        try:
+            with pytest.raises(RuntimeError, match="GEOMETRIC TRANSFORMATION"):
+                run_nonlinear_static_analysis(
+                    source,
+                    control_node=2,
+                    control_dof=1,
+                    geometric_transform_type="Buckling",
+                )
+        finally:
+            ops.wipe()
+
+
+class TestTargetLoadFactor:
+    """TARGET LOAD FACTOR scales LoadControl's per-step increment - a request
+    for 2.0 must push every pattern to exactly twice its defined load."""
+
+    def test_target_load_factor_scales_the_final_load_reached(
+        self, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "elastic_spring.py"
+        source.write_text(
+            """
+import openseespy.opensees as ops
+ops.wipe()
+ops.model('basic', '-ndm', 1, '-ndf', 1)
+ops.node(1, 0.0)
+ops.node(2, 1.0)
+ops.fix(1, 1)
+ops.uniaxialMaterial('Elastic', 1, 1000.0)
+ops.element('zeroLength', 1, 1, 2, '-mat', 1, '-dir', 1)
+ops.timeSeries('Linear', 1)
+ops.pattern('Plain', 1, 1)
+ops.load(2, 50.0)
+""",
+            encoding="utf-8",
+        )
+        try:
+            default_factor = run_nonlinear_static_analysis(
+                source, control_node=2, control_dof=1, num_steps=10
+            )
+            ops.wipe()
+            doubled = run_nonlinear_static_analysis(
+                source, control_node=2, control_dof=1, num_steps=10, target_load_factor=2.0
+            )
+        finally:
+            ops.wipe()
+
+        assert default_factor["load_displacement_curve"][-1]["base_shear"] == pytest.approx(
+            50.0, rel=1e-9
+        )
+        assert doubled["load_displacement_curve"][-1]["base_shear"] == pytest.approx(
+            100.0, rel=1e-9
+        )
+
+    def test_rejects_non_positive_target_load_factor(self, tmp_path: Path) -> None:
+        source = _write_spring_model(tmp_path, load=150.0)
+        try:
+            with pytest.raises(RuntimeError, match="TARGET LOAD FACTOR"):
+                run_nonlinear_static_analysis(
+                    source, control_node=2, control_dof=1, target_load_factor=0.0
+                )
+        finally:
+            ops.wipe()
+
+
+class TestAutomaticRecoveryIntegration:
+    """automatic_recovery=False ("Use Settings Only") must genuinely remove the
+    safety net - a run that only completes because of algorithm fallback or
+    bisection must fail earlier without it."""
+
+    def test_disabling_recovery_stops_the_curve_earlier_than_the_default(
+        self, tmp_path: Path
+    ) -> None:
+        # A perfectly-plastic spring pushed past its capacity: the default
+        # (automatic_recovery=True) retries with fallback algorithms and a
+        # halved increment before giving up (see the module-level test of the
+        # same scenario); with recovery disabled, the very first non-converging
+        # attempt must end the run, completing no more steps than the default.
+        source = _write_spring_model(tmp_path, load=300.0, b_ratio=0.0)
+        try:
+            with_recovery = run_nonlinear_static_analysis(
+                source, control_node=2, control_dof=1, num_steps=10, max_iterations=10
+            )
+            ops.wipe()
+            without_recovery = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=10,
+                max_iterations=10,
+                automatic_recovery=False,
+            )
+        finally:
+            ops.wipe()
+
+        assert with_recovery["status"] == "partial"
+        assert without_recovery["status"] == "partial"
+        assert without_recovery["convergence"]["completed_steps"] <= (
+            with_recovery["convergence"]["completed_steps"]
+        )
+        # No fallback algorithm and no bisection ever ran.
+        assert without_recovery["convergence"]["total_attempts"] == (
+            without_recovery["convergence"]["completed_steps"] + 1
+        )
+        assert without_recovery["convergence"]["automatic_recovery"] is False
+
+
+class TestAdaptiveStepAndMinIncrement:
+    def test_adaptive_step_does_not_change_the_final_target_reached(
+        self, tmp_path: Path
+    ) -> None:
+        """Adaptive Step changes how a step's own increment is discovered, never
+        how many reporting steps exist or what total range they cover - this is
+        the invariant the rest of this program's contract (exactly num_steps
+        points, ending at the requested target) depends on."""
+        source = _write_spring_model(tmp_path, load=150.0)
+        try:
+            result = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=15,
+                adaptive_step=True,
+                min_increment=1.0e-6,
+                max_increment=1.0,
+            )
+        finally:
+            ops.wipe()
+
+        assert result["status"] == "completed"
+        assert len(result["load_displacement_curve"]) == 15
+
+    def test_min_increment_ends_the_run_without_crashing(self, tmp_path: Path) -> None:
+        source = _write_spring_model(tmp_path, load=300.0, b_ratio=0.0)
+        try:
+            result = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=10,
+                max_iterations=10,
+                min_increment=0.05,
+            )
+        finally:
+            ops.wipe()
+
+        assert result["status"] == "partial"
+        assert result["load_displacement_curve"]
+
+    def test_rejects_min_increment_greater_than_max_increment(self, tmp_path: Path) -> None:
+        source = _write_spring_model(tmp_path, load=150.0)
+        try:
+            with pytest.raises(RuntimeError, match="MIN INCREMENT"):
+                run_nonlinear_static_analysis(
+                    source,
+                    control_node=2,
+                    control_dof=1,
+                    min_increment=1.0,
+                    max_increment=0.5,
+                )
+        finally:
+            ops.wipe()

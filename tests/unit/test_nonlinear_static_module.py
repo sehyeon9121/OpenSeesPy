@@ -82,3 +82,51 @@ def test_validate_passes_for_displacement_control_with_a_target() -> None:
     )
 
     assert errors == []
+
+
+def test_validate_rejects_unsupported_geometric_transform_type() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(
+        _request(control_node=2, geometric_transform_type="Buckling")
+    )
+
+    assert errors == ["지원하지 않는 geometric_transform_type 설정입니다: Buckling"]
+
+
+def test_validate_accepts_every_supported_geometric_transform_type() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    for transform in ("Linear", "PDelta", "Corotational"):
+        errors = module.validate(
+            _request(control_node=2, geometric_transform_type=transform)
+        )
+        assert errors == []
+
+
+def test_validate_rejects_non_positive_target_load_factor() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(_request(control_node=2, target_load_factor=0.0))
+
+    assert errors == ["TARGET LOAD FACTOR 값은 0보다 커야 합니다."]
+
+
+def test_validate_rejects_min_increment_greater_than_max_increment() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(
+        _request(control_node=2, min_increment=1.0, max_increment=0.5)
+    )
+
+    assert errors == ["MIN INCREMENT는 MAX INCREMENT보다 클 수 없습니다."]
+
+
+def test_validate_passes_with_consistent_min_and_max_increment() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(
+        _request(control_node=2, min_increment=0.1, max_increment=0.5)
+    )
+
+    assert errors == []

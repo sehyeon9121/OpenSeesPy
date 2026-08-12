@@ -81,6 +81,46 @@ def test_nonlinear_run_populates_pushover_curve(information: MagicMock) -> None:
     window.close()
 
 
+@patch("openframe.app.shell.main_window.QMessageBox.information")
+def test_nonlinear_run_with_pdelta_and_new_options_survives_the_real_worker_subprocess(
+    information: MagicMock,
+) -> None:
+    """build_options() must produce exactly the keyword names
+    run_nonlinear_static_analysis accepts - a mismatch would only surface as a
+    worker-subprocess TypeError, which only a real end-to-end run (not a mocked
+    runner) actually exercises. Covers geometric_transform_type, target_load_factor,
+    automatic_recovery and adaptive_step together."""
+    application = QApplication.instance() or QApplication([])
+    window = _build_window()
+
+    window._start_model_load(EXAMPLE_MODEL)
+    _run_thread_to_completion(window._model_load_thread)
+    application.processEvents()
+
+    settings = window.analysis_settings
+    settings.analysis_type.setCurrentIndex(
+        settings.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    settings.control_node.setCurrentIndex(settings.control_node.findData(2))
+    settings.num_steps.setValue(10)
+    settings.geometric_transformation.setCurrentIndex(
+        settings.geometric_transformation.findData("PDelta")
+    )
+    settings.target_load_factor.setValue(1.0)
+    settings.adaptive_step.setChecked(True)
+    settings.min_increment.setValue(0.0001)
+
+    window._run_analysis()
+    thread = window._analysis_run_thread
+    assert thread is not None
+    _run_thread_to_completion(thread)
+    application.processEvents()
+
+    assert window._analysis_run_thread is None
+    information.assert_called_once()
+    window.close()
+
+
 @patch("openframe.app.shell.main_window.QMessageBox.critical")
 def test_nonlinear_validation_blocks_run_without_control_node(critical: MagicMock) -> None:
     """The control node combo starts empty until a model loads; running before that

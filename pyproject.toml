@@ -16,6 +16,7 @@ dependencies = [
   # worker subprocess instead of crashing on import.
   "numpy>=1.26",
   "matplotlib>=3.8",
+  "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,8 @@ where = ["src"]
 openframe = [
   "features/viewport/presentation/qml/*.qml",
   "infrastructure/ground_motions/data/*.AT2",
+  "infrastructure/material_section_db/data/*.xlsx",
+  "infrastructure/material_section_db/data/*.json",
   "resources/icons/*",
 ]
 

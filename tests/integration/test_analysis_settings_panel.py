@@ -252,6 +252,137 @@ def test_build_options_includes_gravity_and_target_displacement_when_selected() 
     application.processEvents()
 
 
+def test_build_options_includes_the_new_nonlinear_control_fields_by_default() -> None:
+    panel = AnalysisSettingsPanel()
+
+    options = panel.build_options()
+
+    assert options["geometric_transform_type"] == "Linear"
+    assert options["target_load_factor"] == 1.0
+    assert options["automatic_recovery"] is True
+    assert options["adaptive_step"] is False
+    # 0 (the spin boxes' "Auto" sentinel) means "let the solver derive it" -
+    # sending an explicit 0 would instead be validated as an error there.
+    assert "min_increment" not in options
+    assert "max_increment" not in options
+
+
+def test_build_options_includes_min_and_max_increment_once_set() -> None:
+    panel = AnalysisSettingsPanel()
+    panel.min_increment.setValue(0.001)
+    panel.max_increment.setValue(0.5)
+
+    options = panel.build_options()
+
+    assert options["min_increment"] == 0.001
+    assert options["max_increment"] == 0.5
+
+
+def test_geometric_transformation_selection_updates_the_behavior_tile_and_notice() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    panel.show()
+    application.processEvents()
+
+    assert panel.geometric_nonlinearity_value.text() == "○  Linear (disabled)"
+    assert panel.geometric_nonlinearity_value.property("state") == "off"
+
+    panel.geometric_transformation.setCurrentIndex(
+        panel.geometric_transformation.findData("PDelta")
+    )
+
+    assert panel.geometric_nonlinearity_value.text() == "✓  P-Delta ENABLED"
+    assert panel.geometric_nonlinearity_value.property("state") == "ok"
+    assert "P-Delta" in panel.geometric_nonlinearity_notice.text()
+    assert panel.build_options()["geometric_transform_type"] == "PDelta"
+    panel.close()
+
+
+def test_reset_to_default_restores_a_customized_solution_strategy() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    panel.show()
+    application.processEvents()
+
+    assert panel.solution_strategy_status.text() == "DEFAULT"
+    panel.algorithm.setCurrentText("KrylovNewton")
+    panel.tolerance.setValue(1.0e-4)
+    assert panel.solution_strategy_status.text() == "CUSTOM"
+
+    panel.reset_solution_strategy_button.click()
+
+    assert panel.solution_strategy_status.text() == "DEFAULT"
+    assert panel.algorithm.currentText() == "Newton"
+    assert panel.tolerance.value() == pytest.approx(1.0e-6)
+    panel.close()
+
+
+def test_automatic_recovery_off_disables_adaptive_and_increment_fields() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    panel.show()
+    application.processEvents()
+
+    assert panel.adaptive_step.isEnabled() is True
+    panel.adaptive_step.setChecked(True)
+
+    panel.automatic_recovery.setChecked(False)
+
+    assert panel.adaptive_step.isEnabled() is False
+    assert panel.adaptive_step.isChecked() is False
+    assert panel.min_increment_group.isEnabled() is False
+    assert panel.max_increment_group.isEnabled() is False
+    assert panel.build_options()["automatic_recovery"] is False
+    panel.close()
+
+
+def test_precheck_flags_a_missing_control_node_then_clears_once_one_is_picked() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.set_model(model)
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    panel.show()
+    application.processEvents()
+
+    panel.control_node.setCurrentIndex(-1)
+    panel._update_precheck()
+    assert "CONTROL NODE" in panel.precheck_status.text()
+    assert panel.precheck_status.property("state") == "warning"
+
+    panel.control_node.setCurrentIndex(0)
+
+    assert panel.precheck_status.text() == "✓  Ready for Analysis"
+    assert panel.precheck_status.property("state") == "ok"
+    panel.close()
+
+
+def test_precheck_reports_material_nonlinearity_not_active_for_an_elastic_model() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.set_model(model)
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    panel.show()
+    application.processEvents()
+
+    assert panel.precheck_value_labels["Material Nonlinearity"].text() == "Not Active"
+    panel.close()
+
+
 def test_panel_without_an_explicit_store_still_defaults_to_linear_static() -> None:
     panel = AnalysisSettingsPanel()
 

@@ -617,8 +617,8 @@ QLabel#resultTypeGroupIcon {
     max-height: 22px;
 }
 QToolButton#resultTypeButton {
-    min-height: 46px;
-    padding: 0 8px;
+    min-height: 42px;
+    padding: 0 6px;
     border: 0;
     border-left: 4px solid transparent;
     border-radius: 3px;
@@ -1582,6 +1582,7 @@ QLabel#setupBehaviorValue {
     color: #555f6d; font-family: "JetBrains Mono", "Consolas"; font-size: 8pt;
 }
 QLabel#setupBehaviorValue[state="ok"] { color: #087f5b; }
+QLabel#setupBehaviorValue[state="warning"] { color: #b93815; font-weight: 700; }
 QFrame#setupLoadProgress {
     background: transparent;
     border-left: 1px dashed #c4c5d5;

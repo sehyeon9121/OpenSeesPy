@@ -25,6 +25,29 @@ _MAX_BISECTIONS = 4
 #: Reserved timeSeries/pattern tag offset used when a lateral pattern is torn down
 #: for the gravity phase and rebuilt afterwards, kept clear of the user's own tags.
 _REPLAY_TAG_OFFSET = 900_000_000
+#: Element types whose formulation is inherently nonlinear (fiber/plastic-hinge
+#: force-based or displacement-based beam-columns, corotational truss) regardless
+#: of the material assigned to them. Mirrored by analysis_settings_panel.py's own
+#: ``_NONLINEAR_ELEMENT_TYPES`` (StructuralModel only carries element_type, never
+#: reaches this collector-internal detection), kept numerically identical on purpose.
+_NONLINEAR_ELEMENT_TYPES = frozenset(
+    {
+        "forcebeamcolumn",
+        "dispbeamcolumn",
+        "displacementbeamcolumn",
+        "corottruss",
+        "corottrusssection",
+    }
+)
+#: Geometric transformation types Setup's dropdown may choose between - the only
+#: three whose ``ops.geomTransf(type, tag, *transfArgs)`` argument shape is
+#: identical, which is what makes overriding the type safe (see
+#: ModelCommandCollector.install(geom_transf_override=...)).
+_GEOMETRIC_TRANSFORM_TYPES = frozenset({"Linear", "PDelta", "Corotational"})
+#: Adaptive Step's growth rate after a reporting step converges cleanly at its
+#: current starting fraction - geometric, not additive, so recovery from a very
+#: small fraction does not take as many steps as the descent into it did.
+_ADAPTIVE_GROWTH_FACTOR = 1.5
 
 
 @dataclass(slots=True)
@@ -35,6 +58,11 @@ class _StepDiagnostics:
     substeps: int = 0
     iterations: int = 0
     bisections: int = 0
+    #: Fraction (of the reporting step's nominal increment) of the last substep
+    #: that actually converged - Adaptive Step's seed for the *next* reporting
+    #: step's starting_fraction, so a step that only succeeded at 1/4 size does
+    #: not force the next step to rediscover that by bisecting down from 1.0 again.
+    last_fraction: float = 1.0
 
 
 def _record_test_iterations(diagnostics: _StepDiagnostics | None) -> None:
@@ -122,21 +150,30 @@ def _load_warnings(collector: ElementLoadCollector, element_tags: list[int]) -> 
     ]
 
 
-def _model_nonlinearity_warnings(collector: ModelCommandCollector) -> list[str]:
-    """Warn when a nonlinear solve is requested for an apparently linear model."""
+@dataclass(frozen=True, slots=True)
+class _NonlinearityDetection:
+    """What the executed script actually contains, as opposed to what Setup asked
+    for - e.g. ``geometric`` reflects the *overridden* geomTransf type actually
+    applied (see ``ModelCommandCollector.install(geom_transf_override=...)``),
+    not merely whatever the script's own source text happened to say."""
+
+    material: bool
+    element: bool
+    fiber_section: bool
+    geometric: bool
+
+    @property
+    def material_or_section(self) -> bool:
+        return self.material or self.element or self.fiber_section
+
+
+def _detect_nonlinearity(collector: ModelCommandCollector) -> _NonlinearityDetection:
     linear_materials = {"elastic", "elasticisotropic", "elasticorthotropic"}
     has_nonlinear_material = any(
         material.lower() not in linear_materials for material in collector.material_types
     )
-    nonlinear_elements = {
-        "forcebeamcolumn",
-        "dispbeamcolumn",
-        "displacementbeamcolumn",
-        "corottruss",
-        "corottrusssection",
-    }
     has_nonlinear_element = any(
-        str(item.get("element_type", "")).lower() in nonlinear_elements
+        str(item.get("element_type", "")).lower() in _NONLINEAR_ELEMENT_TYPES
         for item in collector.elements.values()
     )
     has_fiber_section = any("fiber" in section.lower() for section in collector.section_types)
@@ -144,14 +181,18 @@ def _model_nonlinearity_warnings(collector: ModelCommandCollector) -> list[str]:
         transformation.lower() in {"pdelta", "corotational", "corot"}
         for transformation in collector.geom_transf_types
     )
-    if any(
-        (
-            has_nonlinear_material,
-            has_nonlinear_element,
-            has_fiber_section,
-            has_geometric_nonlinearity,
-        )
-    ):
+    return _NonlinearityDetection(
+        material=has_nonlinear_material,
+        element=has_nonlinear_element,
+        fiber_section=has_fiber_section,
+        geometric=has_geometric_nonlinearity,
+    )
+
+
+def _model_nonlinearity_warnings(collector: ModelCommandCollector) -> list[str]:
+    """Warn when a nonlinear solve is requested for an apparently linear model."""
+    detection = _detect_nonlinearity(collector)
+    if detection.material_or_section or detection.geometric:
         return []
     return [
         (
@@ -228,7 +269,12 @@ def _analyze_with_fallback(
     primary_algorithm: str,
     recovered_with: set[str],
     diagnostics: _StepDiagnostics | None = None,
+    *,
+    automatic_recovery: bool = True,
 ) -> bool:
+    """``automatic_recovery=False`` is Setup's "Use Settings Only" - the primary
+    algorithm gets exactly one attempt, and a non-convergent result is returned
+    as-is instead of trying any of ``_FALLBACK_ALGORITHMS``."""
     if diagnostics is not None:
         diagnostics.attempts += 1
     if ops.analyze(1) == 0:
@@ -236,6 +282,8 @@ def _analyze_with_fallback(
             diagnostics.substeps += 1
         _record_test_iterations(diagnostics)
         return True
+    if not automatic_recovery:
+        return False
     for candidate in _FALLBACK_ALGORITHMS:
         if candidate == primary_algorithm:
             continue
@@ -263,26 +311,50 @@ def _advance_one_step(
     recovered_with: set[str],
     max_bisections: int = _MAX_BISECTIONS,
     diagnostics: _StepDiagnostics | None = None,
+    automatic_recovery: bool = True,
+    min_increment: float | None = None,
+    starting_fraction: float = 1.0,
 ) -> bool:
     """Cover one reporting step's worth of pseudo-time/displacement, retrying with
     algorithm fallback and (if that alone isn't enough) a halved increment - applied
     repeatedly, so a step that only converges at a quarter or eighth of the nominal
-    size still completes instead of ending the whole curve early."""
+    size still completes instead of ending the whole curve early.
+
+    ``automatic_recovery=False`` disables both of those: the configured algorithm
+    gets exactly one attempt at the full increment, and any non-convergence ends
+    the step immediately - Setup's "Use Settings Only".
+
+    ``starting_fraction`` (Adaptive Step) begins the bisection ladder below 1.0
+    when the caller already knows (from a previous step) that the full increment
+    is unlikely to converge, instead of always re-discovering that by bisecting
+    down from scratch. ``min_increment``, if given, stops bisecting once the next
+    candidate size would fall below it - a physical floor on top of/instead of
+    ``max_bisections``' depth-based one.
+    """
     fraction_remaining = 1.0
-    sub_fraction = 1.0
+    sub_fraction = max(1.0e-9, min(1.0, starting_fraction))
     depth = 0
     while fraction_remaining > 1.0e-9:
         step_fraction = min(sub_fraction, fraction_remaining)
         _set_integrator(integrator_type, control_node, control_dof, nominal_increment * step_fraction)
-        if _analyze_with_fallback(algorithm, recovered_with, diagnostics):
+        if _analyze_with_fallback(
+            algorithm, recovered_with, diagnostics, automatic_recovery=automatic_recovery
+        ):
             fraction_remaining -= step_fraction
+            if diagnostics is not None:
+                diagnostics.last_fraction = step_fraction
             continue
+        if not automatic_recovery:
+            return False
         depth += 1
         if depth > max_bisections:
             return False
+        next_fraction = step_fraction / 2.0
+        if min_increment is not None and abs(nominal_increment) * next_fraction < min_increment:
+            return False
         if diagnostics is not None:
             diagnostics.bisections += 1
-        sub_fraction = step_fraction / 2.0
+        sub_fraction = next_fraction
     return True
 
 
@@ -305,6 +377,12 @@ def run_nonlinear_static_analysis(
     integrator_type: str = "LoadControl",
     target_displacement: float | None = None,
     max_bisections: int = _MAX_BISECTIONS,
+    geometric_transform_type: str = "Linear",
+    target_load_factor: float = 1.0,
+    automatic_recovery: bool = True,
+    min_increment: float | None = None,
+    max_increment: float | None = None,
+    adaptive_step: bool = False,
     progress_callback: Callable[[int | None, str], None] | None = None,
 ) -> dict[str, Any]:
     """Build the model by executing ``source``, then push it in ``num_steps`` equal
@@ -326,10 +404,56 @@ def run_nonlinear_static_analysis(
     Retries a failed step with the other standard algorithms, then with a halved
     increment, before finally stopping the curve there and reporting why - the curve
     up to that point, and the last converged state, are still meaningful results.
+    Set ``automatic_recovery=False`` to disable both of these and run exactly the
+    configured algorithm/increment, failing the run at the first non-convergent step.
+
+    ``geometric_transform_type`` (``"Linear"``/``"PDelta"``/``"Corotational"``)
+    overrides every ``ops.geomTransf(...)`` call the source script makes, so a
+    single Setup choice controls P-Delta/large-displacement behavior regardless of
+    what the imported script itself specifies.
+
+    ``target_load_factor`` scales ``LoadControl``'s per-step increment
+    (``target_load_factor / num_steps``); ``adaptive_step``, when enabled, carries
+    a shrunk increment forward after a step needed bisection and grows it back
+    toward the nominal size after steps that converge cleanly, bounded by
+    ``min_increment``/``max_increment`` when given.
     """
     def _report_progress(value: int | None, stage: str) -> None:
         if progress_callback is not None:
             progress_callback(value, stage)
+
+    # Validated before the model is built (not after, alongside the model-shape
+    # checks below) because geometric_transform_type is applied *during*
+    # run_model_script via ModelCommandCollector's geomTransf override - an
+    # unsupported value would otherwise reach real OpenSeesPy and fail as a raw
+    # opensees.OpenSeesError instead of this function's own clean RuntimeError.
+    if num_steps <= 0:
+        raise RuntimeError("LOAD STEPS는 1 이상이어야 합니다.")
+    if max_bisections < 0:
+        raise RuntimeError("MAX BISECTIONS는 0 이상이어야 합니다.")
+    if target_load_factor <= 0:
+        raise RuntimeError("TARGET LOAD FACTOR는 0보다 커야 합니다.")
+    if min_increment is not None and min_increment <= 0:
+        raise RuntimeError("MIN INCREMENT는 0보다 커야 합니다.")
+    if max_increment is not None and max_increment <= 0:
+        raise RuntimeError("MAX INCREMENT는 0보다 커야 합니다.")
+    if min_increment is not None and max_increment is not None and min_increment > max_increment:
+        raise RuntimeError("MIN INCREMENT는 MAX INCREMENT보다 클 수 없습니다.")
+    supported_settings = {
+        "INTEGRATOR": (integrator_type, {"LoadControl", "DisplacementControl"}),
+        "ALGORITHM": (algorithm, set(_FALLBACK_ALGORITHMS)),
+        "CONVERGENCE TEST": (
+            test_type,
+            {"NormDispIncr", "EnergyIncr", "NormUnbalance"},
+        ),
+        "SYSTEM": (system, {"BandGeneral", "UmfPack", "ProfileSPD"}),
+        "CONSTRAINT HANDLER": (constraints_type, {"Plain", "Transformation"}),
+        "NUMBERER": (numberer, {"RCM", "Plain", "AMD"}),
+        "GEOMETRIC TRANSFORMATION": (geometric_transform_type, _GEOMETRIC_TRANSFORM_TYPES),
+    }
+    for label, (value, supported) in supported_settings.items():
+        if value not in supported:
+            raise RuntimeError(f"지원하지 않는 {label} 설정입니다: {value}")
 
     _report_progress(0, "Building the nonlinear OpenSees model...")
     # The section properties are only knowable from the element() call itself, and the
@@ -345,7 +469,7 @@ def run_nonlinear_static_analysis(
     # with ``gravity_pattern`` set would have actually pushed with the wrong
     # distributed load, not merely reported one.
     property_collector = ModelCommandCollector()
-    property_collector.install()
+    property_collector.install(geom_transf_override=geometric_transform_type)
     try:
         run_model_script(source)
     finally:
@@ -362,24 +486,6 @@ def run_nonlinear_static_analysis(
         )
     if control_node not in node_tags:
         raise RuntimeError(f"CONTROL NODE {control_node}가 모델에 존재하지 않습니다.")
-    if num_steps <= 0:
-        raise RuntimeError("LOAD STEPS는 1 이상이어야 합니다.")
-    if max_bisections < 0:
-        raise RuntimeError("MAX BISECTIONS는 0 이상이어야 합니다.")
-    supported_settings = {
-        "INTEGRATOR": (integrator_type, {"LoadControl", "DisplacementControl"}),
-        "ALGORITHM": (algorithm, set(_FALLBACK_ALGORITHMS)),
-        "CONVERGENCE TEST": (
-            test_type,
-            {"NormDispIncr", "EnergyIncr", "NormUnbalance"},
-        ),
-        "SYSTEM": (system, {"BandGeneral", "UmfPack", "ProfileSPD"}),
-        "CONSTRAINT HANDLER": (constraints_type, {"Plain", "Transformation"}),
-        "NUMBERER": (numberer, {"RCM", "Plain", "AMD"}),
-    }
-    for label, (value, supported) in supported_settings.items():
-        if value not in supported:
-            raise RuntimeError(f"지원하지 않는 {label} 설정입니다: {value}")
     control_node_dof_count = len(ops.nodeDisp(control_node))
     if not 1 <= control_dof <= control_node_dof_count:
         raise RuntimeError(
@@ -450,6 +556,8 @@ def run_nonlinear_static_analysis(
                 recovered_with=recovered_with,
                 max_bisections=max_bisections,
                 diagnostics=gravity_diagnostics,
+                automatic_recovery=automatic_recovery,
+                min_increment=min_increment,
             ):
                 raise RuntimeError(
                     f"중력 하중(GRAVITY PATTERN {gravity_pattern}) 적용 중 {step}번째 스텝에서 "
@@ -476,7 +584,7 @@ def run_nonlinear_static_analysis(
     nominal_increment = (
         (target_displacement or 0.0) / num_steps
         if integrator_type == "DisplacementControl"
-        else 1.0 / num_steps
+        else target_load_factor / num_steps
     )
     # An integrator must exist before ops.analysis() is created, or OpenSees falls
     # back to its own default and warns about it - _advance_one_step redefines this
@@ -489,9 +597,22 @@ def run_nonlinear_static_analysis(
     failed_step: int | None = None
     pushover_progress_start = 25 if gravity_pattern is not None else 5
     pushover_progress_span = 100 - pushover_progress_start
+    # Adaptive Step: the fraction (of nominal_increment) the *next* reporting step
+    # starts its own bisection ladder at. Persists across steps only when
+    # adaptive_step=True - otherwise every step starts at the full 1.0, exactly
+    # today's behavior. A step that needed bisection hands its last-converged
+    # fraction forward (skip re-discovering the same small size); a step that
+    # converged cleanly grows the starting fraction back toward 1.0.
+    adaptive_start_fraction = 1.0
+    adaptive_max_fraction = (
+        min(1.0, max_increment / abs(nominal_increment))
+        if adaptive_step and max_increment is not None and nominal_increment
+        else 1.0
+    )
     for step in range(1, num_steps + 1):
         recovered_with: set[str] = set()
         diagnostics = _StepDiagnostics()
+        starting_fraction = adaptive_start_fraction if adaptive_step else 1.0
         if not _advance_one_step(
             nominal_increment,
             integrator_type=integrator_type,
@@ -501,6 +622,9 @@ def run_nonlinear_static_analysis(
             recovered_with=recovered_with,
             max_bisections=max_bisections,
             diagnostics=diagnostics,
+            automatic_recovery=automatic_recovery,
+            min_increment=min_increment,
+            starting_fraction=starting_fraction,
         ):
             total_attempts += diagnostics.attempts
             total_substeps += diagnostics.substeps
@@ -519,6 +643,12 @@ def run_nonlinear_static_analysis(
         total_substeps += diagnostics.substeps
         if recovered_with or diagnostics.bisections:
             recovered_steps[step] = recovered_with
+        if adaptive_step:
+            adaptive_start_fraction = (
+                max(1.0e-9, diagnostics.last_fraction)
+                if diagnostics.bisections
+                else min(adaptive_max_fraction, adaptive_start_fraction * _ADAPTIVE_GROWTH_FACTOR)
+            )
         base_shear = _base_shear() - baseline_base_shear
         displacement = float(ops.nodeDisp(control_node, control_dof))
         curve.append(
@@ -546,6 +676,7 @@ def run_nonlinear_static_analysis(
             f"{step_list}번째 스텝은 기본 알고리즘으로 수렴하지 않아 대체 알고리즘 또는 "
             "축소된 증분으로 재시도해 수렴했습니다."
         )
+    detection = _detect_nonlinearity(property_collector)
     messages.extend(_model_nonlinearity_warnings(property_collector))
     messages.extend(_load_warnings(load_collector, element_tags))
 
@@ -577,6 +708,11 @@ def run_nonlinear_static_analysis(
             "total_attempts": total_attempts,
             "total_substeps": total_substeps,
             "recovered_steps": sorted(recovered_steps),
+            "automatic_recovery": automatic_recovery,
+        },
+        "nonlinearity": {
+            "geometric_transform_type": geometric_transform_type,
+            "material_nonlinearity_detected": detection.material_or_section,
         },
         "messages": messages,
     }

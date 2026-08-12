@@ -80,7 +80,7 @@ class _CollapsibleResultGroup(QFrame):
         self.setObjectName("resultTypeGroup")
         self._expanded = False
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(7, 5, 7, 5)
+        outer.setContentsMargins(4, 3, 4, 3)
         outer.setSpacing(0)
 
         self._header = QWidget()
@@ -89,12 +89,14 @@ class _CollapsibleResultGroup(QFrame):
         self._header.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._header.mousePressEvent = self._on_header_pressed  # type: ignore[method-assign]
         header_layout = QHBoxLayout(self._header)
-        header_layout.setContentsMargins(2, 4, 1, 4)
-        header_layout.setSpacing(4)
+        header_layout.setContentsMargins(2, 3, 2, 3)
+        header_layout.setSpacing(3)
+
+        _LEFT = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
 
         self._arrow = QLabel("▸")
         self._arrow.setObjectName("resultTypeGroupArrow")
-        header_layout.addWidget(self._arrow)
+        header_layout.addWidget(self._arrow, 0, _LEFT)
         if show_icon:
             # Skipped in the compact embedded (2D-canvas) sidebar - that one is
             # barely 180-205px wide to begin with, nowhere near enough room for
@@ -103,19 +105,24 @@ class _CollapsibleResultGroup(QFrame):
             icon_label = QLabel()
             icon_label.setObjectName("resultTypeGroupIcon")
             icon_label.setPixmap(_glyph_icon(_GROUP_ICON_GLYPHS.get(title, "•")).pixmap(18, 18))
-            header_layout.addWidget(icon_label)
+            header_layout.addWidget(icon_label, 0, _LEFT)
         # A fixed width (set once every group in the sidebar exists - see
-        # ResultTypeSidebar._align_group_counts) instead of a stretch is what
-        # keeps every row's count badge in the same column: a title-hugging
-        # gap or a stretch both let the badge's X position follow whichever
-        # title happens to be shortest/longest on that particular row.
+        # ResultTypeSidebar._align_group_counts) keeps every row's count badge
+        # in the same column. The explicit AlignLeft passed to addWidget below
+        # (not just the label's own setAlignment) is what actually pins arrow/
+        # icon/title/badge to the left edge instead of letting Qt spread them
+        # out across the row's full width when nothing has a stretch factor -
+        # the trailing addStretch is what claims the leftover space instead,
+        # in one place, after the badge.
         self.title_label = QLabel(title)
         self.title_label.setObjectName("resultTypeGroupTitle")
+        self.title_label.setAlignment(_LEFT)
         count_badge = QLabel(str(count))
         count_badge.setObjectName("resultTypeGroupCount")
-        header_layout.addWidget(self.title_label)
-        header_layout.addSpacing(20)
-        header_layout.addWidget(count_badge)
+        header_layout.addWidget(self.title_label, 0, _LEFT)
+        header_layout.addSpacing(10)
+        header_layout.addWidget(count_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        header_layout.addStretch(1)
         outer.addWidget(self._header)
 
         self._body = QWidget()
@@ -123,8 +130,8 @@ class _CollapsibleResultGroup(QFrame):
         self._body.setMaximumHeight(0)
         self._body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         body_layout = QVBoxLayout(self._body)
-        body_layout.setContentsMargins(0, 3, 0, 2)
-        body_layout.setSpacing(2)
+        body_layout.setContentsMargins(0, 2, 0, 1)
+        body_layout.setSpacing(1)
         if hint:
             description = QLabel(hint)
             description.setObjectName("resultTypeGroupHint")
@@ -182,11 +189,11 @@ class ResultTypeSidebar(QFrame):
         self.setObjectName("resultTypeSidebar")
         self._compact_2d = compact_2d
         self.setProperty("compact2d", compact_2d)
-        self.setMinimumWidth(180 if compact_2d else 320)
-        self.setMaximumWidth(205 if compact_2d else 380)
+        self.setMinimumWidth(180 if compact_2d else 280)
+        self.setMaximumWidth(205 if compact_2d else 340)
         outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(8 if compact_2d else 10, 11, 8 if compact_2d else 10, 11)
-        outer_layout.setSpacing(5 if compact_2d else 8)
+        outer_layout.setContentsMargins(6 if compact_2d else 7, 8, 6 if compact_2d else 7, 8)
+        outer_layout.setSpacing(5 if compact_2d else 6)
 
         title = QLabel("RESULT NAVIGATOR" if compact_2d else "RESULT TYPES")
         title.setObjectName("resultSectionTitle")
@@ -215,7 +222,7 @@ class ResultTypeSidebar(QFrame):
         self._scroll_area.setWidget(scroll_content)
         layout = QVBoxLayout(scroll_content)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5 if compact_2d else 8)
+        layout.setSpacing(5)
 
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
@@ -246,10 +253,12 @@ class ResultTypeSidebar(QFrame):
             layout,
             "MEMBER FORCES",
             "" if compact_2d else "Whole-frame local force plots",
+            # "Force"/"Moment" dropped - MEMBER FORCES above already says so;
+            # this was the widest button in the whole sidebar.
             (
-                ("axial", "N Axial Force"),
-                ("shear", "V Shear Force"),
-                ("moment", "M Bending Moment"),
+                ("axial", "N Axial"),
+                ("shear", "V Shear"),
+                ("moment", "M Bending"),
             ),
         )
         if not compact_2d:
@@ -276,7 +285,9 @@ class ResultTypeSidebar(QFrame):
                 layout,
                 "TIME HISTORY",
                 "Displacement/rotation vs. time",
-                (("time_history", "Response History"),),
+                # Not "Response History" - "History" already duplicates the
+                # category name above.
+                (("time_history", "Response"),),
             )
         layout.addStretch(1)
 

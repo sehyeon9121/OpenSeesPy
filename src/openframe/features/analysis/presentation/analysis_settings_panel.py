@@ -342,6 +342,24 @@ class AnalysisSettingsPanel(QFrame):
         nonlinear_title_row.addWidget(review_badge)
         nonlinear_layout.addLayout(nonlinear_title_row)
 
+        nonlinear_layout.addWidget(self._field_label("GEOMETRIC TRANSFORMATION"))
+        self.geometric_transformation = QComboBox()
+        self.geometric_transformation.addItem("Linear", "Linear")
+        self.geometric_transformation.addItem("P-Delta", "PDelta")
+        self.geometric_transformation.addItem("Corotational", "Corotational")
+        self.geometric_transformation.setToolTip(
+            "Overrides every ops.geomTransf(...) call the model script makes, so "
+            "this choice - not whatever the script itself specifies - controls the "
+            "analysis. Linear ignores P-Delta/large-displacement effects entirely; "
+            "P-Delta adds axial-load-times-displacement moments; Corotational adds "
+            "full large-displacement/large-rotation kinematics on top of that."
+        )
+        self.geometric_transformation.currentIndexChanged.connect(
+            self._update_nonlinear_behavior_tiles
+        )
+        self.geometric_transformation.currentIndexChanged.connect(self._update_nonlinear_summary)
+        nonlinear_layout.addWidget(self.geometric_transformation)
+
         behavior_row = QHBoxLayout()
         behavior_row.setSpacing(8)
         for title, default_value, default_state, attr in (
@@ -364,13 +382,10 @@ class AnalysisSettingsPanel(QFrame):
             setattr(self, attr, tile_value)
         nonlinear_layout.addLayout(behavior_row)
 
-        warning = QLabel(
-            "ⓘ  Geometric nonlinearity is currently disabled. P-Delta or "
-            "large-displacement effects will not be considered."
-        )
-        warning.setObjectName("setupNotice")
-        warning.setWordWrap(True)
-        nonlinear_layout.addWidget(warning)
+        self.geometric_nonlinearity_notice = QLabel()
+        self.geometric_nonlinearity_notice.setObjectName("setupNotice")
+        self.geometric_nonlinearity_notice.setWordWrap(True)
+        nonlinear_layout.addWidget(self.geometric_nonlinearity_notice)
         self._build_nonlinear_inline_editor(nonlinear_layout)
         settings_layout.addWidget(self.nonlinear_group)
 
@@ -1154,6 +1169,26 @@ class AnalysisSettingsPanel(QFrame):
         self.num_steps.setRange(1, 100_000)
         self.num_steps.setValue(10)
 
+        self.target_load_factor = QDoubleSpinBox()
+        self.target_load_factor.setDecimals(4)
+        self.target_load_factor.setRange(0.0001, 1000.0)
+        self.target_load_factor.setSingleStep(0.1)
+        self.target_load_factor.setValue(1.0)
+        self.target_load_factor.setToolTip(
+            "The load factor every active pattern reaches by the final step - 1.0 "
+            "applies each pattern's loads exactly as defined. LOAD INCREMENT below "
+            "is always TARGET LOAD FACTOR / ANALYSIS STEPS, so changing either one "
+            "keeps the other consistent automatically."
+        )
+        self.target_load_factor_group = self._field_block(
+            "TARGET LOAD FACTOR", self.target_load_factor
+        )
+        self.load_increment_value = QLabel("—")
+        self.load_increment_value.setObjectName("setupMetricValue")
+        self.load_increment_group = self._field_block(
+            "LOAD INCREMENT (per step, derived)", self.load_increment_value
+        )
+
         self.target_displacement = QDoubleSpinBox()
         self.target_displacement.setDecimals(6)
         self.target_displacement.setRange(-1.0e6, 1.0e6)
@@ -1165,6 +1200,11 @@ class AnalysisSettingsPanel(QFrame):
         self.target_displacement_group = self._field_block(
             None, self.target_displacement, label=self.target_displacement_label
         )
+        self.initial_increment_value = QLabel("—")
+        self.initial_increment_value.setObjectName("setupMetricValue")
+        self.initial_increment_group = self._field_block(
+            "INITIAL INCREMENT (per step, derived)", self.initial_increment_value
+        )
 
         self.control_node_group = self._field_block("CONTROL NODE", self.control_node)
         self.control_dof_group = self._field_block("CONTROL DOF", self.control_dof)
@@ -1174,7 +1214,10 @@ class AnalysisSettingsPanel(QFrame):
             self._field_block("LATERAL LOAD PATTERN", self.lateral_pattern),
             self._field_block("INTEGRATOR", self.integrator_type),
             self._field_block("ANALYSIS STEPS", self.num_steps),
+            self.target_load_factor_group,
+            self.load_increment_group,
             self.target_displacement_group,
+            self.initial_increment_group,
             self.control_node_group,
             self.control_dof_group,
         ]
@@ -1274,9 +1317,21 @@ class AnalysisSettingsPanel(QFrame):
         advanced_layout = QVBoxLayout(self.nonlinear_advanced_body)
         advanced_layout.setContentsMargins(12, 10, 12, 12)
         advanced_layout.setSpacing(9)
+        advanced_title_row = QHBoxLayout()
+        advanced_title_row.setContentsMargins(0, 0, 0, 0)
         advanced_title = QLabel("SOLUTION, CONVERGENCE & EXECUTION")
         advanced_title.setObjectName("setupConfigTitle")
-        advanced_layout.addWidget(advanced_title)
+        advanced_title_row.addWidget(advanced_title)
+        advanced_title_row.addStretch(1)
+        self.solution_strategy_status = QLabel("DEFAULT")
+        self.solution_strategy_status.setObjectName("setupBehaviorValue")
+        self.solution_strategy_status.setProperty("state", "off")
+        advanced_title_row.addWidget(self.solution_strategy_status)
+        self.reset_solution_strategy_button = QPushButton("Reset to Default")
+        self.reset_solution_strategy_button.setObjectName("nonlinearSettingsButton")
+        self.reset_solution_strategy_button.clicked.connect(self._reset_solution_strategy)
+        advanced_title_row.addWidget(self.reset_solution_strategy_button)
+        advanced_layout.addLayout(advanced_title_row)
         advanced_note = QLabel(
             "Defaults suit most models. Adjust these values when convergence is slow "
             "or when the imported model uses multi-point constraints."
@@ -1305,6 +1360,127 @@ class AnalysisSettingsPanel(QFrame):
         # so start open and let the user collapse it once they know it's there.
         self.nonlinear_advanced_toggle.setChecked(True)
 
+        recovery = QFrame()
+        recovery.setObjectName("nonlinearSetupSection")
+        recovery_layout = QVBoxLayout(recovery)
+        recovery_layout.setContentsMargins(12, 10, 12, 12)
+        recovery_layout.setSpacing(9)
+        recovery_title = QLabel("ADAPTIVE RECOVERY")
+        recovery_title.setObjectName("setupConfigTitle")
+        recovery_layout.addWidget(recovery_title)
+
+        self.automatic_recovery = QCheckBox(
+            "Automatic Recovery - retry a non-convergent step with the other "
+            "standard algorithms, then a halved increment, before failing it"
+        )
+        self.automatic_recovery.setChecked(True)
+        self.automatic_recovery.setToolTip(
+            "ON (default): a step that fails to converge is retried with "
+            "ModifiedNewton/KrylovNewton/NewtonLineSearch, then with the increment "
+            "halved up to MAX STEP BISECTIONS times, before the run stops there. "
+            "OFF (\"Use Settings Only\"): the configured ALGORITHM gets exactly one "
+            "attempt at the full increment - no fallback, no bisection."
+        )
+        self.automatic_recovery.toggled.connect(self._update_recovery_field_states)
+        self.automatic_recovery.toggled.connect(self._update_nonlinear_summary)
+        recovery_layout.addWidget(self.automatic_recovery)
+
+        self.adaptive_step = QCheckBox(
+            "Adaptive Step - start each step where the previous one last "
+            "succeeded instead of always retrying from the full increment"
+        )
+        self.adaptive_step.setToolTip(
+            "OFF (default): every reporting step starts at the full nominal "
+            "increment, exactly as ANALYSIS STEPS implies. ON: a step that needed "
+            "bisection hands its smaller working size to the next step instead of "
+            "rediscovering it from scratch, and grows back toward the full nominal "
+            "increment after steps that converge cleanly (bounded by MIN/MAX "
+            "INCREMENT below). The total number of reporting steps and the final "
+            "target reached are unchanged either way."
+        )
+        self.adaptive_step.toggled.connect(self._update_nonlinear_summary)
+        recovery_layout.addWidget(self.adaptive_step)
+
+        self.min_increment = QDoubleSpinBox()
+        self.min_increment.setDecimals(8)
+        self.min_increment.setRange(0.0, 1.0e6)
+        self.min_increment.setSpecialValueText("Auto")
+        self.min_increment.setToolTip(
+            "Stop bisecting once the next smaller attempt would fall below this "
+            "size, instead of continuing down to MAX STEP BISECTIONS' depth limit "
+            "regardless of how physically small that has become. 0 = Auto (depth "
+            "limit only, today's behavior)."
+        )
+        self.max_increment = QDoubleSpinBox()
+        self.max_increment.setDecimals(8)
+        self.max_increment.setRange(0.0, 1.0e6)
+        self.max_increment.setSpecialValueText("Auto")
+        self.max_increment.setToolTip(
+            "With Adaptive Step ON, caps how far the starting increment may grow "
+            "back after clean steps. 0 = Auto (never exceeds the nominal increment "
+            "ANALYSIS STEPS/TARGET LOAD FACTOR or TARGET DISPLACEMENT implies)."
+        )
+        self.min_increment_group = self._field_block("MIN INCREMENT", self.min_increment)
+        self.max_increment_group = self._field_block("MAX INCREMENT", self.max_increment)
+        recovery_grid = QGridLayout()
+        recovery_grid.setHorizontalSpacing(16)
+        recovery_grid.setVerticalSpacing(9)
+        recovery_grid.setColumnStretch(0, 1)
+        recovery_grid.setColumnStretch(1, 1)
+        recovery_grid.addWidget(self.min_increment_group, 0, 0)
+        recovery_grid.addWidget(self.max_increment_group, 0, 1)
+        recovery_layout.addLayout(recovery_grid)
+
+        recovery_note = QLabel(
+            "Retries are bounded either way: at most one attempt per fallback "
+            "algorithm (Newton, ModifiedNewton, KrylovNewton, NewtonLineSearch) "
+            "per bisection depth, and at most MAX STEP BISECTIONS halvings - a "
+            "step that still cannot converge always ends the run there rather "
+            "than retrying forever."
+        )
+        recovery_note.setObjectName("secondaryText")
+        recovery_note.setWordWrap(True)
+        recovery_layout.addWidget(recovery_note)
+        parent_layout.addWidget(recovery)
+
+        self.precheck_card = QFrame()
+        self.precheck_card.setObjectName("nonlinearSetupSection")
+        precheck_layout = QVBoxLayout(self.precheck_card)
+        precheck_layout.setContentsMargins(12, 10, 12, 12)
+        precheck_layout.setSpacing(9)
+        precheck_title = QLabel("PRE-CHECK")
+        precheck_title.setObjectName("setupConfigTitle")
+        precheck_layout.addWidget(precheck_title)
+        precheck_grid = QGridLayout()
+        precheck_grid.setHorizontalSpacing(24)
+        precheck_grid.setVerticalSpacing(5)
+        self.precheck_value_labels: dict[str, QLabel] = {}
+        for row, key in enumerate(
+            (
+                "Geometric Nonlinearity",
+                "Material Nonlinearity",
+                "Control Method",
+                "Initial Step",
+                "Algorithm",
+                "Convergence",
+                "Automatic Recovery",
+            )
+        ):
+            key_label = QLabel(f"{key}:")
+            key_label.setObjectName("setupMetricLabel")
+            value_label = QLabel("—")
+            value_label.setObjectName("setupMetricValue")
+            precheck_grid.addWidget(key_label, row, 0)
+            precheck_grid.addWidget(value_label, row, 1)
+            self.precheck_value_labels[key] = value_label
+        precheck_layout.addLayout(precheck_grid)
+        self.precheck_status = QLabel("Ready for Analysis")
+        self.precheck_status.setObjectName("setupBehaviorValue")
+        self.precheck_status.setProperty("state", "ok")
+        self.precheck_status.setWordWrap(True)
+        precheck_layout.addWidget(self.precheck_status)
+        parent_layout.addWidget(self.precheck_card)
+
         for combo in (
             self.control_node,
             self.control_dof,
@@ -1325,11 +1501,15 @@ class AnalysisSettingsPanel(QFrame):
             self.execution_timeout,
             self.gravity_steps,
             self.target_displacement,
+            self.target_load_factor,
+            self.min_increment,
+            self.max_increment,
         ):
             spinner.valueChanged.connect(self._update_nonlinear_summary)
 
         self._update_gravity_visibility()
         self._update_integrator_visibility()
+        self._update_recovery_field_states()
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         """Show the imported model's native length beside dimensional inputs."""
@@ -1349,6 +1529,9 @@ class AnalysisSettingsPanel(QFrame):
         self.control_node_group.setVisible(displacement_control)
         self.control_dof_group.setVisible(displacement_control)
         self.target_displacement_group.setVisible(displacement_control)
+        self.initial_increment_group.setVisible(displacement_control)
+        self.target_load_factor_group.setVisible(not displacement_control)
+        self.load_increment_group.setVisible(not displacement_control)
 
     def set_model(self, model: StructuralModel | None) -> None:
         self._model = model
@@ -1479,7 +1662,19 @@ class AnalysisSettingsPanel(QFrame):
             "algorithm": self.algorithm.currentText(),
             "test_type": self.test_type.currentText(),
             "integrator_type": self.integrator_type.currentData(),
+            "geometric_transform_type": self.geometric_transformation.currentData(),
+            "target_load_factor": self.target_load_factor.value(),
+            "automatic_recovery": self.automatic_recovery.isChecked(),
+            "adaptive_step": self.adaptive_step.isChecked(),
         }
+        # 0 is this panel's "not set / let the solver derive it" sentinel for
+        # both fields (their spin boxes floor at 0) - only send a real override
+        # when the user actually typed one, so run_nonlinear_static_analysis's
+        # own defaults (derived from MAX STEP BISECTIONS) apply otherwise.
+        if self.min_increment.value() > 0:
+            options["min_increment"] = self.min_increment.value()
+        if self.max_increment.value() > 0:
+            options["max_increment"] = self.max_increment.value()
         control_node = self.control_node.currentData()
         if control_node is not None:
             options["control_node"] = int(control_node)
@@ -1777,20 +1972,145 @@ class AnalysisSettingsPanel(QFrame):
         self.load_progress.setValue(self.num_steps.value())
         self.load_progress_caption.setText(f"100% ({self.num_steps.value()} Steps)")
         self._update_engine_capability_display()
+        num_steps = max(1, self.num_steps.value())
+        self.load_increment_value.setText(
+            f"{self.target_load_factor.value() / num_steps:.6g}"
+        )
+        self.initial_increment_value.setText(
+            f"{self.target_displacement.value() / num_steps:.6g} {self._unit_system.length}"
+        )
+        self._update_solution_strategy_status()
+        self._update_precheck()
         self._sync_store_options()
+
+    #: (widget attribute, default value) pairs Reset to Default restores, and
+    #: what current values are compared against for the DEFAULT/CUSTOM status -
+    #: the same "recommended, stable values already in use by this program"
+    #: the widgets themselves are constructed with (see _build_nonlinear_inline_editor).
+    _SOLUTION_STRATEGY_DEFAULTS = (
+        ("solver", "BandGeneral"),
+        ("algorithm", "Newton"),
+        ("constraints_type", "Plain"),
+        ("numberer", "RCM"),
+        ("test_type", "NormDispIncr"),
+        ("tolerance", 1.0e-6),
+        ("max_iterations", 25),
+    )
+
+    def _update_solution_strategy_status(self) -> None:
+        is_default = True
+        for attr, default in self._SOLUTION_STRATEGY_DEFAULTS:
+            widget = getattr(self, attr)
+            current = widget.currentText() if isinstance(widget, QComboBox) else widget.value()
+            if current != default:
+                is_default = False
+                break
+        self.solution_strategy_status.setText("DEFAULT" if is_default else "CUSTOM")
+        self.solution_strategy_status.setProperty("state", "off" if is_default else "ok")
+        self.solution_strategy_status.style().unpolish(self.solution_strategy_status)
+        self.solution_strategy_status.style().polish(self.solution_strategy_status)
+
+    def _reset_solution_strategy(self) -> None:
+        for attr, default in self._SOLUTION_STRATEGY_DEFAULTS:
+            widget = getattr(self, attr)
+            if isinstance(widget, QComboBox):
+                widget.setCurrentText(default)
+            else:
+                widget.setValue(default)
+        self._update_nonlinear_summary()
+
+    def _update_recovery_field_states(self) -> None:
+        enabled = self.automatic_recovery.isChecked()
+        self.max_bisections.setEnabled(enabled)
+        self.adaptive_step.setEnabled(enabled)
+        self.min_increment_group.setEnabled(enabled)
+        self.max_increment_group.setEnabled(enabled)
+        if not enabled:
+            self.adaptive_step.setChecked(False)
+
+    def _update_precheck(self) -> None:
+        """Item 7's synchronous RUN-blocking check, computed entirely from the
+        current model + widget state - no solver call, so it stays instant."""
+        labels = self.precheck_value_labels
+        transform_label = self.geometric_transformation.currentText()
+        labels["Geometric Nonlinearity"].setText(transform_label)
+        material_active = bool(
+            self._model is not None
+            and any(
+                element.element_type.lower() in _NONLINEAR_ELEMENT_TYPES
+                for element in self._model.elements.values()
+            )
+        )
+        labels["Material Nonlinearity"].setText(
+            "Active" if material_active else "Not Active"
+        )
+        labels["Control Method"].setText(self.integrator_type.currentText())
+        num_steps = max(1, self.num_steps.value())
+        if self.integrator_type.currentData() == "DisplacementControl":
+            initial_step = self.target_displacement.value() / num_steps
+            labels["Initial Step"].setText(f"{initial_step:.6g} {self._unit_system.length}")
+        else:
+            initial_step = self.target_load_factor.value() / num_steps
+            labels["Initial Step"].setText(f"{initial_step:.6g}")
+        labels["Algorithm"].setText(self.algorithm.currentText())
+        labels["Convergence"].setText(
+            f"{self.test_type.currentText()} / {self.tolerance.value():.1E} / "
+            f"{self.max_iterations.value()}"
+        )
+        labels["Automatic Recovery"].setText(
+            "ON" if self.automatic_recovery.isChecked() else "OFF (Use Settings Only)"
+        )
+
+        issues: list[str] = []
+        if self._model is None or not self._model.nodes or not self._model.elements:
+            issues.append("모델이 비어 있습니다.")
+        else:
+            if not self._pattern_tags(self._model):
+                issues.append("적용된 하중 패턴이 없습니다.")
+            if not self._model.boundaries:
+                issues.append("경계조건이 없습니다 - 메커니즘(불안정 구조)이 될 수 있습니다.")
+        if self.control_node.currentData() is None:
+            issues.append("CONTROL NODE가 지정되지 않았습니다.")
+        if (
+            self.integrator_type.currentData() == "DisplacementControl"
+            and self.target_displacement.value() == 0
+        ):
+            issues.append("TARGET DISPLACEMENT가 0입니다 - 0이 아닌 값을 입력하세요.")
+        if (
+            self.gravity_pattern.currentData() is not None
+            and self.gravity_pattern.currentData() == self.lateral_pattern.currentData()
+        ):
+            issues.append("GRAVITY PATTERN과 LATERAL LOAD PATTERN이 같습니다.")
+        if self.min_increment.value() > 0 and self.max_increment.value() > 0:
+            if self.min_increment.value() > self.max_increment.value():
+                issues.append("MIN INCREMENT가 MAX INCREMENT보다 큽니다.")
+
+        if issues:
+            self.precheck_status.setText("⚠  " + "  ·  ".join(issues))
+            self.precheck_status.setProperty("state", "warning")
+        else:
+            self.precheck_status.setText("✓  Ready for Analysis")
+            self.precheck_status.setProperty("state", "ok")
+        self.precheck_status.style().unpolish(self.precheck_status)
+        self.precheck_status.style().polish(self.precheck_status)
 
     def _update_nonlinear_behavior_tiles(self) -> None:
         """MATERIAL NONLINEARITY used to always read "✓ Detected in Model"
         regardless of the actual model - a hardcoded claim, never checked.
-        StructuralModel only carries element_type (not material/section/
-        geomTransf type names, which live only inside the solver's own
-        ModelCommandCollector and never reach the imported domain object - see
-        model_importer.py), so that is the one signal checked here: real, but
-        only a partial proxy for "material nonlinearity" in the fullest sense.
-        GEOMETRIC NONLINEARITY is left unresolved rather than guessed - the
-        imported script's own geomTransf choice is not visible from
-        StructuralModel at all, and the script-import Nonlinear Static solver
-        applies no P-Delta/Corotational handling of its own either way."""
+        StructuralModel only carries element_type (not material/section names,
+        which live only inside the solver's own ModelCommandCollector and never
+        reach the imported domain object - see model_importer.py), so that is
+        the one signal checked here: real, but only a partial proxy for
+        "material nonlinearity" in the fullest sense - no Fiber Section/
+        Concrete02/Steel02 material DB is wired up yet (out of scope here; see
+        the module docstring), so this never claims more than element type
+        alone actually supports.
+
+        GEOMETRIC NONLINEARITY mirrors ``self.geometric_transformation`` -
+        Setup's own selection, which ``run_nonlinear_static_analysis`` applies
+        by overriding every ``ops.geomTransf(...)`` call the model script makes
+        (see ModelCommandCollector.install(geom_transf_override=...)) - so this
+        tile is never a guess about what the script might contain."""
         if self._model is None:
             self.material_nonlinearity_value.setText("—")
             self.material_nonlinearity_value.setProperty("state", "off")
@@ -1810,8 +2130,26 @@ class AnalysisSettingsPanel(QFrame):
                 self.material_nonlinearity_value.setProperty("state", "off")
         self.material_nonlinearity_value.style().unpolish(self.material_nonlinearity_value)
         self.material_nonlinearity_value.style().polish(self.material_nonlinearity_value)
-        self.geometric_nonlinearity_value.setText("Not tracked here")
-        self.geometric_nonlinearity_value.setProperty("state", "off")
+
+        transform = self.geometric_transformation.currentData()
+        transform_label = self.geometric_transformation.currentText()
+        if transform == "Linear":
+            self.geometric_nonlinearity_value.setText("○  Linear (disabled)")
+            self.geometric_nonlinearity_value.setProperty("state", "off")
+            self.geometric_nonlinearity_notice.setText(
+                "ⓘ  Geometric nonlinearity is Linear. P-Delta or large-displacement "
+                "effects will not be considered. Change GEOMETRIC TRANSFORMATION "
+                "above to enable them."
+            )
+        else:
+            self.geometric_nonlinearity_value.setText(f"✓  {transform_label} ENABLED")
+            self.geometric_nonlinearity_value.setProperty("state", "ok")
+            self.geometric_nonlinearity_notice.setText(
+                f"ⓘ  {transform_label} is applied to every frame element, overriding "
+                "whatever geomTransf the model script itself defines."
+            )
+        self.geometric_nonlinearity_value.style().unpolish(self.geometric_nonlinearity_value)
+        self.geometric_nonlinearity_value.style().polish(self.geometric_nonlinearity_value)
 
     def _update_engine_capability_display(self) -> None:
         """Make SOLUTION METHOD/CONVERGENCE show what the current AnalysisKind's

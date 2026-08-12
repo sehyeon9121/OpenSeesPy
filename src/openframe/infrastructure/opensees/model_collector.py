@@ -27,9 +27,25 @@ class ModelCommandCollector:
         self.element_loads = ElementLoadCollector()
         self._originals: dict[str, Callable[..., Any]] = {}
         self._tracker: AnalysisStageTracker | None = None
+        self._geom_transf_override: str | None = None
 
-    def install(self, tracker: AnalysisStageTracker | None = None) -> None:
+    def install(
+        self,
+        tracker: AnalysisStageTracker | None = None,
+        *,
+        geom_transf_override: str | None = None,
+    ) -> None:
+        """``geom_transf_override``, when given, replaces the transformation type
+        of every ``ops.geomTransf(...)`` call the script makes (Linear/PDelta/
+        Corotational all share the same ``(tag, *transfArgs)`` signature, so the
+        substitution is safe) - this is how Setup's Geometric Transformation
+        selection actually reaches the analysis: a script's own choice cannot be
+        changed after its elements are built (OpenSees resolves the transform
+        pointer at ``ops.element(...)`` time, not lazily), so the override must
+        happen at the moment ``ops.geomTransf`` itself is called, before any
+        element referencing that tag exists."""
         self._tracker = tracker
+        self._geom_transf_override = geom_transf_override
         self._patch("wipe", self._wrap_wipe)
         self._patch("model", self._wrap_model)
         self._patch("node", self._wrap_node)
@@ -50,10 +66,7 @@ class ModelCommandCollector:
             "section",
             lambda original: self._wrap_typed_command(original, self.section_types),
         )
-        self._patch(
-            "geomTransf",
-            lambda original: self._wrap_typed_command(original, self.geom_transf_types),
-        )
+        self._patch("geomTransf", self._wrap_geom_transf)
 
     def restore(self) -> None:
         """Put the real OpenSees commands back once the script has finished."""
@@ -231,6 +244,15 @@ class ModelCommandCollector:
                 self.element_loads.record(args, self.ndm, self.current_pattern_tag)
             except (ValueError, IndexError, TypeError):
                 pass
+            return result
+
+        return wrapped
+
+    def _wrap_geom_transf(self, original: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapped(command_type: str, *arguments: Any, **kwargs: Any) -> Any:
+            effective_type = self._geom_transf_override or command_type
+            result = original(effective_type, *arguments, **kwargs)
+            self.geom_transf_types.add(str(effective_type))
             return result
 
         return wrapped
