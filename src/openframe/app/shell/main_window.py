@@ -241,9 +241,10 @@ class MainWindow(QMainWindow):
 
     def _connect_actions(self) -> None:
         self.header.upload_requested.connect(self._choose_model_file)
+        self.header.direct_open_requested.connect(self.direct_model_workspace._open_project)
         self.header.run_requested.connect(self._run_analysis)
         self.header.home_requested.connect(self._show_start_workspace)
-        self.header.save_requested.connect(lambda: self._show_pending_workflow("Save Project"))
+        self.header.save_requested.connect(self._save_project_from_header)
         self.header.settings_requested.connect(lambda: self._show_pending_workflow("Settings"))
         self.header.help_requested.connect(self._show_about_dialog)
         self.header.profile_requested.connect(lambda: self._show_pending_workflow("Account"))
@@ -332,7 +333,8 @@ class MainWindow(QMainWindow):
         the 2D canvas instead of the setup wizard."""
         self._current_model_source = None
         self.navigation.hide()
-        self.header.hide()
+        self.header.show()
+        self.header.set_direct_model_mode(True)
         self.direct_model_workspace.start_2d_model()
         self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
         self.statusBar().showMessage("New 2D Model · 2D 캔버스에서 바로 시작합니다")
@@ -346,7 +348,8 @@ class MainWindow(QMainWindow):
         geometry never appears here and vice versa."""
         self._current_model_source = None
         self.navigation.hide()
-        self.header.hide()
+        self.header.show()
+        self.header.set_direct_model_mode(True)
         self.direct_model_workspace.start_3d_model()
         self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
         self.statusBar().showMessage(
@@ -374,9 +377,16 @@ class MainWindow(QMainWindow):
             return
         self._current_model_source = None
         self.navigation.hide()
-        self.header.hide()
+        self.header.show()
+        self.header.set_direct_model_mode(True)
         self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
         self.statusBar().showMessage(f"프로젝트 열기 · {Path(path_str).name}")
+
+    def _save_project_from_header(self) -> None:
+        if self.workspace_stack.currentWidget() is self.direct_model_workspace:
+            self.direct_model_workspace._save_project()
+            return
+        self._show_pending_workflow("Save Project")
 
     def _show_model_workspace(self) -> None:
         self._resume_section = "model"

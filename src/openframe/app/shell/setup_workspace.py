@@ -44,17 +44,25 @@ from openframe.features.analysis.presentation.analysis_settings_panel import (
 _KIND_LABELS: dict[AnalysisKind, str] = {
     AnalysisKind.LINEAR_STATIC: "Linear Static",
     AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
+    AnalysisKind.MODAL: "Modal (Eigenvalue)",
     AnalysisKind.TIME_HISTORY: "Time History",
 }
 
 _FLOW_STEPS: dict[AnalysisKind, tuple[str, ...]] = {
-    AnalysisKind.LINEAR_STATIC: ("Model", "Loading", "Solver", "Pre-check", "Run"),
+    AnalysisKind.LINEAR_STATIC: ("Model", "Loading", "Analysis Method", "Pre-check", "Run"),
     AnalysisKind.NONLINEAR_STATIC: (
         "Model",
         "Loading",
         "Nonlinearity",
         "Solution Method",
         "Convergence",
+        "Pre-check",
+        "Run",
+    ),
+    AnalysisKind.MODAL: (
+        "Model",
+        "Modal Parameters",
+        "Eigen Solution",
         "Pre-check",
         "Run",
     ),
@@ -72,37 +80,60 @@ _FLOW_STEPS: dict[AnalysisKind, tuple[str, ...]] = {
 
 _GUIDE_TEXT: dict[AnalysisKind, str] = {
     AnalysisKind.LINEAR_STATIC: (
-        "Linear static analysis assumes forces and displacements stay proportional - "
-        "no yielding, no large displacements. Fast and predictable, but it cannot trace "
-        "post-yield or post-buckling behavior. Use it to check a first-pass design."
+        "Calculates displacement, reactions, and member forces from static loads "
+        "using a linear elastic structural response, solved in a single step "
+        "without iterating for equilibrium.\n\n"
+        "Suitable for:\n"
+        "•  basic elastic structural response\n"
+        "•  service-level load checks\n"
+        "•  preliminary structural assessment"
     ),
     AnalysisKind.NONLINEAR_STATIC: (
-        "Nonlinear static (pushover) analysis pushes the structure incrementally and "
-        "solves for equilibrium at every step, so it can capture yielding and "
-        "softening a linear analysis would miss. It needs a CONTROL NODE/DOF to push "
-        "and a converging solution algorithm - see NONLINEAR SETTINGS below."
+        "Pushes the structure in increments and solves for equilibrium at "
+        "every step, capturing yielding and softening a linear analysis "
+        "would miss.\n\n"
+        "Load Control scales every pattern together; Displacement Control "
+        "drives one node/DOF directly, so it can trace a softening branch "
+        "Load Control cannot.\n\n"
+        "A step that fails to converge does not necessarily mean the "
+        "structure has collapsed - see the results up to that point."
+    ),
+    AnalysisKind.MODAL: (
+        "Calculates the natural vibration characteristics of the structure "
+        "without applying a time-varying ground motion. Use the calculated "
+        "modes to inspect natural periods, frequencies and mode shapes.\n\n"
+        "Results include:\n"
+        "•  Natural Period\n"
+        "•  Frequency\n"
+        "•  Mode Shape\n"
+        "•  Mass Participation"
     ),
     AnalysisKind.TIME_HISTORY: (
-        "Time history analysis applies a real or synthetic ground-motion record over "
-        "time and integrates the equation of motion step by step. It is the most "
-        "realistic seismic check available here, and the most demanding to set up - "
-        "this analysis type is not implemented yet."
+        "Applies a ground-motion record over time and calculates the dynamic "
+        "response of the structure step by step, using Newmark time integration. "
+        "Configure the ground-motion file, direction, scale factor and damping "
+        "ratio below, then review the response history under RESULTS."
     ),
 }
 
 _GUIDE_TOPIC: dict[AnalysisKind, str] = {
-    AnalysisKind.LINEAR_STATIC: "LINEAR RESPONSE",
+    AnalysisKind.LINEAR_STATIC: "LINEAR STATIC",
     AnalysisKind.NONLINEAR_STATIC: "NONLINEARITY",
+    AnalysisKind.MODAL: "MODAL ANALYSIS",
     AnalysisKind.TIME_HISTORY: "DYNAMIC RESPONSE",
 }
 
 _GUIDE_CALLOUT: dict[AnalysisKind, str] = {
     AnalysisKind.LINEAR_STATIC: (
-        "Use this setup when stiffness remains constant and load history does not affect "
-        "the final response."
+        "Assumes linear elastic material, no yielding, no iterative equilibrium - "
+        "not a post-yield or post-buckling check."
     ),
     AnalysisKind.NONLINEAR_STATIC: (
         "Review the control node, load pattern and convergence settings before running."
+    ),
+    AnalysisKind.MODAL: (
+        "Modal results describe relative vibration shapes, not actual static "
+        "displacement."
     ),
     AnalysisKind.TIME_HISTORY: (
         "Ground-motion units, time step and damping must be consistent with the model."

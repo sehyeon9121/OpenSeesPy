@@ -63,6 +63,7 @@ def _centered_png_icon(path: Path, canvas_size: int = 64, content_size: int = 54
 
 class AppHeader(QFrame):
     home_requested = Signal()
+    direct_open_requested = Signal()
     upload_requested = Signal()
     run_requested = Signal()
     save_requested = Signal()
@@ -116,6 +117,13 @@ class AppHeader(QFrame):
         self.upload_button = QPushButton("UPLOAD .PY")
         self.upload_button.setObjectName("uploadButton")
         self.upload_button.clicked.connect(self.upload_requested)
+        self.direct_open_button = QPushButton("열기")
+        self.direct_open_button.setObjectName("directModelOpenButton")
+        self.direct_open_button.setToolTip(
+            "저장된 OpenFrame 프로젝트(.ofsm)를 불러옵니다."
+        )
+        self.direct_open_button.clicked.connect(self.direct_open_requested)
+        self.direct_open_button.hide()
         self.save_button = QPushButton("SAVE PROJECT")
         self.save_button.setObjectName("saveProjectButton")
         self.save_button.clicked.connect(self.save_requested)
@@ -150,6 +158,7 @@ class AppHeader(QFrame):
         # Status is kept as an exposed state label for analysis progress and
         # compatibility, but the visible READY badge belongs to the project row.
         layout.addWidget(self.status_label)
+        layout.addWidget(self.direct_open_button)
         layout.addWidget(self.save_button)
         layout.addWidget(self.run_button)
         divider = QFrame()
@@ -163,6 +172,8 @@ class AppHeader(QFrame):
 
     def set_welcome_mode(self, welcome: bool) -> None:
         """Keep the first-run screen focused on project entry choices."""
+        self.direct_open_button.hide()
+        self.save_button.setText("SAVE PROJECT")
         self.status_label.setText("STRUCTURAL MODELING & ANALYSIS" if welcome else "●  READY")
         self.status_label.setObjectName("welcomeHeaderLabel" if welcome else "readyBadge")
         self.status_label.style().unpolish(self.status_label)
@@ -179,6 +190,17 @@ class AppHeader(QFrame):
         # neither the brand nor HOME is clipped and no stale empty gap remains.
         self.brand_panel.setFixedWidth(max(205, self.brand_panel.sizeHint().width()))
         self.brand_panel.updateGeometry()
+        self._fit_action_panel()
+
+    def set_direct_model_mode(self, enabled: bool) -> None:
+        """Show only authoring commands in the menu bar's right corner."""
+        self.status_label.hide()
+        self.home_button.hide()
+        self.upload_button.hide()
+        self.direct_open_button.setVisible(enabled)
+        self.save_button.setVisible(enabled)
+        self.save_button.setText("저장" if enabled else "SAVE PROJECT")
+        self.run_button.setVisible(not enabled)
         self._fit_action_panel()
 
     def _fit_action_panel(self) -> None:

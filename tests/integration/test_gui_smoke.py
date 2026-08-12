@@ -75,8 +75,12 @@ def test_new_2d_model_skips_the_wizard_straight_to_its_own_canvas() -> None:
     assert window.workspace_stack.currentWidget() is direct
     assert direct.stage_stack.currentWidget() is direct.geometry_page
     assert direct.workflow.isHidden()
+    assert direct.command_bar.isHidden()
     assert window.navigation.isHidden()
-    assert window.header.isHidden()
+    assert not window.header.isHidden()
+    assert not window.header.direct_open_button.isHidden()
+    assert window.header.save_button.text() == "저장"
+    assert window.header.run_button.isHidden()
     assert window._current_model_source is None
 
     window.close()
@@ -99,7 +103,8 @@ def test_new_3d_model_opens_the_wizard_and_ends_on_the_3d_canvas() -> None:
     assert "'-ndm', 3" in direct.setup_page.command_preview.text()
     assert "'-ndf', 6" in direct.setup_page.command_preview.text()
     assert window.navigation.isHidden()
-    assert window.header.isHidden()
+    assert not window.header.isHidden()
+    assert not window.header.direct_open_button.isHidden()
 
     direct.setup_page.continue_button.click()
     assert direct.stage_stack.currentWidget() is direct.geometry_page_3d

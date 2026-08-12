@@ -8,9 +8,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
-    QLabel,
     QMessageBox,
-    QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -38,32 +36,15 @@ class DirectModelWorkspace(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        command_bar = QFrame()
-        command_bar.setObjectName("directModelCommandBar")
-        command_layout = QHBoxLayout(command_bar)
-        command_layout.setContentsMargins(12, 7, 12, 7)
-        brand = QLabel("OpenFrame Studio")
-        brand.setObjectName("directModelBrand")
-        command_layout.addWidget(brand)
-        self.back_button = QPushButton("Home")
-        self.back_button.setObjectName("directModelBackButton")
-        self.back_button.clicked.connect(self.back_requested)
-        command_layout.addWidget(self.back_button)
+        self.command_bar = QFrame()
+        self.command_bar.setObjectName("directModelCommandBar")
+        command_layout = QHBoxLayout(self.command_bar)
+        command_layout.setContentsMargins(12, 4, 12, 4)
         command_layout.addStretch(1)
         self.workflow = ModelingWorkflowBar()
         command_layout.addWidget(self.workflow)
         command_layout.addStretch(1)
-        self.open_button = QPushButton("열기")
-        self.open_button.setObjectName("directModelOpenButton")
-        self.open_button.setToolTip("저장된 OpenFrame 프로젝트(.ofsm)를 불러옵니다.")
-        self.open_button.clicked.connect(self._open_project)
-        command_layout.addWidget(self.open_button)
-        self.save_button = QPushButton("저장")
-        self.save_button.setObjectName("directModelSaveButton")
-        self.save_button.setToolTip("현재 2D/3D 모델을 OpenFrame 프로젝트(.ofsm) 파일로 저장합니다.")
-        self.save_button.clicked.connect(self._save_project)
-        command_layout.addWidget(self.save_button)
-        root.addWidget(command_bar)
+        root.addWidget(self.command_bar)
 
         self.setup_page = ModelSetupPage()
         self.materials_page = MaterialSettingsPage()
@@ -149,7 +130,9 @@ class DirectModelWorkspace(QFrame):
         # canvas page itself). Hiding the step bar here, instead of removing
         # steps that other flows may still reach, gives the canvas the full
         # window width without touching how those other steps are entered.
-        self.workflow.setVisible(step not in ("geometry", "geometry_3d"))
+        show_workflow = step not in ("geometry", "geometry_3d")
+        self.workflow.setVisible(show_workflow)
+        self.command_bar.setVisible(show_workflow)
         self.stage_stack.setCurrentWidget(self._pages[step])
 
     def _continue_from_setup(self) -> None:

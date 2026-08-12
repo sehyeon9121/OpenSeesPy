@@ -1,6 +1,12 @@
 """Framework-independent structural engineering domain objects."""
 
 from openframe.core.domain.analysis import AnalysisKind, AnalysisRequest
+from openframe.core.domain.analysis_capabilities import (
+    ANALYSIS_CAPABILITIES,
+    AnalysisCapabilities,
+    ComponentField,
+    FieldState,
+)
 from openframe.core.domain.ground_motion import GroundMotionRecord, GroundMotionSource
 from openframe.core.domain.materials import (
     MaterialDefinition,
@@ -38,17 +44,21 @@ from openframe.core.domain.units import (
 )
 
 __all__ = [
+    "ANALYSIS_CAPABILITIES",
     "DEFAULT_UNIT_SYSTEM",
     "FORCE_UNITS",
     "LENGTH_UNITS",
     "TIME_UNITS",
+    "AnalysisCapabilities",
     "AnalysisKind",
     "AnalysisRequest",
     "AnalysisResult",
     "AnalysisStatus",
     "BoundaryCondition",
+    "ComponentField",
     "Element",
     "ElementResult",
+    "FieldState",
     "GroundMotionRecord",
     "GroundMotionSource",
     "LoadCaseKind",
