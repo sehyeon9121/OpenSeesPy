@@ -131,6 +131,10 @@ class MainWindow(QMainWindow):
             subtitle="Import, inspect, and prepare the structural model before analysis.",
             action_text="Proceed to Setup  →",
         )
+        # Keep MODEL's context header compact so the structural viewport and
+        # side panels receive the recovered vertical workspace. SETUP retains
+        # the roomier shared PageHeader spacing.
+        self.model_page_header.layout().setContentsMargins(24, 7, 24, 7)
         self.model_page_header.action_requested.connect(self._open_setup_workspace)
         self.model_page_header.set_status("Model Status:  ● READY", "ready")
         self.model_workspace_page = QFrame()
@@ -151,7 +155,15 @@ class MainWindow(QMainWindow):
         self.workspace_stack.setCurrentWidget(self.start_workspace)
 
         self._build_menu_bar()
-        root_layout.addWidget(self.header)
+        # AppHeader (brand/status/upload/run) rides the native menu bar's own row
+        # as a corner widget instead of stacking as its own separate row below it -
+        # File/Edit/View/Window/Help and the brand/actions cluster end up on one
+        # physical row, the same way the Stitch mockup packs them, without
+        # changing anything about AppHeader itself (same widgets, same attribute
+        # names every existing test already reaches through window.header.*).
+        self.menuBar().setCornerWidget(self.header.brand_panel, Qt.Corner.TopLeftCorner)
+        self.menuBar().setCornerWidget(self.header, Qt.Corner.TopRightCorner)
+        self.navigation.append_trailing_widget(self.header.upload_button)
         root_layout.addWidget(self.navigation)
         root_layout.addWidget(self.workspace_stack, 1)
         self.setCentralWidget(root)
@@ -231,6 +243,10 @@ class MainWindow(QMainWindow):
         self.header.upload_requested.connect(self._choose_model_file)
         self.header.run_requested.connect(self._run_analysis)
         self.header.home_requested.connect(self._show_start_workspace)
+        self.header.save_requested.connect(lambda: self._show_pending_workflow("Save Project"))
+        self.header.settings_requested.connect(lambda: self._show_pending_workflow("Settings"))
+        self.header.help_requested.connect(self._show_about_dialog)
+        self.header.profile_requested.connect(lambda: self._show_pending_workflow("Account"))
         self.setup_workspace.back_to_model_requested.connect(self._show_model_workspace)
         self.start_workspace.import_opensees_requested.connect(self._start_import_workspace)
         self.start_workspace.new_model_requested.connect(self._start_new_model_workspace)
@@ -289,7 +305,7 @@ class MainWindow(QMainWindow):
         self.workspace_stack.setCurrentWidget(self.start_workspace)
         self.header.show()
         self.navigation.set_home_mode(True)
-        self.navigation.show()
+        self.navigation.hide()
         self.header.set_welcome_mode(True)
         self._set_status_mode("home")
         self.statusBar().showMessage("OpenFrame Studio v2.4.1  |  Ready  |  No project loaded")
@@ -597,21 +613,27 @@ class MainWindow(QMainWindow):
             self._workspace_sessions[run_session_key].result = result
             self._refresh_start_sessions()
         if result.status == AnalysisStatus.COMPLETED:
-            self.analysis_progress.show_completed(
-                f"Results are ready for {len(result.node_results)} nodes and "
-                f"{len(result.element_results)} elements."
-            )
-            self.statusBar().showMessage(
-                f"Analysis completed · Nodes {len(result.node_results)}"
-                f" · Elements {len(result.element_results)}"
-            )
+            if result.mode_shapes:
+                summary_line = f"Results are ready for {len(result.mode_shapes)} modes."
+                detail_line = f"모드 결과: {len(result.mode_shapes)}개\n\n"
+            elif result.time_history:
+                summary_line = f"Results are ready for {len(result.time_history)} time steps."
+                detail_line = f"시간이력 스텝 결과: {len(result.time_history)}개\n\n"
+            else:
+                summary_line = (
+                    f"Results are ready for {len(result.node_results)} nodes and "
+                    f"{len(result.element_results)} elements."
+                )
+                detail_line = (
+                    f"절점 결과: {len(result.node_results)}개\n"
+                    f"부재 결과: {len(result.element_results)}개\n\n"
+                )
+            self.analysis_progress.show_completed(summary_line)
+            self.statusBar().showMessage(f"Analysis completed · {summary_line}")
             QMessageBox.information(
                 self,
                 "해석 완료",
-                "해석이 완료되었습니다.\n\n"
-                f"절점 결과: {len(result.node_results)}개\n"
-                f"부재 결과: {len(result.element_results)}개\n\n"
-                "RESULTS 탭에서 결과를 확인할 수 있습니다.",
+                "해석이 완료되었습니다.\n\n" + detail_line + "RESULTS 탭에서 결과를 확인할 수 있습니다.",
             )
         elif result.status == AnalysisStatus.PARTIAL:
             convergence = result.convergence

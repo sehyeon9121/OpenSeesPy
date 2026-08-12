@@ -20,7 +20,7 @@ class PageHeader(QFrame):
         self.setObjectName("pageHeader")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setContentsMargins(24, 14, 24, 14)
         layout.setSpacing(12)
 
         text_column = QVBoxLayout()

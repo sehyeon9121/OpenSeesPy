@@ -25,13 +25,16 @@ from openframe.features.analysis.presentation.analysis_config_store import (
 _KIND_LABELS = {
     AnalysisKind.LINEAR_STATIC: "Linear Static",
     AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
+    AnalysisKind.MODAL: "Modal (Eigenvalue)",
     AnalysisKind.TIME_HISTORY: "Time History",
 }
 
 #: Kinds without a working AnalysisModule.run() yet - offered so the option is
 #: visible (it is a real enum member with a SETUP page), but disabled with an
-#: honest tooltip instead of silently letting RUN fail later.
-_UNIMPLEMENTED_KINDS = frozenset({AnalysisKind.TIME_HISTORY})
+#: honest tooltip instead of silently letting RUN fail later. Empty: all four
+#: kinds (Linear Static, Nonlinear Static, Modal, Time History) are fully wired
+#: end-to-end (worker/runner/module/bootstrap), so none needs this anymore.
+_UNIMPLEMENTED_KINDS: frozenset[AnalysisKind] = frozenset()
 
 
 class AnalysisTypeSelector(QFrame):

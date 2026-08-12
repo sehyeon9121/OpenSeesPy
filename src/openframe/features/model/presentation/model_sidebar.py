@@ -46,10 +46,15 @@ class ModelSidebar(QFrame):
         self._tree_items: dict[tuple[str, int], QTreeWidgetItem] = {}
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        layout.addWidget(self._section_label("ACTIVE FILE"))
+        file_section = QFrame()
+        file_section.setObjectName("modelSidebarSection")
+        file_section_layout = QVBoxLayout(file_section)
+        file_section_layout.setContentsMargins(12, 12, 12, 12)
+        file_section_layout.setSpacing(8)
+        file_section_layout.addWidget(self._section_label("ACTIVE FILE"))
         file_card = QFrame()
         file_card.setObjectName("panelCard")
         file_layout = QVBoxLayout(file_card)
@@ -61,13 +66,19 @@ class ModelSidebar(QFrame):
         self.file_path.setWordWrap(True)
         file_layout.addWidget(self.file_name)
         file_layout.addWidget(self.file_path)
-        layout.addWidget(file_card)
+        file_section_layout.addWidget(file_card)
+        layout.addWidget(file_section)
 
-        layout.addWidget(self._section_label("MODEL SUMMARY"))
+        summary_section = QFrame()
+        summary_section.setObjectName("modelSidebarSection")
+        summary_section_layout = QVBoxLayout(summary_section)
+        summary_section_layout.setContentsMargins(12, 12, 12, 12)
+        summary_section_layout.setSpacing(8)
+        summary_section_layout.addWidget(self._section_label("MODEL SUMMARY"))
         summary = QFrame()
-        summary.setObjectName("panelCard")
+        summary.setObjectName("modelSummaryGrid")
         summary_layout = QGridLayout(summary)
-        summary_layout.setContentsMargins(10, 9, 10, 9)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
         summary_layout.setHorizontalSpacing(12)
         summary_layout.setVerticalSpacing(8)
         self.summary_values: dict[str, QLabel] = {}
@@ -77,18 +88,30 @@ class ModelSidebar(QFrame):
                 ("NODES", "nodes", "0"),
                 ("ELEMENTS", "elements", "0"),
                 ("SUPPORTS", "supports", "0"),
+                ("LOAD PATTERNS", "load_patterns", "0"),
             )
         ):
             name = QLabel(label)
             name.setObjectName("summaryLabel")
             count = QLabel(value)
             count.setObjectName("summaryValue")
+            count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             summary_layout.addWidget(name, row, 0)
             summary_layout.addWidget(count, row, 1)
             self.summary_values[key] = count
-        layout.addWidget(summary)
+        summary_section_layout.addWidget(summary)
+        layout.addWidget(summary_section)
 
-        layout.addWidget(self._section_label("MODEL CONTENT"))
+        content_header = QFrame()
+        content_header.setObjectName("modelContentHeader")
+        content_header_layout = QHBoxLayout(content_header)
+        content_header_layout.setContentsMargins(12, 9, 12, 7)
+        content_header_layout.addWidget(self._section_label("MODEL CONTENT"))
+        content_header_layout.addStretch(1)
+        content_menu = QLabel("⋮")
+        content_menu.setObjectName("modelContentMenu")
+        content_header_layout.addWidget(content_menu)
+        layout.addWidget(content_header)
         self.tree = QTreeWidget()
         self.tree.setObjectName("modelTree")
         self.tree.setHeaderHidden(True)
@@ -97,6 +120,7 @@ class ModelSidebar(QFrame):
         layout.addWidget(self.tree, 1)
 
         footer = QHBoxLayout()
+        footer.setContentsMargins(12, 8, 12, 8)
         footer.addWidget(QLabel("●  Model workspace"))
         footer.addStretch(1)
         self.dimension_badge = QLabel("2D")
@@ -114,6 +138,12 @@ class ModelSidebar(QFrame):
         self.summary_values["nodes"].setText(str(len(model.nodes)))
         self.summary_values["elements"].setText(str(len(model.elements)))
         self.summary_values["supports"].setText(str(len(model.boundaries)))
+        load_patterns = {
+            load.pattern_tag
+            for load in (*model.nodal_loads, *model.element_loads)
+            if load.pattern_tag is not None
+        }
+        self.summary_values["load_patterns"].setText(str(len(load_patterns)))
         self.dimension_badge.setText(f"{model.ndm}D")
 
         self.tree.clear()

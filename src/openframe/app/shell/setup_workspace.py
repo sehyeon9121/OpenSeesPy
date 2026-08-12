@@ -90,6 +90,25 @@ _GUIDE_TEXT: dict[AnalysisKind, str] = {
     ),
 }
 
+_GUIDE_TOPIC: dict[AnalysisKind, str] = {
+    AnalysisKind.LINEAR_STATIC: "LINEAR RESPONSE",
+    AnalysisKind.NONLINEAR_STATIC: "NONLINEARITY",
+    AnalysisKind.TIME_HISTORY: "DYNAMIC RESPONSE",
+}
+
+_GUIDE_CALLOUT: dict[AnalysisKind, str] = {
+    AnalysisKind.LINEAR_STATIC: (
+        "Use this setup when stiffness remains constant and load history does not affect "
+        "the final response."
+    ),
+    AnalysisKind.NONLINEAR_STATIC: (
+        "Review the control node, load pattern and convergence settings before running."
+    ),
+    AnalysisKind.TIME_HISTORY: (
+        "Ground-motion units, time step and damping must be consistent with the model."
+    ),
+}
+
 
 class SetupWorkspace(QFrame):
     run_requested = Signal()
@@ -199,10 +218,26 @@ class SetupWorkspace(QFrame):
         body.setObjectName("rightSection")
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(14, 12, 14, 14)
+        body_layout.setSpacing(12)
+        self.guide_topic = QLabel()
+        self.guide_topic.setObjectName("setupGuideTopic")
+        body_layout.addWidget(self.guide_topic)
         self.guide_text = QLabel()
         self.guide_text.setObjectName("secondaryText")
         self.guide_text.setWordWrap(True)
         body_layout.addWidget(self.guide_text)
+        self.guide_callout = QLabel()
+        self.guide_callout.setObjectName("setupGuideCallout")
+        self.guide_callout.setWordWrap(True)
+        body_layout.addWidget(self.guide_callout)
+        guide_divider = QFrame()
+        guide_divider.setObjectName("setupGuideDivider")
+        guide_divider.setFrameShape(QFrame.Shape.HLine)
+        body_layout.addWidget(guide_divider)
+        reference = QLabel("OpenSees solution strategy reference  ↗")
+        reference.setObjectName("setupGuideReference")
+        reference.setWordWrap(True)
+        body_layout.addWidget(reference)
         body_layout.addStretch(1)
         layout.addWidget(body, 1)
         return frame
@@ -230,13 +265,17 @@ class SetupWorkspace(QFrame):
                 prefix, color = "○", "#757684"
             item = QListWidgetItem(f"{prefix}   {index + 1}. {label}")
             item.setForeground(QBrush(QColor(color)))
+            if index == active_index:
+                item.setBackground(QBrush(QColor("#eef0ff")))
             item.setSizeHint(QSize(190, 34))
             font = QFont()
             font.setPointSize(8)
             font.setBold(index == active_index)
             item.setFont(font)
             self._flow_list_widget.addItem(item)
+        self.guide_topic.setText(_GUIDE_TOPIC.get(kind, "ANALYSIS"))
         self.guide_text.setText(_GUIDE_TEXT.get(kind, ""))
+        self.guide_callout.setText(_GUIDE_CALLOUT.get(kind, ""))
         self._refresh_precheck()
 
     def _refresh_precheck(self) -> None:

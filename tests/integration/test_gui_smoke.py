@@ -18,18 +18,23 @@ def test_main_window_can_be_constructed() -> None:
     assert window.view is window.viewport.view
     assert window.navigation.current_section() == "model"
     assert window.workspace_stack.currentWidget() is window.start_workspace
-    assert not window.navigation.isHidden()
+    assert window.navigation.isHidden()
     assert window.header.home_button.isHidden()
+    assert window.header.run_button.isHidden()
     assert window.start_workspace.resume_button.isHidden()
     assert window.start_workspace.import_button.text() == "IMPORT"
 
     window.start_workspace.import_button.click()
     assert window.workspace_stack.currentWidget() is window.model_workspace_page
     assert window._current_model_source is None
+    assert not window.navigation.isHidden()
+    assert not window.header.run_button.isHidden()
     assert not window.header.upload_button.isHidden()
 
-    window.header.home_button.click()
+    window.header.brand_label.click()
     assert window.workspace_stack.currentWidget() is window.start_workspace
+    assert window.navigation.isHidden()
+    assert window.header.run_button.isHidden()
     assert not window.start_workspace.resume_button.isHidden()
     window.start_workspace.resume_button.click()
     assert window.workspace_stack.currentWidget() is window.model_workspace_page

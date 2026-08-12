@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -56,10 +58,11 @@ class AnalysisSettingsPanel(QFrame):
         layout.addWidget(self._header("CURRENT CONFIGURATION"))
 
         settings = QFrame()
-        settings.setObjectName("rightSection")
+        settings.setObjectName("setupSettingsSurface")
+        settings.setMaximumWidth(896)
         settings_layout = QVBoxLayout(settings)
-        settings_layout.setContentsMargins(16, 14, 16, 14)
-        settings_layout.setSpacing(12)
+        settings_layout.setContentsMargins(24, 20, 24, 24)
+        settings_layout.setSpacing(16)
 
         kind_row = QFrame()
         kind_row.setObjectName("setupConfigBar")
@@ -96,7 +99,33 @@ class AnalysisSettingsPanel(QFrame):
                 self.load_control_value = metric
             elif name == "Steps":
                 self.load_steps_value = metric
-        load_layout.addLayout(load_grid)
+        load_content = QHBoxLayout()
+        load_content.setSpacing(28)
+        load_content.addLayout(load_grid)
+        load_progress = QFrame()
+        load_progress.setObjectName("setupLoadProgress")
+        load_progress_layout = QVBoxLayout(load_progress)
+        load_progress_layout.setContentsMargins(20, 4, 0, 2)
+        load_progress_layout.setSpacing(4)
+        self.load_progress = QProgressBar()
+        self.load_progress.setObjectName("setupLoadProgressBar")
+        self.load_progress.setRange(0, 10)
+        self.load_progress.setValue(10)
+        self.load_progress.setTextVisible(False)
+        load_progress_layout.addWidget(self.load_progress)
+        progress_labels = QHBoxLayout()
+        progress_labels.setContentsMargins(0, 0, 0, 0)
+        zero_label = QLabel("0%")
+        zero_label.setObjectName("setupProgressCaption")
+        self.load_progress_caption = QLabel("100% (10 Steps)")
+        self.load_progress_caption.setObjectName("setupProgressCaption")
+        self.load_progress_caption.setProperty("active", True)
+        progress_labels.addWidget(zero_label)
+        progress_labels.addStretch(1)
+        progress_labels.addWidget(self.load_progress_caption)
+        load_progress_layout.addLayout(progress_labels)
+        load_content.addWidget(load_progress, 1)
+        load_layout.addLayout(load_content)
         settings_layout.addWidget(load_card)
 
         self.nonlinear_group = QFrame()
@@ -105,9 +134,16 @@ class AnalysisSettingsPanel(QFrame):
         nonlinear_layout = QVBoxLayout(self.nonlinear_group)
         nonlinear_layout.setContentsMargins(12, 10, 12, 10)
         nonlinear_layout.setSpacing(8)
+        nonlinear_title_row = QHBoxLayout()
+        nonlinear_title_row.setContentsMargins(0, 0, 0, 0)
         nonlinear_title = QLabel("2. NONLINEAR BEHAVIOR")
         nonlinear_title.setObjectName("setupConfigTitle")
-        nonlinear_layout.addWidget(nonlinear_title)
+        nonlinear_title_row.addWidget(nonlinear_title)
+        nonlinear_title_row.addStretch(1)
+        review_badge = QLabel("REVIEW REQUIRED")
+        review_badge.setObjectName("setupReviewBadge")
+        nonlinear_title_row.addWidget(review_badge)
+        nonlinear_layout.addLayout(nonlinear_title_row)
 
         behavior_row = QHBoxLayout()
         behavior_row.setSpacing(8)
@@ -237,6 +273,39 @@ class AnalysisSettingsPanel(QFrame):
         solution_grid.addWidget(numberer, 1, 2)
         solution_grid.addWidget(self.solver, 1, 3)
         solution_layout.addLayout(solution_grid)
+        solution_flow = QFrame()
+        solution_flow.setObjectName("setupSolutionFlow")
+        flow_layout = QHBoxLayout(solution_flow)
+        flow_layout.setContentsMargins(14, 9, 14, 9)
+        flow_layout.setSpacing(8)
+        for index, (symbol, caption) in enumerate((
+            ("ΔP", "LOAD STEP"),
+            ("K", "NEWTON"),
+            ("ΣF=0", "EQUILIBRIUM"),
+            ("P+1", "NEXT"),
+        )):
+            node = QFrame()
+            node.setObjectName("setupSolutionNode")
+            node.setProperty("active", index == 1)
+            node_layout = QVBoxLayout(node)
+            node_layout.setContentsMargins(6, 4, 6, 4)
+            node_layout.setSpacing(2)
+            symbol_label = QLabel(symbol)
+            symbol_label.setObjectName("setupSolutionSymbol")
+            symbol_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            caption_label = QLabel(caption)
+            caption_label.setObjectName("setupSolutionCaption")
+            caption_label.setProperty("active", index == 1)
+            caption_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            node_layout.addWidget(symbol_label)
+            node_layout.addWidget(caption_label)
+            flow_layout.addWidget(node, 1)
+            if index < 3:
+                arrow = QLabel("→")
+                arrow.setObjectName("setupSolutionArrow")
+                arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                flow_layout.addWidget(arrow)
+        solution_layout.addWidget(solution_flow)
         settings_layout.addWidget(solution_card)
 
         convergence_card, convergence_layout = self._config_card("4. CONVERGENCE")
@@ -261,11 +330,32 @@ class AnalysisSettingsPanel(QFrame):
         chart = QLabel("▇  ▅  ▂   ┄┄┄")
         chart.setObjectName("setupConvergenceChart")
         convergence_row.addWidget(chart, 1, Qt.AlignmentFlag.AlignRight)
+        chart.hide()
+        visual_chart = QFrame()
+        visual_chart.setObjectName("setupConvergenceChart")
+        chart_layout = QHBoxLayout(visual_chart)
+        chart_layout.setContentsMargins(18, 8, 8, 2)
+        chart_layout.setSpacing(6)
+        chart_layout.addStretch(1)
+        for height, converged in ((50, False), (36, False), (16, True)):
+            bar = QFrame()
+            bar.setObjectName("setupConvergenceBar")
+            bar.setProperty("converged", converged)
+            bar.setFixedSize(18, height)
+            chart_layout.addWidget(bar, 0, Qt.AlignmentFlag.AlignBottom)
+        convergence_row.addWidget(visual_chart, 1)
         convergence_layout.addLayout(convergence_row)
         settings_layout.addWidget(convergence_card)
 
         settings_layout.addStretch(1)
-        layout.addWidget(settings)
+        scroll = QScrollArea()
+        scroll.setObjectName("setupSettingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        scroll.setWidget(settings)
+        layout.addWidget(scroll, 1)
 
         self._build_nonlinear_dialog()
         self.solver.currentIndexChanged.connect(self._update_nonlinear_summary)
@@ -696,6 +786,7 @@ class AnalysisSettingsPanel(QFrame):
         self._ground_motion_path = Path(path_text)
         self.ground_motion_path_label.setText(self._ground_motion_path.name)
         self.ground_motion_path_label.setToolTip(path_text)
+        self._sync_store_options()
 
     def _update_nonlinear_summary(self) -> None:
         """Keep a short readout of the dialog's current values visible in the
@@ -712,6 +803,9 @@ class AnalysisSettingsPanel(QFrame):
         )
         self.load_control_value.setText(integrator)
         self.load_steps_value.setText(str(self.num_steps.value()))
+        self.load_progress.setMaximum(max(1, self.num_steps.value()))
+        self.load_progress.setValue(self.num_steps.value())
+        self.load_progress_caption.setText(f"100% ({self.num_steps.value()} Steps)")
         self.solution_algorithm.setText(self.algorithm.currentText())
         self.convergence_test.setText(self.test_type.currentText())
         self.convergence_tolerance.setText(f"{self.tolerance.value():.1E}")

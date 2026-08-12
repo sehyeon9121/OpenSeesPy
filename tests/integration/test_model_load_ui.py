@@ -67,11 +67,11 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     assert window.viewport.mode_label.text() == "MODEL LOADED"
     assert window.workspace_stack.currentWidget() is window.model_workspace_page
     assert not window.navigation.isHidden()
-    assert not window.header.home_button.isHidden()
+    assert window.header.home_button.isHidden()
     assert window.start_workspace.session_title.text() == "CURRENT SESSION"
     assert EXAMPLE_MODEL.name in window.start_workspace.session_detail.text()
 
-    window.header.brand_button.click()
+    window.header.brand_label.click()
     assert window.workspace_stack.currentWidget() is window.start_workspace
     assert window._current_model_source == EXAMPLE_MODEL
     assert not window.start_workspace.resume_button.isHidden()
@@ -80,7 +80,7 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     assert window.workspace_stack.currentWidget() is window.model_workspace_page
     assert not window.navigation.isHidden()
 
-    window.header.home_button.click()
+    window.header.brand_label.click()
     assert window.workspace_stack.currentWidget() is window.start_workspace
     window.start_workspace.resume_button.click()
     assert window.workspace_stack.currentWidget() is window.model_workspace_page

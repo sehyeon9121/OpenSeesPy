@@ -33,6 +33,7 @@ class WorkspaceNavigation(QFrame):
         breadcrumb_layout.setSpacing(6)
         self.breadcrumb_icon = QLabel("\U0001f4c1")
         self.breadcrumb_icon.setObjectName("breadcrumbIcon")
+        self.breadcrumb_icon.hide()
         self.breadcrumb_name = QLabel("")
         self.breadcrumb_name.setObjectName("breadcrumbName")
         self.breadcrumb_status = QLabel("")
@@ -47,6 +48,7 @@ class WorkspaceNavigation(QFrame):
         self.divider.setObjectName("navigationDivider")
         self.divider.setFrameShape(QFrame.Shape.VLine)
         self.divider.setFixedHeight(18)
+        self.divider.hide()
         layout.addWidget(self.divider)
         layout.addSpacing(6)
 
@@ -78,7 +80,7 @@ class WorkspaceNavigation(QFrame):
     def set_home_mode(self, home: bool) -> None:
         """Keep global navigation visible on Home without selecting a workspace."""
         self.breadcrumb.setVisible(not home)
-        self.divider.setVisible(not home)
+        self.divider.hide()
         if home:
             self._group.setExclusive(False)
             for button in self._buttons.values():
@@ -90,6 +92,12 @@ class WorkspaceNavigation(QFrame):
             (key for key, button in self._buttons.items() if button.isChecked()),
             "model",
         )
+
+    def append_trailing_widget(self, widget: QWidget) -> None:
+        """Reparent a widget (e.g. AppHeader's upload button) onto this row's
+        trailing edge, after the stretch — used to place UPLOAD .PY next to
+        the section tabs instead of in the brand/actions row above."""
+        self.layout().addWidget(widget)
 
     def set_current_section(self, key: str, *, emit: bool = False) -> None:
         if key not in self._buttons:
