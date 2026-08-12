@@ -18,13 +18,14 @@ import math
 from pathlib import Path
 from typing import ClassVar
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -48,6 +49,7 @@ from openframe.features.analysis.statics import (
     ModalSolveThread,
     ModalStaticsSolver,
     check_determinacy,
+    export_opensees_script,
 )
 from openframe.features.model.drawing import PlaneKind
 from openframe.features.model.drawing.coordinates import direction_degrees
@@ -91,6 +93,14 @@ class _CurrentPageOnlyStack(QStackedWidget):
 
 class ModelingInterfacePage(QFrame):
     """One-screen workflow: draw, inspect, assign conditions, and review results."""
+
+    #: Emitted with the saved script's path once "정밀해석으로 내보내기" writes
+    #: it - the canvas's own solvers stop at determinate statics/eigenvalue
+    #: analysis, so unlocking nonlinear static/time history means handing the
+    #: model to the "OpenSeesPy 파일 불러오기" pipeline instead. A parent
+    #: workspace (outside this page's own reach) is the one that actually
+    #: opens it there.
+    analysis_script_exported = Signal(Path)
 
     def __init__(self, parent: QWidget | None = None, *, start_in_3d: bool = False) -> None:
         super().__init__(parent)
@@ -254,6 +264,15 @@ class ModelingInterfacePage(QFrame):
             "부재 자중(단위중량 x 단면적)에서 절점으로 환산해 계산됩니다."
         )
         self.modal_solve_button.clicked.connect(self.solve_modal)
+        self.export_analysis_button = QPushButton("정밀해석으로 내보내기…")
+        self.export_analysis_button.setToolTip(
+            "이 모델을 실행 가능한 OpenSeesPy 스크립트(.py)로 저장하고, "
+            "\"OpenSeesPy 파일 불러오기\" 화면에서 엽니다 - 비선형정적·시간이력 "
+            "해석 등 이 캔버스의 자체 솔버가 지원하지 않는 정밀 해석을 그대로 "
+            "돌릴 수 있습니다. 2D 모델만 가능하며, 모든 부재에 실제 재료·단면이 "
+            "필요합니다."
+        )
+        self.export_analysis_button.clicked.connect(self._export_for_full_analysis)
         # Re-running solve() re-checks determinacy against whatever the canvas
         # holds *right now* — if the user only wants to look at the results
         # they already computed, that must not require a fresh solve (which
@@ -1491,6 +1510,7 @@ class ModelingInterfacePage(QFrame):
         layout.addWidget(QLabel("MODES"))
         layout.addWidget(self.modal_num_modes)
         layout.addWidget(self.modal_solve_button)
+        layout.addWidget(self.export_analysis_button)
         layout.addWidget(self.view_results_button)
         layout.addWidget(self.solve_button)
         return bar
@@ -1697,6 +1717,36 @@ class ModelingInterfacePage(QFrame):
         self._modal_solve_thread = None
         if thread is not None:
             thread.deleteLater()
+
+    def _export_for_full_analysis(self) -> None:
+        """Text generation is fast (no OpenSeesPy solve involved) so this runs
+        synchronously, unlike ``solve()``/``solve_modal()``'s background
+        threads. Same no-popup-for-everyday-failures philosophy: a model that
+        cannot be exported yet (still 3D, or missing section properties) gets
+        the same status-bar message a doomed solve() would, not a dialog."""
+        model = self.canvas.build_model()
+        try:
+            script = export_opensees_script(
+                model, include_mass=True, length_unit=self._unit_system.length
+            )
+        except ValueError as error:
+            self.determinacy_status.setText(f"내보내기 실패: {error}")
+            return
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "OpenSeesPy 스크립트로 내보내기", "model.py", "Python 파일 (*.py)"
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        if path.suffix != ".py":
+            path = path.with_suffix(".py")
+        try:
+            path.write_text(script, encoding="utf-8")
+        except OSError as error:
+            self.determinacy_status.setText(f"내보내기 실패: {error}")
+            return
+        self.determinacy_status.setText(f"내보내기 완료: {path.name}")
+        self.analysis_script_exported.emit(path)
 
     def _toggle_truss_mode(self, checked: bool) -> None:
         """Only affects members drawn from now on — a truss/frame member is a

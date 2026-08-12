@@ -253,6 +253,9 @@ class MainWindow(QMainWindow):
         self.start_workspace.new_model_requested.connect(self._start_new_model_workspace)
         self.start_workspace.new_3d_model_requested.connect(self._start_new_3d_model_workspace)
         self.direct_model_workspace.back_requested.connect(self._show_start_workspace)
+        self.direct_model_workspace.analysis_script_exported.connect(
+            self._open_exported_analysis_script
+        )
         self.start_workspace.template_requested.connect(
             lambda: self._show_pending_workflow("Template Browser")
         )
@@ -422,6 +425,17 @@ class MainWindow(QMainWindow):
         self.header.set_welcome_mode(False)
         self.navigation.set_current_section("setup", emit=True)
         self._set_status_mode("setup")
+
+    def _open_exported_analysis_script(self, path: Path) -> None:
+        """A canvas model just exported itself as an OpenSeesPy script - open it
+        exactly like a hand-picked file would be, through the same "OpenSeesPy
+        파일 불러오기" pipeline the canvas's own solvers cannot reach (nonlinear
+        static, time history). This is the only place the two otherwise-
+        independent authoring paths (canvas vs. file import) ever meet."""
+        self._has_active_workspace = True
+        self._show_model_workspace()
+        self.model_sidebar.set_source_file(str(path))
+        self._start_model_load(path)
 
     def _choose_model_file(self) -> None:
         source, _ = QFileDialog.getOpenFileName(

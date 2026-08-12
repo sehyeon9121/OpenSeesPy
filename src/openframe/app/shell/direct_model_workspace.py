@@ -27,6 +27,11 @@ class DirectModelWorkspace(QFrame):
     """Owns the new-model workflow without sharing the OpenSeesPy import UI."""
 
     back_requested = Signal()
+    #: Forwarded from whichever geometry page exported one - this workspace has
+    #: no access to the "OpenSeesPy 파일 불러오기" pipeline itself (a different,
+    #: sibling top-level workspace owns that), so the actual open happens
+    #: further up, in MainWindow.
+    analysis_script_exported = Signal(Path)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -97,6 +102,8 @@ class DirectModelWorkspace(QFrame):
         self.materials_page.set_unit_system(self.setup_page.unit_system())
         self.geometry_page.set_unit_system(self.setup_page.unit_system())
         self.geometry_page_3d.set_unit_system(self.setup_page.unit_system())
+        self.geometry_page.analysis_script_exported.connect(self.analysis_script_exported)
+        self.geometry_page_3d.analysis_script_exported.connect(self.analysis_script_exported)
         self.set_current_step("geometry")
 
     def start_2d_model(self) -> None:

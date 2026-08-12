@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -736,3 +738,63 @@ def test_pdelta_toggle_amplifies_deflection_on_a_real_material_cantilever() -> N
     assert page.viewport._result.node_results[tip].displacement[0] == pytest.approx(
         linear_ux, abs=1.0e-9
     )
+
+
+def test_export_button_writes_a_runnable_script_and_emits_its_path(tmp_path: Path) -> None:
+    """End-to-end through the actual UI trigger, matching how solve_modal's
+    equivalent test works - a cantilever with a real section/material (the
+    canvas's own solvers stop at determinate statics/eigenvalue analysis, so
+    this is the only way a hand-drawn model reaches nonlinear static/time
+    history: exported as a script and handed to the "OpenSeesPy 파일 불러오기"
+    pipeline, which this signal is the hand-off point for)."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    base = canvas.add_node(0.0, 0.0)
+    tip = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(base, tip)
+    canvas.set_support(base, (True, True, True))
+    canvas.selected_elements = {member}
+    canvas.apply_section_to_selection(width=0.3, height=0.5, elastic=200_000.0, density=10.0)
+
+    destination = tmp_path / "exported.py"
+    exported_paths: list[Path] = []
+    page.analysis_script_exported.connect(exported_paths.append)
+
+    with patch(
+        "openframe.features.model.presentation.modeling_interface_page.QFileDialog.getSaveFileName",
+        return_value=(str(destination), "Python 파일 (*.py)"),
+    ):
+        page.export_analysis_button.click()
+
+    assert application is QApplication.instance()
+    assert exported_paths == [destination]
+    script = destination.read_text(encoding="utf-8")
+    assert "ops.model('basic', '-ndm', 2" in script
+    assert f"ops.node({base}, 0.0, 0.0)" in script
+    assert f"ops.node({tip}, 4.0, 0.0)" in script
+    assert "내보내기 완료" in page.determinacy_status.text()
+
+
+def test_export_button_reports_missing_material_without_opening_a_dialog() -> None:
+    """No section applied - same everyday-not-an-error philosophy solve_modal's
+    missing-material test already covers. The file dialog must never open for
+    a model that cannot be exported, so patching it is deliberately omitted -
+    the dialog would raise (or hang) here if the guard were ever removed."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    base = canvas.add_node(0.0, 0.0)
+    tip = canvas.add_node(4.0, 0.0)
+    canvas.add_member(base, tip)
+    canvas.set_support(base, (True, True, True))
+
+    exported_paths: list[Path] = []
+    page.analysis_script_exported.connect(exported_paths.append)
+
+    page.export_analysis_button.click()
+
+    assert application is QApplication.instance()
+    assert exported_paths == []
+    assert "내보내기 실패" in page.determinacy_status.text()
+    assert "E/A/I" in page.determinacy_status.text()
