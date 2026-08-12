@@ -36,6 +36,54 @@ def build_model():
     assert len(model.elements) == 1
 
 
+def test_imports_explicit_native_unit_declaration_into_model_metadata(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "declared_units.py"
+    source.write_text(
+        """
+import openseespy.opensees as ops
+OPENFRAME_UNITS = {'force': 'kip', 'length': 'inch', 'time': 'sec'}
+ops.wipe()
+ops.model('basic', '-ndm', 1, '-ndf', 1)
+ops.node(1, 0.0)
+ops.node(2, 1.0)
+ops.fix(1, 1)
+ops.uniaxialMaterial('Elastic', 1, 1.0)
+ops.element('zeroLength', 1, 1, 2, '-mat', 1, '-dir', 1)
+""",
+        encoding="utf-8",
+    )
+
+    model = _import(source)
+
+    assert model.metadata["unit_force"] == "kip"
+    assert model.metadata["unit_length"] == "in"
+    assert model.metadata["unit_time"] == "s"
+    assert model.metadata["unit_source"] == "OPENFRAME_UNITS"
+
+
+def test_rejects_unsupported_explicit_native_unit(tmp_path: Path) -> None:
+    source = tmp_path / "bad_units.py"
+    source.write_text(
+        """
+import openseespy.opensees as ops
+OPENFRAME_UNITS = {'force': 'kgf', 'length': 'cm'}
+ops.wipe()
+ops.model('basic', '-ndm', 1, '-ndf', 1)
+ops.node(1, 0.0)
+ops.node(2, 1.0)
+ops.fix(1, 1)
+ops.uniaxialMaterial('Elastic', 1, 1.0)
+ops.element('zeroLength', 1, 1, 2, '-mat', 1, '-dir', 1)
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ModelImportError, match="kgf"):
+        _import(source)
+
+
 def test_imports_a_main_file_that_delegates_to_a_local_helper(tmp_path: Path) -> None:
     helper = tmp_path / "frame_builder.py"
     helper.write_text(

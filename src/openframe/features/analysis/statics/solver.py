@@ -52,6 +52,18 @@ _TRAPEZOID_ELEMENT_TAG_OFFSET = 7_500_000
 #: simply-supported triangular-load case (wL^2/(9*sqrt(3)) at x=L/sqrt(3)).
 _TRAPEZOID_SEGMENTS = 40
 
+# A 3D member end release (see _build_hinge_zeroLength) needs a duplicate node at
+# the same point plus a zeroLength element tying them together in every direction
+# except the two local bending rotations - offsets kept clear of every other
+# dummy-tag range above.
+_HINGE_NODE_TAG_OFFSET = 8_000_000
+_HINGE_MATERIAL_TAG = 8_000_001
+#: Same magnitude as _INCLINED_SUPPORT_STIFFNESS and for the same reason: rigid
+#: enough that the released end's translation/torsion behave as continuous, small
+#: enough not to spoil the solve's numerical conditioning against the unit member
+#: stiffness used everywhere else in this solver.
+_HINGE_STIFFNESS = 1.0e8
+
 
 @dataclass(frozen=True, slots=True)
 class DeterminacyCheck:
@@ -104,16 +116,13 @@ def check_determinacy(model: StructuralModel) -> DeterminacyCheck:
     else:
         dof = 3 if model.ndm == 2 else 6
         reactions = sum(sum(condition.restraints[:dof]) for condition in model.boundaries)
-        # A drawn end release only reaches the solver in 2D (see _build): a 3D
-        # frame member has two independent bending planes, and OpenSees' -release
-        # flag is not unambiguous about which one it frees, so 3D releases are not
-        # yet realised. Counting them here without applying them in _build would
-        # tell a Gerber-beam-shaped 3D model it is solvable when it silently is not.
-        releases = (
-            sum(element.release_count for element in model.elements.values())
-            if model.ndm == 2
-            else 0
-        )
+        # A 2D frame joint has one rotation (Mz) to release; a 3D one has two
+        # independent bending planes (My, Mz) - a drawn release frees both at once
+        # (see _build's hinge zeroLength, which drops both bending dofs and keeps
+        # axial/shear/torsion rigid), so each released end removes two equations
+        # in 3D instead of one.
+        released_dof_per_end = 1 if model.ndm == 2 else 2
+        releases = _hinge_condition_equations(model) * released_dof_per_end
         degree = dof * members + reactions - dof * joints - releases
 
     if degree == 0:
@@ -139,18 +148,43 @@ class MaterialFreeStaticsSolver:
     """
 
     def solve(
-        self, model: StructuralModel, material: tuple[float, float, float] | None = None
+        self,
+        model: StructuralModel,
+        material: tuple[float, float, float] | None = None,
+        geometric_nonlinearity: str = "Linear",
     ) -> AnalysisResult:
         """``material`` is a (E, A, I) fallback applied to any 2D frame member
         that doesn't carry its own E/A/I in ``properties`` - real values here
         (per element or as this fallback) also give real (not unit-normalised)
         deflection for determinate structures, since deflection, unlike
         reactions and N/V/M, does scale with EI even when it is determinate.
+
+        ``geometric_nonlinearity`` ("Linear" or "PDelta") switches every
+        member's ``geomTransf`` between the ordinary linear one and OpenSees'
+        native P-Delta transformation, which is the second-order (P-Delta)
+        effect: unlike a determinate structure's *first-order* reactions and
+        member forces (equilibrium alone, independent of stiffness), a P-Delta
+        amplification is intrinsically stiffness-dependent even on an
+        otherwise-determinate structure, so it always needs real E/A/I - there
+        is no unit-placeholder shortcut for it the way there is for the
+        first-order case.
         """
+        if geometric_nonlinearity not in ("Linear", "PDelta"):
+            return AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=[f"지원하지 않는 기하비선형 설정입니다: {geometric_nonlinearity}"],
+            )
         check = check_determinacy(model)
-        if not check.can_solve_without_materials:
+        needs_material = not check.can_solve_without_materials or geometric_nonlinearity != "Linear"
+        if needs_material:
             if material is None and not self._has_material_everywhere(model, check.system):
-                return AnalysisResult(status=AnalysisStatus.FAILED, messages=[check.message])
+                messages = [] if check.can_solve_without_materials else [check.message]
+                if geometric_nonlinearity != "Linear":
+                    messages.append(
+                        "P-Delta(기하비선형) 해석에는 모든 부재의 실제 재료·단면(E/A/I)이 "
+                        "필요합니다 - 정정구조라도 2차효과는 강성에 좌우됩니다."
+                    )
+                return AnalysisResult(status=AnalysisStatus.FAILED, messages=messages)
             if check.system != "frame" or model.ndm != 2:
                 return AnalysisResult(
                     status=AnalysisStatus.FAILED,
@@ -162,9 +196,9 @@ class MaterialFreeStaticsSolver:
 
         ops.wipe()
         try:
-            self._build(model, check.system, material)
+            self._build(model, check.system, material, geometric_nonlinearity)
             self._apply_loads(model, check.system)
-            self._analyze()
+            self._analyze(geometric_nonlinearity)
             return self._collect(model, check.system, check.message, material)
         except (RuntimeError, ValueError, ops.OpenSeesError) as error:
             return AnalysisResult(
@@ -215,6 +249,7 @@ class MaterialFreeStaticsSolver:
         model: StructuralModel,
         system: str,
         material: tuple[float, float, float] | None = None,
+        geometric_nonlinearity: str = "Linear",
     ) -> None:
         ndm = model.ndm
         ndf = (2 if system == "truss" else 3) if ndm == 2 else (3 if system == "truss" else 6)
@@ -247,7 +282,7 @@ class MaterialFreeStaticsSolver:
             return
 
         if ndm == 2:
-            ops.geomTransf("Linear", 1)
+            ops.geomTransf(geometric_nonlinearity, 1)
             trapezoid_loads = {
                 load.element_tag: load for load in model.element_loads if not load.is_uniform
             }
@@ -277,6 +312,22 @@ class MaterialFreeStaticsSolver:
                 ops.element(*arguments)
             return
 
+        if any(element.release_count for element in model.elements.values()):
+            ops.uniaxialMaterial("Elastic", _HINGE_MATERIAL_TAG, _HINGE_STIFFNESS)
+            # A node where every touching element releases there (a true shared
+            # hinge - see _hinge_condition_equations) ends up with no element or
+            # support giving its OWN bending rotations any stiffness at all: each
+            # released element connects to its own dummy node instead (see
+            # _build_hinge), never to this node's rotation directly. Left alone
+            # that is a zero-pivot in the global stiffness matrix. The value is
+            # physically meaningless either way (nothing reads it - the real
+            # hinge rotations live on the dummy nodes), so pinning it to zero
+            # only removes the singularity; it does not constrain the actual
+            # bending behaviour, which the dummy nodes still carry freely.
+            _released_ends_by_node, _rigid_nodes = _released_and_rigid_nodes(model)
+            for node_tag in _released_ends_by_node:
+                if node_tag not in _rigid_nodes:
+                    ops.fix(node_tag, 0, 0, 0, 0, 1, 1)
         for element in model.elements.values():
             node_i = model.nodes[element.node_i]
             node_j = model.nodes[element.node_j]
@@ -284,11 +335,21 @@ class MaterialFreeStaticsSolver:
             ops.geomTransf(
                 "Linear", transf_tag, *_reference_vector(node_i, node_j)
             )
+            end_i_tag = element.node_i
+            end_j_tag = element.node_j
+            if element.moment_release_i:
+                end_i_tag = MaterialFreeStaticsSolver._build_hinge(
+                    element.tag, "i", node_i, node_j
+                )
+            if element.moment_release_j:
+                end_j_tag = MaterialFreeStaticsSolver._build_hinge(
+                    element.tag, "j", node_i, node_j
+                )
             ops.element(
                 "elasticBeamColumn",
                 element.tag,
-                element.node_i,
-                element.node_j,
+                end_i_tag,
+                end_j_tag,
                 1.0,
                 1.0,
                 1.0,
@@ -297,6 +358,54 @@ class MaterialFreeStaticsSolver:
                 1.0,
                 transf_tag,
             )
+
+    @staticmethod
+    def _hinge_node_tag(element_tag: int, end: str) -> int:
+        return _HINGE_NODE_TAG_OFFSET + element_tag * 10 + (0 if end == "i" else 1)
+
+    @staticmethod
+    def _build_hinge(element_tag: int, end: str, node_i, node_j) -> int:
+        """Insert a duplicate node at the given end plus a zeroLength element that
+        ties it back to the real end node in translation and torsion (both rigid)
+        but leaves the two local bending rotations free - the 3D equivalent of a
+        2D moment release. Returns the duplicate node's tag, to be used as this
+        end's node in the real ``elasticBeamColumn`` call instead of the original.
+
+        A plain ``equalDOF`` on global rotation dofs would be wrong for any member
+        not aligned with a global axis: it would release whatever global rotation
+        happens to be unconstrained rather than the member's own local bending
+        directions, and could accidentally release torsion instead of bending. A
+        ``-orient``ed zeroLength (the same technique already used for inclined
+        supports in ``_fix_inclined``) rigidly ties translation (local dofs 1-3)
+        and torsion (local dof 4) while leaving local dofs 5-6 (bending about the
+        member's own y/z axes) with no assigned material - and therefore free -
+        regardless of how the member is oriented in space.
+        """
+        real_node = node_i if end == "i" else node_j
+        dummy_tag = MaterialFreeStaticsSolver._hinge_node_tag(element_tag, end)
+        ops.node(dummy_tag, real_node.x, real_node.y, real_node.z)
+        vector_x, vector_y = _hinge_local_axes(node_i, node_j)
+        real_tag = node_i.tag if end == "i" else node_j.tag
+        ops.element(
+            "zeroLength",
+            dummy_tag,
+            real_tag,
+            dummy_tag,
+            "-mat",
+            _HINGE_MATERIAL_TAG,
+            _HINGE_MATERIAL_TAG,
+            _HINGE_MATERIAL_TAG,
+            _HINGE_MATERIAL_TAG,
+            "-dir",
+            1,
+            2,
+            3,
+            4,
+            "-orient",
+            *vector_x,
+            *vector_y,
+        )
+        return dummy_tag
 
     @staticmethod
     def _trapezoid_sub_element_tags(element_tag: int) -> list[int]:
@@ -440,15 +549,26 @@ class MaterialFreeStaticsSolver:
                 ops.eleLoad("-ele", sub_tag, "-type", "-beamUniform", wy_mid, wx_mid)
 
     @staticmethod
-    def _analyze() -> None:
+    def _analyze(geometric_nonlinearity: str = "Linear") -> None:
         ops.system("BandGeneral")
         ops.numberer("Plain")
         ops.constraints("Plain")
         ops.integrator("LoadControl", 1.0)
-        ops.algorithm("Linear")
+        if geometric_nonlinearity == "Linear":
+            ops.algorithm("Linear")
+        else:
+            # P-Delta is a genuine geometric nonlinearity - unlike the ordinary
+            # linear case, equilibrium depends on the (unknown) deformed shape,
+            # so a single un-iterated pass is not enough; Newton needs to
+            # actually converge on it, even for a "single step" analysis.
+            ops.test("NormDispIncr", 1.0e-8, 30)
+            ops.algorithm("Newton")
         ops.analysis("Static")
         if ops.analyze(1) != 0:
-            raise RuntimeError("구조가 불안정하거나 지점 조건이 충분하지 않습니다.")
+            message = "구조가 불안정하거나 지점 조건이 충분하지 않습니다."
+            if geometric_nonlinearity != "Linear":
+                message += " P-Delta 해석이 수렴하지 않았다면 축력이 좌굴하중에 가까울 수 있습니다."
+            raise RuntimeError(message)
         ops.reactions()
 
     @staticmethod
@@ -543,6 +663,54 @@ def _element_family(element_type: str) -> str:
     return "truss" if "truss" in element_type.lower() else "frame"
 
 
+def _released_and_rigid_nodes(model: StructuralModel) -> tuple[dict[int, int], set[int]]:
+    """For every node: how many element-ends release there, and whether its
+    rotation is otherwise anchored - either an unreleased element touches it, or
+    its own support already restrains that rotation directly (a FIXED support
+    has a real moment reaction; a PIN/roller does not, so a release there is
+    genuinely uninformative, but a release at an otherwise-FIXED node still means
+    something: the wall could resist a moment, the member just never delivers
+    one). Shared by the determinacy count below and ``_build``'s
+    orphaned-rotation fix, since both need exactly this same partition."""
+    released_ends_by_node: dict[int, int] = {}
+    rigid_nodes: set[int] = set()
+    for element in model.elements.values():
+        for node_tag, released in (
+            (element.node_i, element.moment_release_i),
+            (element.node_j, element.moment_release_j),
+        ):
+            if released:
+                released_ends_by_node[node_tag] = released_ends_by_node.get(node_tag, 0) + 1
+            else:
+                rigid_nodes.add(node_tag)
+    rotation_dof_indices = (2,) if model.ndm == 2 else (4, 5)
+    for condition in model.boundaries:
+        if any(
+            index < len(condition.restraints) and condition.restraints[index]
+            for index in rotation_dof_indices
+        ):
+            rigid_nodes.add(condition.node_tag)
+    return released_ends_by_node, rigid_nodes
+
+
+def _hinge_condition_equations(model: StructuralModel) -> int:
+    """Classic hinge-counting rule: a joint where ``k`` members are ALL released
+    there (a true shared hinge, e.g. the fixed-hinge-roller Gerber beam) adds
+    ``k - 1`` condition equations, not ``k`` - the members share one collective
+    relative-rotation freedom, not one each. A joint where at least one member
+    stays rigid there still adds a full 1 per release: the rigid member anchors
+    a well-defined node rotation, and each released member is independently free
+    relative to it. A lone release at a node nothing else touches (e.g. a
+    redundant release at an already-pinned support) adds 0 - that fact is
+    already reflected in the support's own reaction count, and double-subtracting
+    it would be wrong."""
+    released_ends_by_node, rigid_nodes = _released_and_rigid_nodes(model)
+    return sum(
+        (count - 1) if node_tag not in rigid_nodes else count
+        for node_tag, count in released_ends_by_node.items()
+    )
+
+
 def _reference_vector(node_i, node_j) -> tuple[float, float, float]:
     """A ``vecxz`` for ``geomTransf`` that is never parallel to the member axis.
 
@@ -561,3 +729,27 @@ def _reference_vector(node_i, node_j) -> tuple[float, float, float]:
     global_z = (0.0, 0.0, 1.0)
     is_vertical = abs(axis[0] * global_z[0] + axis[1] * global_z[1] + axis[2] * global_z[2]) > 0.999
     return (1.0, 0.0, 0.0) if is_vertical else global_z
+
+
+def _hinge_local_axes(
+    node_i, node_j
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """``(vecx, vecy)`` for a hinge zeroLength's ``-orient``: vecx is the member's
+    own axial direction (so the rigid-material dofs 1-4 line up with axial, the two
+    shears, and torsion), vecy is any unit vector exactly perpendicular to it (its
+    exact direction within the cross-section doesn't matter here, since both
+    bending dofs 5-6 are released together rather than one-at-a-time)."""
+    dx = node_j.x - node_i.x
+    dy = node_j.y - node_i.y
+    dz = node_j.z - node_i.z
+    length = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
+    vecx = (dx / length, dy / length, dz / length)
+    reference = _reference_vector(node_i, node_j)
+    cross = (
+        reference[1] * vecx[2] - reference[2] * vecx[1],
+        reference[2] * vecx[0] - reference[0] * vecx[2],
+        reference[0] * vecx[1] - reference[1] * vecx[0],
+    )
+    cross_length = math.sqrt(sum(component * component for component in cross)) or 1.0
+    vecy = tuple(component / cross_length for component in cross)
+    return vecx, vecy

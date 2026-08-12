@@ -1,10 +1,12 @@
 """Modal analysis progress feedback shared by every workspace."""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
+    QHBoxLayout,
     QLabel,
     QProgressBar,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -18,6 +20,8 @@ class AnalysisProgressBanner(QDialog):
     banner embedded above the workspace.
     """
 
+    cancel_requested = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("analysisProgressDialog")
@@ -26,7 +30,7 @@ class AnalysisProgressBanner(QDialog):
         self.setModal(True)
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
         self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
-        self.setFixedSize(560, 190)
+        self.setFixedSize(560, 230)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 24)
@@ -48,17 +52,27 @@ class AnalysisProgressBanner(QDialog):
         self.detail.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self.detail)
 
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.cancel_button = QPushButton("CANCEL ANALYSIS")
+        self.cancel_button.setObjectName("cancelAnalysisButton")
+        self.cancel_button.clicked.connect(self.cancel_requested)
+        actions.addWidget(self.cancel_button)
+        layout.addLayout(actions)
+
     def reset(self) -> None:
         self.hide()
         self.progress.setRange(0, 0)
         self.progress.setTextVisible(False)
         self.detail.setText("In progress...")
+        self.cancel_button.setEnabled(True)
 
     def show_running(self, analysis_name: str) -> None:
         self.title.setText("Calculating results")
         self.detail.setText(f"{analysis_name} analysis in progress...")
         self.progress.setRange(0, 0)
         self.progress.setTextVisible(False)
+        self.cancel_button.setEnabled(True)
         self.show()
         self.raise_()
         self.activateWindow()
@@ -73,6 +87,10 @@ class AnalysisProgressBanner(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(max(0, min(value, 100)))
         self.progress.setTextVisible(True)
+
+    def show_cancelling(self) -> None:
+        self.detail.setText("Cancelling analysis and stopping the OpenSees worker...")
+        self.cancel_button.setEnabled(False)
 
     def show_completed(self, detail: str) -> None:
         """Close immediately; completed results remain available in RESULTS."""

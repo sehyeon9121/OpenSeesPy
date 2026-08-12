@@ -64,6 +64,7 @@ class ResultSummaryPanel(QFrame):
         self.metric_values: dict[str, QLabel] = {}
         for key, title_text in (
             ("displacement", "MAX DISPLACEMENT"),
+            ("rotation", "MAX ROTATION (처짐각)"),
             ("moment", "MAX BENDING MOMENT"),
             ("shear", "MAX SHEAR FORCE"),
             ("axial", "MAX AXIAL FORCE"),
@@ -156,6 +157,24 @@ class ResultSummaryPanel(QFrame):
             self.member_selector.blockSignals(False)
             self._refresh_end_forces()
 
+    @staticmethod
+    def _node_rotation_degrees(displacement: Sequence[float], ndm: int) -> float:
+        """처짐각 — the rotation the node's displacement vector carries, in
+        degrees. A 2D node's third DOF (index 2) is Rz directly; a 3D node
+        has three rotational DOF (indices 3..5, Rx/Ry/Rz) with no single
+        "the" bending angle, so its combined magnitude (like MAX
+        DISPLACEMENT already does for Ux/Uy/Uz) is the closest analogue.
+        Solver output is always radians - there is no unit-system notion of
+        angle (see ``UnitSystem``), so this always converts to degrees.
+        """
+        if ndm == 3:
+            if len(displacement) < 6:
+                return 0.0
+            return math.degrees(math.hypot(displacement[3], displacement[4], displacement[5]))
+        if len(displacement) < 3:
+            return 0.0
+        return math.degrees(abs(displacement[2]))
+
     def _metric_row(self, key: str, title: str) -> QFrame:
         row = QFrame()
         row.setObjectName("resultMetricRow")
@@ -177,9 +196,11 @@ class ResultSummaryPanel(QFrame):
             ("END", f"N ({unit.force})", f"V ({unit.force})", f"M ({unit.moment})")
         )
         result = self._result
-        if result is None or result.status != AnalysisStatus.COMPLETED:
+        usable_statuses = {AnalysisStatus.COMPLETED, AnalysisStatus.PARTIAL}
+        if result is None or result.status not in usable_statuses:
             self.status_badge.setText("WAITING")
             self.metric_values["displacement"].setText(f"—  {unit.length}")
+            self.metric_values["rotation"].setText("—  °")
             self.metric_values["moment"].setText(f"—  {unit.moment}")
             self.metric_values["shear"].setText(f"—  {unit.force}")
             self.metric_values["axial"].setText(f"—  {unit.force}")
@@ -187,7 +208,9 @@ class ResultSummaryPanel(QFrame):
             self._refresh_end_forces()
             return
 
-        self.status_badge.setText("COMPLETED")
+        self.status_badge.setText(
+            "PARTIAL" if result.status == AnalysisStatus.PARTIAL else "COMPLETED"
+        )
         max_displacement = max(
             (
                 math.hypot(
@@ -201,6 +224,11 @@ class ResultSummaryPanel(QFrame):
                 )
                 for node in result.node_results.values()
             ),
+            default=0.0,
+        )
+        ndm = self._model.ndm if self._model is not None else 2
+        max_rotation = max(
+            (self._node_rotation_degrees(node.displacement, ndm) for node in result.node_results.values()),
             default=0.0,
         )
         axial = []
@@ -219,6 +247,7 @@ class ResultSummaryPanel(QFrame):
         self.metric_values["displacement"].setText(
             f"{max_displacement:.6g}  {unit.length}"
         )
+        self.metric_values["rotation"].setText(f"{max_rotation:.4g}  °")
         if self._model is not None and self._model.ndm == 3:
             force_maxima = {
                 kind: max(member_magnitudes(self._model, result, kind).values(), default=0.0)
@@ -262,7 +291,7 @@ class ResultSummaryPanel(QFrame):
         if (
             self._model is None
             or result is None
-            or result.status != AnalysisStatus.COMPLETED
+            or result.status not in {AnalysisStatus.COMPLETED, AnalysisStatus.PARTIAL}
             or self._result_type not in self._LEGEND_CAPTIONS
         ):
             self.legend_minimum.setText("MIN")

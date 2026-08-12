@@ -9,6 +9,8 @@ from openframe.features.model.drawing import PlaneKind, WorkPlane
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 
+from _solve_helpers import solve_and_wait
+
 
 def _canvas() -> StaticsDrawingCanvas:
     QApplication.instance() or QApplication([])
@@ -120,19 +122,26 @@ def test_mirroring_on_a_vertical_elevation_plane_reflects_along_its_local_axis()
     assert zs == [0.0, 2.0, 4.0, 6.0]
 
 
-def test_a_node_dropped_mid_height_on_a_column_embeds_in_true_3d() -> None:
-    """Colinearity is a real 3D fact — it must hold on an elevation view too."""
+def test_a_node_dropped_mid_height_on_a_column_splits_it_in_true_3d() -> None:
+    """Colinearity is a real 3D fact — it must hold on an elevation view too.
+    A brand-new node landing exactly on an existing member now splits it into
+    two independent elements (see canvas_geometry.py's _add_node_at) rather
+    than only marking an embedded pass-through point, so each half can carry
+    its own load - this must work identically off the ground plane."""
     canvas = _canvas()
     canvas.enter_3d_mode()
     base = canvas.place_point(0.0, 0.0)
     roof = canvas.add_level(6.0, "roof")
     canvas.selected_nodes = {base}
     canvas.extrude_selection_to_plane(roof)
-    column = next(iter(canvas.elements))
+    top = next(node.tag for node in canvas.nodes.values() if node.tag != base)
 
     mid = canvas._add_node_at((0.0, 0.0, 3.0))
 
-    assert canvas.embedded_nodes[mid] == (column, pytest.approx(0.5))
+    assert mid not in canvas.embedded_nodes
+    assert len(canvas.elements) == 2
+    spans = {(el.node_i, el.node_j) for el in canvas.elements.values()}
+    assert spans == {(base, mid), (mid, top)}
 
 
 def test_build_model_reports_3d_dimensionality_once_in_3d_mode() -> None:
@@ -231,7 +240,7 @@ def test_a_3d_cantilever_column_is_drawn_loaded_and_solved_entirely_through_the_
     page.load_fields["fx"].setValue(10.0)
     page._apply_load()
 
-    page.solve()
+    solve_and_wait(page)
 
     assert page.workspace_stack.currentIndex() == 1
     reaction = page.results.viewport._result.node_results[base].reaction

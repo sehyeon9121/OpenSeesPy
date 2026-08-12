@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -7,16 +8,44 @@ from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
 from openframe.app.shell.main_window import MainWindow
+from openframe.core.domain import Element, Node, StructuralModel, UnitSystem
 from openframe.features.model.application.open_model import OpenModelService
 from openframe.infrastructure.opensees.model_importer import OpenSeesModelImporter
 
 EXAMPLE_MODEL = Path(__file__).parents[2] / "examples" / "portal_frame_2d.py"
 
 
+def test_declared_model_units_are_applied_without_asking_the_user(tmp_path: Path) -> None:
+    application = QApplication.instance() or QApplication([])
+    resolver = MagicMock(return_value=UnitSystem("kN", "m"))
+    window = MainWindow(imported_unit_resolver=resolver)
+    model = StructuralModel(
+        nodes={1: Node(1, 0.0, 0.0), 2: Node(2, 1.0, 0.0)},
+        elements={1: Element(1, 1, 2, "elasticBeamColumn")},
+        metadata={
+            "unit_force": "kip",
+            "unit_length": "in",
+            "unit_time": "s",
+            "unit_source": "OPENFRAME_UNITS",
+        },
+    )
+
+    window._model_loaded(model, str(tmp_path / "declared.py"))
+    application.processEvents()
+
+    resolver.assert_not_called()
+    assert window.viewport.unit_system == UnitSystem("kip", "in")
+    assert window.analysis_settings.target_displacement.suffix() == " in"
+    window.close()
+
+
 def test_model_file_updates_sidebar_and_viewport() -> None:
     application = QApplication.instance() or QApplication([])
     service = OpenModelService(OpenSeesModelImporter(timeout_seconds=10))
-    window = MainWindow(open_model_service=service)
+    window = MainWindow(
+        open_model_service=service,
+        imported_unit_resolver=lambda _source: UnitSystem("kN", "m"),
+    )
 
     window._start_model_load(EXAMPLE_MODEL)
     thread = window._model_load_thread
@@ -73,7 +102,7 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     assert window.viewport.unit_system.force == "N"
     assert window.viewport.unit_system.length == "m"
     assert (
-        window.results_workspace.data_panel.result_table.horizontalHeaderItem(1).text()
+        window.results_workspace.tables_panel.displacement_table.horizontalHeaderItem(1).text()
         == "UX (m)"
     )
 
@@ -82,7 +111,7 @@ def test_model_file_updates_sidebar_and_viewport() -> None:
     assert "Fx=20 N" in load_items[0].toolTip()
     assert "kN" not in load_items[0].toolTip()
     assert (
-        window.results_workspace.data_panel.result_table.horizontalHeaderItem(1).text()
+        window.results_workspace.tables_panel.displacement_table.horizontalHeaderItem(1).text()
         == "UX (mm)"
     )
 

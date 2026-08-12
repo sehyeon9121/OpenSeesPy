@@ -8,7 +8,7 @@ from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
 from openframe.app.shell.main_window import MainWindow
-from openframe.core.domain import AnalysisKind
+from openframe.core.domain import AnalysisKind, UnitSystem
 from openframe.features.analysis.application.run_analysis import RunAnalysisService
 from openframe.features.analysis.linear_static.module import LinearStaticAnalysis
 from openframe.features.analysis.nonlinear_static.module import NonlinearStaticAnalysis
@@ -35,7 +35,11 @@ def _build_window() -> MainWindow:
             AnalysisKind.NONLINEAR_STATIC: NonlinearStaticAnalysis(runner),
         }
     )
-    return MainWindow(open_model_service=model_service, run_analysis_service=analysis_service)
+    return MainWindow(
+        open_model_service=model_service,
+        run_analysis_service=analysis_service,
+        imported_unit_resolver=lambda _source: UnitSystem("kN", "m"),
+    )
 
 
 @patch("openframe.app.shell.main_window.QMessageBox.information")

@@ -8,6 +8,8 @@ class AnalysisStatus(StrEnum):
     NOT_RUN = "not_run"
     RUNNING = "running"
     COMPLETED = "completed"
+    PARTIAL = "partial"
+    CANCELLED = "cancelled"
     FAILED = "failed"
 
 
@@ -26,6 +28,31 @@ class LoadDisplacementPoint:
     step: int
     control_displacement: float
     base_shear: float
+    attempts: int = 1
+    substeps: int = 1
+    iterations: int = 0
+    recovered_with: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class NonlinearConvergence:
+    """Execution summary for an incremental nonlinear-static solve.
+
+    A run may have useful committed results without reaching every requested
+    increment.  Keeping that state separate from a plain success/failure flag lets
+    the UI show the converged branch without calling a truncated curve complete.
+    """
+
+    requested_steps: int
+    completed_steps: int
+    failed_step: int | None = None
+    total_attempts: int = 0
+    total_substeps: int = 0
+    recovered_steps: tuple[int, ...] = ()
+
+    @property
+    def converged(self) -> bool:
+        return self.failed_step is None and self.completed_steps == self.requested_steps
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +70,43 @@ class ElementResult:
     flexural_rigidity: float = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class ModeShape:
+    """One natural mode from an eigenvalue (modal) analysis.
+
+    ``node_results`` reuses ``NodeResult`` for its displacement field so the mode
+    shape can be rendered by the same deflected-shape viewer a static result
+    uses - a mode shape carries no reactions or forces, so ``reaction`` stays empty
+    on every entry.
+    """
+
+    mode_number: int
+    #: Raw eigenvalue from ``ops.eigen`` (rad/s)^2 - kept for reference/debugging.
+    eigenvalue: float
+    angular_frequency: float
+    frequency_hz: float
+    period: float
+    node_results: dict[int, NodeResult] = field(default_factory=dict)
+    #: Fraction (0..1) of the total mass in each DOF direction this mode accounts
+    #: for - one entry per DOF (2D: Ux,Uy,Rz; 3D: Ux,Uy,Uz,Rx,Ry,Rz), computed from
+    #: the model's own lumped mass rather than assumed from solver normalization.
+    mass_participation_ratio: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TimeHistoryStep:
+    """One recorded time step of a transient (time-history) analysis.
+
+    ``node_results`` reuses ``NodeResult`` the same way ``ModeShape`` does -
+    ``displacement`` is populated for every node (needed for the deformed-shape
+    animation), ``reaction`` only for restrained nodes (a free node's reaction
+    is always zero and not worth carrying at every step).
+    """
+
+    time: float
+    node_results: dict[int, NodeResult] = field(default_factory=dict)
+
+
 @dataclass(slots=True)
 class AnalysisResult:
     status: AnalysisStatus = AnalysisStatus.NOT_RUN
@@ -53,4 +117,8 @@ class AnalysisResult:
     #: Empty for analyses that are not incremental (linear static, ...). Populated by
     #: nonlinear static analysis, one point per converged load step.
     load_displacement_curve: tuple[LoadDisplacementPoint, ...] = ()
-
+    convergence: NonlinearConvergence | None = None
+    #: Empty except for modal analysis, one entry per computed natural mode.
+    mode_shapes: tuple[ModeShape, ...] = ()
+    #: Empty except for time-history analysis, one entry per recorded time step.
+    time_history: tuple[TimeHistoryStep, ...] = ()

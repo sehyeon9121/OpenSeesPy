@@ -1,3 +1,4 @@
+import math
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -12,12 +13,21 @@ from openframe.features.model.drawing import PlaneKind
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 
+from _solve_helpers import solve_and_wait
+
 
 def _canvas() -> StaticsDrawingCanvas:
     QApplication.instance() or QApplication([])
     canvas = StaticsDrawingCanvas()
     canvas.set_mode("draw")
     return canvas
+
+
+def _page() -> ModelingInterfacePage:
+    QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    page.show()
+    return page
 
 
 def test_one_chain_of_clicks_creates_both_nodes_and_members() -> None:
@@ -31,6 +41,59 @@ def test_one_chain_of_clicks_creates_both_nodes_and_members() -> None:
     assert len(canvas.elements) == 2
     assert canvas.is_drawing is True
     assert canvas.chain_anchor == pytest.approx((5.0, 4.0))
+
+
+def test_add_arch_places_endpoints_and_crown_on_a_circular_arc() -> None:
+    """The whole point is that a user only ever types span + rise, not a
+    radius - so what actually gets verified here is that the generated
+    facet nodes are truly points on the circle those two numbers imply:
+    both span endpoints back at (start_x, start_y)/(start_x+span, start_y),
+    and the midspan node exactly ``rise`` above the chord."""
+    canvas = _canvas()
+
+    created = canvas.add_arch(start_x=0.0, start_y=0.0, span=8.0, rise=1.6, segments=12)
+
+    assert len(created) == 13  # segments + 1 nodes
+    assert len(canvas.elements) == 12
+    start_node = canvas.nodes[created[0]]
+    end_node = canvas.nodes[created[-1]]
+    assert (start_node.x, start_node.y) == pytest.approx((0.0, 0.0))
+    assert (end_node.x, end_node.y) == pytest.approx((8.0, 0.0))
+    crown = canvas.nodes[created[6]]  # segments/2 -> midspan
+    assert (crown.x, crown.y) == pytest.approx((4.0, 1.6))
+    # Every generated element joins two consecutive facet nodes - a simple
+    # open chain, not e.g. a closed loop or skipped points.
+    for element, node_i, node_j in zip(canvas.elements.values(), created, created[1:]):
+        assert (element.node_i, element.node_j) == (node_i, node_j)
+
+
+def test_add_arch_selects_the_generated_nodes() -> None:
+    canvas = _canvas()
+
+    created = canvas.add_arch(start_x=0.0, start_y=0.0, span=6.0, rise=1.0, segments=6)
+
+    assert canvas.selected_nodes == set(created)
+    assert not canvas.selected_elements
+
+
+def test_add_arch_rejects_a_non_positive_span_or_too_few_segments() -> None:
+    canvas = _canvas()
+
+    assert canvas.add_arch(start_x=0.0, start_y=0.0, span=0.0, rise=1.0, segments=8) == ()
+    assert canvas.add_arch(start_x=0.0, start_y=0.0, span=8.0, rise=1.0, segments=0) == ()
+    assert not canvas.nodes
+
+
+def test_add_arch_falls_back_to_a_straight_chord_when_rise_is_zero() -> None:
+    """A zero/negative rise has no circle to fit (division by zero in the
+    circular-segment formula) - rather than reject the call outright, this
+    degrades to evenly spaced points on the straight chord."""
+    canvas = _canvas()
+
+    created = canvas.add_arch(start_x=0.0, start_y=2.0, span=4.0, rise=0.0, segments=4)
+
+    ys = {round(canvas.nodes[tag].y, 9) for tag in created}
+    assert ys == {2.0}
 
 
 def test_escape_ends_the_chain_so_the_next_click_starts_a_new_run() -> None:
@@ -145,7 +208,13 @@ def test_drawing_onto_an_existing_node_reuses_it_instead_of_stacking_a_duplicate
     assert len(canvas.elements) == 2
 
 
-def test_drawing_across_a_member_lands_on_it_and_splits_it_for_the_analysis() -> None:
+def test_drawing_across_a_member_lands_on_it_and_splits_it_for_real() -> None:
+    """Starting a new chain point on an existing member is a deliberate
+    request for a joint there (unlike drawing a brand-new member *through* an
+    already-existing, unrelated node - see test_collinear_node_is_auto_
+    attached_without_splitting_the_visible_member) - it splits the member
+    into two independent elements immediately, not just an analysis-time
+    embedded point."""
     canvas = _canvas()
     canvas.place_point(0.0, 0.0)
     canvas.place_point(4.0, 0.0)
@@ -154,9 +223,9 @@ def test_drawing_across_a_member_lands_on_it_and_splits_it_for_the_analysis() ->
     snap = canvas.snap_at(1.4, 0.03)
     tag = canvas.place_point(snap.x, snap.y, snap=snap)
 
-    assert canvas.embedded_nodes[tag] == (1, pytest.approx(0.35))
+    assert tag not in canvas.embedded_nodes
     assert canvas.nodes[tag].x == pytest.approx(1.4)
-    assert len(canvas.elements) == 1
+    assert len(canvas.elements) == 2
     assert len(canvas.build_model().elements) == 2
 
 
@@ -409,6 +478,70 @@ def test_a_hinge_node_is_labelled_as_a_joint_on_the_canvas_itself() -> None:
     assert f"N{hinge}" not in labels
 
 
+def test_an_inclined_nodal_load_draws_one_combined_arrow_not_two_crossed_ones() -> None:
+    """Fx and Fy both nonzero (e.g. from 부재 수직 입력) is one inclined force,
+    not two independent ones - drawing it as two separate axis-aligned
+    Fx/Fy arrows crossing at the node used to look like unrelated clutter
+    rather than one inclined load. The label reads as magnitude+angle, not
+    raw Fx/Fy, since the user typing a load never sees Fx/Fy either (see
+    _build_perpendicular_load_fields)."""
+    from PySide6.QtWidgets import QGraphicsTextItem
+
+    canvas = _canvas()
+    node = canvas.place_point(0.0, 0.0)
+    canvas.selected_nodes = {node}
+    canvas.apply_nodal_load_to_selection((-5.14137, 8.57708, 0.0))
+
+    labels = {
+        item.toPlainText()
+        for item in canvas.scene_model.items()
+        if isinstance(item, QGraphicsTextItem)
+    }
+    load_labels = {label for label in labels if label.startswith("P ")}
+    assert load_labels == {"P 10 ∠120.9°"}
+
+
+def test_load_fields_show_a_dashed_preview_before_apply_is_clicked() -> None:
+    """Typing Fx/Fy (directly, or via 크기·각도) must show the arrow
+    immediately, not only after 적용 — otherwise a wrong angle is only
+    discovered after it is already committed."""
+    from PySide6.QtWidgets import QGraphicsTextItem
+
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+
+    page.load_fields["fx"].setValue(3.0)
+    page.load_fields["fy"].setValue(4.0)
+
+    assert page.canvas._pending_load_preview == ({node}, (3.0, 4.0, 0.0))
+    labels = {
+        item.toPlainText()
+        for item in page.canvas.scene_model.items()
+        if isinstance(item, QGraphicsTextItem)
+    }
+    assert any("미적용" in label for label in labels)
+    # 적용 commits it and the preview - now redundant with the real arrow -
+    # is cleared rather than left drawn on top of it.
+    page._apply_load()
+    assert page.canvas._pending_load_preview is None
+    assert page.canvas.nodal_loads[node].values == (3.0, 4.0, 0.0)
+
+
+def test_magnitude_and_angle_live_update_fx_fy_without_a_separate_convert_click() -> None:
+    """Fx·Fy로 변환 used to be a manual step easy to forget, leaving 적용 to
+    silently save zero - 크기/각도 now sync into Fx/Fy on every edit."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+
+    page.load_magnitude.setValue(10.0)
+    page.load_angle.setValue(30.0)
+
+    assert page.load_fields["fx"].value() == pytest.approx(10.0 * math.cos(math.radians(30.0)))
+    assert page.load_fields["fy"].value() == pytest.approx(10.0 * math.sin(math.radians(30.0)))
+
+
 def test_the_draw_tool_and_its_entry_field_are_wired_to_the_canvas() -> None:
     QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
@@ -572,3 +705,68 @@ def test_a_free_form_gable_frame_reaches_the_determinacy_check() -> None:
     canvas.set_selected_node_kind(True)
 
     assert check_determinacy(canvas.build_model()).degree == 0
+
+
+def test_grid_snap_pulls_a_click_onto_the_nearest_grid_intersection() -> None:
+    canvas = _canvas()
+    canvas.grid = 1.0
+
+    result = canvas.snap_at(1.03, -0.02)
+
+    assert result.kind == "grid"
+    assert (result.x, result.y) == pytest.approx((1.0, 0.0))
+
+
+def test_grid_snap_toggle_off_leaves_the_raw_cursor_point_untouched() -> None:
+    """The 격자 스냅 checkbox in the bottom bar has to be able to turn this off
+    entirely - otherwise there is no way to place a point at an exact
+    off-grid coordinate by clicking."""
+    canvas = _canvas()
+    canvas.grid = 1.0
+    canvas.grid_snap_enabled = False
+
+    result = canvas.snap_at(1.03, -0.02)
+
+    assert result.kind == "free"
+    assert (result.x, result.y) == pytest.approx((1.03, -0.02))
+
+
+def test_space_bar_activates_the_draw_tool() -> None:
+    """QShortcut activation depends on real window focus, which a headless
+    test window does not reliably get - the same reason the existing
+    fit_shortcut test (test_modeling_layout.py) emits .activated directly
+    instead of simulating a real key press."""
+    page = _page()
+    page._activate_select_tool()
+    assert page.canvas.mode == "select"
+
+    page.draw_space_shortcut.activated.emit()
+
+    assert page.canvas.mode == "draw"
+    assert page.draw_tool.isChecked() is True
+
+
+def test_an_indeterminate_structure_without_material_fails_quietly_not_as_a_popup() -> None:
+    """solve() must always call the solver rather than pre-emptively refusing
+    on the determinacy check alone - the check is status-bar information, not
+    a separate gate. The solver's own refusal (no way to give a meaningful
+    stiffness-dependent answer without material) still has to surface
+    somewhere, but only in the status bar, never a blocking dialog, since an
+    indeterminate structure with nothing set yet is an everyday state while
+    still authoring a model."""
+    page = _page()
+    canvas = page.canvas
+    left = canvas.add_node(0.0, 0.0)
+    mid = canvas.add_node(4.0, 0.0)
+    right = canvas.add_node(8.0, 0.0)
+    canvas.add_member(left, mid)
+    canvas.add_member(mid, right)
+    canvas.set_support(left, (True, True, True))
+    canvas.set_support(mid, (False, True, False))
+    canvas.set_support(right, (False, True, False))
+
+    solve_and_wait(page)
+
+    assert page.workspace_stack.currentIndex() == 0
+    assert "부정정" in page.determinacy_status.text()
+    assert page.analysis_progress.isVisible() is False

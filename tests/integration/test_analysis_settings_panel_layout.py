@@ -9,7 +9,7 @@ keeps real space. The nonlinear dialog itself is unchanged - these fields
 still must not overlap regardless of which page hosts the panel."""
 
 import os
-from itertools import pairwise
+from itertools import combinations, pairwise
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -61,6 +61,8 @@ def test_nonlinear_settings_button_and_summary_live_in_the_setup_panel() -> None
     settings.set_model(model)
     store.set_kind(AnalysisKind.NONLINEAR_STATIC)
     application.processEvents()
+
+    assert settings.num_steps.maximum() >= 3_240
     application.processEvents()
 
     assert settings.open_nonlinear_settings_button.isVisible()
@@ -84,6 +86,10 @@ def test_nonlinear_settings_button_and_summary_live_in_the_setup_panel() -> None
 
 
 def test_nonlinear_dialog_fields_do_not_overlap() -> None:
+    """The dialog lays fields out in two columns (left: how the push is applied,
+    right: how the solver converges) rather than one long column, so two fields
+    can legitimately share a row as long as their columns differ - only a real
+    2D bounding-box overlap (both axes intersecting) counts as a layout bug."""
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
 
@@ -107,15 +113,23 @@ def test_nonlinear_dialog_fields_do_not_overlap() -> None:
         settings.algorithm,
         settings.test_type,
     ]
-    ranges = [
+    rects = [
         (
+            widget.mapTo(dialog, widget.rect().topLeft()).x(),
             widget.mapTo(dialog, widget.rect().topLeft()).y(),
+            widget.mapTo(dialog, widget.rect().bottomRight()).x(),
             widget.mapTo(dialog, widget.rect().bottomRight()).y(),
         )
         for widget in fields
     ]
+
+    def _overlaps(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        return ax1 < bx2 and bx1 < ax2 and ay1 < by2 and by1 < ay2
+
     overlaps = [
-        (earlier, later) for earlier, later in pairwise(ranges) if later[0] < earlier[1]
+        (i, j) for i, j in combinations(range(len(rects)), 2) if _overlaps(rects[i], rects[j])
     ]
     assert overlaps == []
 

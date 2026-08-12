@@ -35,6 +35,7 @@ where = ["src"]
 openframe = [
   "features/viewport/presentation/qml/*.qml",
   "infrastructure/ground_motions/data/*.AT2",
+  "resources/icons/*",
 ]
 
 [tool.pytest.ini_options]

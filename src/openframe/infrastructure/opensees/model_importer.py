@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from openframe.core.domain import (
+    FORCE_UNITS,
+    LENGTH_UNITS,
+    TIME_UNITS,
     BoundaryCondition,
     Element,
     LoadCaseKind,
@@ -73,6 +76,7 @@ class OpenSeesModelImporter:
 
         model_payload = payload["model"]
         self._apply_load_case_hints(source, model_payload)
+        self._apply_unit_declaration(source, model_payload)
         model = self._to_domain_model(model_payload)
         if not model.nodes or not model.elements:
             import_hint = (
@@ -209,3 +213,93 @@ class OpenSeesModelImporter:
         if normalized in aliases:
             return aliases[normalized]
         return LoadCaseKind(normalized)
+
+    @staticmethod
+    def _apply_unit_declaration(source: Path, payload: dict[str, Any]) -> None:
+        """Read a literal ``OPENFRAME_UNITS`` declaration without executing it.
+
+        OpenSees intentionally has no built-in unit system, so dimensions cannot be
+        inferred safely from coordinates or material values.  A literal declaration
+        is the only unambiguous source of truth an imported script can provide.
+        """
+        try:
+            source_text = read_python_source(source)
+            tree = ast.parse(source_text, filename=str(source))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            return
+
+        declaration: object | None = None
+        found = False
+        for statement in tree.body:
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            if not any(
+                isinstance(target, ast.Name) and target.id == "OPENFRAME_UNITS"
+                for target in targets
+            ):
+                continue
+            found = True
+            try:
+                declaration = ast.literal_eval(statement.value)
+            except (ValueError, TypeError, SyntaxError) as error:
+                raise ModelImportError(
+                    "OPENFRAME_UNITS는 문자열 값으로 구성된 딕셔너리여야 합니다."
+                ) from error
+            break
+
+        if not found:
+            return
+        if not isinstance(declaration, dict):
+            raise ModelImportError("OPENFRAME_UNITS는 딕셔너리여야 합니다.")
+
+        missing = {"force", "length"} - {str(key).strip().lower() for key in declaration}
+        if missing:
+            raise ModelImportError(
+                "OPENFRAME_UNITS에 force와 length가 모두 필요합니다: "
+                + ", ".join(sorted(missing))
+            )
+
+        normalized_keys = {str(key).strip().lower(): value for key, value in declaration.items()}
+        force = OpenSeesModelImporter._normalize_declared_unit(
+            normalized_keys["force"], FORCE_UNITS, {"kips": "kip"}, "force"
+        )
+        length = OpenSeesModelImporter._normalize_declared_unit(
+            normalized_keys["length"],
+            LENGTH_UNITS,
+            {"inch": "in", "inches": "in", "feet": "ft", "foot": "ft"},
+            "length",
+        )
+        time = OpenSeesModelImporter._normalize_declared_unit(
+            normalized_keys.get("time", "s"),
+            TIME_UNITS,
+            {"sec": "s", "second": "s", "seconds": "s"},
+            "time",
+        )
+        metadata = payload.setdefault("metadata", {})
+        metadata.update(
+            {
+                "unit_force": force,
+                "unit_length": length,
+                "unit_time": time,
+                "unit_source": "OPENFRAME_UNITS",
+            }
+        )
+
+    @staticmethod
+    def _normalize_declared_unit(
+        value: object,
+        supported: tuple[str, ...],
+        aliases: dict[str, str],
+        dimension: str,
+    ) -> str:
+        raw = str(value).strip()
+        canonical_by_lower = {unit.lower(): unit for unit in supported}
+        normalized = aliases.get(raw.lower(), canonical_by_lower.get(raw.lower()))
+        if normalized is None:
+            choices = ", ".join(supported)
+            raise ModelImportError(
+                f"지원하지 않는 OPENFRAME_UNITS {dimension} 단위입니다: {raw!r}. "
+                f"지원 단위: {choices}"
+            )
+        return normalized

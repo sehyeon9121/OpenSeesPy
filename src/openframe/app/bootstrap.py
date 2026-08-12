@@ -12,14 +12,18 @@ def run_desktop_app() -> int:
     os.environ.setdefault("QSG_RHI_BACKEND", "opengl")
 
     # Qt imports stay at the application boundary so domain modules remain GUI-independent.
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
+    from openframe.app.shell.app_header import APP_ICON_PATH
     from openframe.app.shell.main_window import MainWindow
     from openframe.app.shell.theme import apply_application_theme
     from openframe.core.domain import AnalysisKind
     from openframe.features.analysis.application.run_analysis import RunAnalysisService
     from openframe.features.analysis.linear_static.module import LinearStaticAnalysis
+    from openframe.features.analysis.modal.module import ModalAnalysis
     from openframe.features.analysis.nonlinear_static.module import NonlinearStaticAnalysis
+    from openframe.features.analysis.time_history.module import TimeHistoryAnalysis
     from openframe.features.model.application.open_model import OpenModelService
     from openframe.infrastructure.opensees.model_importer import OpenSeesModelImporter
     from openframe.infrastructure.opensees.runner import OpenSeesProcessRunner
@@ -27,6 +31,8 @@ def run_desktop_app() -> int:
     application = QApplication(sys.argv)
     application.setApplicationName("OpenFrame Studio")
     application.setOrganizationName("OpenFrame")
+    if APP_ICON_PATH.exists():
+        application.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     apply_application_theme(application)
 
     model_importer = OpenSeesModelImporter()
@@ -35,10 +41,14 @@ def run_desktop_app() -> int:
     analysis_runner = OpenSeesProcessRunner()
     linear_static = LinearStaticAnalysis(analysis_runner)
     nonlinear_static = NonlinearStaticAnalysis(analysis_runner)
+    modal = ModalAnalysis(analysis_runner)
+    time_history = TimeHistoryAnalysis(analysis_runner)
     run_analysis_service = RunAnalysisService(
         {
             AnalysisKind.LINEAR_STATIC: linear_static,
             AnalysisKind.NONLINEAR_STATIC: nonlinear_static,
+            AnalysisKind.MODAL: modal,
+            AnalysisKind.TIME_HISTORY: time_history,
         }
     )
 

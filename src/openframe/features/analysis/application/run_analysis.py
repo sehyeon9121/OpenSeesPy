@@ -1,5 +1,7 @@
 """Run an analysis without coupling the caller to OpenSees infrastructure."""
 
+from collections.abc import Callable
+
 from openframe.core.domain import AnalysisKind, AnalysisRequest, AnalysisResult, AnalysisStatus
 from openframe.features.analysis.common import AnalysisModule
 
@@ -17,10 +19,22 @@ class RunAnalysisService:
             return [f"지원하지 않는 해석 종류입니다: {request.kind}"]
         return module.validate(request)
 
-    def execute(self, request: AnalysisRequest) -> AnalysisResult:
+    def execute(
+        self,
+        request: AnalysisRequest,
+        *,
+        progress_callback: Callable[[int | None, str], None] | None = None,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> AnalysisResult:
         errors = self.validate(request)
         if errors:
             return AnalysisResult(status=AnalysisStatus.FAILED, messages=errors)
 
         module = self._modules[request.kind]
-        return module.run(request)
+        if progress_callback is None and cancellation_requested is None:
+            return module.run(request)
+        return module.run(
+            request,
+            progress_callback=progress_callback,
+            cancellation_requested=cancellation_requested,
+        )

@@ -1,10 +1,11 @@
 """Stitch-inspired structural analysis application shell."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -19,8 +20,13 @@ from PySide6.QtWidgets import (
 
 from openframe.app.shell.analysis_progress_banner import AnalysisProgressBanner
 from openframe.app.shell.analysis_results_sidebar import AnalysisResultsSidebar
-from openframe.app.shell.app_header import AppHeader
+from openframe.app.shell.app_header import APP_ICON_PATH, AppHeader
 from openframe.app.shell.direct_model_workspace import DirectModelWorkspace
+from openframe.app.shell.imported_model_units import (
+    ImportedModelUnitDialog,
+    ImportedModelUnitStore,
+    unit_system_from_metadata,
+)
 from openframe.app.shell.page_header import PageHeader
 from openframe.app.shell.setup_workspace import SetupWorkspace
 from openframe.app.shell.start_workspace import StartWorkspace
@@ -50,6 +56,7 @@ class _WorkspaceSession:
     title: str
     source_path: Path
     model: StructuralModel
+    unit_system: UnitSystem
     result: AnalysisResult | None = None
     section: str = "model"
 
@@ -59,10 +66,15 @@ class MainWindow(QMainWindow):
         self,
         open_model_service: OpenModelService | None = None,
         run_analysis_service: RunAnalysisService | None = None,
+        imported_unit_resolver: Callable[[Path], UnitSystem | None] | None = None,
     ) -> None:
         super().__init__()
         self._open_model_service = open_model_service
         self._run_analysis_service = run_analysis_service
+        self._imported_unit_store = ImportedModelUnitStore()
+        self._imported_unit_resolver = (
+            imported_unit_resolver or self._resolve_undeclared_imported_units
+        )
         self._model_load_thread: ModelLoadThread | None = None
         self._analysis_run_thread: AnalysisRunThread | None = None
         self._current_model_source: Path | None = None
@@ -72,6 +84,8 @@ class MainWindow(QMainWindow):
         self._workspace_sessions: dict[str, _WorkspaceSession] = {}
         self._current_session_key: str | None = None
         self.setWindowTitle("OpenFrame Studio")
+        if APP_ICON_PATH.exists():
+            self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.resize(1440, 860)
         self.setMinimumSize(980, 620)
 
@@ -225,9 +239,7 @@ class MainWindow(QMainWindow):
         self.start_workspace.template_requested.connect(
             lambda: self._show_pending_workflow("Template Browser")
         )
-        self.start_workspace.open_project_requested.connect(
-            lambda: self._show_pending_workflow("Open Project")
-        )
+        self.start_workspace.open_project_requested.connect(self._open_project_from_start)
         self.start_workspace.resume_workspace_requested.connect(self._resume_workspace)
         self.start_workspace.session_requested.connect(self._activate_workspace_session)
         self.navigation.current_changed.connect(self._change_workspace_section)
@@ -237,11 +249,37 @@ class MainWindow(QMainWindow):
         self.viewport.unit_system_changed.connect(self._set_unit_system)
         self.viewport.entity_selected.connect(self._entity_selected_from_viewport)
         self.model_sidebar.entity_selected.connect(self._entity_selected_from_tree)
+        self.analysis_progress.cancel_requested.connect(self._cancel_analysis)
 
     def _set_unit_system(self, unit_system: UnitSystem) -> None:
-        self.model_inspector.set_unit_system(unit_system)
-        self.results_workspace.set_unit_system(unit_system)
+        self._apply_unit_system(unit_system)
+        if self._current_session_key in self._workspace_sessions:
+            session = self._workspace_sessions[self._current_session_key]
+            session.unit_system = unit_system
+            session.model.metadata.update(
+                {
+                    "unit_force": unit_system.force,
+                    "unit_length": unit_system.length,
+                    "unit_time": unit_system.time,
+                }
+            )
+            self._imported_unit_store.save(session.source_path, unit_system)
         self.statusBar().showMessage(f"Model units changed | {unit_system.label}")
+
+    def _apply_unit_system(self, unit_system: UnitSystem) -> None:
+        self.viewport.set_unit_system(unit_system, emit=False)
+        self.model_inspector.set_unit_system(unit_system)
+        self.analysis_settings.set_unit_system(unit_system)
+        self.results_workspace.set_unit_system(unit_system)
+
+    def _resolve_undeclared_imported_units(self, source: Path) -> UnitSystem | None:
+        saved = self._imported_unit_store.load(source)
+        if saved is not None:
+            return saved
+        selected = ImportedModelUnitDialog.choose(source, self)
+        if selected is not None:
+            self._imported_unit_store.save(source, selected)
+        return selected
 
     def _show_start_workspace(self) -> None:
         if self.workspace_stack.currentWidget() is not self.start_workspace:
@@ -298,6 +336,31 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "New 3D Model · 기본 설정부터 새 모델을 작성합니다"
         )
+
+    def _open_project_from_start(self) -> None:
+        """"Open Project" on the home screen — the only "이전 작업 불러오기"
+        entry point used to be the OpenSeesPy import history list, which only
+        ever remembers a .py source path, so a hand-drawn 2D/3D project saved
+        via the canvas's own 저장 button had nowhere to be reopened from on
+        this screen. This card already existed for exactly this (its own
+        description always said "Continue a saved OpenFrame project") but was
+        left connected to a placeholder message until now.
+        """
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "프로젝트 열기", "", "OpenFrame 프로젝트 (*.ofsm);;모든 파일 (*.*)"
+        )
+        if not path_str:
+            return
+        try:
+            self.direct_model_workspace.open_project_file(Path(path_str))
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            QMessageBox.critical(self, "프로젝트 열기", f"프로젝트를 열지 못했습니다: {error}")
+            return
+        self._current_model_source = None
+        self.navigation.hide()
+        self.header.hide()
+        self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
+        self.statusBar().showMessage(f"프로젝트 열기 · {Path(path_str).name}")
 
     def _show_model_workspace(self) -> None:
         self._resume_section = "model"
@@ -370,9 +433,29 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _model_loaded(self, model: object, source: str) -> None:
-        self._has_active_workspace = True
         source_path = Path(source).resolve()
+        if not isinstance(model, StructuralModel):
+            self._model_load_failed("불러온 모델 형식이 StructuralModel이 아닙니다.")
+            return
+        unit_system = unit_system_from_metadata(model.metadata)
+        if unit_system is None:
+            unit_system = self._imported_unit_resolver(source_path)
+            if unit_system is None:
+                self.statusBar().showMessage(
+                    "Model import cancelled · Native units are required"
+                )
+                return
+            model.metadata["unit_source"] = "user-selection"
+        model.metadata.update(
+            {
+                "unit_force": unit_system.force,
+                "unit_length": unit_system.length,
+                "unit_time": unit_system.time,
+            }
+        )
+        self._has_active_workspace = True
         self._current_model_source = source_path
+        self._apply_unit_system(unit_system)
         self.model_sidebar.set_source_file(source)
         self.model_sidebar.set_model(model)
         self.viewport.set_model(model)
@@ -390,13 +473,15 @@ class MainWindow(QMainWindow):
                 title=source_path.name,
                 source_path=source_path,
                 model=model,
+                unit_system=unit_system,
             )
         )
         self._current_session_key = key
         self._refresh_start_sessions()
         self._show_model_workspace()
         self.statusBar().showMessage(
-            f"Model loaded · Nodes {len(model.nodes)} · Elements {len(model.elements)}"
+            f"Model loaded · Nodes {len(model.nodes)} · Elements {len(model.elements)} · "
+            f"Units {unit_system.label}"
         )
 
     def _model_load_failed(self, message: str) -> None:
@@ -442,6 +527,7 @@ class MainWindow(QMainWindow):
         names = {
             AnalysisKind.LINEAR_STATIC: "Linear Static",
             AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
+            AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
         }
         self.results_workspace.set_analysis_kind(kind)
@@ -469,6 +555,7 @@ class MainWindow(QMainWindow):
         analysis_name = {
             AnalysisKind.LINEAR_STATIC: "Linear Static",
             AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
+            AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
         }[kind]
         self.analysis_progress.show_running(analysis_name)
@@ -482,6 +569,7 @@ class MainWindow(QMainWindow):
                 run_session_key=run_session_key,
             )
         )
+        thread.progress_changed.connect(self.analysis_progress.set_progress)
         thread.finished.connect(self._analysis_run_finished)
         self._analysis_run_thread = thread
         thread.start()
@@ -525,6 +613,30 @@ class MainWindow(QMainWindow):
                 f"부재 결과: {len(result.element_results)}개\n\n"
                 "RESULTS 탭에서 결과를 확인할 수 있습니다.",
             )
+        elif result.status == AnalysisStatus.PARTIAL:
+            convergence = result.convergence
+            progress = (
+                f"{convergence.completed_steps}/{convergence.requested_steps} steps converged"
+                if convergence is not None
+                else "The nonlinear curve is truncated at the last converged step"
+            )
+            detail = "\n".join(result.messages) or progress
+            self.analysis_progress.show_failed(f"Partial convergence: {progress}")
+            self.statusBar().showMessage(f"Analysis partially converged | {progress}")
+            QMessageBox.warning(
+                self,
+                "비선형해석 부분 수렴",
+                f"해석이 마지막 목표 스텝까지 수렴하지 않았습니다.\n\n{progress}\n\n{detail}\n\n"
+                "마지막 수렴 스텝까지의 결과는 RESULTS 탭에서 확인할 수 있습니다.",
+            )
+        elif result.status == AnalysisStatus.CANCELLED:
+            self.analysis_progress.show_failed("Analysis cancelled")
+            self.statusBar().showMessage("Analysis cancelled")
+            QMessageBox.warning(
+                self,
+                "해석 취소",
+                "사용자 요청으로 해석을 취소했습니다.",
+            )
         else:
             self.analysis_progress.show_failed(
                 " ".join(result.messages) or "The solver returned an unknown error."
@@ -533,6 +645,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self, "해석 실행 실패", "\n".join(result.messages) or "알 수 없는 해석 오류"
             )
+
+    def _cancel_analysis(self) -> None:
+        thread = self._analysis_run_thread
+        if thread is None or not thread.isRunning():
+            return
+        self.analysis_progress.show_cancelling()
+        thread.request_cancel()
 
     def _entity_selected_from_viewport(self, kind: str, tag: int) -> None:
         self.model_sidebar.select_entity(kind, tag)
@@ -584,6 +703,7 @@ class MainWindow(QMainWindow):
         self._current_model_source = session.source_path
         self._has_active_workspace = True
 
+        self._apply_unit_system(session.unit_system)
         self.model_sidebar.set_source_file(str(session.source_path))
         self.model_sidebar.set_model(session.model)
         self.viewport.set_model(session.model)

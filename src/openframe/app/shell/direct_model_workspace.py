@@ -1,10 +1,15 @@
 """Independent workspace for models authored inside OpenFrame."""
 
+import json
+from pathlib import Path
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -48,10 +53,15 @@ class DirectModelWorkspace(QFrame):
         self.workflow = ModelingWorkflowBar()
         command_layout.addWidget(self.workflow)
         command_layout.addStretch(1)
+        self.open_button = QPushButton("열기")
+        self.open_button.setObjectName("directModelOpenButton")
+        self.open_button.setToolTip("저장된 OpenFrame 프로젝트(.ofsm)를 불러옵니다.")
+        self.open_button.clicked.connect(self._open_project)
+        command_layout.addWidget(self.open_button)
         self.save_button = QPushButton("저장")
         self.save_button.setObjectName("directModelSaveButton")
-        self.save_button.setToolTip("프로젝트 저장 기능 연결 예정")
-        self.save_button.setDisabled(True)
+        self.save_button.setToolTip("현재 2D/3D 모델을 OpenFrame 프로젝트(.ofsm) 파일로 저장합니다.")
+        self.save_button.clicked.connect(self._save_project)
         command_layout.addWidget(self.save_button)
         root.addWidget(command_bar)
 
@@ -146,3 +156,51 @@ class DirectModelWorkspace(QFrame):
         """Skip stiffness inputs for determinate textbook statics problems."""
         next_step = "geometry" if self.setup_page.is_material_free_statics() else "materials"
         self.set_current_step(next_step)
+
+    def _current_geometry_page(self) -> ModelingInterfacePage | None:
+        current = self.stage_stack.currentWidget()
+        return current if current in (self.geometry_page, self.geometry_page_3d) else None
+
+    def _save_project(self) -> None:
+        page = self._current_geometry_page()
+        if page is None:
+            return
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "프로젝트 저장", "", "OpenFrame 프로젝트 (*.ofsm)"
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        if path.suffix != ".ofsm":
+            path = path.with_suffix(".ofsm")
+        try:
+            page.save_to_file(path)
+        except OSError as error:
+            QMessageBox.critical(self, "프로젝트 저장", f"저장하지 못했습니다: {error}")
+
+    def open_project_file(self, path: Path) -> None:
+        """Load a saved project and land on its own (2D or 3D) canvas.
+
+        A project's own ``ndm`` decides which of the two separate canvas
+        instances receives it — never the one currently on screen — since a
+        2D project must never end up mixed into a 3D session's geometry (or
+        vice versa), the same separation ``start_2d_model``/``start_3d_model``
+        already enforce.
+        """
+        data = json.loads(path.read_text(encoding="utf-8"))
+        is_3d = int(data.get("ndm", 2)) == 3
+        target = self.geometry_page_3d if is_3d else self.geometry_page
+        target.load_project_dict(data)
+        self._wizard_geometry_target = "geometry_3d" if is_3d else "geometry"
+        self.set_current_step("geometry")
+
+    def _open_project(self) -> None:
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "프로젝트 열기", "", "OpenFrame 프로젝트 (*.ofsm);;모든 파일 (*.*)"
+        )
+        if not path_str:
+            return
+        try:
+            self.open_project_file(Path(path_str))
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            QMessageBox.critical(self, "프로젝트 열기", f"프로젝트를 열지 못했습니다: {error}")

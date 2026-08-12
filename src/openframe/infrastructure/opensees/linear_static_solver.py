@@ -42,17 +42,20 @@ def run_linear_static_analysis(source: Path) -> dict[str, Any]:
     The script only builds: any analysis block it carries is suppressed, so the load
     patterns are applied exactly once, by the single static step below.
     """
-    load_collector = ElementLoadCollector()
     # The section properties are only knowable from the element() call itself, and the
-    # deflected shape between two nodes cannot be rebuilt without EI.
+    # deflected shape between two nodes cannot be rebuilt without EI. Its own nested
+    # ``element_loads`` (not a second, standalone ``ElementLoadCollector``) is what
+    # records -beamUniform loads here — it already knows the model's real ndm (it
+    # also wraps ``ops.model()``), whereas a standalone collector's ``eleLoad`` wrap
+    # has no way to find that out and silently defaults to 2D, misreading a 3D call's
+    # (Wy, Wz, Wx) as 2D's (Wy, Wx) - Wz read as Wx, Wx dropped entirely.
     property_collector = ModelCommandCollector()
-    load_collector.install()
     property_collector.install()
     try:
         run_model_script(source)
     finally:
-        load_collector.restore()
         property_collector.restore()
+    load_collector = property_collector.element_loads
 
     node_tags = [int(tag) for tag in ops.getNodeTags()]
     element_tags = [int(tag) for tag in ops.getEleTags()]
@@ -65,7 +68,12 @@ def run_linear_static_analysis(source: Path) -> dict[str, Any]:
     ops.wipeAnalysis()
     ops.system("BandGeneral")
     ops.numberer("Plain")
-    ops.constraints("Plain")
+    # Imported sources may contain MP constraints such as rigidDiaphragm,
+    # equalDOF, or rigidLink.  PlainHandler only enforces homogeneous SP
+    # constraints, which silently lets a diaphragm's retained and constrained
+    # nodes move independently.  Transformation handles both ordinary fixities
+    # and those source-defined MP constraints.
+    ops.constraints("Transformation")
     ops.integrator("LoadControl", 1.0)
     ops.algorithm("Linear")
     ops.analysis("Static")

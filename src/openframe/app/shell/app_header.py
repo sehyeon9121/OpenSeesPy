@@ -1,7 +1,12 @@
 """Application command bar shared by modeling, analysis and results."""
 
-from PySide6.QtCore import Signal
+from pathlib import Path
+
+from PySide6.QtCore import QSize, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
+
+APP_ICON_PATH = Path(__file__).resolve().parents[2] / "resources" / "icons" / "app_icon.png"
 
 
 class AppHeader(QFrame):
@@ -18,6 +23,11 @@ class AppHeader(QFrame):
         layout.setSpacing(8)
         self.brand_button = QPushButton("OF")
         self.brand_button.setObjectName("brandMark")
+        if APP_ICON_PATH.exists():
+            self.brand_button.setIcon(QIcon(str(APP_ICON_PATH)))
+            self.brand_button.setIconSize(QSize(26, 26))
+        else:
+            self.brand_button.setText("OF")
         self.brand_button.setToolTip("Go to Home")
         self.brand_button.clicked.connect(self.home_requested)
         brand = QLabel("OpenFrame Studio")

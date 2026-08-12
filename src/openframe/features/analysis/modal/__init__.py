@@ -1,0 +1,1 @@
+"""Modal (eigenvalue) analysis implementation."""

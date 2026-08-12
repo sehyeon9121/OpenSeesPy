@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QApplication
 from openframe.features.analysis.statics import check_determinacy
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
+from _solve_helpers import solve_and_wait, solve_modal_and_wait
+
 
 def test_student_can_draw_and_solve_a_free_form_simply_supported_beam() -> None:
     application = QApplication.instance() or QApplication([])
@@ -23,7 +25,7 @@ def test_student_can_draw_and_solve_a_free_form_simply_supported_beam() -> None:
     canvas.set_support(left, (True, True, False))
     canvas.set_support(right, (False, True, False))
     canvas.set_uniform_load(member, (0.0, -10.0))
-    page.solve()
+    solve_and_wait(page)
 
     assert page.workspace_stack.currentIndex() == 1
     assert page.viewport._result.node_results[left].reaction[1] == pytest.approx(20.0)
@@ -51,7 +53,7 @@ def test_drawn_hinge_becomes_a_member_release_and_makes_a_gerber_beam_solvable()
     assert model.elements[suspended].moment_release_i is True
     assert check_determinacy(model).degree == 0
 
-    page.solve()
+    solve_and_wait(page)
 
     assert page.workspace_stack.currentIndex() == 1
     assert page.viewport._result.node_results[fixed].reaction[1] == pytest.approx(20.0)
@@ -164,6 +166,69 @@ def test_drag_direction_and_filter_control_window_or_crossing_selection() -> Non
     assert canvas.selected_nodes == {left}
 
 
+def test_a_slight_leftward_jitter_during_a_mostly_vertical_drag_stays_in_window_mode() -> None:
+    """Regression test: the window/crossing decision used to compare raw
+    scene-space x coordinates with no tolerance, so a drag meant to go
+    straight down - which in practice almost never has an exactly-zero
+    horizontal delta - could flip into crossing mode from a single pixel of
+    hand tremor and start sweeping in members the box only grazed, not just
+    the nodes the user meant to box. Reported as "위에서 아래로 드래그하면
+    노드만 선택돼야 하는데 부재까지 같이 선택됨"."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    start = QPointF(0.0, 0.0)
+    tiny_leftward_jitter = QPointF(-1.0, 200.0)
+    assert canvas._is_crossing_drag(start, tiny_leftward_jitter) is False
+
+    deliberate_left_drag = QPointF(-20.0, 200.0)
+    assert canvas._is_crossing_drag(start, deliberate_left_drag) is True
+
+    # End-to-end: a horizontal member straddling a thin, almost-vertical
+    # selection box (crossed, not enclosed) must stay unselected once the
+    # jitter no longer flips the drag into crossing mode.
+    scale = canvas._DRAW_SCALE
+    left = canvas.add_node(-5.0, 0.0)
+    right = canvas.add_node(5.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.selection_filter = "elements"
+    box_start = QPointF(-2.0 * scale, -6.0 * scale)
+    box_end = QPointF(-1.0 * scale, 6.0 * scale)
+    thin_vertical_box = QRectF(box_start, box_end).normalized()
+
+    canvas._select_in_rect(
+        thin_vertical_box, crossing=canvas._is_crossing_drag(box_start, box_end)
+    )
+
+    assert member not in canvas.selected_elements
+
+
+def test_clicking_a_filtered_out_item_preserves_the_current_selection() -> None:
+    """Regression test: _toggle_selection used to clear the current selection
+    *before* checking whether the clicked item even passed the active
+    selection_filter, so clicking the wrong kind of item (e.g. a node while
+    something had narrowed the filter to elements-only) silently wiped out a
+    perfectly valid member selection instead of just being ignored - reported
+    as "부재를 선택해 둔 채로 노드를 클릭했더니 선택이 없어짐"."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.selected_elements = {member}
+    canvas.selection_filter = "elements"
+
+    canvas._toggle_selection(("node", left), Qt.KeyboardModifier.NoModifier)
+
+    assert canvas.selected_elements == {member}
+    assert canvas.selected_nodes == set()
+
+
 def test_crossing_selection_only_picks_members_the_rectangle_actually_crosses() -> None:
     """Regression test: QLineF.intersects() reports UnboundedIntersection whenever
     the two *infinite* lines would cross somewhere, even nowhere near either
@@ -248,7 +313,12 @@ def test_repeated_node_creation_is_one_undo_operation() -> None:
     assert not page.canvas.nodes
 
 
-def test_midpoint_snap_adds_an_analysis_node_without_splitting_the_visible_member() -> None:
+def test_midpoint_snap_splits_the_visible_member_into_two_independent_pieces() -> None:
+    """부재 위 노드 삽입 (here via the explicit midpoint shortcut) now splits
+    the member for real, immediately - not just an analysis-time embedded
+    point (canvas_geometry.py's _add_node_at) - so canvas.elements and the
+    built model agree on the member count, and a point load at the new joint
+    still reaches it correctly either way."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -263,22 +333,23 @@ def test_midpoint_snap_adds_an_analysis_node_without_splitting_the_visible_membe
     canvas.set_nodal_load(middle, (0.0, -10.0, 0.0))
 
     model = canvas.build_model()
-    assert len(canvas.elements) == 1
+    assert len(canvas.elements) == 2
     assert len(model.elements) == 2
     assert all(middle in {element.node_i, element.node_j} for element in model.elements.values())
     assert model.metadata["hinge_nodes"] == ""
-    assert model.metadata["logical_member_count"] == "1"
-    assert model.metadata["embedded_nodes"] == f"{middle}:{member}:0.5"
+    assert model.metadata["logical_member_count"] == "2"
+    assert model.metadata["embedded_nodes"] == ""
     assert check_determinacy(model).degree == 0
 
 
-def test_splitting_a_trapezoidal_load_interpolates_each_segment_not_copies_the_whole_span() -> None:
-    """Regression test: build_model() used to rebuild every analysis segment's
-    load from just (wx, wy) - the member's own *i-end* values - dropping
-    wx_j/wy_j entirely, so a triangular/trapezoidal load collapsed back into a
-    uniform one (at the i-end's value) the moment a member carrying one was
-    split by an embedded node. Each segment must instead carry its own local
-    slice of the linearly-varying load."""
+def test_splitting_a_member_that_carries_a_trapezoidal_load_interpolates_each_new_piece() -> None:
+    """Regression coverage for the same interpolation math this test always
+    checked, now exercised where it actually happens - _split_element_at,
+    called the moment an already-loaded member is explicitly split - instead
+    of build_model()'s segment-splitting path, which this scenario no longer
+    reaches (there is nothing left embedded to split at build time). Each new
+    piece must carry its own local slice of the linearly-varying load, not a
+    copy of the whole original span's i-end value."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -287,26 +358,137 @@ def test_splitting_a_trapezoidal_load_interpolates_each_segment_not_copies_the_w
     left = canvas.add_node(0.0, 0.0)
     right = canvas.add_node(8.0, 0.0)
     member = canvas.add_member(left, right)
-    canvas.add_member_midpoint_node(member)  # splits the member at fraction 0.5
     canvas.selected_elements = {member}
     canvas.apply_uniform_load_to_selection((0.0, 0.0, 0.0, -20.0))  # 0 at i -> -20 at j
 
-    model = canvas.build_model()
-    assert len(model.elements) == 2
-    loads_by_tag = {load.element_tag: load for load in model.element_loads}
-    assert len(loads_by_tag) == 2
+    canvas.add_member_midpoint_node(member)  # splits the member at fraction 0.5
 
-    # build_model() keeps the original tag for the first segment (fraction
-    # 0.0->0.5 of the original member) and mints a new tag for the second
-    # (0.5->1.0), so each one's i/j values must be the load interpolated at
-    # its own pair of fractions, not the whole member's i/j values copied twice.
-    first, second = loads_by_tag[member], next(
-        load for tag, load in loads_by_tag.items() if tag != member
+    assert len(canvas.elements) == 2
+    assert len(canvas.element_loads) == 2
+    first, second = canvas.element_loads[member], next(
+        load for tag, load in canvas.element_loads.items() if tag != member
     )
     assert first.wy == pytest.approx(0.0)
     assert first.wy_j == pytest.approx(-10.0)
     assert second.wy == pytest.approx(-10.0)
     assert second.wy_j == pytest.approx(-20.0)
+
+    # End to end: build_model() has nothing left embedded to split further,
+    # so it must simply carry the two already-split loads through unchanged.
+    model = canvas.build_model()
+    assert len(model.element_loads) == 2
+
+
+def test_self_weight_is_off_by_default_and_absent_from_the_solved_model() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    assert canvas.include_self_weight is False
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.elements[member].properties["A"] = 2.0
+    canvas.elements[member].properties["density"] = 1.0
+
+    model = canvas.build_model()
+    assert model.element_loads == []
+
+
+def test_self_weight_reactions_match_hand_calculation_for_a_horizontal_beam() -> None:
+    """Simply-supported horizontal beam, L=4, A=2, density=1 -> total weight
+    w*L = 2*4 = 8, split evenly by symmetry: 4 at each support, matching the
+    textbook simply-supported-UDL reaction R = wL/2."""
+    from openframe.features.analysis.statics import MaterialFreeStaticsSolver
+
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.set_support(left, (True, True, False))
+    canvas.set_support(right, (False, True, False))
+    canvas.elements[member].properties["A"] = 2.0
+    canvas.elements[member].properties["density"] = 1.0
+    canvas.include_self_weight = True
+
+    result = MaterialFreeStaticsSolver().solve(canvas.build_model())
+    assert result.status.value == "completed"
+    reactions = {tag: node.reaction for tag, node in result.node_results.items()}
+    assert reactions[left] == pytest.approx((0.0, 4.0, 0.0), abs=1e-9)
+    assert reactions[right] == pytest.approx((0.0, 4.0, 0.0), abs=1e-9)
+
+
+def test_self_weight_on_a_vertical_column_is_pure_axial_with_no_bending() -> None:
+    """A column's own weight acts along its own centroidal axis, so a
+    cantilever column under self-weight alone should show zero moment and
+    zero horizontal reaction at its base - the total weight (density*A*L =
+    1*2*3 = 6) shows up entirely as vertical reaction."""
+    from openframe.features.analysis.statics import MaterialFreeStaticsSolver
+
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    base = canvas.add_node(0.0, 0.0)
+    top = canvas.add_node(0.0, 3.0)
+    member = canvas.add_member(base, top)
+    canvas.set_support(base, (True, True, True))
+    canvas.elements[member].properties["A"] = 2.0
+    canvas.elements[member].properties["density"] = 1.0
+    canvas.include_self_weight = True
+
+    result = MaterialFreeStaticsSolver().solve(canvas.build_model())
+    assert result.status.value == "completed"
+    reaction = result.node_results[base].reaction
+    assert reaction == pytest.approx((0.0, 6.0, 0.0), abs=1e-9)
+
+
+def test_self_weight_requires_both_density_and_area_or_is_silently_skipped() -> None:
+    """A member with no density set (the common case, since density defaults
+    to nothing) must not contribute a phantom load just because the global
+    checkbox is on - only members that actually opted in via the section
+    panel's density field participate."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    canvas.add_member(left, right)
+    canvas.include_self_weight = True
+
+    model = canvas.build_model()
+    assert model.element_loads == []
+
+
+def test_rotate_copy_places_new_nodes_at_the_correct_angle_and_reproduces_members() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(1.0, 0.0)
+    right = canvas.add_node(2.0, 0.0)
+    canvas.add_member(left, right)
+    canvas.selected_nodes = {left, right}
+
+    created_members = canvas.rotate_copy_selection(0.0, 0.0, 90.0, 2)
+
+    assert created_members == 2
+    assert len(canvas.nodes) == 6
+    assert len(canvas.elements) == 3
+    positions = {(round(n.x, 6), round(n.y, 6)) for n in canvas.nodes.values()}
+    assert (0.0, 1.0) in positions  # (1,0) rotated 90 deg
+    assert (0.0, 2.0) in positions  # (2,0) rotated 90 deg
+    assert (-1.0, 0.0) in positions  # (1,0) rotated 180 deg
+    assert (-2.0, 0.0) in positions  # (2,0) rotated 180 deg
 
 
 def test_collinear_node_is_auto_attached_without_splitting_the_visible_member() -> None:
@@ -328,6 +510,9 @@ def test_collinear_node_is_auto_attached_without_splitting_the_visible_member() 
 
 
 def test_midpoint_tool_snaps_near_member_center_and_is_undoable() -> None:
+    """Splitting a member via 부재 위 노드 삽입/등분할 is one undo step, same
+    as everything else _add_node_at can trigger - undo must restore the
+    original single element, not leave a half-split state behind."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -341,8 +526,11 @@ def test_midpoint_tool_snaps_near_member_center_and_is_undoable() -> None:
     assert snapped_member == member
     canvas.add_member_midpoint_node(snapped_member)
     assert len(canvas.nodes) == 3
-    assert next(iter(canvas.embedded_nodes.values())) == (member, 0.5)
-    assert len(canvas.elements) == 1
+    assert not canvas.embedded_nodes
+    assert len(canvas.elements) == 2
+    middle = next(tag for tag in canvas.nodes if tag not in (left, right))
+    spans = {(el.node_i, el.node_j) for el in canvas.elements.values()}
+    assert spans == {(left, middle), (middle, right)}
 
     canvas.undo()
     assert len(canvas.nodes) == 2
@@ -351,6 +539,11 @@ def test_midpoint_tool_snaps_near_member_center_and_is_undoable() -> None:
 
 
 def test_arbitrary_member_station_accepts_a_point_load_without_instability() -> None:
+    """A point load at an inserted station lands on a real, independent node
+    whether the member it came from stays whole or gets split for real
+    (canvas_geometry.py's _add_node_at) - the split must not introduce any
+    spurious instability, and reactions for this determinate beam must come
+    out exactly as equilibrium alone dictates either way."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -365,11 +558,11 @@ def test_arbitrary_member_station_accepts_a_point_load_without_instability() -> 
     canvas.set_nodal_load(load_node, (0.0, -15.0, 0.0))
 
     model = canvas.build_model()
-    assert len(canvas.elements) == 1
+    assert len(canvas.elements) == 2
     assert len(model.elements) == 2
     assert canvas.nodes[load_node].x == pytest.approx(3.0)
     assert check_determinacy(model).degree == 0
-    page.solve()
+    solve_and_wait(page)
     assert page.viewport._result.node_results[left].reaction[1] == pytest.approx(10.5)
     assert page.viewport._result.node_results[right].reaction[1] == pytest.approx(4.5)
 
@@ -439,3 +632,84 @@ def test_node_transform_tool_activates_node_drag_selection_without_support_tool(
     page._activate_node_transform_tool()
     assert page.canvas.mode == "select"
     assert page.canvas.selection_filter == "nodes"
+
+
+def test_modal_solve_button_runs_an_eigenvalue_analysis_on_a_real_material_cantilever() -> None:
+    """End-to-end through the actual UI trigger (solve_modal), not just the
+    solver directly - a cantilever with a real section/material and nonzero
+    density (so it has both stiffness and mass), matching this app's own
+    apply_section_to_selection API a user would actually click through."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    base = canvas.add_node(0.0, 0.0)
+    tip = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(base, tip)
+    canvas.set_support(base, (True, True, True))
+    canvas.selected_elements = {member}
+    canvas.apply_section_to_selection(width=0.3, height=0.5, elastic=200_000.0, density=10.0)
+
+    solve_modal_and_wait(page)
+
+    assert application is QApplication.instance()
+    assert page.workspace_stack.currentIndex() == 1
+    result = page.viewport._result
+    assert result.status.value == "completed"
+    assert len(result.mode_shapes) == page.modal_num_modes.value()
+    assert all(mode.angular_frequency > 0.0 for mode in result.mode_shapes)
+    # Ascending order: fundamental (softest, longest period) mode first.
+    periods = [mode.period for mode in result.mode_shapes]
+    assert periods == sorted(periods, reverse=True)
+
+
+def test_modal_solve_button_reports_missing_material_without_a_popup() -> None:
+    """No section/density applied - the same everyday-not-an-error philosophy
+    solve() already has for an indeterminate structure with no material."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    base = canvas.add_node(0.0, 0.0)
+    tip = canvas.add_node(4.0, 0.0)
+    canvas.add_member(base, tip)
+    canvas.set_support(base, (True, True, True))
+
+    solve_modal_and_wait(page)
+
+    assert application is QApplication.instance()
+    assert page.workspace_stack.currentIndex() == 0
+    assert "재료" in page.determinacy_status.text()
+
+
+def test_pdelta_toggle_amplifies_deflection_on_a_real_material_cantilever() -> None:
+    """End-to-end through the actual UI trigger (solve(), not the solver
+    directly): a cantilever with real section/material carrying a lateral load
+    plus a large compressive axial load - the pdelta_toggle checkbox must
+    change the result (larger deflection than the linear solve), and toggling
+    it off again must reproduce the exact linear result."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    base = canvas.add_node(0.0, 0.0)
+    tip = canvas.add_node(0.0, 4.0)
+    member = canvas.add_member(base, tip)
+    canvas.set_support(base, (True, True, True))
+    canvas.selected_elements = {member}
+    canvas.apply_section_to_selection(width=0.3, height=0.5, elastic=200_000.0)
+    canvas.set_nodal_load(tip, (1.0, -2.0, 0.0))
+
+    solve_and_wait(page)
+    linear_ux = page.viewport._result.node_results[tip].displacement[0]
+
+    page.pdelta_toggle.setChecked(True)
+    solve_and_wait(page)
+
+    assert application is QApplication.instance()
+    result = page.viewport._result
+    assert result.status.value == "completed"
+    assert result.node_results[tip].displacement[0] > linear_ux
+
+    page.pdelta_toggle.setChecked(False)
+    solve_and_wait(page)
+    assert page.viewport._result.node_results[tip].displacement[0] == pytest.approx(
+        linear_ux, abs=1.0e-9
+    )

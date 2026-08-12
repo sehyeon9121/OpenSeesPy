@@ -1,3 +1,4 @@
+import math
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -8,6 +9,8 @@ from PySide6.QtWidgets import QApplication
 
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
+from _solve_helpers import solve_and_wait
+
 
 def _page(*, start_in_3d: bool = False) -> ModelingInterfacePage:
     QApplication.instance() or QApplication([])
@@ -17,16 +20,95 @@ def _page(*, start_in_3d: bool = False) -> ModelingInterfacePage:
     return page
 
 
-def test_the_right_panel_offers_only_the_two_always_on_widgets() -> None:
-    """The right panel is deliberately fixed now: 좌표로 노드 추가 and 이동·복사·
-    배열, both always visible, nothing else, no selection-gating. Every other
-    editor (지점/노드 유형/부재/하중, 단면·재료 included) lives in the canvas-top
-    bar's accordion instead (``_build_node_property_bar``)."""
+def test_the_right_panel_starts_empty_until_a_category_is_picked() -> None:
+    """Nothing is pinned any more: 노드 추가/이동·복사·배열/노드 분할 used to
+    always occupy the 우측 패널, and 지점/노드 유형/부재/하중 lived in a
+    canvas-top accordion. Now all seven are equal category pages and the
+    panel shows none of them until a category button is clicked."""
     page = _page()
 
-    assert page.node_x.isVisible() is True
-    assert page.node_transform_operation.isVisible() is True
+    assert page.category_stack.currentIndex() == page.category_pages["empty"]
+    assert page.node_x.isVisible() is False
     assert "선택된 대상이 없습니다" in page.selection_summary.text()
+    assert {key for key, _label in page._CATEGORY_OPTIONS} == set(page.category_buttons)
+
+
+def test_clicking_a_category_button_shows_only_that_pages_content() -> None:
+    page = _page()
+
+    page.category_buttons["add"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["add"]
+    assert page.node_x.isVisible() is True
+
+    page.category_buttons["move"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["move"]
+    assert page.node_transform_operation.isVisible() is True
+    # Switching category is exclusive - the previous one's page stops being
+    # the one shown (QStackedWidget only ever shows its current widget).
+    assert page.category_stack.currentIndex() != page.category_pages["add"]
+
+
+def test_category_stays_open_until_a_different_one_is_clicked() -> None:
+    """Re-clicking the already-active category button must not close it -
+    an exclusive QButtonGroup never lets the last checked button un-check
+    itself, so the panel simply has nothing that "closes" it back to empty."""
+    page = _page()
+    page.category_buttons["add"].click()
+
+    page.category_buttons["add"].click()
+
+    assert page.category_stack.currentIndex() == page.category_pages["add"]
+    assert page.node_x.isVisible() is True
+
+
+def test_arch_category_button_generates_an_arch_from_typed_span_and_rise() -> None:
+    page = _page()
+    page.category_buttons["arch"].click()
+
+    page.arch_start_x.setValue(0.0)
+    page.arch_start_y.setValue(0.0)
+    page.arch_span.setValue(8.0)
+    page.arch_rise.setValue(1.6)
+    page.arch_segments.setValue(12)
+    page._generate_arch()
+
+    assert len(page.canvas.nodes) == 13
+    assert len(page.canvas.elements) == 12
+    assert page.canvas.selected_nodes  # ready to immediately add supports at the ends
+
+
+def test_generated_arch_members_take_a_support_and_a_uniform_load_like_any_other_member() -> None:
+    """The whole point of building an arch out of ordinary straight
+    Nodes/Elements is that 지점 and 하중 need no arch-specific code at all -
+    this is the end-to-end proof, not just a unit check on the geometry."""
+    page = _page()
+    page.category_buttons["arch"].click()
+    page.arch_span.setValue(8.0)
+    page.arch_rise.setValue(1.6)
+    page.arch_segments.setValue(4)
+    page._generate_arch()
+    left_foot, *_middle, right_foot = sorted(page.canvas.nodes)
+    first_member = next(iter(page.canvas.elements))
+
+    page.category_buttons["support"].click()
+    page.canvas.selected_nodes = {left_foot, right_foot}
+    page.canvas.selection_changed.emit()
+    page.support_buttons[4].click()  # 고정
+
+    page.category_buttons["load"].click()
+    page.canvas.selected_nodes = set()
+    page.canvas.selected_elements = {first_member}
+    page.canvas.selection_changed.emit()
+    page.load_target_group.button(1).click()  # 등분포하중 (element)
+    page.load_fields["qy"].setValue(-5.0)
+    page._apply_load()
+
+    model = page.canvas.build_model()
+    boundaries_by_node = {boundary.node_tag: boundary for boundary in model.boundaries}
+    assert boundaries_by_node[left_foot].restraints == (True, True, True)
+    assert boundaries_by_node[right_foot].restraints == (True, True, True)
+    element_loads_by_tag = {load.element_tag: load for load in model.element_loads}
+    assert element_loads_by_tag[first_member].wy == pytest.approx(-5.0)
 
 
 def test_create_section_stays_visible_across_selection_changes() -> None:
@@ -34,6 +116,7 @@ def test_create_section_stays_visible_across_selection_changes() -> None:
     after picking the reference node - create must never disappear just
     because a selection was made, which is the bug this guards against."""
     page = _page()
+    page.category_buttons["add"].click()
     node = page.canvas.add_node(0.0, 0.0)
 
     page.canvas.selected_nodes = {node}
@@ -41,33 +124,36 @@ def test_create_section_stays_visible_across_selection_changes() -> None:
     assert page.node_x.isVisible() is True
 
 
-def test_the_right_panel_stays_fixed_when_a_node_is_selected() -> None:
+def test_selecting_a_node_does_not_switch_the_active_category() -> None:
     """Selecting a node used to swap the right panel to node-only properties;
-    now the panel never changes shape at all - only the top-bar accordion and
-    the selection summary respond to what is selected."""
+    selection now only ever refreshes whichever category is already showing
+    (the selection summary text included) - it never picks a category on
+    its own."""
     page = _page()
+    page.category_buttons["move"].click()
     node = page.canvas.add_node(0.0, 0.0)
 
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
 
     assert "노드 1개 선택됨" in page.selection_summary.text()
-    assert page.node_x.isVisible() is True
+    assert page.category_stack.currentIndex() == page.category_pages["move"]
     assert page.node_transform_operation.isVisible() is True
 
 
-def test_activating_a_tool_expands_its_own_slide_out_and_collapses_the_others() -> None:
-    """지점/노드 유형/부재/하중 share one accordion (``_SlideOutGroup``): opening
-    one must automatically close whichever was open before, or the top bar
-    recreates the "everything laid out at once" clutter it exists to avoid."""
+def test_activating_a_tool_shows_its_own_category_and_switches_off_the_others() -> None:
+    """지점/하중 등은 하나의 예외적 QButtonGroup으로 배타적으로 전환된다: 하나를
+    켜면 이전에 켜져 있던 다른 카테고리는 자동으로 꺼진다."""
     page = _page()
 
     page._activate_support_tool()
-    assert page.support_slide_out.toggle_button.isChecked() is True
+    assert page.category_buttons["support"].isChecked() is True
+    assert page.category_stack.currentIndex() == page.category_pages["support"]
 
     page._activate_load_tool()
-    assert page.load_slide_out.toggle_button.isChecked() is True
-    assert page.support_slide_out.toggle_button.isChecked() is False
+    assert page.category_buttons["load"].isChecked() is True
+    assert page.category_buttons["support"].isChecked() is False
+    assert page.category_stack.currentIndex() == page.category_pages["load"]
 
 
 def test_selecting_a_member_refreshes_the_member_bar_and_the_summary() -> None:
@@ -100,6 +186,9 @@ def test_toggling_the_member_end_checkbox_releases_that_end_only() -> None:
 
 
 def test_inserting_a_member_station_node_from_the_panel_reaches_the_canvas() -> None:
+    """An explicit 부재 위 노드 삽입 splits the member into two independent
+    elements immediately (not just an analysis-time embedded point), so each
+    side can carry its own load - see canvas_geometry.py's _add_node_at."""
     page = _page()
     first = page.canvas.add_node(0.0, 0.0)
     second = page.canvas.add_node(4.0, 0.0)
@@ -110,9 +199,12 @@ def test_inserting_a_member_station_node_from_the_panel_reaches_the_canvas() -> 
     page.member_station.setValue(0.25)
     page._insert_member_station_node()
 
-    inserted = next(iter(page.canvas.embedded_nodes))
-    assert page.canvas.embedded_nodes[inserted] == (member, pytest.approx(0.25))
+    assert len(page.canvas.embedded_nodes) == 0
+    assert len(page.canvas.elements) == 2
+    inserted = next(tag for tag, node in page.canvas.nodes.items() if tag not in (first, second))
     assert page.canvas.nodes[inserted].x == pytest.approx(1.0)
+    spans = {(el.node_i, el.node_j) for el in page.canvas.elements.values()}
+    assert spans == {(first, inserted), (inserted, second)}
 
 
 def test_the_node_transform_tool_filters_selection_to_nodes_only() -> None:
@@ -208,6 +300,9 @@ def test_the_array_copy_operation_reaches_the_canvas_and_reproduces_members() ->
 
 
 def test_the_subdivide_control_reaches_the_canvas() -> None:
+    """Equal subdivision now creates independent elements immediately (see
+    canvas_transforms.py's subdivide_member), not analysis-time embedded
+    points - each of the 3 equal pieces must be independently loadable."""
     page = _page()
     left = page.canvas.add_node(0.0, 0.0)
     right = page.canvas.add_node(6.0, 0.0)
@@ -218,8 +313,11 @@ def test_the_subdivide_control_reaches_the_canvas() -> None:
     page.member_segments.setValue(3)
     page._subdivide_member()
 
-    assert len(page.canvas.embedded_nodes) == 2
+    assert len(page.canvas.embedded_nodes) == 0
+    assert len(page.canvas.elements) == 3
     assert len(page.canvas.build_model().elements) == 3
+    xs = sorted(node.x for node in page.canvas.nodes.values())
+    assert xs == pytest.approx([0.0, 2.0, 4.0, 6.0])
 
 
 def test_the_f_shortcut_recentres_the_canvas_on_the_model() -> None:
@@ -253,7 +351,233 @@ def test_applying_a_load_sets_every_component_at_once_without_losing_earlier_one
     page._apply_load()
 
     load = page.canvas.build_model().nodal_loads[0]
-    assert load.values == pytest.approx((5.0, -12.0, 3.0))
+    # Mz is typed 시계방향(+)/반시계방향(-) - the opposite of the stored
+    # right-hand-rule sign OpenSees itself needs - so a typed +3 stores as -3.
+    assert load.values == pytest.approx((5.0, -12.0, -3.0))
+
+
+def test_a_clockwise_moment_is_typed_positive_and_stores_as_the_right_hand_rule_negative() -> None:
+    """시계방향(clockwise) is + in the field the user types, 반시계방향
+    (counter-clockwise) is - - the opposite of the signed value OpenSees
+    itself expects for a moment about +Z (+ = CCW). The flip has to happen
+    exactly once, here, so everything downstream (the solver, saved
+    projects) keeps working in the one standard convention."""
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+
+    page.load_fields["mz"].setValue(10.0)  # 10, clockwise
+    page._apply_load()
+    assert page.canvas.build_model().nodal_loads[0].values[2] == pytest.approx(-10.0)
+
+    page.canvas.selected_nodes = {node}
+    page.load_fields["mz"].setValue(-4.0)  # 4, counter-clockwise
+    page._apply_load()
+    assert page.canvas.build_model().nodal_loads[0].values[2] == pytest.approx(4.0)
+
+
+def test_magnitude_and_angle_convert_to_fx_fy_matching_standard_trig() -> None:
+    """각도 uses the same convention as the draw-mode 길이<각도 entry: degrees
+    counter-clockwise from global +X."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+
+    page.load_magnitude.setValue(10.0)
+    page.load_angle.setValue(30.0)
+    page._apply_magnitude_angle_to_fxfy()
+
+    assert page.load_fields["fx"].value() == pytest.approx(10.0 * math.cos(math.radians(30.0)))
+    assert page.load_fields["fy"].value() == pytest.approx(10.0 * math.sin(math.radians(30.0)))
+
+
+def test_perpendicular_to_member_button_fills_the_angle_field_from_member_slope() -> None:
+    """A load perpendicular to a sloped member (e.g. wind pressure on a
+    gable roof, textbook figures resolving a force into components
+    perpendicular/parallel to the rafter) can be entered without computing
+    the member's own slope angle by hand first."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    horizontal_a = canvas.add_node(0.0, 0.0)
+    horizontal_b = canvas.add_node(4.0, 0.0)
+    horizontal_member = canvas.add_member(horizontal_a, horizontal_b)
+    sloped_a = canvas.add_node(0.0, 4.0)
+    sloped_b = canvas.add_node(4.0, 8.0)  # 45 degrees
+    sloped_member = canvas.add_member(sloped_a, sloped_b)
+
+    canvas.selected_elements = {horizontal_member}
+    canvas.selected_nodes = {horizontal_a}  # the load's actual target node
+    page._fill_angle_perpendicular_to_selected_member()
+    assert page.load_angle.value() == pytest.approx(90.0)
+
+    canvas.selected_elements = {sloped_member}
+    page._fill_angle_perpendicular_to_selected_member()
+    assert page.load_angle.value() == pytest.approx(135.0)
+
+    # No selected member and no selected node -> nothing to reference, leaves
+    # whatever angle was already there.
+    canvas.selected_elements = set()
+    canvas.selected_nodes = set()
+    page._fill_angle_perpendicular_to_selected_member()
+    assert page.load_angle.value() == pytest.approx(135.0)
+
+
+def test_perpendicular_button_auto_detects_the_member_from_a_lone_load_target_node() -> None:
+    """The common case - a load at the end of a sloped member with only one
+    member there (a rafter end, a cantilever tip, a truss apex) - must not
+    require holding Ctrl and clicking the member too just to pick an
+    unambiguous reference: selecting only the load-target node is enough."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    sloped_a = canvas.add_node(0.0, 4.0)
+    sloped_b = canvas.add_node(4.0, 8.0)  # 45 degrees
+    canvas.add_member(sloped_a, sloped_b)
+
+    canvas.selected_nodes = {sloped_a}
+    canvas.selected_elements = set()
+    page._fill_angle_perpendicular_to_selected_member()
+    assert page.load_angle.value() == pytest.approx(135.0)
+
+
+def test_perpendicular_button_warns_when_the_load_target_node_has_two_members() -> None:
+    """A rigid-frame joint with two or more members at the load-target node
+    is genuinely ambiguous - perpendicular to which one? - so the button
+    must say so instead of guessing or silently doing nothing."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    corner = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    up = canvas.add_node(0.0, 4.0)
+    canvas.add_member(corner, right)
+    canvas.add_member(corner, up)
+
+    canvas.selected_nodes = {corner}
+    canvas.selected_elements = set()
+    page.load_angle.setValue(7.0)
+    page._fill_angle_perpendicular_to_selected_member()
+
+    assert page.load_angle.value() == pytest.approx(7.0)
+    assert "기준 부재를 정할 수 없습니다" in page.selection_summary.text()
+
+
+def test_perpendicular_button_auto_detects_at_a_node_splitting_a_straight_member() -> None:
+    """부재 노드 삽입 (splitting a drawn member partway along its span - see
+    ``add_member_station_node``) leaves two members at the new node, but
+    both halves sit on the exact same line, so this is not the ambiguous
+    two-member case: perpendicular-to-either gives the same angle."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    bottom = canvas.add_node(0.0, 0.0)
+    top = canvas.add_node(4.0, 4.0)  # 45 degrees
+    member = canvas.add_member(bottom, top)
+    split_node = canvas.add_member_station_node(member, 0.5)
+
+    canvas.selected_nodes = {split_node}
+    canvas.selected_elements = set()
+    page._fill_angle_perpendicular_to_selected_member()
+
+    assert page.load_angle.value() == pytest.approx(135.0)
+    assert "기준 부재를 정할 수 없습니다" not in page.selection_summary.text()
+
+
+def test_node_loads_default_to_component_fx_fy_input() -> None:
+    """Fx/Fy is the default 집중하중 input, same as every other axis field in
+    this app - '부재 수직' (크기+자동 각도) is opt-in via the toggle, for
+    loads naturally given relative to a sloped member instead."""
+    page = _page()
+    page.category_buttons["load"].click()
+
+    assert page.load_input_mode == "component"
+    assert set(page.load_fields) == {"fx", "fy", "mz"}
+    assert not hasattr(page, "load_magnitude")
+    assert not hasattr(page, "load_angle")
+    assert page.load_mode_toggle.isVisible()
+    visible_widgets = {
+        page.load_form_layout.itemAt(i).widget() for i in range(page.load_form_layout.count())
+    }
+    assert page.load_fields["fx"] in visible_widgets
+    assert page.load_fields["fy"] in visible_widgets
+
+
+def test_toggling_to_perpendicular_mode_hides_fx_fy() -> None:
+    page = _page()
+
+    page.load_mode_toggle.setChecked(True)
+
+    assert page.load_input_mode == "perpendicular"
+    visible_widgets = {
+        page.load_form_layout.itemAt(i).widget() for i in range(page.load_form_layout.count())
+    }
+    assert page.load_fields["fx"] not in visible_widgets
+    assert page.load_fields["fy"] not in visible_widgets
+    assert page.load_magnitude in visible_widgets
+    assert page.load_angle in visible_widgets
+
+
+def test_selecting_a_node_silently_follows_it_with_the_perpendicular_angle() -> None:
+    """The angle used to require an explicit button press per selection -
+    now it just follows whichever node/member is selected, with no ⚠
+    warning noise for an ordinary click that doesn't land on a reference."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    a = canvas.add_node(0.0, 0.0)
+    b = canvas.add_node(4.0, 4.0)  # 45 degrees
+    canvas.add_member(a, b)
+
+    canvas.selected_nodes = {b}
+    canvas.selection_changed.emit()
+    assert page.load_angle.value() == pytest.approx(135.0)
+    assert "⚠" not in page.selection_summary.text()
+
+    # Selecting something with no usable reference must not warn either -
+    # only the explicit "각도 재계산" path does that.
+    canvas.selected_nodes = set()
+    canvas.selection_changed.emit()
+    assert "⚠" not in page.selection_summary.text()
+
+
+def test_perpendicular_load_end_to_end_stores_and_previews_the_resultant() -> None:
+    """크기 + auto-angle -> 적용 must store the same Fx/Fy the old
+    magnitude/angle calculator computed, and preview it live beforehand."""
+    page = _page()
+    page.load_mode_toggle.setChecked(True)
+    canvas = page.canvas
+    a = canvas.add_node(0.0, 4.0)
+    b = canvas.add_node(4.0, 8.0)  # 45 degrees
+    canvas.add_member(a, b)
+
+    canvas.selected_nodes = {a}
+    canvas.selection_changed.emit()
+    assert page.load_angle.value() == pytest.approx(135.0)
+
+    page.load_magnitude.setValue(10.0)
+    expected_fx = 10.0 * math.cos(math.radians(135.0))
+    expected_fy = 10.0 * math.sin(math.radians(135.0))
+    assert page.load_fields["fx"].value() == pytest.approx(expected_fx)
+    assert page.load_fields["fy"].value() == pytest.approx(expected_fy)
+    assert canvas._pending_load_preview == ({a}, pytest.approx((expected_fx, expected_fy, 0.0)))
+
+    page._apply_load()
+    assert canvas.nodal_loads[a].values == pytest.approx((expected_fx, expected_fy, 0.0))
+
+
+def test_applying_a_node_load_with_nothing_selected_warns_instead_of_silently_doing_nothing() -> None:
+    """A plain click on a member (no Ctrl) clears an already-selected node -
+    see ``_toggle_selection`` - so it is easy to reach 적용 with no node
+    selected after using 선택 부재에 수직. That used to no-op with zero
+    feedback, which reads as "the button is broken"."""
+    page = _page()
+    page.load_fields["fx"].setValue(5.0)
+
+    page._apply_load()
+
+    assert not page.canvas.build_model().nodal_loads
+    assert "선택된 노드가 없어" in page.selection_summary.text()
 
 
 def test_load_fields_gain_fz_mx_my_once_3d_mode_is_active() -> None:
@@ -269,6 +593,7 @@ def test_custom_support_lets_a_single_dof_be_restrained_on_its_own() -> None:
     """None of the five presets can restrain rotation alone; the custom option
     has to reach every combination, not just the common ones."""
     page = _page()
+    page.category_buttons["support"].click()
     node = page.canvas.add_node(0.0, 0.0)
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
@@ -279,6 +604,32 @@ def test_custom_support_lets_a_single_dof_be_restrained_on_its_own() -> None:
 
     boundary = page.canvas.build_model().boundaries[0]
     assert boundary.restraints == (False, False, True)
+
+
+def test_rotate_support_angle_buttons_step_30_degrees_and_apply() -> None:
+    """A button click never fires editingFinished on its own the way typing
+    into the field and tabbing away does, so the rotate buttons must apply
+    the new angle themselves rather than silently changing the field."""
+    page = _page()
+    page.category_buttons["support"].click()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+    page.support_buttons[1].click()  # 핀
+
+    page._rotate_support_angle(30.0)
+    assert page.support_angle.value() == pytest.approx(30.0)
+    assert page.canvas.boundaries[node].angle == pytest.approx(30.0)
+
+    page._rotate_support_angle(-30.0)
+    assert page.support_angle.value() == pytest.approx(0.0)
+    assert page.canvas.boundaries[node].angle == pytest.approx(0.0)
+
+    # Wraps around both ends of the range instead of clamping dead at ±360,
+    # which would make the button stop doing anything near the boundary.
+    page._rotate_support_angle(-30.0)
+    assert page.support_angle.value() == pytest.approx(330.0)
+    assert page.canvas.boundaries[node].angle == pytest.approx(330.0)
 
 
 def test_custom_support_reaches_all_six_dof_in_3d() -> None:
@@ -374,12 +725,18 @@ def test_escape_while_drawing_returns_to_select_and_syncs_the_rail_button() -> N
     assert page.draw_tool.isChecked() is False
 
 
-def test_returning_to_select_widens_a_selection_filter_left_narrowed_by_a_load_target() -> None:
-    """Regression test: choosing 부재 as the load target narrows the selection
-    filter to elements-only so the load section stays relevant to what you just
-    picked — but nothing ever widened it back. A later click on a node would
-    then be silently ignored with no visible reason why, which is exactly what
-    a user reported as "nodes suddenly can't be selected"."""
+def test_choosing_a_load_target_never_narrows_what_the_canvas_can_still_select() -> None:
+    """Regression test: choosing 부재 as the load target used to narrow the
+    selection filter to elements-only, permanently, since 하중 is now an
+    always-open accordion section with no "leave this tool" step left to
+    widen it back (that widening only ever happened in
+    _activate_select_tool, reachable only via Escape-from-draw or the rail's
+    선택 button) - so a later click on a node would be silently ignored with
+    no visible reason why, reported as "노드를 선택하려고 드래그했는데 안
+    잡힘, 그리기로 갔다가 취소해야 풀림" (the Escape-from-draw path happened
+    to widen the filter back as a side effect, which is how that workaround
+    ever "worked"). Picking a load target must never touch the filter at
+    all now — 적용 already no-ops safely against whatever is selected."""
     page = _page()
     member_a = page.canvas.add_node(0.0, 0.0)
     member_b = page.canvas.add_node(4.0, 0.0)
@@ -387,9 +744,6 @@ def test_returning_to_select_widens_a_selection_filter_left_narrowed_by_a_load_t
     other_node = page.canvas.add_node(4.0, 3.0)
 
     page.load_target_group.button(1).click()  # 등분포하중 (element)
-    assert page.canvas.selection_filter == "elements"
-
-    page._activate_select_tool()
     assert page.canvas.selection_filter == "all"
 
     page.canvas.selected_nodes = set()
@@ -430,7 +784,7 @@ def test_returning_to_the_model_and_back_shows_the_same_solved_results_without_r
     page.canvas.set_support(right, (False, True, False))
 
     assert not page.view_results_button.isEnabled()
-    page.solve()
+    solve_and_wait(page)
     assert page.workspace_stack.currentIndex() == 1
     assert page.view_results_button.isEnabled()
     solved_result = page.results.viewport._result
@@ -458,7 +812,7 @@ def test_2d_results_hide_the_dormant_3d_view_selector() -> None:
     page.canvas.set_support(left, (True, True, False))
     page.canvas.set_support(right, (False, True, False))
 
-    page.solve()
+    solve_and_wait(page)
 
     assert not page.results.toolbar.view_mode.parentWidget().isVisible()
 
@@ -558,7 +912,7 @@ def test_a_determinate_truss_solves_with_one_constant_axial_value_per_member() -
     page.canvas.selected_nodes = {c}
     page.canvas.apply_nodal_load_to_selection((0.0, -10.0, 0.0))
 
-    page.solve()
+    solve_and_wait(page)
 
     assert page.workspace_stack.currentIndex() == 1
     result = page.results.viewport._result
@@ -572,9 +926,10 @@ def test_a_determinate_truss_solves_with_one_constant_axial_value_per_member() -
 
 
 def test_truss_results_table_lists_joints_force_and_tension_compression_zero() -> None:
-    """부재력 표: for a truss, the TABLE tab must read as a 부재 번호 / 절점 (i-j) /
-    축력 / 인장·압축·0부재 sheet — not the frame table's N/V/M-i columns, since V
-    and M are always zero and say nothing about a two-force member."""
+    """부재력 표: for a truss, the Result Tables member-force sheet must read as a
+    부재 번호 / 절점 (i-j) / 축력 / 인장·압축·0부재 sheet — not the frame table's
+    N/V/M-i-j columns, since V and M are always zero and say nothing about a
+    two-force member."""
     page = _page()
     page.truss_mode_toggle.setChecked(True)
     a = page.canvas.add_node(0.0, 0.0)
@@ -593,10 +948,8 @@ def test_truss_results_table_lists_joints_force_and_tension_compression_zero() -
     page.canvas.selected_nodes = {c}
     page.canvas.apply_nodal_load_to_selection((0.0, -10.0, 0.0))
 
-    page.solve()
-    panel = page.results.data_panel
-    panel.set_result_type("axial")
-    table = panel.result_table
+    solve_and_wait(page)
+    table = page.results.tables_panel.member_force_truss_table
 
     assert [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())] == [
         "부재",
