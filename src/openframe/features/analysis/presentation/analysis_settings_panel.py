@@ -1106,8 +1106,8 @@ class AnalysisSettingsPanel(QFrame):
         """Build the nonlinear workflow directly in SETUP instead of a modal dialog."""
         introduction = QLabel(
             "Set how the structure is pushed below. Recommended solver defaults are "
-            "already applied; expand Advanced Solution & Convergence only when the "
-            "model requires tuning."
+            "already applied in Advanced Solution & Convergence; collapse it once "
+            "you're happy with them."
         )
         introduction.setObjectName("secondaryText")
         introduction.setWordWrap(True)
@@ -1259,9 +1259,9 @@ class AnalysisSettingsPanel(QFrame):
         parent_layout.addWidget(essential)
 
         self.nonlinear_advanced_toggle = QPushButton(
-            "\N{BLACK RIGHT-POINTING SMALL TRIANGLE}  ADVANCED SOLUTION & CONVERGENCE"
+            "\N{BLACK RIGHT-POINTING SMALL TRIANGLE}  ADVANCED SOLUTION && CONVERGENCE"
         )
-        self.nonlinear_advanced_toggle.setObjectName("setupCollapsibleToggle")
+        self.nonlinear_advanced_toggle.setObjectName("nonlinearAdvancedToggle")
         self.nonlinear_advanced_toggle.setCheckable(True)
         self.nonlinear_advanced_toggle.setFlat(True)
         self.nonlinear_advanced_toggle.toggled.connect(
@@ -1301,6 +1301,9 @@ class AnalysisSettingsPanel(QFrame):
         advanced_layout.addLayout(advanced_grid)
         self.nonlinear_advanced_body.hide()
         parent_layout.addWidget(self.nonlinear_advanced_body)
+        # Expanded by default: the collapsed toggle was easy to miss entirely,
+        # so start open and let the user collapse it once they know it's there.
+        self.nonlinear_advanced_toggle.setChecked(True)
 
         for combo in (
             self.control_node,
@@ -1541,7 +1544,7 @@ class AnalysisSettingsPanel(QFrame):
         self.load_card.setVisible(False)
         if is_nonlinear_static:
             self._update_nonlinear_behavior_tiles()
-            self.nonlinear_advanced_toggle.setChecked(False)
+            self.nonlinear_advanced_toggle.setChecked(True)
         self.linear_static_group.setVisible(is_linear_static)
         self.modal_group.setVisible(is_modal)
         self.modal_engine_card.setVisible(is_modal)
@@ -1579,7 +1582,7 @@ class AnalysisSettingsPanel(QFrame):
         self.nonlinear_advanced_body.setVisible(expanded)
         arrow = "▾" if expanded else "▸"
         self.nonlinear_advanced_toggle.setText(
-            f"{arrow}  ADVANCED SOLUTION & CONVERGENCE"
+            f"{arrow}  ADVANCED SOLUTION && CONVERGENCE"
         )
 
     def _update_linear_static_summary(self) -> None:

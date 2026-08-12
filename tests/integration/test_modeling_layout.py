@@ -25,6 +25,10 @@ def test_direct_2d_workspace_uses_the_compact_modeling_and_result_shell() -> Non
     assert page.findChild(QFrame, "direct2DPageHeader") is not None
     assert page.findChild(QFrame, "direct2DToolRail").width() == 72
     assert page.model_type_selector.count() == 2
+    # 2D direct modeling shares the exact same RESULT TYPES sidebar as 3D direct
+    # modeling and "OpenSeesPy 파일 불러오기" now - the compact-only variant was
+    # too narrow for its own button labels (content wider than its own
+    # viewport, silently clipped with no horizontal scroll to reveal it).
     assert set(page.results.result_types.buttons) == {
         "overview",
         "deformation",
@@ -33,9 +37,12 @@ def test_direct_2d_workspace_uses_the_compact_modeling_and_result_shell() -> Non
         "axial",
         "shear",
         "moment",
+        "pushover",
         "tables",
+        "mode_shapes",
+        "time_history",
     }
-    assert page.results.property("compact2d") is True
+    assert page.results.property("compact2d") is False
     assert page.footer_stack.currentIndex() == 0
     assert page.page_title.text() == "2D Structure Model"
     assert page.header_controls_stack.currentIndex() == 0
@@ -712,6 +719,40 @@ def test_applying_a_node_load_with_nothing_selected_warns_instead_of_silently_do
 
     assert not page.canvas.build_model().nodal_loads
     assert "선택된 노드가 없어" in page.selection_summary.text()
+
+
+def test_applying_a_member_section_with_nothing_selected_warns_instead_of_silently_doing_nothing() -> None:
+    """apply_section_to_selection no-ops with nothing selected (see its own
+    docstring) - the same "reads as broken" trap _apply_load already guards
+    against, now closed for 선택 부재에 적용 too."""
+    page = _page()
+
+    page._apply_member_section()
+
+    assert "선택된 부재가 없어" in page.selection_summary.text()
+
+
+def test_applying_a_member_section_confirms_how_many_members_it_reached() -> None:
+    page = _page()
+    canvas = page.canvas
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(left, right)
+    canvas.selected_elements = {member}
+    canvas.selection_changed.emit()
+
+    page.member_width.setValue(0.3)
+    page.member_height.setValue(0.5)
+    page.member_elastic.setValue(200_000.0)
+    page.member_density.setValue(24.0)
+    page._apply_member_section()
+
+    element = canvas.elements[member]
+    assert element.properties["E"] == pytest.approx(200_000.0)
+    assert element.properties["A"] == pytest.approx(0.15)
+    assert element.properties["density"] == pytest.approx(24.0)
+    assert "부재 1개" in page.selection_summary.text()
+    assert "적용했습니다" in page.selection_summary.text()
 
 
 def test_load_fields_gain_fz_mx_my_once_3d_mode_is_active() -> None:

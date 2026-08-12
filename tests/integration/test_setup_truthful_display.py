@@ -92,9 +92,9 @@ def test_nonlinear_static_inline_advanced_changes_reach_run_options() -> None:
     settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
     application.processEvents()
 
-    assert not settings.solver.isVisible()
-    settings.nonlinear_advanced_toggle.setChecked(True)
-    application.processEvents()
+    # Advanced Solution & Convergence now starts expanded for Nonlinear Static
+    # (the collapsed toggle was easy to miss entirely) - no manual expand step
+    # needed before SOLVER becomes reachable.
     assert settings.solver.isVisible()
 
     settings.algorithm.setCurrentText("KrylovNewton")

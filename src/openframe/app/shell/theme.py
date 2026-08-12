@@ -1553,6 +1553,24 @@ QPushButton#setupCollapsibleToggle {
 QPushButton#setupCollapsibleToggle:hover {
     background: #eef0ff;
 }
+QPushButton#nonlinearAdvancedToggle {
+    min-height: 34px;
+    padding: 4px 10px;
+    margin-top: 4px;
+    color: #00288e;
+    background: #eef0ff;
+    border: 1px solid #1e40af;
+    border-radius: 2px;
+    text-align: left;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QPushButton#nonlinearAdvancedToggle:hover {
+    background: #dde1ff;
+}
+QPushButton#nonlinearAdvancedToggle:checked {
+    background: #ffffff;
+}
 QLabel#setupMetricLabel { color: #555f6d; font-size: 7pt; font-weight: 700; }
 QLabel#setupMetricValue {
     color: #191c1d;
@@ -1734,27 +1752,33 @@ QFrame#direct2DCanvasPanel {
     border-right: 1px solid #c4c5d5;
 }
 QFrame#direct2DCanvasToolbar {
-    min-height: 38px;
-    max-height: 38px;
+    /* Must fit the 32px-tall category buttons plus the 6px top/bottom
+       margin _build_category_bar's layout sets (32 + 6 + 6 = 44) - a
+       shorter frame here clips the buttons against its own border. */
+    min-height: 44px;
+    max-height: 44px;
     background: #f8f9fa;
     border: 0;
     border-bottom: 1px solid #c4c5d5;
 }
 QFrame#direct2DCanvasToolbar QToolButton#slideOutToggle {
-    min-height: 26px;
-    max-height: 26px;
-    padding: 0 9px;
-    color: #555f6d;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 2px;
-    font-size: 7pt;
+    min-height: 32px;
+    padding: 0 12px;
+    color: #2a3a4e;
+    background: #ffffff;
+    border: 1px solid #c7d1de;
+    border-radius: 5px;
+    font-size: 9pt;
+    font-weight: 700;
 }
-QFrame#direct2DCanvasToolbar QToolButton#slideOutToggle:hover,
+QFrame#direct2DCanvasToolbar QToolButton#slideOutToggle:hover {
+    background: #f0f5fb;
+    border-color: #9ebbe3;
+}
 QFrame#direct2DCanvasToolbar QToolButton#slideOutToggle:checked {
-    color: #00288e;
-    background: #eef0ff;
-    border-color: #1e40af;
+    color: #ffffff;
+    background: #174ea6;
+    border-color: #174ea6;
 }
 QScrollArea#modelingInspectorScroll {
     background: #f8f9fa;

@@ -577,13 +577,13 @@ class ModelingInterfacePage(QFrame):
     #: same breath - a single always-visible row of buttons has no fold to
     #: hide behind either way.
     _CATEGORY_OPTIONS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("add", "NODE"),
-        ("move", "TRANSFORM"),
-        ("arch", "ARCH"),
-        ("support", "SUPPORT"),
-        ("kind", "NODE TYPE"),
-        ("member", "MEMBER"),
-        ("load", "LOAD"),
+        ("add", "노드 추가"),
+        ("move", "이동·복사"),
+        ("arch", "아치"),
+        ("support", "지점"),
+        ("kind", "노드 유형"),
+        ("member", "부재"),
+        ("load", "하중"),
     )
 
     def _build_category_bar(self) -> QFrame:
@@ -1470,7 +1470,11 @@ class ModelingInterfacePage(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.results = ResultsWorkspace(compact_2d=not self._start_in_3d)
+        # Both 2D and 3D direct modeling now share the exact same RESULT TYPES
+        # sidebar as "OpenSeesPy 파일 불러오기" - the compact 2D-only variant
+        # was already too narrow for its own button labels (content wider than
+        # its own viewport, clipped with no horizontal scroll to reveal it).
+        self.results = ResultsWorkspace(compact_2d=False)
         self.viewport = self.results.viewport
         layout.addWidget(self.results, 1)
         return page
@@ -2037,11 +2041,25 @@ class ModelingInterfacePage(QFrame):
         )
 
     def _apply_member_section(self) -> None:
+        """``apply_section_to_selection`` silently no-ops with nothing selected
+        (see its own docstring) - exactly the same "reads as the button doesn't
+        work" trap ``_apply_load`` already guards against, extended here so a
+        member click that missed (or a stale 노드 selection) says so instead of
+        leaving the user unsure whether 적용 did anything at all."""
+        if not self.canvas.selected_elements:
+            self.selection_summary.setText(
+                "⚠ 선택된 부재가 없어 단면·재료를 적용하지 못했습니다 — 적용할 부재를 클릭하세요."
+            )
+            return
+        count = len(self.canvas.selected_elements)
         self.canvas.apply_section_to_selection(
             self.member_width.value(),
             self.member_height.value(),
             self.member_elastic.value(),
             self.member_density.value(),
+        )
+        self.selection_summary.setText(
+            f"✓ 부재 {count}개에 단면·재료(E/A/I)와 단위중량을 적용했습니다."
         )
 
     def _apply_member_end_release(self, end: str, released: bool) -> None:

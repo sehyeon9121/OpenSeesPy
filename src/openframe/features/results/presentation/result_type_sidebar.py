@@ -68,7 +68,13 @@ class _CollapsibleResultGroup(QFrame):
     showing every option at once."""
 
     def __init__(
-        self, title: str, hint: str, count: int, parent: QWidget | None = None
+        self,
+        title: str,
+        hint: str,
+        count: int,
+        parent: QWidget | None = None,
+        *,
+        show_icon: bool = True,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("resultTypeGroup")
@@ -88,19 +94,28 @@ class _CollapsibleResultGroup(QFrame):
 
         self._arrow = QLabel("▸")
         self._arrow.setObjectName("resultTypeGroupArrow")
-        icon_label = QLabel()
-        icon_label.setObjectName("resultTypeGroupIcon")
-        icon_label.setPixmap(_glyph_icon(_GROUP_ICON_GLYPHS.get(title, "•")).pixmap(18, 18))
-        name = QLabel(title)
-        name.setObjectName("resultTypeGroupTitle")
+        header_layout.addWidget(self._arrow)
+        if show_icon:
+            # Skipped in the compact embedded (2D-canvas) sidebar - that one is
+            # barely 180-205px wide to begin with, nowhere near enough room for
+            # an icon chip alongside arrow + title + count without overflowing
+            # its own frame.
+            icon_label = QLabel()
+            icon_label.setObjectName("resultTypeGroupIcon")
+            icon_label.setPixmap(_glyph_icon(_GROUP_ICON_GLYPHS.get(title, "•")).pixmap(18, 18))
+            header_layout.addWidget(icon_label)
+        # A fixed width (set once every group in the sidebar exists - see
+        # ResultTypeSidebar._align_group_counts) instead of a stretch is what
+        # keeps every row's count badge in the same column: a title-hugging
+        # gap or a stretch both let the badge's X position follow whichever
+        # title happens to be shortest/longest on that particular row.
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("resultTypeGroupTitle")
         count_badge = QLabel(str(count))
         count_badge.setObjectName("resultTypeGroupCount")
-        header_layout.addWidget(self._arrow)
-        header_layout.addWidget(icon_label)
-        header_layout.addWidget(name)
-        header_layout.addSpacing(8)
+        header_layout.addWidget(self.title_label)
+        header_layout.addSpacing(20)
         header_layout.addWidget(count_badge)
-        header_layout.addStretch(1)
         outer.addWidget(self._header)
 
         self._body = QWidget()
@@ -165,9 +180,10 @@ class ResultTypeSidebar(QFrame):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("resultTypeSidebar")
+        self._compact_2d = compact_2d
         self.setProperty("compact2d", compact_2d)
-        self.setMinimumWidth(180 if compact_2d else 350)
-        self.setMaximumWidth(205 if compact_2d else 410)
+        self.setMinimumWidth(180 if compact_2d else 320)
+        self.setMaximumWidth(205 if compact_2d else 380)
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(8 if compact_2d else 10, 11, 8 if compact_2d else 10, 11)
         outer_layout.setSpacing(5 if compact_2d else 8)
@@ -213,23 +229,27 @@ class ResultTypeSidebar(QFrame):
             "" if compact_2d else "Geometry, movement and restraints",
             (
                 ("deformation", "Deformed Shape"),
-                ("displacement", "Nodal Displacements"),
+                # Not "Nodal Displacements" - the category header above already
+                # says SHAPE & NODE, so repeating "Nodal" here only widened the
+                # widest button in the whole sidebar for no extra clarity.
+                ("displacement", "Displacements"),
             ),
         )
         self._add_group(
             layout,
             "REACTIONS",
             "" if compact_2d else "Support response",
-            (("reaction", "Support Reactions"),),
+            # Same trim as above - "Support" is already the category itself.
+            (("reaction", "Reactions"),),
         )
         self._add_group(
             layout,
             "MEMBER FORCES",
             "" if compact_2d else "Whole-frame local force plots",
             (
-                ("axial", "N  Axial Force"),
-                ("shear", "V  Shear Force"),
-                ("moment", "M  Bending Moment"),
+                ("axial", "N Axial Force"),
+                ("shear", "V Shear Force"),
+                ("moment", "M Bending Moment"),
             ),
         )
         if not compact_2d:
@@ -260,11 +280,27 @@ class ResultTypeSidebar(QFrame):
             )
         layout.addStretch(1)
 
+        self._align_group_counts()
+
         # Every category starts collapsed - select_result_type("overview") below
         # opens only the active one, via _make_button's toggled -> set_expanded
         # wiring, so RESULTS opens as a short list of category headers rather
         # than a page already full of every option.
         self.select_result_type("overview")
+
+    def _align_group_counts(self) -> None:
+        """Give every category's title label the same fixed width - the
+        widest one's - so every count badge lands in the same column instead
+        of trailing right behind however long that row's own title happens
+        to be (OVERVIEW's short "8" landing nowhere near TIME HISTORY's)."""
+        seen: dict[int, _CollapsibleResultGroup] = {
+            id(group): group for group in self._groups_by_key.values()
+        }
+        if not seen:
+            return
+        widest = max(group.title_label.sizeHint().width() for group in seen.values())
+        for group in seen.values():
+            group.title_label.setFixedWidth(widest)
 
     def select_result_type(self, key: str) -> None:
         button = self.buttons.get(key)
@@ -279,7 +315,7 @@ class ResultTypeSidebar(QFrame):
         hint: str,
         entries: tuple[tuple[str, str], ...],
     ) -> None:
-        group = _CollapsibleResultGroup(title, hint, len(entries))
+        group = _CollapsibleResultGroup(title, hint, len(entries), show_icon=not self._compact_2d)
         for key, text in entries:
             button = self._make_button(key, text, group)
             group.add_button(button)
