@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -27,12 +29,19 @@ from openframe.core.domain import (
     AnalysisKind,
     ComponentField,
     FieldState,
+    GroundMotion,
+    GroundMotionRecord,
     StructuralModel,
     UnitSystem,
 )
 from openframe.features.analysis.presentation.analysis_config_store import (
     AnalysisConfigStore,
 )
+from openframe.features.results.presentation.time_history_curve_view import (
+    TimeHistoryCurveView,
+)
+from openframe.infrastructure.ground_motions import BuiltInGroundMotionCatalog
+from openframe.infrastructure.opensees.ground_motion import load_ground_motion
 
 #: DOF labels by ndm, matching the order OpenSeesPy reports node results in.
 _DOF_LABELS_2D = ("UX", "UY", "RZ")
@@ -440,12 +449,72 @@ class AnalysisSettingsPanel(QFrame):
         # Time history needs a ground-motion file plus three small numbers - a
         # dialog would be overkill, but it earns its own group (unlike modal's
         # one field) since a file picker is a different kind of control.
+        # Time History's own 4-card structure (Phase 3-E) - self.time_history_group
+        # stays the single widget whose visibility means "Time History is
+        # selected" (existing tests reach through it), but internally it is
+        # now a stack of separate titled cards instead of one bare, untitled
+        # field list, so it no longer borrows Nonlinear Static's "1. LOAD &
+        # CONTROL"/"3. SOLUTION METHOD"/"4. CONVERGENCE" cards at all (see
+        # _update_nonlinear_visibility - those three are hidden outright for
+        # this kind now).
         self.time_history_group = QFrame()
-        time_history_layout = QVBoxLayout(self.time_history_group)
-        time_history_layout.setContentsMargins(0, 8, 0, 0)
-        time_history_layout.setSpacing(4)
+        time_history_outer_layout = QVBoxLayout(self.time_history_group)
+        time_history_outer_layout.setContentsMargins(0, 0, 0, 0)
+        time_history_outer_layout.setSpacing(16)
+
+        self.time_history_ground_motion_card, ground_motion_layout = self._config_card(
+            "1. GROUND MOTION"
+        )
+        self._scaling_sync_in_progress = False
+        # Two independent "last picked" slots, one per source - so toggling
+        # Built-in <-> Imported never shows one source's data under the
+        # other's label (the Phase 3-G "no stale values on switch"
+        # requirement), while still remembering each side's own last pick
+        # across a toggle instead of forgetting it.
+        self._builtin_catalog = BuiltInGroundMotionCatalog()
+        self._builtin_record: GroundMotionRecord | None = None
+        self._builtin_ground_motion: GroundMotion | None = None
+        self._imported_ground_motion_path: Path | None = None
+        self._imported_ground_motion: GroundMotion | None = None
+        # What build_options() actually reads and what the info grid/preview
+        # actually display - always a mirror of whichever source is active,
+        # never a second store of its own.
         self._ground_motion_path: Path | None = None
-        time_history_layout.addWidget(self._field_label("GROUND MOTION FILE"))
+        self._ground_motion: GroundMotion | None = None
+
+        ground_motion_layout.addWidget(self._field_label("SOURCE"))
+        source_row = QHBoxLayout()
+        self.ground_motion_source_group = QButtonGroup(self)
+        self.source_builtin_radio = QRadioButton("Built-in Library")
+        self.source_imported_radio = QRadioButton("Imported File")
+        self.source_imported_radio.setChecked(True)
+        self.ground_motion_source_group.addButton(self.source_builtin_radio)
+        self.ground_motion_source_group.addButton(self.source_imported_radio)
+        self.source_builtin_radio.toggled.connect(self._on_ground_motion_source_changed)
+        source_row.addWidget(self.source_builtin_radio)
+        source_row.addWidget(self.source_imported_radio)
+        source_row.addStretch(1)
+        ground_motion_layout.addLayout(source_row)
+
+        self.builtin_record_row = QWidget()
+        builtin_record_layout = QVBoxLayout(self.builtin_record_row)
+        builtin_record_layout.setContentsMargins(0, 0, 0, 0)
+        builtin_record_layout.setSpacing(4)
+        builtin_record_layout.addWidget(self._field_label("RECORD"))
+        self.builtin_record_combo = QComboBox()
+        for record in self._builtin_catalog.list_records():
+            self.builtin_record_combo.addItem(
+                f"{record.event} — {record.station} ({record.component})", record
+            )
+        self.builtin_record_combo.currentIndexChanged.connect(self._on_builtin_record_selected)
+        builtin_record_layout.addWidget(self.builtin_record_combo)
+        ground_motion_layout.addWidget(self.builtin_record_row)
+
+        self.imported_file_row = QWidget()
+        imported_file_layout = QVBoxLayout(self.imported_file_row)
+        imported_file_layout.setContentsMargins(0, 0, 0, 0)
+        imported_file_layout.setSpacing(4)
+        imported_file_layout.addWidget(self._field_label("GROUND MOTION FILE"))
         file_row = QHBoxLayout()
         self.ground_motion_path_label = QLabel("(no file selected)")
         self.ground_motion_path_label.setWordWrap(True)
@@ -453,13 +522,134 @@ class AnalysisSettingsPanel(QFrame):
         self.choose_ground_motion_button = QPushButton("Browse…")
         self.choose_ground_motion_button.clicked.connect(self._choose_ground_motion_file)
         file_row.addWidget(self.choose_ground_motion_button)
-        time_history_layout.addLayout(file_row)
+        imported_file_layout.addLayout(file_row)
+        ground_motion_layout.addWidget(self.imported_file_row)
+        self.builtin_record_row.setVisible(False)
 
-        time_history_layout.addWidget(self._field_label("DIRECTION"))
+        gm_divider_1 = QFrame()
+        gm_divider_1.setObjectName("setupGuideDivider")
+        gm_divider_1.setFrameShape(QFrame.Shape.HLine)
+        ground_motion_layout.addWidget(gm_divider_1)
+
+        self.ground_motion_info_placeholder = QLabel("No ground motion selected")
+        self.ground_motion_info_placeholder.setObjectName("secondaryText")
+        ground_motion_layout.addWidget(self.ground_motion_info_placeholder)
+
+        self.ground_motion_info_grid_widget = QWidget()
+        info_grid = QGridLayout(self.ground_motion_info_grid_widget)
+        info_grid.setContentsMargins(0, 0, 0, 0)
+        info_grid.setHorizontalSpacing(24)
+        info_grid.setVerticalSpacing(5)
+        self.gm_name_value = QLabel("—")
+        self.gm_dt_value = QLabel("—")
+        self.gm_npts_value = QLabel("—")
+        self.gm_duration_value = QLabel("—")
+        self.gm_pga_value = QLabel("—")
+        self.gm_unit_value = QLabel("—")
+        for row, (name, value_label) in enumerate((
+            ("Name", self.gm_name_value),
+            ("dt", self.gm_dt_value),
+            ("NPTS", self.gm_npts_value),
+            ("Duration", self.gm_duration_value),
+            ("PGA", self.gm_pga_value),
+            ("Unit", self.gm_unit_value),
+        )):
+            key = QLabel(f"{name}:")
+            key.setObjectName("setupMetricLabel")
+            value_label.setObjectName("setupMetricValue")
+            value_label.setWordWrap(True)
+            info_grid.addWidget(key, row, 0)
+            info_grid.addWidget(value_label, row, 1)
+        ground_motion_layout.addWidget(self.ground_motion_info_grid_widget)
+
+        ground_motion_layout.addWidget(self._field_label("ACCELERATION-TIME PREVIEW"))
+        self.ground_motion_preview = TimeHistoryCurveView()
+        self.ground_motion_preview.setMinimumHeight(140)
+        self.ground_motion_preview.set_empty_message("No ground motion selected")
+        ground_motion_layout.addWidget(self.ground_motion_preview)
+
+        ground_motion_layout.addWidget(self._field_label("DIRECTION"))
         self.time_history_direction = QComboBox()
-        time_history_layout.addWidget(self.time_history_direction)
+        # Every other option widget in this file syncs on change - DIRECTION/
+        # SCALE FACTOR/DAMPING RATIO were missing this (the same gap
+        # num_modes had in Phase 3-C), so a value picked here was silently
+        # dropped from config_store.options until an unrelated event (e.g.
+        # switching AnalysisKind away and back) happened to sync it anyway.
+        self.time_history_direction.currentIndexChanged.connect(self._sync_store_options)
+        ground_motion_layout.addWidget(self.time_history_direction)
 
-        time_history_layout.addWidget(self._field_label("DAMPING RATIO"))
+        gm_divider_2 = QFrame()
+        gm_divider_2.setObjectName("setupGuideDivider")
+        gm_divider_2.setFrameShape(QFrame.Shape.HLine)
+        ground_motion_layout.addWidget(gm_divider_2)
+
+        ground_motion_layout.addWidget(self._field_label("SCALING"))
+        self.scale_mode_group = QButtonGroup(self)
+        self.scale_factor_radio = QRadioButton("Scale Factor")
+        self.target_pga_radio = QRadioButton("Target PGA")
+        self.scale_factor_radio.setChecked(True)
+        self.scale_mode_group.addButton(self.scale_factor_radio)
+        self.scale_mode_group.addButton(self.target_pga_radio)
+        self.scale_factor_radio.toggled.connect(self._on_scale_mode_changed)
+
+        scale_grid = QGridLayout()
+        scale_grid.setHorizontalSpacing(12)
+        scale_grid.setVerticalSpacing(6)
+        self.ground_motion_scale = QDoubleSpinBox()
+        self.ground_motion_scale.setRange(-1.0e6, 1.0e6)
+        self.ground_motion_scale.setDecimals(6)
+        self.ground_motion_scale.setValue(1.0)
+        self.ground_motion_scale.setToolTip(
+            "Multiplies every value in the ground-motion file - e.g. 9.81 (or "
+            "9810 in mm) if the file is in units of g rather than already "
+            "matching this model's length unit."
+        )
+        self.ground_motion_scale.valueChanged.connect(self._on_ground_motion_scale_changed)
+        scale_grid.addWidget(self.scale_factor_radio, 0, 0)
+        scale_grid.addWidget(self.ground_motion_scale, 0, 1)
+        self.target_pga_input = QDoubleSpinBox()
+        self.target_pga_input.setRange(0.0, 1.0e6)
+        self.target_pga_input.setDecimals(6)
+        self.target_pga_input.setValue(0.0)
+        self.target_pga_input.setEnabled(False)
+        self.target_pga_input.setToolTip(
+            "scale_factor = Target PGA / Original PGA - only available when the "
+            "file's unit is known, so the two PGAs are actually comparable."
+        )
+        self.target_pga_input.valueChanged.connect(self._on_target_pga_changed)
+        scale_grid.addWidget(self.target_pga_radio, 1, 0)
+        scale_grid.addWidget(self.target_pga_input, 1, 1)
+        ground_motion_layout.addLayout(scale_grid)
+
+        self.target_pga_unit_note = QLabel(
+            "Target PGA is unavailable - this file's unit was not detected, or "
+            "its PGA is zero. Use Scale Factor directly instead."
+        )
+        self.target_pga_unit_note.setObjectName("secondaryText")
+        self.target_pga_unit_note.setWordWrap(True)
+        self.target_pga_unit_note.setVisible(False)
+        ground_motion_layout.addWidget(self.target_pga_unit_note)
+
+        readout_grid = QGridLayout()
+        readout_grid.setHorizontalSpacing(24)
+        readout_grid.setVerticalSpacing(5)
+        self.original_pga_value = QLabel("—")
+        self.applied_pga_value = QLabel("—")
+        for row, (name, value_label) in enumerate((
+            ("Original PGA", self.original_pga_value),
+            ("Applied PGA", self.applied_pga_value),
+        )):
+            key = QLabel(f"{name}:")
+            key.setObjectName("setupMetricLabel")
+            value_label.setObjectName("setupMetricValue")
+            readout_grid.addWidget(key, row, 0)
+            readout_grid.addWidget(value_label, row, 1)
+        ground_motion_layout.addLayout(readout_grid)
+
+        time_history_outer_layout.addWidget(self.time_history_ground_motion_card)
+
+        self.time_history_damping_card, damping_layout = self._config_card("2. DAMPING")
+        damping_layout.addWidget(self._field_label("DAMPING RATIO"))
         self.damping_ratio = QDoubleSpinBox()
         self.damping_ratio.setRange(0.0, 1.0)
         self.damping_ratio.setSingleStep(0.01)
@@ -470,19 +660,109 @@ class AnalysisSettingsPanel(QFrame):
             "computed automatically from the model's own first one or two natural "
             "frequencies, not entered directly."
         )
-        time_history_layout.addWidget(self.damping_ratio)
-
-        time_history_layout.addWidget(self._field_label("SCALE FACTOR"))
-        self.ground_motion_scale = QDoubleSpinBox()
-        self.ground_motion_scale.setRange(-1.0e6, 1.0e6)
-        self.ground_motion_scale.setDecimals(6)
-        self.ground_motion_scale.setValue(1.0)
-        self.ground_motion_scale.setToolTip(
-            "Multiplies every value in the ground-motion file - e.g. 9.81 (or "
-            "9810 in mm) if the file is in units of g rather than already "
-            "matching this model's length unit."
+        self.damping_ratio.valueChanged.connect(self._sync_store_options)
+        damping_layout.addWidget(self.damping_ratio)
+        damping_note = QLabel(
+            "Rayleigh alpha/beta are computed automatically from the model's "
+            "own first one or two natural frequencies - not entered directly."
         )
-        time_history_layout.addWidget(self.ground_motion_scale)
+        damping_note.setObjectName("secondaryText")
+        damping_note.setWordWrap(True)
+        damping_layout.addWidget(damping_note)
+        time_history_outer_layout.addWidget(self.time_history_damping_card)
+
+        # Cards 3-4 are pure ANALYSIS_CAPABILITIES readouts - every value in
+        # them is ENGINE_FIXED for Time History (see analysis_capabilities.py),
+        # so unlike the ground motion/damping cards above they need no live
+        # widget binding and are built once here, not refreshed on any event.
+        self.time_history_integration_card, integration_layout = self._config_card(
+            "3. TIME INTEGRATION"
+        )
+        th_capabilities = ANALYSIS_CAPABILITIES[AnalysisKind.TIME_HISTORY]
+        integrator_details = dict(th_capabilities.dynamic_integrator.details)
+        integration_grid = QGridLayout()
+        integration_grid.setHorizontalSpacing(24)
+        integration_grid.setVerticalSpacing(5)
+        for row, (name, value) in enumerate(
+            (
+                (
+                    "Method",
+                    f"{th_capabilities.dynamic_integrator.value} "
+                    "(Average Acceleration)   ·   FIXED",
+                ),
+                ("Gamma", integrator_details.get("gamma", "—")),
+                ("Beta", integrator_details.get("beta", "—")),
+            )
+        ):
+            key = QLabel(f"{name}:")
+            key.setObjectName("setupMetricLabel")
+            metric = QLabel(value)
+            metric.setObjectName("setupMetricValue")
+            integration_grid.addWidget(key, row, 0)
+            integration_grid.addWidget(metric, row, 1)
+        integration_layout.addLayout(integration_grid)
+        integration_note = QLabel(
+            "Newmark average-acceleration integration is fixed for every "
+            "Time History run."
+        )
+        integration_note.setObjectName("secondaryText")
+        integration_note.setWordWrap(True)
+        integration_layout.addWidget(integration_note)
+        time_history_outer_layout.addWidget(self.time_history_integration_card)
+
+        self.time_history_solution_card, solution_layout_th = self._config_card(
+            "4. SOLUTION / CONVERGENCE"
+        )
+        solution_subtitle = QLabel("SOLUTION")
+        solution_subtitle.setObjectName("setupConfigTitle")
+        solution_layout_th.addWidget(solution_subtitle)
+        solution_grid_th = QGridLayout()
+        solution_grid_th.setHorizontalSpacing(24)
+        solution_grid_th.setVerticalSpacing(5)
+        for row, (name, field) in enumerate(
+            (
+                ("Equation Solver", th_capabilities.equation_solver),
+                ("Algorithm", th_capabilities.algorithm),
+                ("Constraint Handler", th_capabilities.constraint_handler),
+                ("DOF Numberer", th_capabilities.numberer),
+            )
+        ):
+            key = QLabel(f"{name}:")
+            key.setObjectName("setupMetricLabel")
+            metric = QLabel(f"{field.value}   ·   FIXED")
+            metric.setObjectName("setupMetricValue")
+            solution_grid_th.addWidget(key, row, 0)
+            solution_grid_th.addWidget(metric, row, 1)
+        solution_layout_th.addLayout(solution_grid_th)
+
+        convergence_divider_th = QFrame()
+        convergence_divider_th.setObjectName("setupGuideDivider")
+        convergence_divider_th.setFrameShape(QFrame.Shape.HLine)
+        solution_layout_th.addWidget(convergence_divider_th)
+
+        convergence_subtitle = QLabel("CONVERGENCE")
+        convergence_subtitle.setObjectName("setupConfigTitle")
+        solution_layout_th.addWidget(convergence_subtitle)
+        convergence_details_th = dict(th_capabilities.convergence_test.details)
+        convergence_grid_th = QGridLayout()
+        convergence_grid_th.setHorizontalSpacing(24)
+        convergence_grid_th.setVerticalSpacing(5)
+        for row, (name, value) in enumerate(
+            (
+                ("Test", f"{th_capabilities.convergence_test.value}   ·   FIXED"),
+                ("Tolerance", convergence_details_th.get("tolerance", "—")),
+                ("Max Iterations", convergence_details_th.get("maxIterations", "—")),
+            )
+        ):
+            key = QLabel(f"{name}:")
+            key.setObjectName("setupMetricLabel")
+            metric = QLabel(value)
+            metric.setObjectName("setupMetricValue")
+            convergence_grid_th.addWidget(key, row, 0)
+            convergence_grid_th.addWidget(metric, row, 1)
+        solution_layout_th.addLayout(convergence_grid_th)
+        time_history_outer_layout.addWidget(self.time_history_solution_card)
+
         settings_layout.addWidget(self.time_history_group)
 
         self.solution_card, solution_layout = self._config_card("3. SOLUTION METHOD")
@@ -642,6 +922,11 @@ class AnalysisSettingsPanel(QFrame):
         self.solver.currentIndexChanged.connect(self._update_nonlinear_summary)
         self._update_nonlinear_visibility()
         self._update_nonlinear_summary()
+        # Must run after every widget above exists - _apply_active_ground_motion()
+        # ends in _sync_store_options()/build_options(), which (for whatever
+        # AnalysisKind the combo defaults to) reads widgets built throughout
+        # this constructor, not just the ground-motion ones.
+        self._apply_active_ground_motion()
 
     @staticmethod
     def _config_card(title: str) -> tuple[QFrame, QVBoxLayout]:
@@ -1058,25 +1343,26 @@ class AnalysisSettingsPanel(QFrame):
 
     def _update_nonlinear_visibility(self) -> None:
         kind = self.selected_analysis_kind()
-        self.nonlinear_group.setVisible(kind == AnalysisKind.NONLINEAR_STATIC)
-        self.time_history_group.setVisible(kind == AnalysisKind.TIME_HISTORY)
+        is_linear_static = kind == AnalysisKind.LINEAR_STATIC
+        is_modal = kind == AnalysisKind.MODAL
+        is_nonlinear_static = kind == AnalysisKind.NONLINEAR_STATIC
+        is_time_history = kind == AnalysisKind.TIME_HISTORY
+        self.nonlinear_group.setVisible(is_nonlinear_static)
+        self.time_history_group.setVisible(is_time_history)
         # Linear Static gets its own compact LOADS/ANALYSIS METHOD card instead
         # of the shared "1. LOAD & CONTROL" card (Gravity/Lateral/Control/Steps
         # describe Nonlinear Static's pushover staging, not a single-step linear
         # solve), and starts SOLUTION METHOD collapsed since every value in it
-        # is ENGINE_FIXED for this kind. Modal replaces "1. LOAD & CONTROL" and
-        # "3. SOLUTION METHOD" outright with its own EIGEN SOLUTION card (see
-        # modal_engine_card) instead of collapsing the shared one, since Modal
-        # needs an extra Static Integrator row the shared grid does not have.
-        # Nonlinear Static and Time History's layout is untouched either way.
-        is_linear_static = kind == AnalysisKind.LINEAR_STATIC
-        is_modal = kind == AnalysisKind.MODAL
-        is_nonlinear_static = kind == AnalysisKind.NONLINEAR_STATIC
-        self.load_card.setVisible(not is_linear_static and not is_modal)
+        # is ENGINE_FIXED for this kind. Modal and Time History each replace
+        # "1. LOAD & CONTROL"/"3. SOLUTION METHOD"/"4. CONVERGENCE" outright
+        # with their own cards (modal_engine_card / time_history_group's own
+        # 4-card stack) instead of collapsing the shared ones, since both need
+        # rows (Static Integrator, Newmark gamma/beta, ...) the shared grids do
+        # not have. Nonlinear Static's layout is untouched either way.
+        self.load_card.setVisible(not is_linear_static and not is_modal and not is_time_history)
         # Nonlinear Static gets its own Load/Displacement-Control-aware row set
         # inside "1. LOAD & CONTROL" instead of the generic (never-updated
-        # Gravity/Lateral) grid; Time History still uses the generic grid
-        # exactly as before.
+        # Gravity/Lateral) grid.
         self.nonlinear_load_summary.setVisible(is_nonlinear_static)
         self.load_content_widget.setVisible(not is_nonlinear_static)
         if is_nonlinear_static:
@@ -1085,7 +1371,7 @@ class AnalysisSettingsPanel(QFrame):
         self.linear_static_group.setVisible(is_linear_static)
         self.modal_group.setVisible(is_modal)
         self.modal_engine_card.setVisible(is_modal)
-        self.solution_card.setVisible(not is_modal)
+        self.solution_card.setVisible(not is_modal and not is_time_history)
         self.engine_details_toggle.setVisible(is_linear_static)
         if is_linear_static:
             # Always re-collapsed on entry, never remembers a previous expand -
@@ -1129,10 +1415,149 @@ class AnalysisSettingsPanel(QFrame):
         )
         if not path_text:
             return
-        self._ground_motion_path = Path(path_text)
-        self.ground_motion_path_label.setText(self._ground_motion_path.name)
+        path = Path(path_text)
+        try:
+            motion = load_ground_motion(path)
+        except (ValueError, OSError) as error:
+            # Validate at selection time rather than only deep inside the
+            # worker subprocess at RUN time - a bad file should be obvious
+            # immediately, and must not silently become "the last good file"
+            # if the user already had one selected.
+            self._imported_ground_motion_path = None
+            self._imported_ground_motion = None
+            self.ground_motion_path_label.setText(f"파일을 읽지 못했습니다: {error}")
+            self.ground_motion_path_label.setToolTip(str(error))
+            self._apply_active_ground_motion()
+            return
+        self._imported_ground_motion_path = path
+        self._imported_ground_motion = motion
+        self.ground_motion_path_label.setText(path.name)
         self.ground_motion_path_label.setToolTip(path_text)
+        self._apply_active_ground_motion()
+
+    def _on_ground_motion_source_changed(self, builtin_checked: bool) -> None:
+        self.builtin_record_row.setVisible(builtin_checked)
+        self.imported_file_row.setVisible(not builtin_checked)
+        if builtin_checked and self._builtin_record is None and self.builtin_record_combo.count():
+            # First time Built-in is chosen - default to whatever the combo
+            # already shows (index 0), same as any other combo's default.
+            self._on_builtin_record_selected()
+        else:
+            self._apply_active_ground_motion()
+
+    def _on_builtin_record_selected(self) -> None:
+        record = self.builtin_record_combo.currentData()
+        if record is None:
+            self._builtin_record = None
+            self._builtin_ground_motion = None
+        else:
+            values = tuple(self._builtin_catalog.load_series(record))
+            self._builtin_record = record
+            self._builtin_ground_motion = GroundMotion.from_record(record, values)
+        self._apply_active_ground_motion()
+
+    def _apply_active_ground_motion(self) -> None:
+        """Point the single ``_ground_motion``/``_ground_motion_path`` pair -
+        the only thing ``build_options()``, the info grid and the preview
+        ever read - at whichever source is currently selected."""
+        if self.source_builtin_radio.isChecked():
+            self._ground_motion = self._builtin_ground_motion
+            self._ground_motion_path = (
+                self._builtin_record.path if self._builtin_record is not None else None
+            )
+        else:
+            self._ground_motion = self._imported_ground_motion
+            self._ground_motion_path = self._imported_ground_motion_path
+        self._update_ground_motion_display()
         self._sync_store_options()
+
+    def _update_ground_motion_display(self) -> None:
+        motion = self._ground_motion
+        has_motion = motion is not None
+        self.ground_motion_info_placeholder.setVisible(not has_motion)
+        self.ground_motion_info_grid_widget.setVisible(has_motion)
+        if not has_motion:
+            self.target_pga_radio.setEnabled(False)
+            if self.target_pga_radio.isChecked():
+                self.scale_factor_radio.setChecked(True)
+            self.target_pga_unit_note.setVisible(False)
+            self._update_ground_motion_preview()
+            self._refresh_scaling_readouts()
+            return
+        self.gm_name_value.setText(motion.name)
+        self.gm_dt_value.setText(f"{motion.dt:g} s")
+        self.gm_npts_value.setText(str(motion.npts))
+        self.gm_duration_value.setText(f"{motion.duration:.2f} s")
+        unit_text = motion.unit if motion.unit is not None else "unit unknown"
+        self.gm_pga_value.setText(f"{motion.pga:.4g} ({unit_text})")
+        self.gm_unit_value.setText(motion.unit if motion.unit is not None else "Not detected")
+
+        # Target PGA divides by the original PGA and only means anything if
+        # the two PGAs share a unit - both a missing unit and a zero PGA make
+        # that comparison meaningless, so the mode is simply unavailable
+        # rather than guessing (see Phase 3-F's "don't fabricate unit info").
+        target_pga_available = motion.unit is not None and motion.pga > 0.0
+        self.target_pga_radio.setEnabled(target_pga_available)
+        if not target_pga_available and self.target_pga_radio.isChecked():
+            self.scale_factor_radio.setChecked(True)
+        self.target_pga_unit_note.setVisible(not target_pga_available)
+
+        self._update_ground_motion_preview()
+        self._refresh_scaling_readouts()
+
+    def _update_ground_motion_preview(self) -> None:
+        motion = self._ground_motion
+        if motion is None:
+            self.ground_motion_preview.set_series((), (), y_label="")
+            return
+        scale = self.ground_motion_scale.value()
+        times = tuple(index * motion.dt for index in range(motion.npts))
+        values = tuple(value * scale for value in motion.accelerations)
+        unit_label = motion.unit if motion.unit is not None else "unit unknown"
+        self.ground_motion_preview.set_series(times, values, y_label=f"Accel [{unit_label}]")
+
+    def _refresh_scaling_readouts(self) -> None:
+        motion = self._ground_motion
+        scale = self.ground_motion_scale.value()
+        if motion is None:
+            self.original_pga_value.setText("—")
+            self.applied_pga_value.setText("—")
+            return
+        unit_suffix = f" {motion.unit}" if motion.unit else ""
+        self.original_pga_value.setText(f"{motion.pga:.4g}{unit_suffix}")
+        self.applied_pga_value.setText(f"{motion.pga * scale:.4g}{unit_suffix}")
+        if self.scale_factor_radio.isChecked():
+            # Mirrors what Target PGA would show for this same scale factor -
+            # informative even while Scale Factor is the active input.
+            self.target_pga_input.setValue(motion.pga * scale)
+
+    def _on_scale_mode_changed(self) -> None:
+        is_target_mode = self.target_pga_radio.isChecked()
+        self.ground_motion_scale.setEnabled(not is_target_mode)
+        self.target_pga_input.setEnabled(is_target_mode and self.target_pga_radio.isEnabled())
+        self._refresh_scaling_readouts()
+
+    def _on_ground_motion_scale_changed(self) -> None:
+        if self._scaling_sync_in_progress:
+            return
+        self._sync_store_options()
+        self._refresh_scaling_readouts()
+        self._update_ground_motion_preview()
+
+    def _on_target_pga_changed(self) -> None:
+        if self._scaling_sync_in_progress or not self.target_pga_radio.isChecked():
+            return
+        motion = self._ground_motion
+        if motion is None or motion.pga <= 0.0:
+            return
+        self._scaling_sync_in_progress = True
+        try:
+            self.ground_motion_scale.setValue(self.target_pga_input.value() / motion.pga)
+        finally:
+            self._scaling_sync_in_progress = False
+        self._sync_store_options()
+        self._refresh_scaling_readouts()
+        self._update_ground_motion_preview()
 
     def _update_nonlinear_summary(self) -> None:
         """Keep a short readout of the dialog's current values visible in the
@@ -1274,7 +1699,13 @@ class AnalysisSettingsPanel(QFrame):
         # this card for them would imply a Newton/tolerance loop that never
         # actually runs, so the whole card is hidden rather than shown with a
         # misleading N/A (the card has no single "value" cell to label N/A).
-        if field.state == FieldState.NOT_APPLICABLE:
+        # Time History's convergence_test is ENGINE_FIXED (not NOT_APPLICABLE),
+        # but Phase 3-E gave it its own "4. SOLUTION / CONVERGENCE" card inside
+        # time_history_group, so the shared card is hidden here too rather than
+        # shown twice.
+        if field.state == FieldState.NOT_APPLICABLE or self.selected_analysis_kind() == (
+            AnalysisKind.TIME_HISTORY
+        ):
             self.convergence_card.setVisible(False)
             return
         self.convergence_card.setVisible(True)

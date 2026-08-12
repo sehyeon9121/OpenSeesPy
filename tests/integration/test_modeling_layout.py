@@ -4,12 +4,11 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from _solve_helpers import solve_and_wait
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QFrame
 
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
-
-from _solve_helpers import solve_and_wait
 
 
 def _page(*, start_in_3d: bool = False) -> ModelingInterfacePage:
@@ -18,6 +17,40 @@ def _page(*, start_in_3d: bool = False) -> ModelingInterfacePage:
     page.resize(1280, 800)
     page.show()
     return page
+
+
+def test_direct_2d_workspace_uses_the_compact_modeling_and_result_shell() -> None:
+    page = _page()
+
+    assert page.findChild(QFrame, "direct2DPageHeader") is not None
+    assert page.findChild(QFrame, "direct2DToolRail").width() == 72
+    assert page.model_type_selector.count() == 2
+    assert set(page.results.result_types.buttons) == {
+        "overview",
+        "deformation",
+        "displacement",
+        "reaction",
+        "axial",
+        "shear",
+        "moment",
+        "tables",
+    }
+    assert page.results.property("compact2d") is True
+    assert page.footer_stack.currentIndex() == 0
+    assert page.page_title.text() == "2D Structure Model"
+    assert page.header_controls_stack.currentIndex() == 0
+
+    page.workspace_stack.setCurrentIndex(1)
+
+    assert page.footer_stack.currentIndex() == 1
+    assert page.page_title.text() == "2D Structure Results"
+    assert page.header_controls_stack.currentIndex() == 1
+    assert page.findChild(QFrame, "direct2DResultHeader") is None
+
+    page.workspace_stack.setCurrentIndex(0)
+
+    assert page.page_title.text() == "2D Structure Model"
+    assert page.header_controls_stack.currentIndex() == 0
 
 
 def test_the_right_panel_starts_empty_until_a_category_is_picked() -> None:
@@ -100,6 +133,9 @@ def test_generated_arch_members_take_a_support_and_a_uniform_load_like_any_other
     page.canvas.selected_elements = {first_member}
     page.canvas.selection_changed.emit()
     page.load_target_group.button(1).click()  # 등분포하중 (element)
+    page.load_coordinate_system.setCurrentIndex(
+        page.load_coordinate_system.findData("local")
+    )
     page.load_fields["qy"].setValue(-5.0)
     page._apply_load()
 
@@ -109,6 +145,103 @@ def test_generated_arch_members_take_a_support_and_a_uniform_load_like_any_other
     assert boundaries_by_node[right_foot].restraints == (True, True, True)
     element_loads_by_tag = {load.element_tag: load for load in model.element_loads}
     assert element_loads_by_tag[first_member].wy == pytest.approx(-5.0)
+
+
+def test_distributed_load_defaults_to_global_axes_and_converts_a_vertical_member() -> None:
+    page = _page()
+    canvas = page.canvas
+    top = canvas.add_node(0.0, 4.0)
+    bottom = canvas.add_node(0.0, 0.0)
+    member = canvas.add_member(top, bottom)  # local +x points downward
+    canvas.selected_elements = {member}
+    canvas.selection_changed.emit()
+
+    page.category_buttons["load"].click()
+    page.load_target_group.button(1).click()  # uniform member load
+
+    assert page.load_coordinate_system.currentData() == "global"
+    assert page.load_coordinate_row.isVisible()
+    assert page.load_form_layout.labelForField(page.load_fields["qx"]).text().startswith(
+        "qX"
+    )
+    assert page.load_form_layout.labelForField(page.load_fields["qy"]).text().startswith(
+        "qY"
+    )
+
+    page.load_fields["qx"].setValue(5.0)  # global +X, not member-local +x
+    page._apply_load()
+
+    load = canvas.element_loads[member]
+    assert load.wx == pytest.approx(0.0)
+    assert load.wy == pytest.approx(5.0)
+    segments = canvas.load_arrow_segments(
+        canvas.nodes[top], canvas.nodes[bottom], load, reach=1.0
+    )
+    tail, tip, _label = segments[0]
+    assert (tip[0] - tail[0], tip[1] - tail[1]) == pytest.approx((1.0, 0.0))
+
+
+def test_one_global_distributed_load_is_converted_per_selected_member() -> None:
+    page = _page()
+    canvas = page.canvas
+    origin = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    top = canvas.add_node(8.0, 4.0)
+    bottom = canvas.add_node(8.0, 0.0)
+    horizontal = canvas.add_member(origin, right)
+    vertical_down = canvas.add_member(top, bottom)
+    canvas.selected_elements = {horizontal, vertical_down}
+
+    canvas.apply_uniform_load_to_selection(
+        (10.0, -4.0), coordinate_system="global"
+    )
+
+    horizontal_load = canvas.element_loads[horizontal]
+    vertical_load = canvas.element_loads[vertical_down]
+    assert (horizontal_load.wx, horizontal_load.wy) == pytest.approx((10.0, -4.0))
+    assert (vertical_load.wx, vertical_load.wy) == pytest.approx((4.0, 10.0))
+
+
+def test_global_trapezoidal_load_converts_both_member_ends() -> None:
+    page = _page()
+    canvas = page.canvas
+    top = canvas.add_node(0.0, 4.0)
+    bottom = canvas.add_node(0.0, 0.0)
+    member = canvas.add_member(top, bottom)
+    canvas.selected_elements = {member}
+
+    canvas.apply_uniform_load_to_selection(
+        (2.0, 0.0, 6.0, 0.0), coordinate_system="global"
+    )
+
+    load = canvas.element_loads[member]
+    assert (load.wx, load.wy, load.wx_j, load.wy_j) == pytest.approx(
+        (0.0, 2.0, 0.0, 6.0)
+    )
+
+
+def test_local_distributed_load_mode_preserves_the_existing_member_axis_input() -> None:
+    page = _page()
+    canvas = page.canvas
+    top = canvas.add_node(0.0, 4.0)
+    bottom = canvas.add_node(0.0, 0.0)
+    member = canvas.add_member(top, bottom)
+    canvas.selected_elements = {member}
+    canvas.selection_changed.emit()
+    page.category_buttons["load"].click()
+    page.load_target_group.button(1).click()
+    page.load_coordinate_system.setCurrentIndex(
+        page.load_coordinate_system.findData("local")
+    )
+
+    assert page.load_form_layout.labelForField(page.load_fields["qx"]).text().startswith(
+        "qx"
+    )
+    page.load_fields["qx"].setValue(5.0)
+    page._apply_load()
+
+    load = canvas.element_loads[member]
+    assert (load.wx, load.wy) == pytest.approx((5.0, 0.0))
 
 
 def test_create_section_stays_visible_across_selection_changes() -> None:

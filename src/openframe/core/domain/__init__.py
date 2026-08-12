@@ -7,7 +7,7 @@ from openframe.core.domain.analysis_capabilities import (
     ComponentField,
     FieldState,
 )
-from openframe.core.domain.ground_motion import GroundMotionRecord, GroundMotionSource
+from openframe.core.domain.ground_motion import GroundMotion, GroundMotionRecord, GroundMotionSource
 from openframe.core.domain.materials import (
     MaterialDefinition,
     MaterialFamily,
@@ -59,6 +59,7 @@ __all__ = [
     "Element",
     "ElementResult",
     "FieldState",
+    "GroundMotion",
     "GroundMotionRecord",
     "GroundMotionSource",
     "LoadCaseKind",

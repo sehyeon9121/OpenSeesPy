@@ -69,10 +69,9 @@ _FLOW_STEPS: dict[AnalysisKind, tuple[str, ...]] = {
     AnalysisKind.TIME_HISTORY: (
         "Model",
         "Ground Motion",
-        "Direction & Scale",
-        "Time Step",
         "Damping",
-        "Integration",
+        "Time Integration",
+        "Solution",
         "Pre-check",
         "Run",
     ),

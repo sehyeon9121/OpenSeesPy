@@ -80,11 +80,11 @@ class _CurrentPageOnlyStack(QStackedWidget):
     Qt does not know a widget's size hint changed on its own.
     """
 
-    def sizeHint(self):  # noqa: N802 - Qt override
+    def sizeHint(self):
         current = self.currentWidget()
         return current.sizeHint() if current is not None else super().sizeHint()
 
-    def minimumSizeHint(self):  # noqa: N802 - Qt override
+    def minimumSizeHint(self):
         current = self.currentWidget()
         return current.minimumSizeHint() if current is not None else super().minimumSizeHint()
 
@@ -110,15 +110,21 @@ class ModelingInterfacePage(QFrame):
         self.load_input_mode = "component"
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
         root.addWidget(self._build_header())
 
         self.workspace_stack = QStackedWidget()
         self.workspace_stack.addWidget(self._build_modeling_workspace())
         self.workspace_stack.addWidget(self._build_result_workspace())
         root.addWidget(self.workspace_stack, 1)
-        root.addWidget(self._build_status_bar())
+        self.footer_stack = QStackedWidget()
+        self.footer_stack.setObjectName("direct2DFooterStack")
+        self.footer_stack.addWidget(self._build_status_bar())
+        self.footer_stack.addWidget(self._build_result_status_bar())
+        root.addWidget(self.footer_stack)
+        self.workspace_stack.currentChanged.connect(self.footer_stack.setCurrentIndex)
+        self.workspace_stack.currentChanged.connect(self._workspace_page_changed)
 
         self.canvas.model_changed.connect(self._refresh_status)
         self.canvas.draw_state_changed.connect(self._refresh_draw_readout)
@@ -156,18 +162,62 @@ class ModelingInterfacePage(QFrame):
 
     def _build_header(self) -> QFrame:
         header = QFrame()
+        header.setObjectName("direct2DPageHeader")
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(20, 10, 20, 10)
+        layout.setSpacing(12)
         text = QVBoxLayout()
-        text.setSpacing(1)
-        title = QLabel("3D 구조 모델 작성" if self._start_in_3d else "2D 구조 모델 작성")
-        title.setObjectName("setupTitle")
-        hint = QLabel("노드, 부재, 지점과 하중을 캔버스에 직접 작성하세요.")
-        hint.setObjectName("setupDescription")
-        text.addWidget(title)
-        text.addWidget(hint)
+        text.setSpacing(2)
+        self.page_title = QLabel(
+            "3D Structure Model" if self._start_in_3d else "2D Structure Model"
+        )
+        self.page_title.setObjectName("direct2DPageTitle")
+        self.page_description = QLabel(
+            "Create geometry, assign structural properties, boundary conditions and loads."
+        )
+        self.page_description.setObjectName("direct2DPageDescription")
+        text.addWidget(self.page_title)
+        text.addWidget(self.page_description)
         layout.addLayout(text)
         layout.addStretch(1)
+
+        self.header_controls_stack = QStackedWidget()
+        self.header_controls_stack.setObjectName("direct2DHeaderControls")
+        self.header_controls_stack.addWidget(self._build_model_header_controls())
+        self.header_controls_stack.addWidget(self._build_result_header_controls())
+        layout.addWidget(self.header_controls_stack)
+
+        return header
+
+    def _build_model_header_controls(self) -> QWidget:
+        controls = QWidget()
+        layout = QHBoxLayout(controls)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        model_type = QVBoxLayout()
+        model_type.setSpacing(2)
+        model_type_label = QLabel("MODEL TYPE")
+        model_type_label.setObjectName("direct2DFieldLabel")
+        model_type.addWidget(model_type_label)
+        self.model_type_selector = QComboBox()
+        self.model_type_selector.setObjectName("direct2DModelType")
+        if self._start_in_3d:
+            self.model_type_selector.addItem("3D Frame", "frame")
+        else:
+            self.model_type_selector.addItem("2D Frame", "frame")
+            self.model_type_selector.addItem("2D Truss", "truss")
+            self.model_type_selector.currentIndexChanged.connect(
+                self._model_type_changed
+            )
+        model_type.addWidget(self.model_type_selector)
+        layout.addLayout(model_type)
+
+        self.model_ready_badge = QLabel("●  READY FOR ANALYSIS")
+        self.model_ready_badge.setObjectName("direct2DReadyBadge")
+        layout.addWidget(self.model_ready_badge)
+
+        # These controls are created here so their public attributes and solver
+        # wiring remain unchanged, then placed in the bottom analysis strip.
         self.truss_mode_toggle = QPushButton("트러스 모드")
         self.truss_mode_toggle.setObjectName("modelingToggleButton")
         self.truss_mode_toggle.setCheckable(True)
@@ -176,31 +226,27 @@ class ModelingInterfacePage(QFrame):
             "그려집니다. 해석 후에는 부재마다 축력 값이 하나씩 표시됩니다."
         )
         self.truss_mode_toggle.toggled.connect(self._toggle_truss_mode)
-        layout.addWidget(self.truss_mode_toggle)
+        self.truss_mode_toggle.hide()
         self.self_weight_toggle = QCheckBox("자중 포함")
         self.self_weight_toggle.setToolTip(
             "켜면 해석 시 부재 단위중량(부재 창의 \"단위중량 ρ\")과 단면적으로 계산한 "
             "자중을 등분포하중처럼 더합니다. 단위중량을 입력하지 않은 부재는 빠집니다."
         )
         self.self_weight_toggle.toggled.connect(self._toggle_self_weight)
-        layout.addWidget(self.self_weight_toggle)
         self.pdelta_toggle = QCheckBox("P-Delta 포함")
         self.pdelta_toggle.setToolTip(
             "켜면 2차효과(P-Delta, 기하비선형)를 포함해 해석합니다. 정정성과 무관하게 "
             "모든 부재에 실제 재료·단면(E/A/I)이 필요합니다. 부재 하나로 그려진 기둥의 "
             "축하중이 좌굴하중에 가까울수록(대략 30% 초과) 오차가 커질 수 있습니다."
         )
-        layout.addWidget(self.pdelta_toggle)
         self.solve_button = QPushButton("정정성 검사 및 해석")
         self.solve_button.setObjectName("setupContinueButton")
         self.solve_button.clicked.connect(self.solve)
-        layout.addWidget(self.solve_button)
         self.modal_num_modes = QSpinBox()
         self.modal_num_modes.setRange(1, 50)
         self.modal_num_modes.setValue(3)
         self.modal_num_modes.setToolTip("계산할 모드 수")
         self.modal_num_modes.setMaximumWidth(56)
-        layout.addWidget(self.modal_num_modes)
         self.modal_solve_button = QPushButton("모드해석 실행")
         self.modal_solve_button.setToolTip(
             "고유치(모드) 해석 - 2D 프레임 모델만 지원하며, 모든 부재에 실제 "
@@ -208,7 +254,6 @@ class ModelingInterfacePage(QFrame):
             "부재 자중(단위중량 x 단면적)에서 절점으로 환산해 계산됩니다."
         )
         self.modal_solve_button.clicked.connect(self.solve_modal)
-        layout.addWidget(self.modal_solve_button)
         # Re-running solve() re-checks determinacy against whatever the canvas
         # holds *right now* — if the user only wants to look at the results
         # they already computed, that must not require a fresh solve (which
@@ -220,14 +265,32 @@ class ModelingInterfacePage(QFrame):
         self.view_results_button.clicked.connect(
             lambda: self.workspace_stack.setCurrentIndex(1)
         )
-        layout.addWidget(self.view_results_button)
-        return header
+        return controls
+
+    def _build_result_header_controls(self) -> QWidget:
+        controls = QWidget()
+        layout = QHBoxLayout(controls)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        case_label = QLabel("RESULT CASE\nLinear Static 01")
+        case_label.setObjectName("direct2DResultCase")
+        layout.addWidget(case_label)
+        back = QPushButton("BACK TO MODEL")
+        back.setObjectName("direct2DSecondaryButton")
+        back.clicked.connect(lambda: self.workspace_stack.setCurrentIndex(0))
+        layout.addWidget(back)
+        rerun = QPushButton("RE-RUN ANALYSIS")
+        rerun.setObjectName("direct2DPrimaryButton")
+        rerun.clicked.connect(self.solve)
+        layout.addWidget(rerun)
+        return controls
 
     def _build_modeling_workspace(self) -> QWidget:
         page = QWidget()
+        page.setObjectName("direct2DModelingWorkspace")
         layout = QHBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(0)
         layout.addWidget(self._build_tool_rail())
         layout.addWidget(self._build_canvas_panel(), 1)
         layout.addWidget(self._build_property_panel())
@@ -235,31 +298,40 @@ class ModelingInterfacePage(QFrame):
 
     def _build_tool_rail(self) -> QFrame:
         rail = QFrame()
-        rail.setObjectName("directModelCommandBar")
-        rail.setFixedWidth(76)
+        rail.setObjectName("direct2DToolRail")
+        rail.setFixedWidth(72)
         layout = QVBoxLayout(rail)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(6, 8, 6, 8)
+        layout.setSpacing(4)
         self.tool_group = QButtonGroup(self)
         self.tool_group.setExclusive(True)
         self.select_tool = self._rail_tool("선택", "V", self._activate_select_tool)
         self.draw_tool = self._rail_tool("그리기", "L / Space", self._activate_draw_tool)
         layout.addWidget(self.select_tool)
         layout.addWidget(self.draw_tool)
-        layout.addSpacing(10)
+        layout.addSpacing(6)
         for text, tooltip, slot in (
-            ("실행 취소", "Ctrl+Z", self.canvas.undo),
-            ("다시 실행", "Ctrl+Y", self.canvas.redo),
-            ("삭제", "Delete", self.canvas.delete_selected),
-            ("전체 선택", "선택 필터에 따릅니다", self.canvas.select_all),
-            ("전체 보기", "F · 화면 위치를 잃어버렸을 때 모델 전체가 보이도록 맞춥니다", self.canvas.fit_model),
+            ("지점", "선택한 노드에 지점 조건을 지정합니다.", self._activate_support_tool),
+            ("속성", "선택한 부재의 재료와 단면을 설정합니다.", lambda: self._show_category("member")),
+            ("하중", "절점 또는 부재에 하중을 지정합니다.", self._activate_load_tool),
+        ):
+            button = QPushButton(text)
+            button.setObjectName("railFeatureButton")
+            button.setToolTip(tooltip)
+            button.clicked.connect(slot)
+            layout.addWidget(button)
+        layout.addStretch(1)
+        for text, tooltip, slot in (
+            ("UNDO", "Ctrl+Z", self.canvas.undo),
+            ("REDO", "Ctrl+Y", self.canvas.redo),
+            ("DELETE", "Delete", self.canvas.delete_selected),
+            ("FIT", "F · 모델 전체가 보이도록 맞춥니다", self.canvas.fit_model),
         ):
             button = QPushButton(text)
             button.setObjectName("railCommandButton")
             button.setToolTip(tooltip)
             button.clicked.connect(slot)
             layout.addWidget(button)
-        layout.addStretch(1)
         return rail
 
     def _rail_tool(self, text: str, shortcut: str, slot) -> QPushButton:
@@ -275,7 +347,7 @@ class ModelingInterfacePage(QFrame):
 
     def _build_canvas_panel(self) -> QFrame:
         panel = QFrame()
-        panel.setObjectName("setupSummaryPanel")
+        panel.setObjectName("direct2DCanvasPanel")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -486,13 +558,13 @@ class ModelingInterfacePage(QFrame):
     #: same breath - a single always-visible row of buttons has no fold to
     #: hide behind either way.
     _CATEGORY_OPTIONS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("add", "노드 추가"),
-        ("move", "이동 · 복사 · 배열"),
-        ("arch", "아치"),
-        ("support", "지점"),
-        ("kind", "노드 유형"),
-        ("member", "부재"),
-        ("load", "하중"),
+        ("add", "NODE"),
+        ("move", "TRANSFORM"),
+        ("arch", "ARCH"),
+        ("support", "SUPPORT"),
+        ("kind", "NODE TYPE"),
+        ("member", "MEMBER"),
+        ("load", "LOAD"),
     )
 
     def _build_category_bar(self) -> QFrame:
@@ -506,7 +578,7 @@ class ModelingInterfacePage(QFrame):
         instead of needing an explicit close button.
         """
         bar = QFrame()
-        bar.setObjectName("directModelCommandBar")
+        bar.setObjectName("direct2DCanvasToolbar")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(6)
@@ -550,6 +622,9 @@ class ModelingInterfacePage(QFrame):
         root = QVBoxLayout(panel)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
+        inspector_title = QLabel("PROPERTIES")
+        inspector_title.setObjectName("direct2DInspectorTitle")
+        root.addWidget(inspector_title)
         self.selection_summary = QLabel()
         self.selection_summary.setObjectName("setupSectionTitle")
         self.selection_summary.setWordWrap(True)
@@ -580,7 +655,7 @@ class ModelingInterfacePage(QFrame):
         scroll = QScrollArea()
         scroll.setObjectName("modelingInspectorScroll")
         scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(300)
+        scroll.setFixedWidth(320)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(panel)
         return scroll
@@ -1139,6 +1214,26 @@ class ModelingInterfacePage(QFrame):
         )
         self.load_mode_toggle.toggled.connect(self._toggle_load_input_mode)
         root.addWidget(self.load_mode_toggle)
+        self.load_coordinate_row = QWidget()
+        coordinate_layout = QHBoxLayout(self.load_coordinate_row)
+        coordinate_layout.setContentsMargins(0, 0, 0, 0)
+        coordinate_layout.setSpacing(6)
+        coordinate_label = QLabel("좌표계")
+        coordinate_label.setObjectName("setupSectionHint")
+        coordinate_layout.addWidget(coordinate_label)
+        self.load_coordinate_system = QComboBox()
+        self.load_coordinate_system.setObjectName("loadCoordinateSystem")
+        self.load_coordinate_system.addItem("GLOBAL X / Y", "global")
+        self.load_coordinate_system.addItem("LOCAL x / y", "local")
+        self.load_coordinate_system.setToolTip(
+            "GLOBAL은 구조물 전체 X/Y축 기준이며 선택된 각 부재의 로컬축으로 자동 "
+            "변환됩니다. LOCAL은 부재 i→j 방향의 x축과 그에 수직인 y축 기준입니다."
+        )
+        self.load_coordinate_system.currentIndexChanged.connect(
+            lambda _index: self._load_target_changed()
+        )
+        coordinate_layout.addWidget(self.load_coordinate_system, 1)
+        root.addWidget(self.load_coordinate_row)
         self.load_form_layout = QFormLayout()
         self.load_form_layout.setSpacing(6)
         self.load_fields: dict[str, QDoubleSpinBox] = {}
@@ -1342,29 +1437,14 @@ class ModelingInterfacePage(QFrame):
         return row
 
     def _build_result_workspace(self) -> QWidget:
-        """The full post-processing workspace, not a bare viewport.
-
-        Reactions, nodal displacements and the N/V/M diagrams all need a table beside
-        the picture; the reusable workspace already carries one. Its own RESULT
-        TYPES sidebar (반력/변형/변위/N/V/M — and more) is the one place that
-        picks what's shown; this page used to also draw its own row of the
-        same six buttons above it, which meant two different controls did the
-        exact same job stacked on top of each other. Only "모델 편집으로
-        돌아가기" stays here — nothing inside ResultsWorkspace itself can get
-        back to the canvas, since it doesn't know one exists in the shared
-        (OpenSeesPy-import) case.
-        """
+        """Student-focused result viewer used only by direct 2D modeling."""
         page = QWidget()
+        page.setObjectName("direct2DResultPage")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        tools = QHBoxLayout()
-        back = QPushButton("모델 편집으로 돌아가기")
-        back.clicked.connect(lambda: self.workspace_stack.setCurrentIndex(0))
-        tools.addWidget(back)
-        tools.addStretch(1)
-        layout.addLayout(tools)
-        self.results = ResultsWorkspace()
+        layout.setSpacing(0)
+
+        self.results = ResultsWorkspace(compact_2d=not self._start_in_3d)
         self.viewport = self.results.viewport
         layout.addWidget(self.results, 1)
         return page
@@ -1405,16 +1485,60 @@ class ModelingInterfacePage(QFrame):
         self.unit_length.setToolTip(self.unit_force.toolTip())
         self.unit_length.currentTextChanged.connect(self._unit_selector_changed)
         layout.addWidget(self.unit_length)
+        layout.addSpacing(10)
+        layout.addWidget(self.self_weight_toggle)
+        layout.addWidget(self.pdelta_toggle)
+        layout.addWidget(QLabel("MODES"))
+        layout.addWidget(self.modal_num_modes)
+        layout.addWidget(self.modal_solve_button)
+        layout.addWidget(self.view_results_button)
+        layout.addWidget(self.solve_button)
+        return bar
+
+    def _build_result_status_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setObjectName("direct2DResultStatusBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 4, 10, 4)
+        self.result_model_status = QLabel("0 NODES  |  0 MEMBERS  |  0 SUPPORTS  |  0 LOADS")
+        layout.addWidget(self.result_model_status)
+        layout.addStretch(1)
+        layout.addWidget(QLabel("RESULT CASE: LINEAR STATIC 01"))
+        layout.addSpacing(14)
+        self.result_unit_status = QLabel()
+        layout.addWidget(self.result_unit_status)
         return bar
 
     def _unit_selector_changed(self) -> None:
         self.set_unit_system(UnitSystem(force=self.unit_force.currentText(), length=self.unit_length.currentText()))
+
+    def _workspace_page_changed(self, index: int) -> None:
+        showing_results = index == 1
+        dimension = "3D" if self._start_in_3d else "2D"
+        self.page_title.setText(
+            f"{dimension} Structure Results"
+            if showing_results
+            else f"{dimension} Structure Model"
+        )
+        self.page_description.setText(
+            "Review deformation, reactions and internal forces of the current structural model."
+            if showing_results
+            else "Create geometry, assign structural properties, boundary conditions and loads."
+        )
+        self.header_controls_stack.setCurrentIndex(1 if showing_results else 0)
+
+    def _model_type_changed(self) -> None:
+        is_truss = self.model_type_selector.currentData() == "truss"
+        self.truss_mode_toggle.setChecked(is_truss)
 
     # --- behaviour ---------------------------------------------------------
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         self._unit_system = unit_system
         self.results.set_unit_system(unit_system)
+        self.result_unit_status.setText(
+            f"UNITS: {unit_system.force} · {unit_system.length}"
+        )
         # Keep the status-bar selectors in sync when the unit system is set from
         # outside (e.g. the 3D wizard's own setup step) instead of by the user
         # picking directly from these combo boxes — blocked so setCurrentText
@@ -1450,6 +1574,14 @@ class ModelingInterfacePage(QFrame):
         self.truss_mode_toggle.blockSignals(True)
         self.truss_mode_toggle.setChecked(self.canvas.element_family == "truss")
         self.truss_mode_toggle.blockSignals(False)
+        if not self._start_in_3d:
+            self.model_type_selector.blockSignals(True)
+            self.model_type_selector.setCurrentIndex(
+                self.model_type_selector.findData(
+                    "truss" if self.canvas.element_family == "truss" else "frame"
+                )
+            )
+            self.model_type_selector.blockSignals(False)
         self.self_weight_toggle.blockSignals(True)
         self.self_weight_toggle.setChecked(self.canvas.include_self_weight)
         self.self_weight_toggle.blockSignals(False)
@@ -1571,6 +1703,13 @@ class ModelingInterfacePage(QFrame):
         drawing-time choice (pinned both ends vs moment-connected), not a
         property that can be flipped retroactively without redrawing it."""
         self.canvas.element_family = "truss" if checked else "frame"
+        if not self._start_in_3d:
+            target = "truss" if checked else "frame"
+            index = self.model_type_selector.findData(target)
+            if index >= 0 and self.model_type_selector.currentIndex() != index:
+                self.model_type_selector.blockSignals(True)
+                self.model_type_selector.setCurrentIndex(index)
+                self.model_type_selector.blockSignals(False)
 
     def _toggle_self_weight(self, checked: bool) -> None:
         """A solve-time decision, unlike truss mode — it only changes what
@@ -1937,6 +2076,7 @@ class ModelingInterfacePage(QFrame):
         target = self._current_load_target()
         trapezoid = target == "element_trapezoid"
         is_node = target == "node"
+        self.load_coordinate_row.setVisible(not is_node and self.canvas.ndm == 2)
         # "부재 수직" input only makes sense for a node load in 2D - a member
         # has one unambiguous perpendicular direction only within a plane.
         # 등분포/사다리꼴하중 already work in the member's own local axes
@@ -1960,13 +2100,25 @@ class ModelingInterfacePage(QFrame):
                 if not is_node:
                     unit = f"{self._unit_system.force}/{self._unit_system.length}"
                 self.load_fields[component] = field
-                full_label = self._COMPONENT_LABELS[component]
+                global_member_load = (
+                    not is_node
+                    and self.canvas.ndm == 2
+                    and self.load_coordinate_system.currentData() == "global"
+                )
+                if global_member_load:
+                    axis = "X" if component.startswith("qx") else "Y"
+                    end = ", j단" if component.endswith("_j") else ""
+                    full_label = f"q{axis} (전역 {axis}{end})"
+                else:
+                    full_label = self._COMPONENT_LABELS[component]
                 short_label = full_label.split(" ", 1)[0]
                 if trapezoid and component in ("qx", "qy"):
                     short_label += "(i)"
                 elif component.endswith("_j"):
                     short_label += "(j)"
                 tooltip = f"{full_label} ({unit})"
+                if global_member_load:
+                    tooltip += " — 각 선택 부재의 로컬 qx/qy로 개별 변환"
                 if component == "mz":
                     # Sign convention here is deliberately the opposite of the
                     # right-hand-rule value OpenSees itself receives (see
@@ -2038,7 +2190,14 @@ class ModelingInterfacePage(QFrame):
             values = (self.load_fields["qx"].value(), self.load_fields["qy"].value())
             if "qx_j" in self.load_fields:
                 values += (self.load_fields["qx_j"].value(), self.load_fields["qy_j"].value())
-            self.canvas.apply_uniform_load_to_selection(values)
+            coordinate_system = (
+                str(self.load_coordinate_system.currentData())
+                if self.canvas.ndm == 2
+                else "local"
+            )
+            self.canvas.apply_uniform_load_to_selection(
+                values, coordinate_system=coordinate_system
+            )
         # A load actually landed - replace any stale ⚠ warning (e.g. from an
         # earlier failed attempt on this same selection) with the normal
         # selection summary, so success doesn't still look like an error.
@@ -2111,6 +2270,10 @@ class ModelingInterfacePage(QFrame):
         self.model_status.setText(
             f"{node_text}  |  부재 {len(model.elements)}  |  "
             f"지점 {len(model.boundaries)}  |  하중 {load_count}"
+        )
+        self.result_model_status.setText(
+            f"{len(model.nodes)} NODES  |  {len(model.elements)} MEMBERS  |  "
+            f"{len(model.boundaries)} SUPPORTS  |  {load_count} LOADS"
         )
         check = check_determinacy(model)
         self.determinacy_status.setText(f"정정성: {check.message}")

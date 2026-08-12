@@ -15,7 +15,7 @@ from typing import Any
 
 import openseespy.opensees as ops
 
-from openframe.infrastructure.opensees.ground_motion import parse_ground_motion
+from openframe.infrastructure.opensees.ground_motion import load_ground_motion
 from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
 from openframe.infrastructure.opensees.script_execution import run_model_script
 
@@ -101,11 +101,10 @@ def run_time_history_analysis(
 
     _report_progress(progress_callback, 5, "Reading the ground motion file...")
     try:
-        motion_dt, accelerations = parse_ground_motion(ground_motion_path, dt=dt_override)
+        motion = load_ground_motion(ground_motion_path, dt_override=dt_override)
     except (ValueError, OSError) as error:
         raise RuntimeError(f"지진파 파일을 읽지 못했습니다: {error}") from error
-    if not accelerations:
-        raise RuntimeError("지진파 파일에 가속도 값이 없습니다.")
+    motion_dt, accelerations = motion.dt, motion.accelerations
 
     fixed_nodes = [int(tag) for tag in ops.getFixedNodes()]
 

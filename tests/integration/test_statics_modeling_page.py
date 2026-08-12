@@ -3,14 +3,13 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from _solve_helpers import solve_and_wait, solve_modal_and_wait
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from openframe.features.analysis.statics import check_determinacy
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
-
-from _solve_helpers import solve_and_wait, solve_modal_and_wait
 
 
 def test_student_can_draw_and_solve_a_free_form_simply_supported_beam() -> None:
@@ -30,6 +29,30 @@ def test_student_can_draw_and_solve_a_free_form_simply_supported_beam() -> None:
     assert page.workspace_stack.currentIndex() == 1
     assert page.viewport._result.node_results[left].reaction[1] == pytest.approx(20.0)
     assert page.viewport._result.node_results[right].reaction[1] == pytest.approx(20.0)
+
+
+def test_global_x_uniform_load_on_a_vertical_cantilever_has_global_reactions() -> None:
+    """GLOBAL qX must remain horizontal through UI conversion and solve."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    assert application is QApplication.instance()
+
+    base = canvas.add_node(0.0, 0.0)
+    top = canvas.add_node(0.0, 4.0)
+    column = canvas.add_member(base, top)
+    canvas.set_support(base, (True, True, True))
+    canvas.selected_elements = {column}
+    canvas.apply_uniform_load_to_selection(
+        (5.0, 0.0), coordinate_system="global"
+    )
+
+    solve_and_wait(page)
+
+    reaction = page.viewport._result.node_results[base].reaction
+    assert reaction[0] == pytest.approx(-20.0)
+    assert reaction[1] == pytest.approx(0.0, abs=1.0e-10)
+    assert reaction[2] == pytest.approx(40.0)
 
 
 def test_drawn_hinge_becomes_a_member_release_and_makes_a_gerber_beam_solvable() -> None:

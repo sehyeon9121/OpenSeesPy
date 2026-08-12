@@ -197,3 +197,86 @@ def test_reports_a_missing_ground_motion_file_as_a_runtime_error(tmp_path: Path)
         run_time_history_analysis(
             model, ground_motion_path=tmp_path / "does_not_exist.txt", direction=1
         )
+
+
+_BUILT_IN_KOBE_AT2 = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "openframe"
+    / "infrastructure"
+    / "ground_motions"
+    / "data"
+    / "RSN1116_KOBE_SHI-UP.AT2"
+)
+
+
+def test_a_real_bundled_kobe_at2_file_still_runs_end_to_end(tmp_path: Path) -> None:
+    """Regression check for the Phase 3-F internal swap from
+    `parse_ground_motion` to `load_ground_motion` inside the solver - a real
+    PEER .AT2 record (not a synthetic half-sine) must still complete exactly
+    as it did before that refactor."""
+    model = _write_sdof_model(tmp_path)
+
+    result = run_time_history_analysis(
+        model, ground_motion_path=_BUILT_IN_KOBE_AT2, direction=1, damping_ratio=0.05
+    )
+
+    assert result["status"] == "completed"
+    assert len(result["time_history"]) == 4096
+
+
+def test_a_built_in_library_selection_from_the_setup_panel_runs_end_to_end(tmp_path: Path) -> None:
+    """Phase 3-G: SETUP's Built-in Library radio ultimately just points
+    build_options()["ground_motion_path"] at one of the catalog's own bundled
+    files - the same path the RUN pipeline already knew how to read since
+    Phase 3-F, so a Built-in selection must run exactly like an Imported one."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from openframe.core.domain import AnalysisKind
+    from openframe.features.analysis.presentation.analysis_settings_panel import (
+        AnalysisSettingsPanel,
+    )
+
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+    panel.source_builtin_radio.setChecked(True)
+    options = panel.build_options()
+    application.processEvents()
+
+    model = _write_sdof_model(tmp_path)
+    result = run_time_history_analysis(
+        model,
+        ground_motion_path=Path(options["ground_motion_path"]),
+        direction=1,
+        damping_ratio=0.05,
+        scale_factor=options["scale_factor"],
+    )
+
+    assert result["status"] == "completed"
+    assert len(result["time_history"]) > 0
+
+
+def test_scale_factor_linearly_scales_the_response(tmp_path: Path) -> None:
+    """The solver applies `scale_factor` via the OpenSees `-factor` flag on
+    the ground-motion time series, independent of how the file was parsed -
+    for this linear-elastic SDOF, doubling it must exactly double every
+    displacement, confirming Phase 3-F's ground-motion loading refactor left
+    that behavior untouched."""
+    model = _write_sdof_model(tmp_path)
+    motion = _write_half_sine_ground_motion(tmp_path)
+
+    baseline = run_time_history_analysis(
+        model, ground_motion_path=motion, direction=1, damping_ratio=0.0, scale_factor=1.0
+    )
+    scaled = run_time_history_analysis(
+        model, ground_motion_path=motion, direction=1, damping_ratio=0.0, scale_factor=2.0
+    )
+
+    for target_time in (0.3, 0.7, 1.5, 3.0):
+        base_disp = _displacement_at(baseline["time_history"], target_time)
+        scaled_disp = _displacement_at(scaled["time_history"], target_time)
+        assert scaled_disp == pytest.approx(2.0 * base_disp, abs=1.0e-6)

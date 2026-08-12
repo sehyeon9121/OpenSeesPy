@@ -41,9 +41,9 @@ def test_model_sidebar_only_holds_the_type_selector_and_stays_short() -> None:
     application.processEvents()
     application.processEvents()
 
-    # Three option buttons + summary + button is taller than the old combo box, but
-    # still nowhere near the 400px+ the nonlinear fields needed inline before they
-    # moved to a dialog - the height floor here is just "no deep fields leaked back in".
+    # Just a summary label and a shortcut button now (the four kind buttons moved
+    # to being SETUP's job entirely) - nowhere near the 400px+ the nonlinear
+    # fields needed inline before they moved to a dialog.
     assert sidebar.type_selector.height() < 260
     assert sidebar.inspector.height() > 0
 

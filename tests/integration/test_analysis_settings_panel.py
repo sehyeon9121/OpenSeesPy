@@ -11,7 +11,8 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+import pytest
+from PySide6.QtWidgets import QApplication, QFileDialog
 
 from openframe.core.domain import AnalysisKind
 from openframe.features.analysis.presentation.analysis_config_store import (
@@ -299,4 +300,234 @@ def test_time_history_build_options_defaults_to_direction_1_with_no_model_loaded
     assert options["ground_motion_path"] == ""
     assert options["direction"] == 1
     application.processEvents()
-    application.processEvents()
+
+
+def _stub_file_dialog(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *args, **kwargs: (str(path), ""))
+    )
+
+
+class TestGroundMotionBrowse:
+    """Phase 3-F: picking a file now loads it through GroundMotion immediately
+    (not just at RUN time inside the worker subprocess), so a bad file is
+    caught, and the metadata it lets us verify (dt/NPTS/duration/PGA/unit) is
+    shown right away instead of only living inside build_options()'s opaque
+    path string."""
+
+    def test_picking_a_valid_file_shows_its_metadata_and_syncs_the_store(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        application = QApplication.instance() or QApplication([])
+        motion_path = tmp_path / "motion.AT2"
+        motion_path.write_text(
+            "PACIFIC EARTHQUAKE ENGINEERING RESEARCH CENTER\n"
+            "SOME STATION, SOME EVENT\n"
+            "ACCELERATION TIME SERIES IN UNITS OF G\n"
+            "NPTS=   4, DT=  0.0200 SEC\n"
+            " 0.1000  -0.5000  0.3000  0.2000\n",
+            encoding="utf-8",
+        )
+        _stub_file_dialog(monkeypatch, motion_path)
+        panel = AnalysisSettingsPanel()
+        panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+
+        panel._choose_ground_motion_file()
+
+        assert panel._ground_motion is not None
+        assert panel._ground_motion.pga == pytest.approx(0.5)
+        # Phase 3-G moved the metadata out of the file-path label and into the
+        # shared info grid (Built-in and Imported both feed the same grid).
+        assert panel.ground_motion_path_label.text() == "motion.AT2"
+        assert panel.gm_dt_value.text() == "0.02 s"
+        assert panel.gm_npts_value.text() == "4"
+        assert "0.5" in panel.gm_pga_value.text()
+        assert "G" in panel.gm_pga_value.text()
+        assert panel.build_options()["ground_motion_path"] == str(motion_path)
+        application.processEvents()
+
+    def test_picking_a_malformed_file_reports_an_error_and_clears_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        application = QApplication.instance() or QApplication([])
+        bad_path = tmp_path / "not_a_motion.txt"
+        bad_path.write_text("this file has no numbers in it at all\n", encoding="utf-8")
+        _stub_file_dialog(monkeypatch, bad_path)
+        panel = AnalysisSettingsPanel()
+        panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+
+        panel._choose_ground_motion_file()
+
+        assert panel._ground_motion is None
+        assert panel._ground_motion_path is None
+        assert panel.build_options()["ground_motion_path"] == ""
+        application.processEvents()
+
+    def test_a_malformed_file_does_not_clobber_a_previously_valid_selection_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Selecting a bad file after a good one must not leave the store
+        pointing at the (now-replaced) good path while the label claims
+        failure - the two must agree, so the good selection is cleared too."""
+        application = QApplication.instance() or QApplication([])
+        good_path = tmp_path / "good.txt"
+        good_path.write_text("NPTS=2, DT=0.01 SEC\n1.0 -2.0\n", encoding="utf-8")
+        bad_path = tmp_path / "bad.txt"
+        bad_path.write_text("no numbers here\n", encoding="utf-8")
+        panel = AnalysisSettingsPanel()
+        panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+
+        _stub_file_dialog(monkeypatch, good_path)
+        panel._choose_ground_motion_file()
+        assert panel.build_options()["ground_motion_path"] == str(good_path)
+
+        _stub_file_dialog(monkeypatch, bad_path)
+        panel._choose_ground_motion_file()
+
+        assert panel.build_options()["ground_motion_path"] == ""
+        application.processEvents()
+
+
+def _time_history_panel() -> AnalysisSettingsPanel:
+    panel = AnalysisSettingsPanel()
+    panel.show()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+    return panel
+
+
+class TestBuiltInGroundMotionLibrary:
+    """Phase 3-G: Built-in Library / Imported File as two selectable sources
+    for the same GROUND MOTION card, sharing one info grid, one preview, and
+    one scaling section - build_options() must never care which source was
+    used, only what wound up in _ground_motion/_ground_motion_path."""
+
+    def test_built_in_library_lists_the_bundled_records_including_kobe(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+
+        labels = [
+            panel.builtin_record_combo.itemText(index)
+            for index in range(panel.builtin_record_combo.count())
+        ]
+        assert panel.builtin_record_combo.count() == 65
+        assert any("Kobe" in label for label in labels)
+        application.processEvents()
+
+    def test_selecting_built_in_populates_the_info_grid_and_preview(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+
+        panel.source_builtin_radio.setChecked(True)
+
+        assert panel._ground_motion is not None
+        assert panel.builtin_record_row.isVisible()
+        assert not panel.imported_file_row.isVisible()
+        assert panel.gm_npts_value.text() == str(panel._ground_motion.npts)
+        assert panel.build_options()["ground_motion_path"] == str(panel._ground_motion.path)
+        application.processEvents()
+
+    def test_preview_series_matches_the_selected_motions_accelerations(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        panel.source_builtin_radio.setChecked(True)
+        motion = panel._ground_motion
+        assert motion is not None
+
+        preview_values = panel.ground_motion_preview._values
+        preview_times = panel.ground_motion_preview._times
+
+        assert len(preview_values) == motion.npts
+        assert preview_values == pytest.approx(motion.accelerations)
+        assert preview_times[1] == pytest.approx(motion.dt)
+        application.processEvents()
+
+    def test_scale_factor_change_updates_applied_pga_and_preview(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        panel.source_builtin_radio.setChecked(True)
+        motion = panel._ground_motion
+        assert motion is not None
+
+        panel.ground_motion_scale.setValue(2.0)
+
+        assert panel.applied_pga_value.text() == f"{motion.pga * 2.0:.4g} {motion.unit}"
+        assert panel.ground_motion_preview._values == pytest.approx(
+            tuple(value * 2.0 for value in motion.accelerations)
+        )
+        application.processEvents()
+
+    def test_target_pga_computes_the_correct_scale_factor(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        panel.source_builtin_radio.setChecked(True)
+        motion = panel._ground_motion
+        assert motion is not None
+        target = motion.pga * 1.5
+
+        panel.target_pga_radio.setChecked(True)
+        panel.target_pga_input.setValue(target)
+
+        assert panel.ground_motion_scale.value() == pytest.approx(1.5, rel=1e-6)
+        assert panel.build_options()["scale_factor"] == pytest.approx(1.5, rel=1e-6)
+        application.processEvents()
+
+    def test_switching_source_leaves_no_stale_values(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        application = QApplication.instance() or QApplication([])
+        imported_path = tmp_path / "imported.txt"
+        imported_path.write_text("NPTS=3, DT=0.02 SEC\n0.1 0.2 -0.3\n", encoding="utf-8")
+        panel = _time_history_panel()
+
+        panel.source_builtin_radio.setChecked(True)
+        builtin_motion = panel._ground_motion
+        assert builtin_motion is not None
+
+        _stub_file_dialog(monkeypatch, imported_path)
+        panel.source_imported_radio.setChecked(True)
+        panel._choose_ground_motion_file()
+        assert panel._ground_motion is not None
+        assert panel._ground_motion.path == imported_path
+        assert panel.build_options()["ground_motion_path"] == str(imported_path)
+
+        panel.source_builtin_radio.setChecked(True)
+        assert panel._ground_motion is builtin_motion
+        assert panel.build_options()["ground_motion_path"] == str(builtin_motion.path)
+
+        panel.source_imported_radio.setChecked(True)
+        assert panel._ground_motion is not None
+        assert panel._ground_motion.path == imported_path
+        application.processEvents()
+
+    def test_zero_pga_disables_target_pga_with_a_clear_note(self, tmp_path: Path) -> None:
+        application = QApplication.instance() or QApplication([])
+        zero_path = tmp_path / "zero.txt"
+        zero_path.write_text("NPTS=3, DT=0.01 SEC\n0 0 0\n", encoding="utf-8")
+        panel = _time_history_panel()
+
+        panel._imported_ground_motion_path = zero_path
+        from openframe.infrastructure.opensees.ground_motion import load_ground_motion
+
+        panel._imported_ground_motion = load_ground_motion(zero_path)
+        panel._apply_active_ground_motion()
+
+        assert not panel.target_pga_radio.isEnabled()
+        assert panel.target_pga_unit_note.isVisible()
+        application.processEvents()
+
+    def test_unknown_unit_disables_target_pga_with_a_clear_note(self, tmp_path: Path) -> None:
+        application = QApplication.instance() or QApplication([])
+        no_unit_path = tmp_path / "no_unit.csv"
+        no_unit_path.write_text("0.00,0.10\n0.02,0.20\n0.04,-0.15\n", encoding="utf-8")
+        panel = _time_history_panel()
+
+        panel._imported_ground_motion_path = no_unit_path
+        from openframe.infrastructure.opensees.ground_motion import load_ground_motion
+
+        panel._imported_ground_motion = load_ground_motion(no_unit_path)
+        panel._apply_active_ground_motion()
+
+        assert panel._ground_motion is not None
+        assert panel._ground_motion.unit is None
+        assert not panel.target_pga_radio.isEnabled()
+        assert panel.target_pga_unit_note.isVisible()
+        assert panel.gm_unit_value.text() == "Not detected"
+        application.processEvents()

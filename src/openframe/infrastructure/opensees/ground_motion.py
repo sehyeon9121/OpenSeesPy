@@ -18,11 +18,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from openframe.core.domain import GroundMotion
+
 _NPTS_DT_PATTERN = re.compile(
     r"NPTS\s*[=:]\s*(?P<npts>\d+).*?DT\s*[=:]\s*(?P<dt>[\d.eE+-]+)",
     re.IGNORECASE | re.DOTALL,
 )
 _NUMBER_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+#: Same convention PEER .AT2 files use ("ACCELERATION TIME SERIES IN UNITS OF
+#: G") - the only unit label any currently-supported format ever carries.
+_UNITS_PATTERN = re.compile(r"UNITS OF\s*([A-Za-z0-9%]+)", re.IGNORECASE)
 
 
 def parse_ground_motion(path: Path, *, dt: float | None = None) -> tuple[float, list[float]]:
@@ -38,6 +43,10 @@ def parse_ground_motion(path: Path, *, dt: float | None = None) -> tuple[float, 
     if header_match is not None:
         npts = int(header_match.group("npts"))
         file_dt = float(header_match.group("dt"))
+        if file_dt <= 0.0:
+            raise ValueError(
+                f"헤더의 DT 값이 0 이하입니다(DT={file_dt}) - 올바른 지진파 파일인지 확인하세요."
+            )
         remainder = text[header_match.end() :]
         values = [float(token) for token in _NUMBER_PATTERN.findall(remainder)]
         if len(values) < npts:
@@ -88,3 +97,27 @@ def _parse_numeric_rows(text: str) -> list[list[float]]:
     counts = [len(row) for row in rows]
     common_count = max(set(counts), key=counts.count)
     return [row for row in rows if len(row) == common_count]
+
+
+def _detect_unit(text: str) -> str | None:
+    match = _UNITS_PATTERN.search(text)
+    return match.group(1) if match else None
+
+
+def load_ground_motion(path: Path, *, dt_override: float | None = None) -> GroundMotion:
+    """Parse ``path`` with :func:`parse_ground_motion` and wrap the result as
+    a :class:`GroundMotion` - the single entry point that turns a user-picked
+    file (PEER .AT2, or a plain NPTS/DT-header / two-column txt/csv/dat) into
+    the object both the SETUP UI (for preview) and the time-history solver
+    (for the actual run) work with."""
+    dt, accelerations = parse_ground_motion(path, dt=dt_override)
+    if not accelerations:
+        raise ValueError("지진파 파일에 가속도 값이 없습니다.")
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return GroundMotion(
+        name=path.stem,
+        path=path,
+        accelerations=tuple(accelerations),
+        dt=dt,
+        unit=_detect_unit(text),
+    )

@@ -32,16 +32,21 @@ from openframe.features.results.magnitudes import (
     magnitude_range,
     member_magnitudes,
 )
+from openframe.features.results.reactions import support_reactions
 
 
 class ResultSummaryPanel(QFrame):
     member_changed = Signal(int)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, *, compact_2d: bool = False
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("resultSummaryPanel")
-        self.setMinimumWidth(245)
-        self.setMaximumWidth(310)
+        self.setProperty("compact2d", compact_2d)
+        self.setMinimumWidth(275 if compact_2d else 245)
+        self.setMaximumWidth(320 if compact_2d else 310)
+        self._compact_2d = compact_2d
         self._model: StructuralModel | None = None
         self._result: AnalysisResult | None = None
         self._result_type = "overview"
@@ -52,7 +57,7 @@ class ResultSummaryPanel(QFrame):
         layout.setSpacing(8)
 
         header = QHBoxLayout()
-        title = QLabel("RESULT SUMMARY")
+        title = QLabel("RESULT INSPECTOR" if compact_2d else "RESULT SUMMARY")
         title.setObjectName("resultSectionTitle")
         self.status_badge = QLabel("WAITING")
         self.status_badge.setObjectName("waitingBadge")
@@ -62,18 +67,22 @@ class ResultSummaryPanel(QFrame):
         layout.addLayout(header)
 
         self.metric_values: dict[str, QLabel] = {}
+        self.metric_rows: dict[str, QFrame] = {}
         for key, title_text in (
             ("displacement", "MAX DISPLACEMENT"),
             ("rotation", "MAX ROTATION (처짐각)"),
+            ("reaction", "MAX SUPPORT REACTION"),
             ("moment", "MAX BENDING MOMENT"),
             ("shear", "MAX SHEAR FORCE"),
             ("axial", "MAX AXIAL FORCE"),
         ):
-            layout.addWidget(self._metric_row(key, title_text))
+            row = self._metric_row(key, title_text)
+            self.metric_rows[key] = row
+            layout.addWidget(row)
 
-        legend_title = QLabel("RESULT LEGEND")
-        legend_title.setObjectName("resultGroupLabel")
-        layout.addWidget(legend_title)
+        self.legend_title = QLabel("RESULT LEGEND")
+        self.legend_title.setObjectName("resultGroupLabel")
+        layout.addWidget(self.legend_title)
         self.legend = QProgressBar()
         self.legend.setObjectName("resultLegend")
         self.legend.setRange(0, 100)
@@ -92,9 +101,9 @@ class ResultSummaryPanel(QFrame):
         self.legend_caption.setWordWrap(True)
         layout.addWidget(self.legend_caption)
 
-        selected_title = QLabel("SELECTED ELEMENT")
-        selected_title.setObjectName("resultGroupLabel")
-        layout.addWidget(selected_title)
+        self.selected_title = QLabel("SELECTED ELEMENT")
+        self.selected_title.setObjectName("resultGroupLabel")
+        layout.addWidget(self.selected_title)
         self.member_selector = QComboBox()
         self.member_selector.setObjectName("resultMemberSelector")
         self.member_selector.currentIndexChanged.connect(self._member_selected)
@@ -107,15 +116,25 @@ class ResultSummaryPanel(QFrame):
         self.end_force_table.setMaximumHeight(108)
         layout.addWidget(self.end_force_table)
 
-        details = QGridLayout()
+        self.details_panel = QFrame()
+        details = QGridLayout(self.details_panel)
+        details.setContentsMargins(0, 0, 0, 0)
         details.addWidget(QLabel("SYSTEM"), 0, 0)
         self.system_value = QLabel("LOCAL 2D")
         details.addWidget(self.system_value, 0, 1)
         details.addWidget(QLabel("DATA"), 1, 0)
         self.data_value = QLabel("END FORCES")
         details.addWidget(self.data_value, 1, 1)
-        layout.addLayout(details)
+        layout.addWidget(self.details_panel)
+        self.learning_title = QLabel("WHAT THIS MEANS")
+        self.learning_title.setObjectName("resultGroupLabel")
+        layout.addWidget(self.learning_title)
+        self.learning_hint = QLabel()
+        self.learning_hint.setObjectName("direct2DResultLearningHint")
+        self.learning_hint.setWordWrap(True)
+        layout.addWidget(self.learning_hint)
         layout.addStretch(1)
+        self._apply_compact_visibility()
         self._refresh()
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
@@ -129,7 +148,54 @@ class ResultSummaryPanel(QFrame):
 
     def set_result_type(self, result_type: str) -> None:
         self._result_type = result_type
+        self._apply_compact_visibility()
         self._refresh()
+
+    def _apply_compact_visibility(self) -> None:
+        if not self._compact_2d:
+            self.metric_rows["reaction"].hide()
+            self.learning_title.hide()
+            self.learning_hint.hide()
+            return
+        visible_metrics = {
+            "overview": set(self.metric_rows),
+            "deformation": {"displacement", "rotation"},
+            "displacement": {"displacement", "rotation"},
+            "reaction": {"reaction"},
+            "axial": {"axial"},
+            "shear": {"shear"},
+            "moment": {"moment"},
+        }.get(self._result_type, set())
+        for key, row in self.metric_rows.items():
+            row.setVisible(key in visible_metrics)
+        legend_visible = self._result_type in {
+            "overview",
+            "deformation",
+            "displacement",
+            "axial",
+            "shear",
+            "moment",
+        }
+        self.legend_title.setVisible(legend_visible)
+        self.legend.setVisible(legend_visible)
+        self.legend_minimum.setVisible(legend_visible)
+        self.legend_maximum.setVisible(legend_visible)
+        self.legend_caption.setVisible(legend_visible)
+        member_result = self._result_type in {"axial", "shear", "moment"}
+        self.selected_title.setVisible(member_result)
+        self.member_selector.setVisible(member_result)
+        self.end_force_table.setVisible(member_result)
+        self.details_panel.setVisible(member_result)
+        hints = {
+            "overview": "Review the governing response, then choose one result to inspect it clearly.",
+            "deformation": "Displayed deformation may be magnified so structural movement is visible.",
+            "displacement": "Compare the movement of individual nodes and their displacement components.",
+            "reaction": "Reaction arrows show how the supports balance the applied structural loads.",
+            "axial": "Positive and negative axial forces distinguish tension from compression.",
+            "shear": "Larger shear values identify members carrying greater transverse demand.",
+            "moment": "Larger moment values identify regions with greater bending demand.",
+        }
+        self.learning_hint.setText(hints.get(self._result_type, ""))
 
     def show_result(self, result: AnalysisResult) -> None:
         self._result = result
@@ -201,6 +267,7 @@ class ResultSummaryPanel(QFrame):
             self.status_badge.setText("WAITING")
             self.metric_values["displacement"].setText(f"—  {unit.length}")
             self.metric_values["rotation"].setText("—  °")
+            self.metric_values["reaction"].setText(f"—  {unit.force}")
             self.metric_values["moment"].setText(f"—  {unit.moment}")
             self.metric_values["shear"].setText(f"—  {unit.force}")
             self.metric_values["axial"].setText(f"—  {unit.force}")
@@ -248,6 +315,16 @@ class ResultSummaryPanel(QFrame):
             f"{max_displacement:.6g}  {unit.length}"
         )
         self.metric_values["rotation"].setText(f"{max_rotation:.4g}  °")
+        reactions = (
+            () if self._model is None else support_reactions(self._model, result)
+        )
+        max_reaction = max(
+            (math.hypot(reaction.fx, reaction.fy) for reaction in reactions),
+            default=0.0,
+        )
+        self.metric_values["reaction"].setText(
+            f"{max_reaction:.6g}  {unit.force}"
+        )
         if self._model is not None and self._model.ndm == 3:
             force_maxima = {
                 kind: max(member_magnitudes(self._model, result, kind).values(), default=0.0)

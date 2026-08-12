@@ -132,25 +132,19 @@ def test_modal_shows_engine_fixed_solver_and_hides_convergence() -> None:
     setup.close()
 
 
-def test_time_history_shows_engine_fixed_solver_algorithm_and_convergence() -> None:
+def test_time_history_no_longer_uses_the_shared_solution_and_convergence_cards() -> None:
+    """Phase 3-E: Time History gets its own "4. SOLUTION / CONVERGENCE" card
+    (see time_history_solution_card) instead of the shared solution_card/
+    convergence_card Nonlinear Static uses - both must be hidden for this
+    kind now, not shown a second time."""
     application, setup = _make_setup()
     settings = setup.settings_panel
 
     settings.config_store.set_kind(AnalysisKind.TIME_HISTORY)
     application.processEvents()
 
-    assert not settings.solver.isVisible()
-    assert "BandGeneral" in settings.solver_fixed_value.text()
-    assert "Newton" in settings.solution_algorithm.text()
-    assert "FIXED" in settings.solution_algorithm.text()
-    assert "Transformation" in settings.constraint_value.text()
-    assert "RCM" in settings.numberer_value.text()
-
-    assert settings.convergence_card.isVisible()
-    assert "NormDispIncr" in settings.convergence_test.text()
-    assert "FIXED" in settings.convergence_test.text()
-    assert settings.convergence_tolerance.text() == "1e-8"
-    assert settings.convergence_iterations.text() == "30"
+    assert not settings.solution_card.isVisible()
+    assert not settings.convergence_card.isVisible()
 
     setup.close()
 
@@ -164,9 +158,16 @@ def test_switching_kinds_back_and_forth_restores_the_correct_solver_editability(
     assert settings.solver.isVisible()
     assert not settings.solver_fixed_value.isVisible()
 
-    settings.config_store.set_kind(AnalysisKind.TIME_HISTORY)
+    # Linear Static's SOLVER is ENGINE_FIXED, but only visible once ADVANCED
+    # ENGINE DETAILS is expanded (see Phase 3-B) - Modal/Time History hide
+    # solution_card outright now (Phase 3-C/3-E), so neither shows
+    # solver_fixed_value at all regardless of expand state.
+    settings.config_store.set_kind(AnalysisKind.LINEAR_STATIC)
     application.processEvents()
     assert not settings.solver.isVisible()
+    assert not settings.solver_fixed_value.isVisible()
+    settings.engine_details_toggle.setChecked(True)
+    application.processEvents()
     assert settings.solver_fixed_value.isVisible()
 
     settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
@@ -256,9 +257,9 @@ def test_switching_between_linear_static_and_other_kinds_leaves_no_residue() -> 
         settings.config_store.set_kind(other_kind)
         application.processEvents()
         assert not settings.linear_static_group.isVisible()
-        # Modal hides "1. LOAD & CONTROL" too (see the dedicated Modal test
-        # below) - only Nonlinear Static/Time History still use it.
-        assert settings.load_card.isVisible() == (other_kind != AnalysisKind.MODAL)
+        # Modal and Time History each hide "1. LOAD & CONTROL" too (see their
+        # own dedicated tests) - only Nonlinear Static still uses it.
+        assert settings.load_card.isVisible() == (other_kind == AnalysisKind.NONLINEAR_STATIC)
 
         settings.config_store.set_kind(AnalysisKind.LINEAR_STATIC)
         application.processEvents()
@@ -534,9 +535,13 @@ def test_nonlinear_static_convergence_card_shows_recovery_summary() -> None:
     assert settings.convergence_bisections_value.text() == str(settings.max_bisections.value())
     assert "Recovery Strategy" in settings.convergence_recovery_summary.text()
 
+    # Time History has its own "4. SOLUTION / CONVERGENCE" card now (Phase
+    # 3-E) - the shared card (and this recovery summary, which only makes
+    # sense for Nonlinear Static's algorithm-fallback/bisection strategy)
+    # must not leak into it.
     settings.config_store.set_kind(AnalysisKind.TIME_HISTORY)
     application.processEvents()
-    assert settings.convergence_card.isVisible()
+    assert not settings.convergence_card.isVisible()
     assert not settings.convergence_recovery_row.isVisible()
 
     setup.close()
@@ -577,5 +582,140 @@ def test_switching_between_nonlinear_static_and_other_kinds_leaves_no_residue() 
         application.processEvents()
         assert not settings.nonlinear_load_summary.isVisible()
         assert not settings.convergence_recovery_row.isVisible()
+
+    setup.close()
+
+
+def test_time_history_flow_is_its_own() -> None:
+    application, setup = _make_setup()
+
+    setup.config_store.set_kind(AnalysisKind.TIME_HISTORY)
+    application.processEvents()
+
+    flow_labels = [
+        setup._flow_list_widget.item(index).text()
+        for index in range(setup._flow_list_widget.count())
+    ]
+    flow_text = " ".join(flow_labels)
+    assert "Ground Motion" in flow_text
+    assert "Damping" in flow_text
+    assert "Time Integration" in flow_text
+    assert "Solution" in flow_text
+    assert "Loading" not in flow_text
+    assert "Nonlinearity" not in flow_text
+    assert "Convergence" not in flow_text
+
+    setup.close()
+
+
+def test_time_history_shows_its_own_four_cards_and_hides_nonlinear_ones() -> None:
+    application, setup = _make_setup()
+    settings = setup.settings_panel
+
+    settings.config_store.set_kind(AnalysisKind.TIME_HISTORY)
+    application.processEvents()
+
+    assert settings.time_history_group.isVisible()
+    for card in (
+        settings.time_history_ground_motion_card,
+        settings.time_history_damping_card,
+        settings.time_history_integration_card,
+        settings.time_history_solution_card,
+    ):
+        assert card.isVisible()
+
+    # None of Nonlinear Static's cards (or their contents) may show through.
+    assert not settings.load_card.isVisible()
+    assert not settings.nonlinear_load_summary.isVisible()
+    assert not settings.nonlinear_group.isVisible()
+    assert not settings.linear_static_group.isVisible()
+    assert not settings.modal_group.isVisible()
+    assert not settings.modal_engine_card.isVisible()
+    assert not settings.solution_card.isVisible()
+    assert not settings.convergence_card.isVisible()
+
+    setup.close()
+
+
+def test_time_history_ground_motion_direction_and_scale_reach_the_config_store() -> None:
+    """Regression test for the sync bug found while implementing Phase 3-E:
+    time_history_direction/ground_motion_scale/damping_ratio had no
+    valueChanged/currentIndexChanged connection at all (the same gap
+    num_modes had in Phase 3-C), so a value picked here was silently dropped
+    from config_store.options until an unrelated event happened to sync it."""
+    application, setup = _make_setup()
+    settings = setup.settings_panel
+
+    settings.config_store.set_kind(AnalysisKind.TIME_HISTORY)
+    application.processEvents()
+
+    settings.time_history_direction.addItem("UY", 2)
+    settings.time_history_direction.setCurrentIndex(
+        settings.time_history_direction.findData(2)
+    )
+    settings.ground_motion_scale.setValue(9.81)
+    settings.damping_ratio.setValue(0.02)
+    application.processEvents()
+
+    assert settings.config_store.options.get("direction") == 2
+    assert settings.config_store.options.get("scale_factor") == 9.81
+    assert settings.config_store.options.get("damping_ratio") == 0.02
+
+    setup.close()
+
+
+def test_time_history_integration_and_solution_cards_match_the_capability_registry() -> None:
+    application, setup = _make_setup()
+    settings = setup.settings_panel
+
+    settings.config_store.set_kind(AnalysisKind.TIME_HISTORY)
+    application.processEvents()
+
+    from PySide6.QtWidgets import QLabel
+
+    capabilities = ANALYSIS_CAPABILITIES[AnalysisKind.TIME_HISTORY]
+
+    integration_labels = " | ".join(
+        label.text()
+        for label in settings.time_history_integration_card.findChildren(QLabel)
+    )
+    assert capabilities.dynamic_integrator.value in integration_labels
+    assert dict(capabilities.dynamic_integrator.details)["gamma"] in integration_labels
+    assert dict(capabilities.dynamic_integrator.details)["beta"] in integration_labels
+
+    solution_labels = " | ".join(
+        label.text() for label in settings.time_history_solution_card.findChildren(QLabel)
+    )
+    assert capabilities.equation_solver.value in solution_labels
+    assert capabilities.algorithm.value in solution_labels
+    assert capabilities.constraint_handler.value in solution_labels
+    assert capabilities.numberer.value in solution_labels
+    assert capabilities.convergence_test.value in solution_labels
+    details = dict(capabilities.convergence_test.details)
+    assert details["tolerance"] in solution_labels
+    assert details["maxIterations"] in solution_labels
+    assert "FIXED" in solution_labels
+
+    setup.close()
+
+
+def test_switching_between_time_history_and_other_kinds_leaves_no_residue() -> None:
+    application, setup = _make_setup()
+    settings = setup.settings_panel
+
+    for other_kind in (
+        AnalysisKind.LINEAR_STATIC,
+        AnalysisKind.NONLINEAR_STATIC,
+        AnalysisKind.MODAL,
+    ):
+        settings.config_store.set_kind(AnalysisKind.TIME_HISTORY)
+        application.processEvents()
+        assert settings.time_history_group.isVisible()
+        assert not settings.solution_card.isVisible()
+        assert not settings.convergence_card.isVisible()
+
+        settings.config_store.set_kind(other_kind)
+        application.processEvents()
+        assert not settings.time_history_group.isVisible()
 
     setup.close()

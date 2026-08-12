@@ -25,19 +25,24 @@ from openframe.features.results.presentation.time_history_panel import TimeHisto
 
 
 class ResultsWorkspace(QFrame):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, *, compact_2d: bool = False
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("resultsWorkspace")
+        self.setProperty("compact2d", compact_2d)
+        self._compact_2d = compact_2d
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self.toolbar = ResultToolbar()
+        self.toolbar.setVisible(not compact_2d)
         layout.addWidget(self.toolbar)
 
-        self.result_types = ResultTypeSidebar()
+        self.result_types = ResultTypeSidebar(compact_2d=compact_2d)
         self.viewport = ResultViewport()
-        self.summary = ResultSummaryPanel()
+        self.summary = ResultSummaryPanel(compact_2d=compact_2d)
         self.tables_panel = ResultTablesPanel()
         self.time_history_panel = TimeHistoryPanel()
 
@@ -51,7 +56,7 @@ class ResultsWorkspace(QFrame):
         normal_page.addWidget(self.summary)
         normal_page.setStretchFactor(0, 1)
         normal_page.setStretchFactor(1, 0)
-        normal_page.setSizes((875, 275))
+        normal_page.setSizes((875, 300 if compact_2d else 275))
 
         self.content_stack = QStackedWidget()
         self.content_stack.addWidget(normal_page)
@@ -65,7 +70,7 @@ class ResultsWorkspace(QFrame):
         body.addWidget(self.content_stack)
         body.setStretchFactor(0, 0)
         body.setStretchFactor(1, 1)
-        body.setSizes((230, 1150))
+        body.setSizes((190 if compact_2d else 230, 1190 if compact_2d else 1150))
         layout.addWidget(body, 1)
 
         self.result_types.result_type_changed.connect(self._set_result_type)

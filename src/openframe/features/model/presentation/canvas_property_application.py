@@ -4,6 +4,7 @@ See ``canvas_work_planes.py`` for why this is a mixin rather than a
 standalone class.
 """
 
+import math
 from dataclasses import replace
 
 from openframe.core.domain import BoundaryCondition, NodalLoad, UniformElementLoad
@@ -104,17 +105,60 @@ class _PropertyApplicationMixin:
         self._changed()
 
     def apply_uniform_load_to_selection(
-        self, values: tuple[float, float] | tuple[float, float, float, float]
+        self,
+        values: tuple[float, float] | tuple[float, float, float, float],
+        *,
+        coordinate_system: str = "local",
     ) -> None:
-        """``values`` is (wx, wy) for a plain uniform load, or (wx_i, wy_i,
-        wx_j, wy_j) for a linearly-varying (triangular/trapezoidal) one."""
+        """Apply a 2D member load in local or global coordinates.
+
+        ``values`` is ``(qx, qy)`` for a plain uniform load, or
+        ``(qx_i, qy_i, qx_j, qy_j)`` for a linearly-varying one. Local input
+        is stored unchanged. Global X/Y input is resolved separately for each
+        selected member, so one wind load can be applied to horizontal,
+        vertical and diagonal members together without sharing the wrong
+        local components.
+        """
         if not self.selected_elements:
             return
-        wx, wy = values[0], values[1]
-        wx_j, wy_j = (values[2], values[3]) if len(values) >= 4 else (wx, wy)
+        if coordinate_system not in {"local", "global"}:
+            raise ValueError(f"Unsupported load coordinate system: {coordinate_system}")
+        if coordinate_system == "global" and self.ndm != 2:
+            raise ValueError("Global member-load conversion is currently supported in 2D only.")
+        qx_i, qy_i = values[0], values[1]
+        qx_j, qy_j = (
+            (values[2], values[3]) if len(values) >= 4 else (qx_i, qy_i)
+        )
         self._record_history()
         for element_tag in self.selected_elements:
+            wx_i, wy_i, wx_j, wy_j = qx_i, qy_i, qx_j, qy_j
+            if coordinate_system == "global":
+                element = self.elements.get(element_tag)
+                if element is None:
+                    continue
+                node_i = self.nodes[element.node_i]
+                node_j = self.nodes[element.node_j]
+                dx, dy = node_j.x - node_i.x, node_j.y - node_i.y
+                length = math.hypot(dx, dy)
+                if length <= 0.0:
+                    continue
+                cosine, sine = dx / length, dy / length
+                wx_i, wy_i = self._global_to_local_load(
+                    qx_i, qy_i, cosine, sine
+                )
+                wx_j, wy_j = self._global_to_local_load(
+                    qx_j, qy_j, cosine, sine
+                )
             self.element_loads[element_tag] = UniformElementLoad(
-                element_tag, wx=wx, wy=wy, wx_j=wx_j, wy_j=wy_j
+                element_tag, wx=wx_i, wy=wy_i, wx_j=wx_j, wy_j=wy_j
             )
         self._changed()
+
+    @staticmethod
+    def _global_to_local_load(
+        qx: float, qy: float, cosine: float, sine: float
+    ) -> tuple[float, float]:
+        return (
+            qx * cosine + qy * sine,
+            -qx * sine + qy * cosine,
+        )

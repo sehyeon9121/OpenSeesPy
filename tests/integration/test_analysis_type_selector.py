@@ -1,14 +1,10 @@
-"""Regression coverage for MODEL's Analysis Type selector staying in sync with
-what is actually implemented.
+"""Regression coverage for MODEL's Analysis Type panel staying a read-only
+mirror of what SETUP actually has selected.
 
-``AnalysisTypeSelector`` used to ship with a stale ``_UNIMPLEMENTED_KINDS`` set
-(left over from before Time History was wired up end-to-end) and a
-``_KIND_LABELS`` mapping missing ``AnalysisKind.MODAL`` entirely - so MODEL's
-"ANALYSIS PREPARATION" panel offered only 2 of the 4 fully working analysis
-kinds, even though SETUP's own dropdown (and the backend's
-``RunAnalysisService``) already supported all four. These tests pin the fixed
-state: all four kinds selectable from MODEL, and picking one there is
-immediately visible in SETUP through the shared ``AnalysisConfigStore``."""
+``AnalysisTypeSelector`` used to offer its own four analysis-kind buttons,
+duplicating the exact same choice ``AnalysisSettingsPanel`` asks on SETUP one
+click later. It now only shows a summary of the shared ``AnalysisConfigStore``
+and a shortcut to SETUP - the kind is chosen there, not here."""
 
 import os
 
@@ -23,7 +19,6 @@ from openframe.features.analysis.presentation.analysis_config_store import (
 )
 from openframe.features.analysis.presentation.analysis_type_selector import (
     _KIND_LABELS,
-    _UNIMPLEMENTED_KINDS,
     AnalysisTypeSelector,
 )
 
@@ -35,66 +30,60 @@ ALL_KINDS = {
 }
 
 
-def test_all_four_analysis_kinds_have_a_label_and_none_are_marked_unimplemented() -> None:
-    """Pins the stale-state bug fixed: every AnalysisKind the backend actually
-    supports (see RunAnalysisService's module registration in bootstrap.py)
-    must have a MODEL-page label and must not be disabled as unimplemented."""
+def test_every_analysis_kind_has_a_label_for_the_summary_text() -> None:
+    """Pins the fixed state a stale-label bug once broke: every AnalysisKind the
+    backend actually supports (see RunAnalysisService's module registration in
+    bootstrap.py) must be nameable in MODEL's summary, or picking it in SETUP
+    would show up here as a raw enum repr instead of a readable label."""
     assert set(_KIND_LABELS.keys()) == ALL_KINDS
-    assert _UNIMPLEMENTED_KINDS == frozenset()
 
 
-def test_model_screen_offers_all_four_analysis_kinds_as_enabled_buttons() -> None:
+def test_model_screen_shows_no_interactive_kind_picker() -> None:
+    """The four analysis-kind buttons are gone - SETUP is now the only place
+    that changes the kind, so this panel has nothing to click for that."""
     application = QApplication.instance() or QApplication([])
     store = AnalysisConfigStore()
     selector = AnalysisTypeSelector(store)
 
-    assert set(selector._option_buttons.keys()) == ALL_KINDS
-    for kind, button in selector._option_buttons.items():
-        assert button.isEnabled(), f"{kind} should be selectable from MODEL"
+    assert not hasattr(selector, "_option_buttons")
+    assert selector.open_setup_button is not None
 
     application.processEvents()
     selector.close()
 
 
-def test_selecting_modal_on_model_screen_updates_the_shared_store() -> None:
-    application = QApplication.instance() or QApplication([])
-    store = AnalysisConfigStore()
-    selector = AnalysisTypeSelector(store)
-
-    selector._option_buttons[AnalysisKind.MODAL].click()
-
-    assert store.kind == AnalysisKind.MODAL
-    application.processEvents()
-    selector.close()
-
-
-def test_selecting_time_history_on_model_screen_updates_the_shared_store() -> None:
-    application = QApplication.instance() or QApplication([])
-    store = AnalysisConfigStore()
-    selector = AnalysisTypeSelector(store)
-
-    selector._option_buttons[AnalysisKind.TIME_HISTORY].click()
-
-    assert store.kind == AnalysisKind.TIME_HISTORY
-    application.processEvents()
-    selector.close()
-
-
-def test_analysis_type_chosen_on_model_screen_is_immediately_reflected_in_setup() -> None:
-    """MODEL's selector and SETUP's dropdown share one AnalysisConfigStore - a
-    kind picked on one must show up on the other without any extra action."""
+def test_model_summary_reflects_the_kind_chosen_on_setup() -> None:
+    """MODEL's summary and SETUP's dropdown share one AnalysisConfigStore - a
+    kind picked on SETUP must show up in MODEL's summary without any extra
+    action, since MODEL can no longer set it directly."""
     application = QApplication.instance() or QApplication([])
     store = AnalysisConfigStore()
     selector = AnalysisTypeSelector(store)
     setup = SetupWorkspace(store)
 
-    selector._option_buttons[AnalysisKind.MODAL].click()
+    index = setup.settings_panel.analysis_type.findData(AnalysisKind.MODAL)
+    setup.settings_panel.analysis_type.setCurrentIndex(index)
     application.processEvents()
-    assert setup.settings_panel.analysis_type.currentData() == AnalysisKind.MODAL
+    assert "Modal (Eigenvalue)" in selector.summary_label.text()
 
-    selector._option_buttons[AnalysisKind.TIME_HISTORY].click()
+    index = setup.settings_panel.analysis_type.findData(AnalysisKind.TIME_HISTORY)
+    setup.settings_panel.analysis_type.setCurrentIndex(index)
     application.processEvents()
-    assert setup.settings_panel.analysis_type.currentData() == AnalysisKind.TIME_HISTORY
+    assert "Time History" in selector.summary_label.text()
 
     selector.close()
     setup.close()
+
+
+def test_open_setup_button_emits_the_navigation_signal() -> None:
+    application = QApplication.instance() or QApplication([])
+    store = AnalysisConfigStore()
+    selector = AnalysisTypeSelector(store)
+    received = []
+    selector.open_setup_requested.connect(lambda: received.append(True))
+
+    selector.open_setup_button.click()
+
+    assert received == [True]
+    application.processEvents()
+    selector.close()

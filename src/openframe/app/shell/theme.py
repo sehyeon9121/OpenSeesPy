@@ -1129,29 +1129,6 @@ QLabel#pageStatusBadge[state="ready"] { color: #2e7048; background: #e4f4ea; }
 QLabel#pageStatusBadge[state="running"] { color: #925c1a; background: #fff1cf; }
 QLabel#pageStatusBadge[state="error"] { color: #a42f36; background: #fde7e8; }
 
-/* MODEL's ANALYSIS PREPARATION list (replaces a plain combo box) */
-QToolButton#analysisTypeOption {
-    min-height: 34px;
-    padding: 0 10px;
-    text-align: left;
-    background: #ffffff;
-    border: 1px solid #d8e1eb;
-    border-radius: 4px;
-    color: #35485f;
-    font-size: 8pt;
-    font-weight: 600;
-}
-QToolButton#analysisTypeOption:hover { border-color: #9ebbe3; background: #f5f8fc; }
-QToolButton#analysisTypeOption:checked {
-    background: #eaf1fb;
-    border: 1px solid #174ea6;
-    color: #123f89;
-}
-QToolButton#analysisTypeOption:disabled {
-    color: #a7b2c0;
-    background: #f4f6f8;
-    border-color: #e1e6ec;
-}
 QPushButton#openSetupButton {
     min-height: 36px;
     margin-top: 6px;
@@ -1432,10 +1409,6 @@ QListWidget#setupFlowList::item {
     min-height: 34px; padding: 0 8px; margin: 1px 0; border-radius: 2px;
     color: #555f6d; font-size: 8pt;
 }
-QToolButton#analysisTypeOption { border-radius: 2px; border-color: #c4c5d5; }
-QToolButton#analysisTypeOption:checked {
-    background: #eef0ff; border: 2px solid #1e40af; color: #00288e;
-}
 QPushButton#openSetupButton { min-height: 32px; border-radius: 2px; background: #00288e; }
 QFrame#precheckRow { min-height: 56px; max-height: 56px; border-top-color: #c4c5d5; }
 QFrame#analysisSettingsPanel { background: #f8f9fa; }
@@ -1559,6 +1532,222 @@ QFrame#setupConfigCard QComboBox { min-height: 25px; max-height: 25px; }
 QFrame#setupConfigCard QPushButton#nonlinearSettingsButton {
     min-height: 27px; padding: 0 10px; border-radius: 2px;
     color: #00288e; background: #ffffff; border: 1px solid #1e40af;
+}
+
+/* Direct 2D modeling and student result workspace. The geometry follows the
+   Stitch reference while retaining OpenFrame's existing navy/gray palette. */
+QFrame#modelingInterfacePage, QWidget#direct2DModelingWorkspace,
+QWidget#direct2DResultPage { background: #f3f4f5; }
+QFrame#direct2DPageHeader {
+    min-height: 58px;
+    max-height: 58px;
+    background: #f8f9fa;
+    border: 0;
+    border-bottom: 1px solid #c4c5d5;
+}
+QStackedWidget#direct2DHeaderControls { background: transparent; }
+QLabel#direct2DPageTitle {
+    color: #191c1d;
+    font-size: 16pt;
+    font-weight: 700;
+}
+QLabel#direct2DPageDescription { color: #555f6d; font-size: 8pt; }
+QLabel#direct2DFieldLabel {
+    color: #757684;
+    font-size: 6pt;
+    font-weight: 700;
+}
+QComboBox#direct2DModelType {
+    min-width: 120px;
+    min-height: 27px;
+    max-height: 27px;
+    background: #ffffff;
+    border: 1px solid #c4c5d5;
+    border-radius: 2px;
+}
+QLabel#direct2DReadyBadge {
+    color: #006a61;
+    background: #dff7f2;
+    border: 1px solid #addfd7;
+    border-radius: 2px;
+    padding: 5px 8px;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QFrame#direct2DToolRail {
+    background: #f8f9fa;
+    border: 0;
+    border-right: 1px solid #c4c5d5;
+}
+QFrame#direct2DToolRail QPushButton#railToolButton,
+QFrame#direct2DToolRail QPushButton#railFeatureButton {
+    min-height: 45px;
+    max-height: 45px;
+    padding: 0 3px;
+    color: #555f6d;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    font-size: 8pt;
+    font-weight: 600;
+}
+QFrame#direct2DToolRail QPushButton#railToolButton:hover,
+QFrame#direct2DToolRail QPushButton#railFeatureButton:hover {
+    color: #00288e;
+    background: #eef0ff;
+    border-color: #bdc7d8;
+}
+QFrame#direct2DToolRail QPushButton#railToolButton:checked {
+    color: #ffffff;
+    background: #00288e;
+    border-color: #00288e;
+}
+QFrame#direct2DToolRail QPushButton#railCommandButton {
+    min-height: 25px;
+    max-height: 25px;
+    padding: 0 2px;
+    color: #757684;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    font-size: 6pt;
+}
+QFrame#direct2DToolRail QPushButton#railCommandButton:hover {
+    color: #00288e;
+    background: #eef0ff;
+    border-color: #bdc7d8;
+}
+QFrame#direct2DCanvasPanel {
+    background: #ffffff;
+    border: 0;
+    border-right: 1px solid #c4c5d5;
+}
+QFrame#direct2DCanvasToolbar {
+    min-height: 38px;
+    max-height: 38px;
+    background: #f8f9fa;
+    border: 0;
+    border-bottom: 1px solid #c4c5d5;
+}
+QFrame#direct2DCanvasToolbar QToolButton#slideOutToggle {
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0 9px;
+    color: #555f6d;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    font-size: 7pt;
+}
+QFrame#direct2DCanvasToolbar QToolButton#slideOutToggle:hover,
+QFrame#direct2DCanvasToolbar QToolButton#slideOutToggle:checked {
+    color: #00288e;
+    background: #eef0ff;
+    border-color: #1e40af;
+}
+QScrollArea#modelingInspectorScroll {
+    background: #f8f9fa;
+    border: 0;
+    border-left: 1px solid #c4c5d5;
+}
+QFrame#modelingPropertyPanel { background: #f8f9fa; }
+QLabel#direct2DInspectorTitle {
+    color: #191c1d;
+    font-size: 9pt;
+    font-weight: 700;
+}
+QFrame#modelingPropertyPanel QFrame#propertySectionCard {
+    background: #ffffff;
+    border: 1px solid #c4c5d5;
+    border-radius: 2px;
+}
+QStackedWidget#direct2DFooterStack {
+    min-height: 42px;
+    max-height: 42px;
+    background: #ffffff;
+}
+QFrame#direct2DResultStatusBar {
+    background: #ffffff;
+    border-top: 1px solid #c4c5d5;
+    color: #555f6d;
+    font-family: "JetBrains Mono", "Consolas";
+    font-size: 7pt;
+}
+QLabel#direct2DResultCase {
+    min-width: 125px;
+    color: #555f6d;
+    font-family: "JetBrains Mono", "Consolas";
+    font-size: 7pt;
+}
+QPushButton#direct2DSecondaryButton, QPushButton#direct2DPrimaryButton {
+    min-height: 30px;
+    padding: 0 11px;
+    border-radius: 2px;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QPushButton#direct2DSecondaryButton {
+    color: #00288e;
+    background: #ffffff;
+    border: 1px solid #1e40af;
+}
+QPushButton#direct2DPrimaryButton {
+    color: #ffffff;
+    background: #00288e;
+    border: 1px solid #00288e;
+}
+QFrame#resultsWorkspace[compact2d="true"] { background: #ffffff; }
+QFrame#resultTypeSidebar[compact2d="true"] {
+    background: #f8f9fa;
+    border: 0;
+    border-right: 1px solid #c4c5d5;
+}
+QFrame#resultTypeSidebar[compact2d="true"] QFrame#resultTypeGroup {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+}
+QFrame#resultTypeSidebar[compact2d="true"] QLabel#resultTypeGroupCount {
+    background: transparent;
+    border: 0;
+    color: #a3a6ad;
+}
+QFrame#resultTypeSidebar[compact2d="true"] QToolButton#resultTypeButton {
+    min-height: 28px;
+    max-height: 28px;
+    padding: 0 8px;
+    border: 0;
+    border-left: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: #555f6d;
+    text-align: left;
+    font-size: 8pt;
+}
+QFrame#resultTypeSidebar[compact2d="true"] QToolButton#resultTypeButton:checked {
+    color: #00288e;
+    background: #eef0ff;
+    border-left-color: #00288e;
+}
+QFrame#resultSummaryPanel[compact2d="true"] {
+    background: #f8f9fa;
+    border: 0;
+    border-left: 1px solid #c4c5d5;
+}
+QFrame#resultSummaryPanel[compact2d="true"] QFrame#resultMetricRow {
+    background: #ffffff;
+    border: 1px solid #c4c5d5;
+    border-radius: 2px;
+}
+QFrame#resultSummaryPanel[compact2d="true"] QLabel#resultMetricValue {
+    color: #00288e;
+}
+QLabel#direct2DResultLearningHint {
+    color: #555f6d;
+    background: #eef0ff;
+    border-left: 2px solid #1e40af;
+    padding: 8px;
+    font-size: 8pt;
 }
 """
 
