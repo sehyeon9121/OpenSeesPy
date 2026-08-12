@@ -1460,6 +1460,34 @@ QFrame#setupBehaviorTile {
     border: 1px solid #c4c5d5;
     border-radius: 2px;
 }
+QFrame#nonlinearSetupSection {
+    background: #f8f9fa;
+    border: 1px solid #c4c5d5;
+    border-radius: 2px;
+}
+QFrame#nonlinearSetupSection QFrame {
+    background: transparent;
+    border: 0;
+}
+QFrame#nonlinearSetupSection QComboBox,
+QFrame#nonlinearSetupSection QSpinBox,
+QFrame#nonlinearSetupSection QDoubleSpinBox {
+    min-height: 27px;
+    max-height: 27px;
+}
+QPushButton#setupCollapsibleToggle {
+    min-height: 28px;
+    padding: 0 6px;
+    color: #00288e;
+    background: transparent;
+    border: 0;
+    text-align: left;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QPushButton#setupCollapsibleToggle:hover {
+    background: #eef0ff;
+}
 QLabel#setupMetricLabel { color: #555f6d; font-size: 7pt; font-weight: 700; }
 QLabel#setupMetricValue {
     color: #191c1d;

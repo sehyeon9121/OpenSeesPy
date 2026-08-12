@@ -182,27 +182,37 @@ def test_gravity_steps_hidden_until_a_gravity_pattern_is_chosen() -> None:
     model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
     panel = AnalysisSettingsPanel()
     panel.set_model(model)
-    panel._nonlinear_dialog.show()
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    panel.show()
     application.processEvents()
 
     assert panel.gravity_steps_group.isVisible() is False
     panel.gravity_pattern.setCurrentIndex(panel.gravity_pattern.findData(1))
     assert panel.gravity_steps_group.isVisible() is True
-    panel._nonlinear_dialog.close()
+    panel.close()
 
 
 def test_target_displacement_hidden_until_displacement_control_is_chosen() -> None:
     application = QApplication.instance() or QApplication([])
     panel = AnalysisSettingsPanel()
-    panel._nonlinear_dialog.show()
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    panel.show()
     application.processEvents()
 
     assert panel.target_displacement_group.isVisible() is False
+    assert panel.control_node_group.isVisible() is False
+    assert panel.control_dof_group.isVisible() is False
     panel.integrator_type.setCurrentIndex(
         panel.integrator_type.findData("DisplacementControl")
     )
     assert panel.target_displacement_group.isVisible() is True
-    panel._nonlinear_dialog.close()
+    assert panel.control_node_group.isVisible() is True
+    assert panel.control_dof_group.isVisible() is True
+    panel.close()
 
 
 def test_build_options_omits_gravity_and_target_displacement_by_default() -> None:
@@ -316,6 +326,7 @@ def test_modal_build_options_is_just_the_mode_count() -> None:
     panel.num_modes.setValue(6)
 
     assert panel.build_options() == {"num_modes": 6}
+    application.processEvents()
 
 
 def test_selecting_time_history_shows_its_own_settings_and_hides_the_others() -> None:

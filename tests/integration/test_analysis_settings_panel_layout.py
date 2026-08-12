@@ -9,7 +9,7 @@ keeps real space. The nonlinear dialog itself is unchanged - these fields
 still must not overlap regardless of which page hosts the panel."""
 
 import os
-from itertools import combinations, pairwise
+from itertools import combinations
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -50,7 +50,7 @@ def test_model_sidebar_only_holds_the_type_selector_and_stays_short() -> None:
     sidebar.close()
 
 
-def test_nonlinear_settings_button_and_summary_live_in_the_setup_panel() -> None:
+def test_nonlinear_settings_are_edited_inline_without_a_dialog() -> None:
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
 
@@ -65,31 +65,34 @@ def test_nonlinear_settings_button_and_summary_live_in_the_setup_panel() -> None
     assert settings.num_steps.maximum() >= 3_240
     application.processEvents()
 
-    assert settings.open_nonlinear_settings_button.isVisible()
-    assert "Node" in settings.nonlinear_summary.text() or "not set" in settings.nonlinear_summary.text()
+    assert settings.integrator_type.isVisible()
+    assert settings.lateral_pattern.isVisible()
+    assert settings.num_steps.isVisible()
+    assert not hasattr(settings, "_nonlinear_dialog")
+    assert not hasattr(settings, "open_nonlinear_settings_button")
 
-    fields = [settings.analysis_type, settings.solver, settings.open_nonlinear_settings_button]
-    ranges = [
+    fields = [settings.analysis_type, settings.lateral_pattern, settings.integrator_type]
+    rects = [
         (
+            widget.mapTo(settings, widget.rect().topLeft()).x(),
             widget.mapTo(settings, widget.rect().topLeft()).y(),
+            widget.mapTo(settings, widget.rect().bottomRight()).x(),
             widget.mapTo(settings, widget.rect().bottomRight()).y(),
         )
         for widget in fields
     ]
-    overlaps = [
-        (earlier, later)
-        for earlier, later in pairwise(sorted(ranges))
-        if later[0] < earlier[1]
-    ]
+    overlaps = []
+    for earlier, later in combinations(rects, 2):
+        ax1, ay1, ax2, ay2 = earlier
+        bx1, by1, bx2, by2 = later
+        if ax1 < bx2 and bx1 < ax2 and ay1 < by2 and by1 < ay2:
+            overlaps.append((earlier, later))
     assert overlaps == []
     setup.close()
 
 
-def test_nonlinear_dialog_fields_do_not_overlap() -> None:
-    """The dialog lays fields out in two columns (left: how the push is applied,
-    right: how the solver converges) rather than one long column, so two fields
-    can legitimately share a row as long as their columns differ - only a real
-    2D bounding-box overlap (both axes intersecting) counts as a layout bug."""
+def test_nonlinear_inline_advanced_fields_do_not_overlap() -> None:
+    """Expanded advanced fields remain readable in the two-column inline grid."""
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
 
@@ -99,8 +102,12 @@ def test_nonlinear_dialog_fields_do_not_overlap() -> None:
     settings.set_model(model)
     store.set_kind(AnalysisKind.NONLINEAR_STATIC)
 
-    dialog = settings._nonlinear_dialog
-    dialog.show()
+    setup.resize(1200, 900)
+    setup.show()
+    settings.integrator_type.setCurrentIndex(
+        settings.integrator_type.findData("DisplacementControl")
+    )
+    settings.nonlinear_advanced_toggle.setChecked(True)
     application.processEvents()
     application.processEvents()
 
@@ -115,10 +122,10 @@ def test_nonlinear_dialog_fields_do_not_overlap() -> None:
     ]
     rects = [
         (
-            widget.mapTo(dialog, widget.rect().topLeft()).x(),
-            widget.mapTo(dialog, widget.rect().topLeft()).y(),
-            widget.mapTo(dialog, widget.rect().bottomRight()).x(),
-            widget.mapTo(dialog, widget.rect().bottomRight()).y(),
+            widget.mapTo(settings, widget.rect().topLeft()).x(),
+            widget.mapTo(settings, widget.rect().topLeft()).y(),
+            widget.mapTo(settings, widget.rect().bottomRight()).x(),
+            widget.mapTo(settings, widget.rect().bottomRight()).y(),
         )
         for widget in fields
     ]
@@ -133,4 +140,4 @@ def test_nonlinear_dialog_fields_do_not_overlap() -> None:
     ]
     assert overlaps == []
 
-    dialog.close()
+    setup.close()

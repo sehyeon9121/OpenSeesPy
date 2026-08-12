@@ -1,12 +1,12 @@
 """Phase 3-A: SETUP's SOLUTION METHOD/CONVERGENCE readouts must match what
 ANALYSIS_CAPABILITIES (and, transitively, the actual solver code it was
 written to describe) says the current AnalysisKind's engine really does -
-not always mirror whatever the Nonlinear Settings dialog last held.
+not always mirror whatever the nonlinear controls last held.
 
 Also pins the fix for the Phase 2 Known Issue: the main SETUP page's
 CONSTRAINT/NUMBERER labels used to be two independent QLabels hardcoded to
-"Plain"/"RCM" and never wired to the dialog's real constraints_type/numberer
-combos at all - changing them in the dialog left the main page stuck showing
+"Plain"/"RCM" and never wired to the real constraints_type/numberer combos at
+all - changing them left the main page stuck showing
 the wrong value forever. Test B below is the regression test for that.
 """
 
@@ -85,17 +85,17 @@ def test_linear_static_shows_engine_fixed_values_not_editable() -> None:
     setup.close()
 
 
-def test_nonlinear_static_dialog_changes_are_mirrored_on_the_main_page() -> None:
-    """Regression test for the Phase 2 Known Issue: CONSTRAINT and NUMBERER
-    used to never update no matter what the dialog held."""
+def test_nonlinear_static_inline_advanced_changes_reach_run_options() -> None:
     application, setup = _make_setup()
     settings = setup.settings_panel
 
     settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
     application.processEvents()
 
+    assert not settings.solver.isVisible()
+    settings.nonlinear_advanced_toggle.setChecked(True)
+    application.processEvents()
     assert settings.solver.isVisible()
-    assert not settings.solver_fixed_value.isVisible()
 
     settings.algorithm.setCurrentText("KrylovNewton")
     settings.test_type.setCurrentText("EnergyIncr")
@@ -104,13 +104,13 @@ def test_nonlinear_static_dialog_changes_are_mirrored_on_the_main_page() -> None
     settings.solver.setCurrentText("UmfPack")
     application.processEvents()
 
-    assert settings.solution_algorithm.text() == "KrylovNewton"
-    assert settings.convergence_test.text() == "EnergyIncr"
-    # The actual bug: these two used to be static QLabel("Plain")/QLabel("RCM")
-    # with no connection to constraints_type/numberer whatsoever.
-    assert settings.constraint_value.text() == "Transformation"
-    assert settings.numberer_value.text() == "AMD"
-    assert settings.convergence_card.isVisible()
+    options = settings.config_store.options
+    assert options["algorithm"] == "KrylovNewton"
+    assert options["test_type"] == "EnergyIncr"
+    assert options["constraints_type"] == "Transformation"
+    assert options["numberer"] == "AMD"
+    assert options["system"] == "UmfPack"
+    assert not settings.convergence_card.isVisible()
 
     setup.close()
 
@@ -155,6 +155,9 @@ def test_switching_kinds_back_and_forth_restores_the_correct_solver_editability(
 
     settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
     application.processEvents()
+    assert not settings.solver.isVisible()
+    settings.nonlinear_advanced_toggle.setChecked(True)
+    application.processEvents()
     assert settings.solver.isVisible()
     assert not settings.solver_fixed_value.isVisible()
 
@@ -171,6 +174,9 @@ def test_switching_kinds_back_and_forth_restores_the_correct_solver_editability(
     assert settings.solver_fixed_value.isVisible()
 
     settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
+    application.processEvents()
+    assert not settings.solver.isVisible()
+    settings.nonlinear_advanced_toggle.setChecked(True)
     application.processEvents()
     assert settings.solver.isVisible()
     assert not settings.solver_fixed_value.isVisible()
@@ -257,9 +263,10 @@ def test_switching_between_linear_static_and_other_kinds_leaves_no_residue() -> 
         settings.config_store.set_kind(other_kind)
         application.processEvents()
         assert not settings.linear_static_group.isVisible()
-        # Modal and Time History each hide "1. LOAD & CONTROL" too (see their
-        # own dedicated tests) - only Nonlinear Static still uses it.
-        assert settings.load_card.isVisible() == (other_kind == AnalysisKind.NONLINEAR_STATIC)
+        assert not settings.load_card.isVisible()
+        assert settings.nonlinear_group.isVisible() == (
+            other_kind == AnalysisKind.NONLINEAR_STATIC
+        )
 
         settings.config_store.set_kind(AnalysisKind.LINEAR_STATIC)
         application.processEvents()
@@ -449,7 +456,7 @@ def _model_with_pattern(pattern_tag: int = 2, *, nonlinear_element: bool = False
     )
 
 
-def test_nonlinear_static_load_control_shows_its_own_row_set() -> None:
+def test_nonlinear_static_load_control_shows_only_relevant_inline_inputs() -> None:
     application, setup = _make_setup()
     settings = setup.settings_panel
 
@@ -457,25 +464,24 @@ def test_nonlinear_static_load_control_shows_its_own_row_set() -> None:
     settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
     application.processEvents()
 
-    assert not settings.load_content_widget.isVisible()
-    assert settings.nonlinear_load_summary.isVisible()
-
-    rows = settings._nonlinear_load_rows
-    for key in ("gravity_pattern", "lateral_pattern", "control_method", "load_steps"):
-        assert rows[key][1].isVisible(), key
-    for key in ("control_node", "control_dof", "target_displacement"):
-        assert not rows[key][1].isVisible(), key
-
-    # Gravity/Lateral used to be permanently "NONE"/"ALL NON-GRAVITY" text -
-    # they must now mirror the dialog's real combo state.
-    assert rows["gravity_pattern"][1].text() == settings.gravity_pattern.currentText()
-    assert rows["lateral_pattern"][1].text() == settings.lateral_pattern.currentText()
-    assert rows["load_steps"][1].text() == str(settings.num_steps.value())
+    assert settings.nonlinear_group.isVisible()
+    for widget in (
+        settings.gravity_pattern,
+        settings.lateral_pattern,
+        settings.integrator_type,
+        settings.num_steps,
+    ):
+        assert widget.isVisible()
+    assert not settings.control_node_group.isVisible()
+    assert not settings.control_dof_group.isVisible()
+    assert not settings.target_displacement_group.isVisible()
+    assert settings.nonlinear_advanced_toggle.isVisible()
+    assert not settings.nonlinear_advanced_body.isVisible()
 
     setup.close()
 
 
-def test_nonlinear_static_displacement_control_shows_its_own_row_set() -> None:
+def test_nonlinear_static_displacement_control_reveals_control_inputs_inline() -> None:
     application, setup = _make_setup()
     settings = setup.settings_panel
 
@@ -487,16 +493,11 @@ def test_nonlinear_static_displacement_control_shows_its_own_row_set() -> None:
     settings.target_displacement.setValue(0.05)
     application.processEvents()
 
-    rows = settings._nonlinear_load_rows
-    for key in ("gravity_pattern", "lateral_pattern", "control_method"):
-        assert rows[key][1].isVisible(), key
-    assert not rows["load_steps"][1].isVisible()
-    for key in ("control_node", "control_dof", "target_displacement"):
-        assert rows[key][1].isVisible(), key
-
-    assert rows["control_node"][1].text() == settings.control_node.currentText()
-    assert rows["control_dof"][1].text() == settings.control_dof.currentText()
-    assert "0.05" in rows["target_displacement"][1].text()
+    assert settings.control_node_group.isVisible()
+    assert settings.control_dof_group.isVisible()
+    assert settings.target_displacement_group.isVisible()
+    assert settings.num_steps.isVisible()
+    assert settings.target_displacement.value() == 0.05
 
     setup.close()
 
@@ -525,15 +526,28 @@ def test_nonlinear_static_material_nonlinearity_tile_reflects_the_model() -> Non
     setup.close()
 
 
-def test_nonlinear_static_convergence_card_shows_recovery_summary() -> None:
+def test_nonlinear_static_advanced_solution_and_convergence_are_collapsible() -> None:
     application, setup = _make_setup()
     settings = setup.settings_panel
 
     settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
     application.processEvents()
-    assert settings.convergence_recovery_row.isVisible()
-    assert settings.convergence_bisections_value.text() == str(settings.max_bisections.value())
-    assert "Recovery Strategy" in settings.convergence_recovery_summary.text()
+    assert not settings.nonlinear_advanced_body.isVisible()
+
+    settings.nonlinear_advanced_toggle.setChecked(True)
+    application.processEvents()
+    assert settings.nonlinear_advanced_body.isVisible()
+    for widget in (
+        settings.solver,
+        settings.algorithm,
+        settings.constraints_type,
+        settings.test_type,
+        settings.tolerance,
+        settings.max_iterations,
+        settings.max_bisections,
+        settings.execution_timeout,
+    ):
+        assert widget.isVisible()
 
     # Time History has its own "4. SOLUTION / CONVERGENCE" card now (Phase
     # 3-E) - the shared card (and this recovery summary, which only makes
@@ -542,7 +556,7 @@ def test_nonlinear_static_convergence_card_shows_recovery_summary() -> None:
     settings.config_store.set_kind(AnalysisKind.TIME_HISTORY)
     application.processEvents()
     assert not settings.convergence_card.isVisible()
-    assert not settings.convergence_recovery_row.isVisible()
+    assert not settings.nonlinear_group.isVisible()
 
     setup.close()
 
@@ -574,14 +588,13 @@ def test_switching_between_nonlinear_static_and_other_kinds_leaves_no_residue() 
     ):
         settings.config_store.set_kind(AnalysisKind.NONLINEAR_STATIC)
         application.processEvents()
-        assert settings.nonlinear_load_summary.isVisible()
-        assert not settings.load_content_widget.isVisible()
-        assert settings.convergence_recovery_row.isVisible()
+        assert settings.nonlinear_group.isVisible()
+        assert settings.integrator_type.isVisible()
+        assert not settings.nonlinear_advanced_body.isVisible()
 
         settings.config_store.set_kind(other_kind)
         application.processEvents()
-        assert not settings.nonlinear_load_summary.isVisible()
-        assert not settings.convergence_recovery_row.isVisible()
+        assert not settings.nonlinear_group.isVisible()
 
     setup.close()
 
@@ -626,7 +639,6 @@ def test_time_history_shows_its_own_four_cards_and_hides_nonlinear_ones() -> Non
 
     # None of Nonlinear Static's cards (or their contents) may show through.
     assert not settings.load_card.isVisible()
-    assert not settings.nonlinear_load_summary.isVisible()
     assert not settings.nonlinear_group.isVisible()
     assert not settings.linear_static_group.isVisible()
     assert not settings.modal_group.isVisible()

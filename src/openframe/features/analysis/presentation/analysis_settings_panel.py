@@ -8,8 +8,6 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QButtonGroup,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
@@ -71,7 +69,7 @@ class _SetupInputWheelGuard(QObject):
     """Prevent a setup value from changing merely because the pointer is over it.
 
     Wheel input over a field inside the main settings scroll area is converted
-    into page scrolling.  Dialog fields have no scrollable ancestor, so their
+    into page scrolling. If a guarded field has no scrollable ancestor, its
     wheel input is simply consumed; click, keyboard, and drop-down editing are
     unaffected.
     """
@@ -192,45 +190,13 @@ class AnalysisSettingsPanel(QFrame):
         load_content.addWidget(load_progress, 1)
         load_layout.addWidget(self.load_content_widget)
 
-        # Nonlinear Static's own row set, shown instead of load_content_widget above
-        # (whose Gravity/Lateral text never updates - a real gap this phase
-        # fixes) - Time History still uses load_content exactly as before,
-        # unchanged, since this row set is Load/Displacement-Control-shaped
-        # and that concept does not apply to it (Time History's own dedicated
-        # SETUP screen is Phase 3-E's job, not this one's).
-        self.nonlinear_load_summary = QWidget()
-        nonlinear_load_layout = QGridLayout(self.nonlinear_load_summary)
-        nonlinear_load_layout.setHorizontalSpacing(24)
-        nonlinear_load_layout.setVerticalSpacing(5)
-        self._nonlinear_load_rows: dict[str, tuple[QWidget, QLabel]] = {}
-        for row, (key, label) in enumerate(
-            (
-                ("gravity_pattern", "Gravity Pattern"),
-                ("lateral_pattern", "Lateral Pattern"),
-                ("control_method", "Control Method"),
-                ("load_steps", "Load Steps"),
-                ("control_node", "Control Node"),
-                ("control_dof", "Control DOF"),
-                ("target_displacement", "Target Displacement"),
-            )
-        ):
-            key_label = QLabel(f"{label}:")
-            key_label.setObjectName("setupMetricLabel")
-            value_label = QLabel("—")
-            value_label.setObjectName("setupMetricValue")
-            nonlinear_load_layout.addWidget(key_label, row, 0)
-            nonlinear_load_layout.addWidget(value_label, row, 1)
-            self._nonlinear_load_rows[key] = (key_label, value_label)
-        load_layout.addWidget(self.nonlinear_load_summary)
-        self.nonlinear_load_summary.hide()
-
         settings_layout.addWidget(self.load_card)
 
         # Linear Static's own compact card, shown instead of self.load_card
         # (whose Gravity/Lateral/Control/Steps rows are Nonlinear-Static-shaped
         # and mean nothing for a single-step linear solve) - see
         # _update_kind_specific_layout. Load pattern data reuses the same
-        # _pattern_tags() helper the Nonlinear dialog's GRAVITY/LATERAL PATTERN
+        # _pattern_tags() helper the Nonlinear inline GRAVITY/LATERAL PATTERN
         # combos already read from the model, so nothing here is guessed.
         self.linear_static_group = QFrame()
         self.linear_static_group.setObjectName("setupConfigCard")
@@ -301,7 +267,7 @@ class AnalysisSettingsPanel(QFrame):
         nonlinear_title.setObjectName("setupConfigTitle")
         nonlinear_title_row.addWidget(nonlinear_title)
         nonlinear_title_row.addStretch(1)
-        review_badge = QLabel("REVIEW REQUIRED")
+        review_badge = QLabel("EDIT INLINE")
         review_badge.setObjectName("setupReviewBadge")
         nonlinear_title_row.addWidget(review_badge)
         nonlinear_layout.addLayout(nonlinear_title_row)
@@ -335,24 +301,11 @@ class AnalysisSettingsPanel(QFrame):
         warning.setObjectName("setupNotice")
         warning.setWordWrap(True)
         nonlinear_layout.addWidget(warning)
-        self.solver = QComboBox()
-        self.solver.addItems(("BandGeneral", "UmfPack", "ProfileSPD"))
-        self.solver.currentIndexChanged.connect(self._sync_store_options)
-
-        self.open_nonlinear_settings_button = QPushButton("Review Nonlinearity Settings")
-        self.open_nonlinear_settings_button.setObjectName("nonlinearSettingsButton")
-        self.open_nonlinear_settings_button.clicked.connect(self._open_nonlinear_settings)
-        self.nonlinear_summary = QLabel()
-        self.nonlinear_summary.setObjectName("nonlinearSettingsSummary")
-        self.nonlinear_summary.setWordWrap(True)
-        nonlinear_layout.addWidget(self.nonlinear_summary)
-        nonlinear_layout.addWidget(
-            self.open_nonlinear_settings_button, 0, Qt.AlignmentFlag.AlignRight
-        )
+        self._build_nonlinear_inline_editor(nonlinear_layout)
         settings_layout.addWidget(self.nonlinear_group)
 
-        # Modal analysis only needs how many modes to compute - no dialog needed,
-        # unlike nonlinear's seven interdependent fields.
+        # Modal analysis only needs how many modes to compute, so a compact card
+        # is sufficient unlike nonlinear's interdependent workflow.
         self.modal_group = QFrame()
         self.modal_group.setObjectName("setupConfigCard")
         modal_layout = QVBoxLayout(self.modal_group)
@@ -370,7 +323,7 @@ class AnalysisSettingsPanel(QFrame):
             "analysis has no natural frequency to find without it."
         )
         # Every other option widget in this file syncs on change (see self.solver
-        # above, the dialog's spinners/combos below) - num_modes was missing this,
+        # above, the inline spinners/combos below) - num_modes was missing this,
         # so a value typed here was silently dropped until some unrelated event
         # (e.g. switching AnalysisKind away and back) happened to call
         # _sync_store_options() anyway. RUN ANALYSIS reads config_store.options
@@ -721,8 +674,10 @@ class AnalysisSettingsPanel(QFrame):
             (
                 (
                     "Method",
-                    f"{th_capabilities.dynamic_integrator.value} "
-                    "(Average Acceleration)   ·   FIXED",
+                    (
+                        f"{th_capabilities.dynamic_integrator.value} "
+                        "(Average Acceleration)   ·   FIXED"
+                    ),
                 ),
                 ("Gamma", integrator_details.get("gamma", "—")),
                 ("Beta", integrator_details.get("beta", "—")),
@@ -839,7 +794,6 @@ class AnalysisSettingsPanel(QFrame):
         solution_grid.addWidget(self.solution_algorithm, 1, 0)
         solution_grid.addWidget(self.constraint_value, 1, 1)
         solution_grid.addWidget(self.numberer_value, 1, 2)
-        solution_grid.addWidget(self.solver, 1, 3)
         solution_grid.addWidget(self.solver_fixed_value, 1, 3)
         solution_body_layout.addLayout(solution_grid)
         solution_flow = QFrame()
@@ -952,7 +906,6 @@ class AnalysisSettingsPanel(QFrame):
         scroll.setWidget(settings)
         layout.addWidget(scroll, 1)
 
-        self._build_nonlinear_dialog()
         self._setup_input_wheel_guard = _SetupInputWheelGuard(self)
         for combo in self.findChildren(QComboBox):
             combo.installEventFilter(self._setup_input_wheel_guard)
@@ -979,25 +932,16 @@ class AnalysisSettingsPanel(QFrame):
         layout.addWidget(heading)
         return card, layout
 
-    def _build_nonlinear_dialog(self) -> None:
-        # Sixteen fields stacked in one column used to push this dialog well past
-        # screen height. Two columns - "how the push is applied" on the left,
-        # "how the solver converges" on the right - halves that, and the two
-        # groupings read as a real conceptual split rather than an arbitrary cut.
-        dialog = QDialog(self)
-        dialog.setObjectName("nonlinearSettingsDialog")
-        dialog.setWindowTitle("Nonlinear Static Settings")
-        dialog.setMinimumWidth(560)
-        dialog_layout = QVBoxLayout(dialog)
-        dialog_layout.setContentsMargins(18, 16, 18, 16)
-        dialog_layout.setSpacing(9)
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(20)
-        grid.setVerticalSpacing(9)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-        dialog_layout.addLayout(grid)
+    def _build_nonlinear_inline_editor(self, parent_layout: QVBoxLayout) -> None:
+        """Build the nonlinear workflow directly in SETUP instead of a modal dialog."""
+        introduction = QLabel(
+            "Set how the structure is pushed below. Recommended solver defaults are "
+            "already applied; expand Advanced Solution & Convergence only when the "
+            "model requires tuning."
+        )
+        introduction.setObjectName("secondaryText")
+        introduction.setWordWrap(True)
+        parent_layout.addWidget(introduction)
 
         self.control_node = QComboBox()
         self.control_dof = QComboBox()
@@ -1052,15 +996,17 @@ class AnalysisSettingsPanel(QFrame):
             None, self.target_displacement, label=self.target_displacement_label
         )
 
+        self.control_node_group = self._field_block("CONTROL NODE", self.control_node)
+        self.control_dof_group = self._field_block("CONTROL DOF", self.control_dof)
         left_column = [
-            self._field_block("CONTROL NODE", self.control_node),
-            self._field_block("CONTROL DOF", self.control_dof),
             self._field_block("GRAVITY PATTERN", self.gravity_pattern),
             self.gravity_steps_group,
             self._field_block("LATERAL LOAD PATTERN", self.lateral_pattern),
             self._field_block("INTEGRATOR", self.integrator_type),
-            self._field_block("LOAD STEPS", self.num_steps),
+            self._field_block("ANALYSIS STEPS", self.num_steps),
             self.target_displacement_group,
+            self.control_node_group,
+            self.control_dof_group,
         ]
 
         self.tolerance = QDoubleSpinBox()
@@ -1107,29 +1053,84 @@ class AnalysisSettingsPanel(QFrame):
         self.test_type = QComboBox()
         self.test_type.addItems(("NormDispIncr", "EnergyIncr", "NormUnbalance"))
 
+        self.solver = QComboBox()
+        self.solver.addItems(("BandGeneral", "UmfPack", "ProfileSPD"))
+        self.solver.currentIndexChanged.connect(self._sync_store_options)
+
         right_column = [
             self._field_block("TOLERANCE", self.tolerance),
             self._field_block("MAX ITERATIONS", self.max_iterations),
             self._field_block("MAX STEP BISECTIONS", self.max_bisections),
             self._field_block("MAX RUNTIME (SECONDS)", self.execution_timeout),
-            self._field_block("CONSTRAINT HANDLER", self.constraints_type),
-            self._field_block("DOF NUMBERER", self.numberer),
-            self._field_block("ALGORITHM", self.algorithm),
             self._field_block("CONVERGENCE TEST", self.test_type),
         ]
 
-        for row, block in enumerate(left_column):
-            grid.addWidget(block, row, 0)
-        for row, block in enumerate(right_column):
-            grid.addWidget(block, row, 1)
-
-        dialog_layout.addStretch(1)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        essential = QFrame()
+        essential.setObjectName("nonlinearSetupSection")
+        essential_layout = QVBoxLayout(essential)
+        essential_layout.setContentsMargins(12, 10, 12, 12)
+        essential_layout.setSpacing(9)
+        essential_title = QLabel("LOAD & CONTROL")
+        essential_title.setObjectName("setupConfigTitle")
+        essential_layout.addWidget(essential_title)
+        essential_note = QLabel(
+            "Choose the load patterns and the quantity that controls each analysis step."
         )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        dialog_layout.addWidget(buttons)
+        essential_note.setObjectName("secondaryText")
+        essential_layout.addWidget(essential_note)
+        essential_grid = QGridLayout()
+        essential_grid.setHorizontalSpacing(16)
+        essential_grid.setVerticalSpacing(9)
+        essential_grid.setColumnStretch(0, 1)
+        essential_grid.setColumnStretch(1, 1)
+        for index, block in enumerate(left_column):
+            essential_grid.addWidget(block, index // 2, index % 2)
+        essential_layout.addLayout(essential_grid)
+        parent_layout.addWidget(essential)
+
+        self.nonlinear_advanced_toggle = QPushButton(
+            "\N{BLACK RIGHT-POINTING SMALL TRIANGLE}  ADVANCED SOLUTION & CONVERGENCE"
+        )
+        self.nonlinear_advanced_toggle.setObjectName("setupCollapsibleToggle")
+        self.nonlinear_advanced_toggle.setCheckable(True)
+        self.nonlinear_advanced_toggle.setFlat(True)
+        self.nonlinear_advanced_toggle.toggled.connect(
+            self._toggle_nonlinear_advanced_settings
+        )
+        parent_layout.addWidget(self.nonlinear_advanced_toggle)
+
+        self.nonlinear_advanced_body = QFrame()
+        self.nonlinear_advanced_body.setObjectName("nonlinearSetupSection")
+        advanced_layout = QVBoxLayout(self.nonlinear_advanced_body)
+        advanced_layout.setContentsMargins(12, 10, 12, 12)
+        advanced_layout.setSpacing(9)
+        advanced_title = QLabel("SOLUTION, CONVERGENCE & EXECUTION")
+        advanced_title.setObjectName("setupConfigTitle")
+        advanced_layout.addWidget(advanced_title)
+        advanced_note = QLabel(
+            "Defaults suit most models. Adjust these values when convergence is slow "
+            "or when the imported model uses multi-point constraints."
+        )
+        advanced_note.setObjectName("secondaryText")
+        advanced_note.setWordWrap(True)
+        advanced_layout.addWidget(advanced_note)
+        advanced_grid = QGridLayout()
+        advanced_grid.setHorizontalSpacing(16)
+        advanced_grid.setVerticalSpacing(9)
+        advanced_grid.setColumnStretch(0, 1)
+        advanced_grid.setColumnStretch(1, 1)
+        advanced_blocks = [
+            self._field_block("EQUATION SOLVER", self.solver),
+            self._field_block("ALGORITHM", self.algorithm),
+            self._field_block("CONSTRAINT HANDLER", self.constraints_type),
+            self._field_block("DOF NUMBERER", self.numberer),
+            *right_column,
+        ]
+        for index, block in enumerate(advanced_blocks):
+            advanced_grid.addWidget(block, index // 2, index % 2)
+        advanced_layout.addLayout(advanced_grid)
+        self.nonlinear_advanced_body.hide()
+        parent_layout.addWidget(self.nonlinear_advanced_body)
 
         for combo in (
             self.control_node,
@@ -1156,7 +1157,6 @@ class AnalysisSettingsPanel(QFrame):
 
         self._update_gravity_visibility()
         self._update_integrator_visibility()
-        self._nonlinear_dialog = dialog
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         """Show the imported model's native length beside dimensional inputs."""
@@ -1170,58 +1170,12 @@ class AnalysisSettingsPanel(QFrame):
         self.gravity_steps_group.setVisible(self.gravity_pattern.currentData() is not None)
 
     def _update_integrator_visibility(self) -> None:
-        self.target_displacement_group.setVisible(
+        displacement_control = (
             self.integrator_type.currentData() == "DisplacementControl"
         )
-
-    def _open_nonlinear_settings(self) -> None:
-        # SAVE keeps whatever is in the fields (they're the same widgets build_options()
-        # reads from, so there's nothing extra to copy). CANCEL - including the dialog's
-        # own [x] button, which Qt already routes to reject() - must undo any edits made
-        # since opening, so a snapshot is taken up front and restored on non-acceptance.
-        snapshot = self._nonlinear_snapshot()
-        accepted = self._nonlinear_dialog.exec() == QDialog.DialogCode.Accepted
-        if not accepted:
-            self._restore_nonlinear_snapshot(snapshot)
-        self._update_nonlinear_summary()
-
-    def _nonlinear_snapshot(self) -> dict[str, int | float]:
-        return {
-            "control_node": self.control_node.currentIndex(),
-            "control_dof": self.control_dof.currentIndex(),
-            "gravity_pattern": self.gravity_pattern.currentIndex(),
-            "gravity_steps": self.gravity_steps.value(),
-            "lateral_pattern": self.lateral_pattern.currentIndex(),
-            "integrator_type": self.integrator_type.currentIndex(),
-            "num_steps": self.num_steps.value(),
-            "target_displacement": self.target_displacement.value(),
-            "tolerance": self.tolerance.value(),
-            "max_iterations": self.max_iterations.value(),
-            "max_bisections": self.max_bisections.value(),
-            "execution_timeout": self.execution_timeout.value(),
-            "constraints_type": self.constraints_type.currentIndex(),
-            "numberer": self.numberer.currentIndex(),
-            "algorithm": self.algorithm.currentIndex(),
-            "test_type": self.test_type.currentIndex(),
-        }
-
-    def _restore_nonlinear_snapshot(self, snapshot: dict[str, int | float]) -> None:
-        self.control_node.setCurrentIndex(int(snapshot["control_node"]))
-        self.control_dof.setCurrentIndex(int(snapshot["control_dof"]))
-        self.gravity_pattern.setCurrentIndex(int(snapshot["gravity_pattern"]))
-        self.gravity_steps.setValue(int(snapshot["gravity_steps"]))
-        self.lateral_pattern.setCurrentIndex(int(snapshot["lateral_pattern"]))
-        self.integrator_type.setCurrentIndex(int(snapshot["integrator_type"]))
-        self.num_steps.setValue(int(snapshot["num_steps"]))
-        self.target_displacement.setValue(float(snapshot["target_displacement"]))
-        self.tolerance.setValue(float(snapshot["tolerance"]))
-        self.max_iterations.setValue(int(snapshot["max_iterations"]))
-        self.max_bisections.setValue(int(snapshot["max_bisections"]))
-        self.execution_timeout.setValue(int(snapshot["execution_timeout"]))
-        self.constraints_type.setCurrentIndex(int(snapshot["constraints_type"]))
-        self.numberer.setCurrentIndex(int(snapshot["numberer"]))
-        self.algorithm.setCurrentIndex(int(snapshot["algorithm"]))
-        self.test_type.setCurrentIndex(int(snapshot["test_type"]))
+        self.control_node_group.setVisible(displacement_control)
+        self.control_dof_group.setVisible(displacement_control)
+        self.target_displacement_group.setVisible(displacement_control)
 
     def set_model(self, model: StructuralModel | None) -> None:
         self._model = model
@@ -1365,7 +1319,7 @@ class AnalysisSettingsPanel(QFrame):
         # Refreshes SOLUTION METHOD/CONVERGENCE against the new kind's
         # ANALYSIS_CAPABILITIES entry - without this, switching kinds would
         # leave the previous kind's readouts (or editable/fixed SOLVER
-        # visibility) stuck on screen until some dialog field happened to
+        # visibility) stuck on screen until some nonlinear field happened to
         # change and trigger it indirectly.
         self._update_nonlinear_summary()
         self.analysis_kind_changed.emit(kind)
@@ -1397,20 +1351,18 @@ class AnalysisSettingsPanel(QFrame):
         # with their own cards (modal_engine_card / time_history_group's own
         # 4-card stack) instead of collapsing the shared ones, since both need
         # rows (Static Integrator, Newmark gamma/beta, ...) the shared grids do
-        # not have. Nonlinear Static's layout is untouched either way.
-        self.load_card.setVisible(not is_linear_static and not is_modal and not is_time_history)
-        # Nonlinear Static gets its own Load/Displacement-Control-aware row set
-        # inside "1. LOAD & CONTROL" instead of the generic (never-updated
-        # Gravity/Lateral) grid.
-        self.nonlinear_load_summary.setVisible(is_nonlinear_static)
-        self.load_content_widget.setVisible(not is_nonlinear_static)
+        # not have. Nonlinear Static instead uses its dedicated inline editor.
+        # Every analysis kind now has its own purpose-built load/configuration
+        # surface. Nonlinear Static edits its values directly inside
+        # ``nonlinear_group`` rather than duplicating them in this legacy card.
+        self.load_card.setVisible(False)
         if is_nonlinear_static:
-            self._update_nonlinear_load_summary()
             self._update_nonlinear_behavior_tiles()
+            self.nonlinear_advanced_toggle.setChecked(False)
         self.linear_static_group.setVisible(is_linear_static)
         self.modal_group.setVisible(is_modal)
         self.modal_engine_card.setVisible(is_modal)
-        self.solution_card.setVisible(not is_modal and not is_time_history)
+        self.solution_card.setVisible(is_linear_static)
         self.engine_details_toggle.setVisible(is_linear_static)
         if is_linear_static:
             # Always re-collapsed on entry, never remembers a previous expand -
@@ -1433,6 +1385,13 @@ class AnalysisSettingsPanel(QFrame):
         self.modal_engine_details_body.setVisible(expanded)
         arrow = "▾" if expanded else "▸"
         self.modal_engine_details_toggle.setText(f"{arrow}  ADVANCED ENGINE DETAILS")
+
+    def _toggle_nonlinear_advanced_settings(self, expanded: bool) -> None:
+        self.nonlinear_advanced_body.setVisible(expanded)
+        arrow = "▾" if expanded else "▸"
+        self.nonlinear_advanced_toggle.setText(
+            f"{arrow}  ADVANCED SOLUTION & CONVERGENCE"
+        )
 
     def _update_linear_static_summary(self) -> None:
         if self._model is None:
@@ -1599,60 +1558,15 @@ class AnalysisSettingsPanel(QFrame):
         self._update_ground_motion_preview()
 
     def _update_nonlinear_summary(self) -> None:
-        """Keep a short readout of the dialog's current values visible in the
-        sidebar, so checking them doesn't require reopening the dialog every time."""
-        control_node = self.control_node.currentText() or "not set"
-        gravity = self.gravity_pattern.currentText() if self.gravity_pattern.count() else "NONE"
-        lateral = self.lateral_pattern.currentText() if self.lateral_pattern.count() else "ALL"
+        """Synchronize inline nonlinear controls with readouts and run options."""
         integrator = self.integrator_type.currentText()
-        self.nonlinear_summary.setText(
-            f"Control: {control_node} / {self.control_dof.currentText()}\n"
-            f"Steps: {self.num_steps.value()}  ·  Algorithm: {self.algorithm.currentText()}\n"
-            f"{integrator}  ·  Gravity: {gravity}\n"
-            f"Lateral: {lateral}"
-        )
         self.load_control_value.setText(integrator)
         self.load_steps_value.setText(str(self.num_steps.value()))
         self.load_progress.setMaximum(max(1, self.num_steps.value()))
         self.load_progress.setValue(self.num_steps.value())
         self.load_progress_caption.setText(f"100% ({self.num_steps.value()} Steps)")
         self._update_engine_capability_display()
-        self._update_nonlinear_load_summary()
         self._sync_store_options()
-
-    def _update_nonlinear_load_summary(self) -> None:
-        """Populate self.nonlinear_load_summary's row set - shown instead of
-        the generic load_content_widget only for Nonlinear Static (see
-        _update_nonlinear_visibility). Reads the exact same dialog widgets
-        build_options() already reads; no new state."""
-        rows = self._nonlinear_load_rows
-        gravity = self.gravity_pattern.currentText() if self.gravity_pattern.count() else "NONE"
-        lateral = (
-            self.lateral_pattern.currentText()
-            if self.lateral_pattern.count()
-            else "ALL NON-GRAVITY PATTERNS"
-        )
-        rows["gravity_pattern"][1].setText(gravity)
-        rows["lateral_pattern"][1].setText(lateral)
-        rows["control_method"][1].setText(self.integrator_type.currentText())
-        is_displacement_control = self.integrator_type.currentData() == "DisplacementControl"
-        for key in ("gravity_pattern", "lateral_pattern", "control_method"):
-            for widget in rows[key]:
-                widget.setVisible(True)
-        for key in ("load_steps",):
-            for widget in rows[key]:
-                widget.setVisible(not is_displacement_control)
-        for key in ("control_node", "control_dof", "target_displacement"):
-            for widget in rows[key]:
-                widget.setVisible(is_displacement_control)
-        if is_displacement_control:
-            rows["control_node"][1].setText(self.control_node.currentText() or "not set")
-            rows["control_dof"][1].setText(self.control_dof.currentText())
-            rows["target_displacement"][1].setText(
-                f"{self.target_displacement.value():g} {self._unit_system.length}"
-            )
-        else:
-            rows["load_steps"][1].setText(str(self.num_steps.value()))
 
     def _update_nonlinear_behavior_tiles(self) -> None:
         """MATERIAL NONLINEARITY used to always read "✓ Detected in Model"
@@ -1691,7 +1605,7 @@ class AnalysisSettingsPanel(QFrame):
     def _update_engine_capability_display(self) -> None:
         """Make SOLUTION METHOD/CONVERGENCE show what the current AnalysisKind's
         engine actually does (ANALYSIS_CAPABILITIES) instead of always mirroring
-        the Nonlinear Settings dialog regardless of kind. This is also where the
+        the nonlinear controls regardless of kind. This is also where the
         Known Issue from the Phase 2 investigation gets fixed: CONSTRAINT/
         NUMBERER used to be two independent QLabels never wired to anything -
         they are now real readouts, EDITABLE-mirroring for Nonlinear Static and
@@ -1742,8 +1656,9 @@ class AnalysisSettingsPanel(QFrame):
         # but Phase 3-E gave it its own "4. SOLUTION / CONVERGENCE" card inside
         # time_history_group, so the shared card is hidden here too rather than
         # shown twice.
-        if field.state == FieldState.NOT_APPLICABLE or self.selected_analysis_kind() == (
-            AnalysisKind.TIME_HISTORY
+        if field.state == FieldState.NOT_APPLICABLE or self.selected_analysis_kind() in (
+            AnalysisKind.NONLINEAR_STATIC,
+            AnalysisKind.TIME_HISTORY,
         ):
             self.convergence_card.setVisible(False)
             return
