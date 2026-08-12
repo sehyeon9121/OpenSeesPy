@@ -81,6 +81,10 @@ def test_runs_time_history_in_subprocess_and_populates_domain_time_history(
     # Displacement grows in magnitude from a standing start.
     late_step = result.time_history[99]
     assert abs(late_step.node_results[2].displacement[0]) > 0.0
+    # Phase 3-H: velocity/acceleration survive the worker subprocess's JSON
+    # round-trip too, not just the in-process solver call.
+    assert len(late_step.node_results[2].velocity) == 1
+    assert len(late_step.node_results[2].acceleration) == 1
 
 
 def test_reports_a_missing_ground_motion_file_as_a_failure(tmp_path: Path) -> None:

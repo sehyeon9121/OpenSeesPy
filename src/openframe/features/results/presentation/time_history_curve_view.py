@@ -6,14 +6,20 @@ zero - the Y axis is therefore ranged symmetrically around zero rather than
 assumed to start there, with its own zero gridline drawn for reference.
 """
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPaintEvent, QPen
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPen
 from PySide6.QtWidgets import QWidget
 
 _TICK_COUNT = 5
 
 
 class TimeHistoryCurveView(QWidget):
+    #: Emitted with the clicked time (clamped into the plotted range) when the
+    #: user clicks inside the plot area - Phase 3-J's "graph click -> nearest
+    #: step" entry point. Resolving that time to an actual step index is the
+    #: caller's job (this view only knows times/values, not step indices).
+    time_clicked = Signal(float)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("timeHistoryCurveView")
@@ -22,18 +28,55 @@ class TimeHistoryCurveView(QWidget):
         self._values: tuple[float, ...] = ()
         self._y_label = ""
         self._empty_message = "시간이력해석을 먼저 실행하세요"
+        self._marker: tuple[float, float] | None = None
+        self._marker_label = ""
+        self._selected_time: float | None = None
+        self._last_plot_rect: QRectF | None = None
+        self._last_max_time = 0.0
 
     def set_series(
-        self, times: tuple[float, ...], values: tuple[float, ...], *, y_label: str
+        self,
+        times: tuple[float, ...],
+        values: tuple[float, ...],
+        *,
+        y_label: str,
+        marker: tuple[float, float] | None = None,
+        marker_label: str = "",
+        selected_time: float | None = None,
     ) -> None:
+        """``marker`` is an optional (time, value) point to highlight - e.g.
+        where the absolute-max response occurs - drawn as a dot with a small
+        text label next to it. ``selected_time`` is a separate, independent
+        highlight - the point the user last clicked in the graph - drawn as a
+        vertical guide line so it stays visually distinct from the marker."""
         self._times = times
         self._values = values
         self._y_label = y_label
+        self._marker = marker
+        self._marker_label = marker_label
+        self._selected_time = selected_time
         self.update()
 
     def set_empty_message(self, message: str) -> None:
         self._empty_message = message
         self.update()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.button() != Qt.MouseButton.LeftButton
+            or self._last_plot_rect is None
+            or len(self._times) < 2
+        ):
+            super().mousePressEvent(event)
+            return
+        position = event.position()
+        if not self._last_plot_rect.contains(position):
+            super().mousePressEvent(event)
+            return
+        fraction = (position.x() - self._last_plot_rect.left()) / self._last_plot_rect.width()
+        time = max(0.0, min(1.0, fraction)) * self._last_max_time
+        self.time_clicked.emit(time)
+        event.accept()
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
@@ -81,6 +124,8 @@ class TimeHistoryCurveView(QWidget):
         if plot_rect.width() <= 1.0 or plot_rect.height() <= 1.0:
             painter.end()
             return
+        self._last_plot_rect = QRectF(plot_rect)
+        self._last_max_time = max_time
 
         def to_screen(time: float, value: float) -> tuple[float, float]:
             x = plot_rect.left() + (time / max_time) * plot_rect.width()
@@ -157,6 +202,31 @@ class TimeHistoryCurveView(QWidget):
         painter.setPen(QPen(QColor("#174ea6"), 1.4))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(curve_path)
+
+        if self._selected_time is not None:
+            selected_x, _ = to_screen(self._selected_time, 0.0)
+            selection_pen = QPen(QColor("#b4530a"), 1.4, Qt.PenStyle.DashLine)
+            selection_pen.setCosmetic(True)
+            painter.setPen(selection_pen)
+            painter.drawLine(selected_x, plot_rect.top(), selected_x, plot_rect.bottom())
+
+        if self._marker is not None:
+            marker_time, marker_value = self._marker
+            marker_x, marker_y = to_screen(marker_time, marker_value)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#d1453b"))
+            radius = 4.0
+            painter.drawEllipse(QRectF(marker_x - radius, marker_y - radius, 2 * radius, 2 * radius))
+            if self._marker_label:
+                painter.setPen(QColor("#d1453b"))
+                label_width = float(font_metrics.horizontalAdvance(self._marker_label) + 8)
+                label_x = min(max(marker_x - label_width / 2.0, plot_rect.left()), plot_rect.right() - label_width)
+                label_y = marker_y - radius - label_height if marker_y - radius - label_height >= plot_rect.top() else marker_y + radius
+                painter.drawText(
+                    QRectF(label_x, label_y, label_width, label_height),
+                    Qt.AlignmentFlag.AlignHCenter,
+                    self._marker_label,
+                )
 
         painter.end()
 

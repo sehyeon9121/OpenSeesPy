@@ -524,6 +524,10 @@ class MainWindow(QMainWindow):
     def _change_workspace_section(self, section: str) -> None:
         self._store_current_session_section(section)
         self.navigation.set_home_mode(False)
+        if section != "results":
+            # Leaving RESULTS entirely must stop the Time History animation
+            # timer too, not just switching between result types inside it.
+            self.results_workspace.time_history_results_panel.animation_panel.pause_animation()
         labels = {
             "model": "Model workspace",
             "setup": "Analysis setup",

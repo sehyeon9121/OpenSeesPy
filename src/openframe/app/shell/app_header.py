@@ -96,10 +96,18 @@ class AppHeader(QFrame):
         else:
             self.brand_button.setText("OF")
         self.brand_button.clicked.connect(self.home_requested)
+        self.brand_button.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.brand_button.setFixedSize(0, 0)
         self.brand_button.hide()
         self.brand_label = QPushButton("OpenFrame Studio")
         self.brand_label.setObjectName("brandName")
         self.brand_label.clicked.connect(self.home_requested)
+        self.brand_label.setToolTip("")
+        self.brand_label.setStatusTip("")
+        self.brand_label.setWhatsThis("")
+        self.brand_label.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.brand_panel.setMinimumWidth(205)
         self.brand_panel.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
@@ -107,6 +115,12 @@ class AppHeader(QFrame):
         self.home_button = QPushButton("HOME")
         self.home_button.setObjectName("homeButton")
         self.home_button.clicked.connect(self.home_requested)
+        # Kept only as a compatibility attribute for older callers/tests.  It
+        # must not remain in the brand layout: a hidden QPushButton can retain
+        # stale geometry and leave a hover/click target beside the brand.
+        self.home_button.setEnabled(False)
+        self.home_button.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.home_button.setFixedSize(0, 0)
         self.home_button.hide()
         self.status_label = QLabel("●  READY")
         self.status_label.setObjectName("readyBadge")
@@ -151,9 +165,7 @@ class AppHeader(QFrame):
         self.profile_button.setIconSize(QSize(18, 18))
         self.profile_button.setToolTip("Account")
         self.profile_button.clicked.connect(self.profile_requested)
-        brand_layout.addWidget(self.brand_button)
         brand_layout.addWidget(self.brand_label)
-        brand_layout.addWidget(self.home_button)
 
         # Status is kept as an exposed state label for analysis progress and
         # compatibility, but the visible READY badge belongs to the project row.
@@ -188,7 +200,7 @@ class AppHeader(QFrame):
         # Corner widgets do not automatically reclaim/release menu-bar width
         # when a child is shown or hidden.  Resize to the new natural width so
         # neither the brand nor HOME is clipped and no stale empty gap remains.
-        self.brand_panel.setFixedWidth(max(205, self.brand_panel.sizeHint().width()))
+        self._fit_brand_panel()
         self.brand_panel.updateGeometry()
         self._fit_action_panel()
 
@@ -201,7 +213,15 @@ class AppHeader(QFrame):
         self.save_button.setVisible(enabled)
         self.save_button.setText("저장" if enabled else "SAVE PROJECT")
         self.run_button.setVisible(not enabled)
+        self._fit_brand_panel()
         self._fit_action_panel()
+
+    def _fit_brand_panel(self) -> None:
+        """Keep the corner widget no wider than the visible brand itself."""
+        self.brand_label.adjustSize()
+        # Layout margins are 5 px left and 4 px right; the final pixel keeps
+        # the panel's right border clear of the text button.
+        self.brand_panel.setFixedWidth(self.brand_label.width() + 10)
 
     def _fit_action_panel(self) -> None:
         """Resize the menu-bar corner to its visible commands immediately.

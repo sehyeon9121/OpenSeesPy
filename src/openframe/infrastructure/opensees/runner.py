@@ -262,6 +262,8 @@ class OpenSeesProcessRunner:
                         node_tag=int(node["node_tag"]),
                         displacement=tuple(float(value) for value in node.get("displacement", [])),
                         reaction=tuple(float(value) for value in node.get("reaction", [])),
+                        velocity=tuple(float(value) for value in node.get("velocity", [])),
+                        acceleration=tuple(float(value) for value in node.get("acceleration", [])),
                     )
                     for node in item.get("node_results", [])
                 },

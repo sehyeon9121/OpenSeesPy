@@ -18,6 +18,11 @@ class NodeResult:
     node_tag: int
     displacement: tuple[float, ...] = ()
     reaction: tuple[float, ...] = ()
+    #: Populated only for time-history steps (empty for static/modal results,
+    #: which have no time axis to differentiate against). Relative to the
+    #: ground, not absolute/total - see time_history_solver.py.
+    velocity: tuple[float, ...] = ()
+    acceleration: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,9 +103,10 @@ class TimeHistoryStep:
     """One recorded time step of a transient (time-history) analysis.
 
     ``node_results`` reuses ``NodeResult`` the same way ``ModeShape`` does -
-    ``displacement`` is populated for every node (needed for the deformed-shape
-    animation), ``reaction`` only for restrained nodes (a free node's reaction
-    is always zero and not worth carrying at every step).
+    ``displacement``/``velocity``/``acceleration`` are populated for every node
+    (displacement needed for the deformed-shape animation), ``reaction`` only
+    for restrained nodes (a free node's reaction is always zero and not worth
+    carrying at every step).
     """
 
     time: float

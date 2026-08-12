@@ -155,6 +155,13 @@ def run_time_history_analysis(
             {
                 "node_tag": tag,
                 "displacement": [float(value) for value in ops.nodeDisp(tag)],
+                # Relative to the ground, not absolute/total - UniformExcitation
+                # solves the equation of motion in the moving (relative) frame,
+                # so ops.nodeVel/nodeAccel never see the ground's own motion.
+                # Verified empirically against an independent Duhamel-integral
+                # relative-acceleration solution (see test_time_history_solver.py).
+                "velocity": [float(value) for value in ops.nodeVel(tag)],
+                "acceleration": [float(value) for value in ops.nodeAccel(tag)],
                 "reaction": (
                     [float(value) for value in ops.nodeReaction(tag)] if tag in fixed_nodes else []
                 ),

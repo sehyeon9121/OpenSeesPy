@@ -557,10 +557,20 @@ QLabel#resultTypeDescription {
     font-size: 7pt;
     padding-bottom: 2px;
 }
+QScrollArea#resultTypeScrollArea { background: transparent; border: 0; }
+QWidget#resultTypeScrollContent { background: transparent; }
 QFrame#resultTypeGroup {
     background: #ffffff;
     border: 1px solid #dce4ed;
     border-radius: 4px;
+}
+QWidget#resultTypeGroupHeader { background: transparent; border-radius: 3px; }
+QWidget#resultTypeGroupHeader:hover { background: #f0f5fb; }
+QLabel#resultTypeGroupArrow {
+    color: #8996a6;
+    font-size: 7pt;
+    min-width: 9px;
+    max-width: 9px;
 }
 QLabel#resultTypeGroupTitle {
     color: #40546d;
@@ -1710,6 +1720,9 @@ QFrame#resultTypeSidebar[compact2d="true"] QFrame#resultTypeGroup {
 QFrame#resultTypeSidebar[compact2d="true"] QLabel#resultTypeGroupCount {
     background: transparent;
     border: 0;
+    color: #a3a6ad;
+}
+QFrame#resultTypeSidebar[compact2d="true"] QLabel#resultTypeGroupArrow {
     color: #a3a6ad;
 }
 QFrame#resultTypeSidebar[compact2d="true"] QToolButton#resultTypeButton {

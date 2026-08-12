@@ -81,6 +81,9 @@ def test_new_2d_model_skips_the_wizard_straight_to_its_own_canvas() -> None:
     assert not window.header.direct_open_button.isHidden()
     assert window.header.save_button.text() == "저장"
     assert window.header.run_button.isHidden()
+    assert window.header.home_button.isHidden()
+    assert window.header.home_button.parentWidget() is None
+    assert window.header.brand_label.toolTip() == ""
     assert window._current_model_source is None
 
     window.close()

@@ -21,7 +21,9 @@ from openframe.features.results.presentation.result_type_sidebar import (
     ResultTypeSidebar,
 )
 from openframe.features.results.presentation.result_viewport import ResultViewport
-from openframe.features.results.presentation.time_history_panel import TimeHistoryPanel
+from openframe.features.results.presentation.time_history_results_panel import (
+    TimeHistoryResultsPanel,
+)
 
 
 class ResultsWorkspace(QFrame):
@@ -44,7 +46,7 @@ class ResultsWorkspace(QFrame):
         self.viewport = ResultViewport()
         self.summary = ResultSummaryPanel(compact_2d=compact_2d)
         self.tables_panel = ResultTablesPanel()
-        self.time_history_panel = TimeHistoryPanel()
+        self.time_history_results_panel = TimeHistoryResultsPanel()
 
         # The graphics/graph view and its summary sidebar make no sense once the
         # user has switched to the tables result type: a Midas-style data export
@@ -61,7 +63,7 @@ class ResultsWorkspace(QFrame):
         self.content_stack = QStackedWidget()
         self.content_stack.addWidget(normal_page)
         self.content_stack.addWidget(self.tables_panel)
-        self.content_stack.addWidget(self.time_history_panel)
+        self.content_stack.addWidget(self.time_history_results_panel)
 
         body = QSplitter(Qt.Orientation.Horizontal)
         body.setObjectName("resultWorkspaceSplitter")
@@ -84,26 +86,26 @@ class ResultsWorkspace(QFrame):
         self.viewport.set_model(model)
         self.summary.set_model(model)
         self.tables_panel.set_model(model)
-        self.time_history_panel.set_model(model)
+        self.time_history_results_panel.set_model(model)
 
     def show_result(self, result: AnalysisResult) -> None:
         self.viewport.show_result(result)
         self.summary.show_result(result)
         self.tables_panel.show_result(result)
-        self.time_history_panel.show_result(result)
+        self.time_history_results_panel.show_result(result)
 
     def clear_result(self) -> None:
         """Return the workspace to its waiting state, keeping the drawn model."""
         self.viewport.clear_result()
         self.summary.clear_result()
         self.tables_panel.clear_result()
-        self.time_history_panel.clear_result()
+        self.time_history_results_panel.clear_result()
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
         self.viewport.set_unit_system(unit_system)
         self.summary.set_unit_system(unit_system)
         self.tables_panel.set_unit_system(unit_system)
-        self.time_history_panel.set_unit_system(unit_system)
+        self.time_history_results_panel.set_unit_system(unit_system)
 
     def set_analysis_kind(self, kind: AnalysisKind) -> None:
         self.toolbar.set_analysis_kind(kind)
@@ -116,11 +118,16 @@ class ResultsWorkspace(QFrame):
         self._set_result_type(result_type)
 
     def _set_result_type(self, result_type: str) -> None:
+        # Leaving Time History (to any other result type) must stop the
+        # animation timer - see TimeHistoryAnimationPanel's timer-lifecycle
+        # notes. A no-op if it was already paused or never started.
+        if result_type != "time_history":
+            self.time_history_results_panel.animation_panel.pause_animation()
         if result_type == "tables":
             self.content_stack.setCurrentWidget(self.tables_panel)
             return
         if result_type == "time_history":
-            self.content_stack.setCurrentWidget(self.time_history_panel)
+            self.content_stack.setCurrentWidget(self.time_history_results_panel)
             return
         self.content_stack.setCurrentWidget(self.content_stack.widget(0))
         self.viewport.set_result_type(result_type)

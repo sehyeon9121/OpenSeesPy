@@ -91,6 +91,20 @@ def _displacement_at(steps: list[dict], target_time: float) -> float:
     return node["displacement"][0]
 
 
+def _node_result_at(steps: list[dict], target_time: float, node_tag: int) -> dict:
+    closest = min(steps, key=lambda step: abs(step["time"] - target_time))
+    return next(item for item in closest["node_results"] if item["node_tag"] == node_tag)
+
+
+def _duhamel_exact_relative_acceleration(time: float) -> float:
+    """Undamped-only: from the governing ODE m*u_rel'' + k*u_rel = -m*ag(t),
+    u_rel'' = -ag(t) - omega^2*u_rel(t) - independent of the solver's own
+    Newmark integration, built only from the same exact Duhamel displacement
+    already validated against nodeDisp elsewhere in this file."""
+    u_rel = _duhamel_exact_displacement(time, damping_ratio=0.0)
+    return -_half_sine_acceleration(time) - _OMEGA**2 * u_rel
+
+
 def test_undamped_sdof_matches_the_duhamel_integral_for_a_smooth_pulse(tmp_path: Path) -> None:
     model = _write_sdof_model(tmp_path)
     motion = _write_half_sine_ground_motion(tmp_path)
@@ -108,6 +122,44 @@ def test_undamped_sdof_matches_the_duhamel_integral_for_a_smooth_pulse(tmp_path:
         actual = _displacement_at(steps, target_time)
         expected = _duhamel_exact_displacement(target_time)
         assert actual == pytest.approx(expected, abs=1.0e-4)
+
+
+def test_velocity_and_acceleration_are_recorded_for_every_node(tmp_path: Path) -> None:
+    model = _write_sdof_model(tmp_path)
+    motion = _write_half_sine_ground_motion(tmp_path)
+
+    result = run_time_history_analysis(model, ground_motion_path=motion, direction=1, damping_ratio=0.0)
+
+    late_step = result["time_history"][300]
+    for node_tag in (1, 2):
+        node = next(item for item in late_step["node_results"] if item["node_tag"] == node_tag)
+        assert len(node["velocity"]) == 1
+        assert len(node["acceleration"]) == 1
+
+
+def test_acceleration_is_relative_to_the_ground_not_absolute(tmp_path: Path) -> None:
+    """Phase 3-H's core correctness check: ops.nodeAccel() under
+    UniformExcitation returns the RELATIVE acceleration (see
+    time_history_solver.py's comment) - this must actually be true of what
+    gets recorded, not just asserted in a comment. Checked against the
+    governing ODE's exact relative acceleration, and explicitly checked to
+    NOT match the absolute/total acceleration (relative + ground), so a
+    future change that accidentally starts reporting absolute values fails
+    loudly here instead of silently mislabeling the RESULTS UI."""
+    model = _write_sdof_model(tmp_path)
+    motion = _write_half_sine_ground_motion(tmp_path)
+
+    result = run_time_history_analysis(model, ground_motion_path=motion, direction=1, damping_ratio=0.0)
+    steps = result["time_history"]
+
+    for target_time in (0.3, 0.5, 0.7, 1.0, 1.5, 2.0):
+        node = _node_result_at(steps, target_time, node_tag=2)
+        recorded_accel = node["acceleration"][0]
+        exact_relative = _duhamel_exact_relative_acceleration(target_time)
+        exact_absolute = exact_relative + _half_sine_acceleration(target_time)
+        assert recorded_accel == pytest.approx(exact_relative, abs=5.0e-3)
+        if abs(_half_sine_acceleration(target_time)) > 0.05:
+            assert recorded_accel != pytest.approx(exact_absolute, abs=5.0e-3)
 
 
 def test_damped_sdof_also_matches_the_duhamel_integral(tmp_path: Path) -> None:
