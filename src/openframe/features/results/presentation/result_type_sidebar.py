@@ -135,6 +135,12 @@ class ResultTypeSidebar(QFrame):
         self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Keep the vertical scrollbar's width reserved at all times (instead
+        # of the default "as needed"): an expand/collapse animation crossing
+        # the show/hide threshold mid-motion would otherwise change the
+        # viewport width, forcing every group to rewrap and relayout on that
+        # one frame - the stutter this was reported as.
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         outer_layout.addWidget(self._scroll_area, 1)
 
         scroll_content = QWidget()

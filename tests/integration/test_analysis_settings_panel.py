@@ -12,7 +12,9 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtWidgets import QApplication, QFileDialog, QScrollArea
 
 from openframe.core.domain import AnalysisKind
 from openframe.features.analysis.presentation.analysis_config_store import (
@@ -25,6 +27,73 @@ from openframe.infrastructure.opensees.model_importer import OpenSeesModelImport
 
 TRUSS_MODEL = Path(__file__).parents[2] / "examples" / "nonlinear_truss_pushover.py"
 SPRING_MODEL = Path(__file__).parents[2] / "examples" / "nonlinear_spring_pushover_1d.py"
+
+
+def _send_wheel(widget, delta: int = 120) -> None:
+    point = QPointF(widget.rect().center())
+    event = QWheelEvent(
+        point,
+        point,
+        QPoint(),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def test_mouse_wheel_does_not_change_setup_combo_or_numeric_values() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+
+    panel.analysis_type.setCurrentIndex(1)
+    panel.num_modes.setValue(7)
+    panel.algorithm.setCurrentIndex(1)
+    panel.max_iterations.setValue(30)
+
+    before = (
+        panel.analysis_type.currentIndex(),
+        panel.num_modes.value(),
+        panel.algorithm.currentIndex(),
+        panel.max_iterations.value(),
+    )
+    for widget in (
+        panel.analysis_type,
+        panel.num_modes,
+        panel.algorithm,
+        panel.max_iterations,
+    ):
+        _send_wheel(widget, 120)
+        _send_wheel(widget, -120)
+
+    assert (
+        panel.analysis_type.currentIndex(),
+        panel.num_modes.value(),
+        panel.algorithm.currentIndex(),
+        panel.max_iterations.value(),
+    ) == before
+    application.processEvents()
+
+
+def test_mouse_wheel_over_main_setup_input_scrolls_the_page() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.resize(640, 280)
+    panel.show()
+    application.processEvents()
+
+    scroll = panel.findChild(QScrollArea, "setupSettingsScroll")
+    bar = scroll.verticalScrollBar()
+    assert bar.maximum() > 0
+    bar.setValue(bar.maximum() // 2)
+    before = bar.value()
+
+    _send_wheel(panel.analysis_type, 120)
+
+    assert bar.value() < before
+    panel.close()
 
 
 def test_control_dof_options_are_limited_to_the_model_ndf() -> None:

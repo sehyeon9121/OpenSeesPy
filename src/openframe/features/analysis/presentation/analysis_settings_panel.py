@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
+    QAbstractSpinBox,
     QButtonGroup,
     QComboBox,
     QDialog,
@@ -63,6 +65,38 @@ _NONLINEAR_ELEMENT_TYPES = frozenset(
         "corottrusssection",
     }
 )
+
+
+class _SetupInputWheelGuard(QObject):
+    """Prevent a setup value from changing merely because the pointer is over it.
+
+    Wheel input over a field inside the main settings scroll area is converted
+    into page scrolling.  Dialog fields have no scrollable ancestor, so their
+    wheel input is simply consumed; click, keyboard, and drop-down editing are
+    unaffected.
+    """
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() != QEvent.Type.Wheel:
+            return super().eventFilter(watched, event)
+
+        ancestor = watched.parent()
+        while ancestor is not None and not isinstance(ancestor, QAbstractScrollArea):
+            ancestor = ancestor.parent()
+
+        if isinstance(ancestor, QAbstractScrollArea):
+            pixel_delta = event.pixelDelta().y()
+            angle_delta = event.angleDelta().y()
+            delta = pixel_delta
+            if not delta and angle_delta:
+                step = max(1, ancestor.verticalScrollBar().singleStep())
+                delta = round(angle_delta / 120 * step * 3)
+            if delta:
+                bar = ancestor.verticalScrollBar()
+                bar.setValue(bar.value() - delta)
+
+        event.accept()
+        return True
 
 
 class AnalysisSettingsPanel(QFrame):
@@ -919,6 +953,11 @@ class AnalysisSettingsPanel(QFrame):
         layout.addWidget(scroll, 1)
 
         self._build_nonlinear_dialog()
+        self._setup_input_wheel_guard = _SetupInputWheelGuard(self)
+        for combo in self.findChildren(QComboBox):
+            combo.installEventFilter(self._setup_input_wheel_guard)
+        for spinner in self.findChildren(QAbstractSpinBox):
+            spinner.installEventFilter(self._setup_input_wheel_guard)
         self.solver.currentIndexChanged.connect(self._update_nonlinear_summary)
         self._update_nonlinear_visibility()
         self._update_nonlinear_summary()
