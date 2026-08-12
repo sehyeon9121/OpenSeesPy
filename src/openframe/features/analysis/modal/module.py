@@ -19,9 +19,19 @@ class ModalAnalysis(AnalysisModule):
         errors: list[str] = []
         if request.source_path.suffix.lower() != ".py":
             errors.append("Python 파일이 필요합니다.")
-        num_modes = request.options.get("num_modes")
-        if num_modes is not None and int(num_modes) <= 0:
-            errors.append("계산할 모드 수는 1 이상이어야 합니다.")
+        if request.options.get("extraction_method") == "target":
+            target_participation = request.options.get("target_participation")
+            if target_participation is not None and not (0 < float(target_participation) <= 100):
+                errors.append("목표 질량참여율은 0보다 크고 100 이하여야 합니다.")
+            max_modes = request.options.get("max_modes")
+            if max_modes is not None and int(max_modes) <= 0:
+                errors.append("최대 모드 수는 1 이상이어야 합니다.")
+            if not request.options.get("target_directions"):
+                errors.append("목표 참여율을 적용할 방향을 하나 이상 선택하세요.")
+        else:
+            num_modes = request.options.get("num_modes")
+            if num_modes is not None and int(num_modes) <= 0:
+                errors.append("계산할 모드 수는 1 이상이어야 합니다.")
         return errors
 
     def run(

@@ -3,11 +3,14 @@
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QColor, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
     QAbstractSpinBox,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
@@ -39,6 +42,9 @@ from openframe.features.analysis.presentation.analysis_config_store import (
 )
 from openframe.features.results.presentation.time_history_curve_view import (
     TimeHistoryCurveView,
+)
+from openframe.features.analysis.presentation.ground_motion_picker_dialog import (
+    GroundMotionPickerDialog,
 )
 from openframe.infrastructure.ground_motions import BuiltInGroundMotionCatalog
 from openframe.infrastructure.opensees.ground_motion import load_ground_motion
@@ -95,6 +101,70 @@ class _SetupInputWheelGuard(QObject):
 
         event.accept()
         return True
+
+
+class _VerticalResizeHandle(QWidget):
+    """Thin drag handle that lets the user resize ``target``'s height.
+
+    The settings panel lives in a scroll area with unbounded vertical room,
+    but a plain QVBoxLayout still only ever gives ``target`` its minimum
+    height - for the ACCELERATION-TIME PREVIEW plot that meant a cramped,
+    barely-legible strip with no way to make it taller. This drags
+    ``target``'s fixed height between ``min_height`` and ``max_height``
+    instead, so the user can reclaim (or give back) that space themselves.
+    """
+
+    def __init__(
+        self,
+        target: QWidget,
+        *,
+        min_height: int,
+        max_height: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._target = target
+        self._min_height = min_height
+        self._max_height = max_height
+        self._drag_start_y: float | None = None
+        self._drag_start_height = 0
+        self.setFixedHeight(12)
+        self.setCursor(Qt.CursorShape.SizeVerCursor)
+        self.setToolTip("Drag to resize the preview")
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QColor("#c3cad6"))
+        mid_y = self.height() // 2
+        center_x = self.width() // 2
+        for offset in (-9, 0, 9):
+            painter.drawLine(center_x + offset - 3, mid_y, center_x + offset + 3, mid_y)
+        painter.end()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self._drag_start_y = event.globalPosition().y()
+        self._drag_start_height = self._target.height()
+        event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._drag_start_y is None:
+            super().mouseMoveEvent(event)
+            return
+        delta = event.globalPosition().y() - self._drag_start_y
+        new_height = max(
+            self._min_height, min(self._max_height, round(self._drag_start_height + delta))
+        )
+        self._target.setFixedHeight(new_height)
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        self._drag_start_y = None
+        super().mouseReleaseEvent(event)
 
 
 class AnalysisSettingsPanel(QFrame):
@@ -305,7 +375,10 @@ class AnalysisSettingsPanel(QFrame):
         settings_layout.addWidget(self.nonlinear_group)
 
         # Modal analysis only needs how many modes to compute, so a compact card
-        # is sufficient unlike nonlinear's interdependent workflow.
+        # is sufficient unlike nonlinear's interdependent workflow. Extraction
+        # method picks between a fixed count and an automatic count driven by
+        # cumulative mass participation; only one of modal_fixed_group/
+        # modal_target_group is ever visible (see _update_modal_extraction_visibility).
         self.modal_group = QFrame()
         self.modal_group.setObjectName("setupConfigCard")
         modal_layout = QVBoxLayout(self.modal_group)
@@ -314,13 +387,36 @@ class AnalysisSettingsPanel(QFrame):
         modal_title = QLabel("MODAL PARAMETERS")
         modal_title.setObjectName("setupConfigTitle")
         modal_layout.addWidget(modal_title)
-        modal_layout.addWidget(self._field_label("NUMBER OF MODES"))
+
+        modal_layout.addWidget(self._field_label("EXTRACTION METHOD"))
+        self.modal_extraction_method = QComboBox()
+        self.modal_extraction_method.addItem("Fixed Number of Modes", "fixed")
+        self.modal_extraction_method.addItem("Target Mass Participation", "target")
+        self.modal_extraction_method.setToolTip(
+            "Fixed always computes exactly NUMBER OF MODES modes, even if cumulative "
+            "mass participation reaches 100% earlier. Target keeps adding modes "
+            "until every selected direction reaches TARGET PARTICIPATION, up to "
+            "MAXIMUM MODES."
+        )
+        self.modal_extraction_method.currentIndexChanged.connect(
+            self._update_modal_extraction_visibility
+        )
+        self.modal_extraction_method.currentIndexChanged.connect(self._sync_store_options)
+        modal_layout.addWidget(self.modal_extraction_method)
+
+        self.modal_fixed_group = QWidget()
+        modal_fixed_layout = QVBoxLayout(self.modal_fixed_group)
+        modal_fixed_layout.setContentsMargins(0, 0, 0, 0)
+        modal_fixed_layout.setSpacing(8)
+        modal_fixed_layout.addWidget(self._field_label("NUMBER OF MODES"))
         self.num_modes = QSpinBox()
         self.num_modes.setRange(1, 200)
-        self.num_modes.setValue(3)
+        self.num_modes.setValue(10)
         self.num_modes.setToolTip(
             "The model's own script must define nodal mass (ops.mass(...)) - modal "
-            "analysis has no natural frequency to find without it."
+            "analysis has no natural frequency to find without it. Every mode up to "
+            "this count is computed even if cumulative mass participation reaches "
+            "100% earlier."
         )
         # Every other option widget in this file syncs on change (see self.solver
         # above, the inline spinners/combos below) - num_modes was missing this,
@@ -330,7 +426,54 @@ class AnalysisSettingsPanel(QFrame):
         # directly (see MainWindow._run_analysis), not a fresh build_options()
         # call, so this was a real bug, not just a cosmetic one.
         self.num_modes.valueChanged.connect(self._sync_store_options)
-        modal_layout.addWidget(self.num_modes)
+        modal_fixed_layout.addWidget(self.num_modes)
+        modal_layout.addWidget(self.modal_fixed_group)
+
+        self.modal_target_group = QWidget()
+        modal_target_layout = QVBoxLayout(self.modal_target_group)
+        modal_target_layout.setContentsMargins(0, 0, 0, 0)
+        modal_target_layout.setSpacing(8)
+
+        modal_target_layout.addWidget(self._field_label("TARGET PARTICIPATION (%)"))
+        self.modal_target_participation = QDoubleSpinBox()
+        self.modal_target_participation.setRange(0.1, 100.0)
+        self.modal_target_participation.setDecimals(1)
+        self.modal_target_participation.setSingleStep(1.0)
+        self.modal_target_participation.setValue(90.0)
+        self.modal_target_participation.setToolTip(
+            "Modes keep being added until every checked direction's cumulative "
+            "mass participation reaches this percentage."
+        )
+        self.modal_target_participation.valueChanged.connect(self._sync_store_options)
+        modal_target_layout.addWidget(self.modal_target_participation)
+
+        modal_target_layout.addWidget(self._field_label("TARGET DIRECTIONS"))
+        directions_row = QHBoxLayout()
+        directions_row.setSpacing(10)
+        self.modal_target_direction_checks: dict[str, QCheckBox] = {}
+        for direction in ("X", "Y", "Z", "RX", "RY", "RZ"):
+            checkbox = QCheckBox(direction)
+            checkbox.setChecked(direction in ("X", "Y"))
+            checkbox.toggled.connect(self._sync_store_options)
+            self.modal_target_direction_checks[direction] = checkbox
+            directions_row.addWidget(checkbox)
+        directions_row.addStretch(1)
+        modal_target_layout.addLayout(directions_row)
+
+        modal_target_layout.addWidget(self._field_label("MAXIMUM MODES"))
+        self.modal_max_modes = QSpinBox()
+        self.modal_max_modes.setRange(1, 500)
+        self.modal_max_modes.setValue(50)
+        self.modal_max_modes.setToolTip(
+            "Upper bound on how many modes Target Mass Participation will compute, "
+            "so a target that is never reached (e.g. no mass in a selected "
+            "direction) cannot loop indefinitely."
+        )
+        self.modal_max_modes.valueChanged.connect(self._sync_store_options)
+        modal_target_layout.addWidget(self.modal_max_modes)
+        modal_layout.addWidget(self.modal_target_group)
+        self._update_modal_extraction_visibility()
+
         settings_layout.addWidget(self.modal_group)
 
         # Modal's own EIGEN SOLUTION card - shown instead of the shared "3.
@@ -488,13 +631,31 @@ class AnalysisSettingsPanel(QFrame):
         builtin_record_layout.setContentsMargins(0, 0, 0, 0)
         builtin_record_layout.setSpacing(4)
         builtin_record_layout.addWidget(self._field_label("RECORD"))
+        # Kept as the underlying data model/selection state (still the single
+        # source of truth _on_builtin_record_selected reads), but hidden -
+        # with 65+ bundled records a plain dropdown stacks them in one long
+        # vertical list that's hard to scan or search, so the visible control
+        # is a button that opens GroundMotionPickerDialog (search + sort +
+        # scrollable list + explicit Apply/Cancel) instead.
         self.builtin_record_combo = QComboBox()
         for record in self._builtin_catalog.list_records():
             self.builtin_record_combo.addItem(
                 f"{record.event} — {record.station} ({record.component})", record
             )
         self.builtin_record_combo.currentIndexChanged.connect(self._on_builtin_record_selected)
+        self.builtin_record_combo.setVisible(False)
         builtin_record_layout.addWidget(self.builtin_record_combo)
+
+        builtin_picker_row = QHBoxLayout()
+        self.builtin_record_label = QLabel("(no record selected)")
+        self.builtin_record_label.setWordWrap(True)
+        builtin_picker_row.addWidget(self.builtin_record_label, 1)
+        self.choose_builtin_record_button = QPushButton("Select…")
+        self.choose_builtin_record_button.setObjectName("groundMotionPickerButton")
+        self.choose_builtin_record_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.choose_builtin_record_button.clicked.connect(self._choose_builtin_record)
+        builtin_picker_row.addWidget(self.choose_builtin_record_button)
+        builtin_record_layout.addLayout(builtin_picker_row)
         ground_motion_layout.addWidget(self.builtin_record_row)
 
         self.imported_file_row = QWidget()
@@ -552,8 +713,17 @@ class AnalysisSettingsPanel(QFrame):
         ground_motion_layout.addWidget(self._field_label("ACCELERATION-TIME PREVIEW"))
         self.ground_motion_preview = TimeHistoryCurveView()
         self.ground_motion_preview.setMinimumHeight(140)
+        # Default height raised from the old bare 140px minimum (visibly
+        # squashed at this panel's width/aspect) to something legible out of
+        # the box, while the handle below still lets the user pull it taller
+        # or shorter to taste.
+        self.ground_motion_preview.setFixedHeight(260)
         self.ground_motion_preview.set_empty_message("No ground motion selected")
         ground_motion_layout.addWidget(self.ground_motion_preview)
+        self.ground_motion_preview_resize_handle = _VerticalResizeHandle(
+            self.ground_motion_preview, min_height=140, max_height=640
+        )
+        ground_motion_layout.addWidget(self.ground_motion_preview_resize_handle)
 
         ground_motion_layout.addWidget(self._field_label("DIRECTION"))
         self.time_history_direction = QComboBox()
@@ -1270,7 +1440,20 @@ class AnalysisSettingsPanel(QFrame):
         except modal, whose solver takes different keyword arguments and would
         raise ``TypeError`` if handed this shape, so it gets its own early return."""
         if self.selected_analysis_kind() == AnalysisKind.MODAL:
-            return {"num_modes": self.num_modes.value()}
+            method = self.modal_extraction_method.currentData()
+            if method == "target":
+                directions = ",".join(
+                    direction
+                    for direction, checkbox in self.modal_target_direction_checks.items()
+                    if checkbox.isChecked()
+                )
+                return {
+                    "extraction_method": "target",
+                    "target_participation": self.modal_target_participation.value(),
+                    "target_directions": directions,
+                    "max_modes": self.modal_max_modes.value(),
+                }
+            return {"extraction_method": "fixed", "num_modes": self.num_modes.value()}
         if self.selected_analysis_kind() == AnalysisKind.TIME_HISTORY:
             direction = self.time_history_direction.currentData()
             return {
@@ -1375,11 +1558,17 @@ class AnalysisSettingsPanel(QFrame):
         if is_modal:
             self.modal_engine_details_toggle.setChecked(False)
             self.modal_engine_details_body.setVisible(False)
+            self._update_modal_extraction_visibility()
 
     def _toggle_engine_details(self, expanded: bool) -> None:
         self.solution_body.setVisible(expanded)
         arrow = "▾" if expanded else "▸"
         self.engine_details_toggle.setText(f"{arrow}  ADVANCED ENGINE DETAILS")
+
+    def _update_modal_extraction_visibility(self) -> None:
+        is_target = self.modal_extraction_method.currentData() == "target"
+        self.modal_fixed_group.setVisible(not is_target)
+        self.modal_target_group.setVisible(is_target)
 
     def _toggle_modal_engine_details(self, expanded: bool) -> None:
         self.modal_engine_details_body.setVisible(expanded)
@@ -1448,11 +1637,30 @@ class AnalysisSettingsPanel(QFrame):
         if record is None:
             self._builtin_record = None
             self._builtin_ground_motion = None
+            self.builtin_record_label.setText("(no record selected)")
         else:
             values = tuple(self._builtin_catalog.load_series(record))
             self._builtin_record = record
             self._builtin_ground_motion = GroundMotion.from_record(record, values)
+            self.builtin_record_label.setText(self.builtin_record_combo.currentText())
         self._apply_active_ground_motion()
+
+    def _choose_builtin_record(self) -> None:
+        records = self._builtin_catalog.list_records()
+        dialog = GroundMotionPickerDialog(records, self._builtin_record, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = dialog.selected_record()
+        if selected is None:
+            return
+        index = self.builtin_record_combo.findData(selected)
+        if index < 0:
+            return
+        if index == self.builtin_record_combo.currentIndex():
+            # Re-picking the same record: currentIndexChanged won't fire, but
+            # the dialog itself is proof enough this is a deliberate confirm.
+            return
+        self.builtin_record_combo.setCurrentIndex(index)
 
     def _apply_active_ground_motion(self) -> None:
         """Point the single ``_ground_motion``/``_ground_motion_path`` pair -

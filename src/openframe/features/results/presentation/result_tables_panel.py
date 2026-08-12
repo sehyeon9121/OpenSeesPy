@@ -328,6 +328,17 @@ class ResultTablesPanel(QFrame):
             ):
                 table.setItem(row, column, QTableWidgetItem(text))
 
+    @staticmethod
+    def _format_participation_percentage(ratio: float) -> str:
+        """UI display only - the stored ``ratio``/cumulative sum stays exactly as
+        computed. Floating-point summation of many small modes commonly lands a
+        fraction of a percent short of (or past) 100%, e.g. 99.999% or 100.0007% -
+        clamped here so the table reads as the clean 100.0% the user expects."""
+        percentage = ratio * 100.0
+        if percentage >= 100.0 - 1.0e-3:
+            percentage = 100.0
+        return f"{percentage:.3g}"
+
     def _refresh_modal(self) -> None:
         model = self._model
         result = self._result
@@ -363,10 +374,12 @@ class ResultTablesPanel(QFrame):
             for index, ratio in enumerate(ratios):
                 cumulative[index] += ratio
                 self.modal_participation_table.setItem(
-                    row, 1 + index, QTableWidgetItem(f"{ratio * 100.0:.3g}")
+                    row, 1 + index, QTableWidgetItem(self._format_participation_percentage(ratio))
                 )
                 self.modal_cumulative_table.setItem(
-                    row, 1 + index, QTableWidgetItem(f"{cumulative[index] * 100.0:.3g}")
+                    row,
+                    1 + index,
+                    QTableWidgetItem(self._format_participation_percentage(cumulative[index])),
                 )
 
         if self._modal_tab_index >= 0:

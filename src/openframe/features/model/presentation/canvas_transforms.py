@@ -10,6 +10,20 @@ from openframe.core.domain import Node
 
 
 class _TransformMixin:
+    def _effective_transform_nodes(self) -> set[int]:
+        """Nodes a move/copy/array/rotate/mirror operation should act on:
+        whatever is directly selected, plus the endpoints of any selected
+        *member* - so picking a member (MIDAS's "Element" selection mode)
+        drags or duplicates both its ends together, the same as picking both
+        of its endpoint nodes by hand."""
+        implied = {
+            node_tag
+            for tag in self.selected_elements
+            for node_tag in (self.elements[tag].node_i, self.elements[tag].node_j)
+            if tag in self.elements
+        }
+        return set(self.selected_nodes) | implied
+
     def transform_selected_nodes(
         self,
         operation: str,
@@ -17,14 +31,17 @@ class _TransformMixin:
         dy: float,
         repeat: int = 1,
     ) -> int:
-        """Move selected nodes, or create translated copies with new node tags.
+        """Move selected nodes (and any selected member's endpoints), or create
+        translated copies with new node tags - and, for "copy", a new member
+        wherever a *selected* member's own two endpoints both got copied.
 
         ``dx``/``dy`` are offsets along the active work plane's local axes, not
         necessarily global X/Y — on an elevation plane, "dy" moves along Z.
         """
-        if not self.selected_nodes or (dx == 0.0 and dy == 0.0):
+        effective_nodes = self._effective_transform_nodes()
+        if not effective_nodes or (dx == 0.0 and dy == 0.0):
             return 0
-        selected = sorted(self.selected_nodes)
+        selected = sorted(effective_nodes)
         if operation == "move":
             targets: dict[int, tuple[float, float, float]] = {}
             for tag in selected:
@@ -33,7 +50,7 @@ class _TransformMixin:
             occupied = {
                 (round(node.x, 12), round(node.y, 12), round(node.z, 12))
                 for tag, node in self.nodes.items()
-                if tag not in self.selected_nodes
+                if tag not in effective_nodes
             }
             if any(
                 (round(x, 12), round(y, 12), round(z, 12)) in occupied
@@ -53,21 +70,36 @@ class _TransformMixin:
             raise ValueError(f"Unknown node transform operation: {operation}")
         self.begin_history_group()
         created: set[int] = set()
+        created_elements: set[int] = set()
         try:
             for step in range(1, max(1, repeat) + 1):
+                mapping: dict[int, int] = {}
                 for source_tag in selected:
                     source_u, source_v = self._uv(self.nodes[source_tag])
                     before = set(self.nodes)
                     tag = self.add_node(source_u + dx * step, source_v + dy * step)
+                    mapping[source_tag] = tag
                     if tag in before:
                         continue
                     created.add(tag)
                     if source_tag in self.hinge_nodes:
                         self.hinge_nodes.add(tag)
+                # Only a *selected* member gets carried along - copying two nodes
+                # that happen to be a member's endpoints must not invent one, or
+                # a plain node-only copy (no member picked) would start growing
+                # members nobody asked for.
+                for element_tag in self.selected_elements:
+                    element = self.elements.get(element_tag)
+                    if element is None:
+                        continue
+                    if element.node_i in mapping and element.node_j in mapping:
+                        new_tag = self.add_member(mapping[element.node_i], mapping[element.node_j])
+                        if new_tag is not None:
+                            created_elements.add(new_tag)
         finally:
             self.end_history_group()
         self.selected_nodes = created
-        self.selected_elements.clear()
+        self.selected_elements = created_elements
         self._selection_changed()
         return len(created)
 
@@ -81,12 +113,13 @@ class _TransformMixin:
         frame across the line through its own apex reconnects at the apex instead
         of stacking a second node on top of it.
         """
-        if not self.selected_nodes or axis not in {"x", "y"}:
+        effective_nodes = self._effective_transform_nodes()
+        if not effective_nodes or axis not in {"x", "y"}:
             return 0
         self.begin_history_group()
         mapping: dict[int, int] = {}
         try:
-            for tag in sorted(self.selected_nodes):
+            for tag in sorted(effective_nodes):
                 u, v = self._uv(self.nodes[tag])
                 mirrored = (2.0 * value - u, v) if axis == "x" else (u, 2.0 * value - v)
                 mapping[tag] = self.add_node(*mirrored)
@@ -108,7 +141,8 @@ class _TransformMixin:
         This is what turning one truss panel into a run of ``count`` panels needs:
         the plain node copy only duplicates points, never the members joining them.
         """
-        if not self.selected_nodes or count < 1:
+        effective_nodes = self._effective_transform_nodes()
+        if not effective_nodes or count < 1:
             return 0
         self.begin_history_group()
         original_elements = list(self.elements.values())
@@ -116,7 +150,7 @@ class _TransformMixin:
         try:
             for step in range(1, count + 1):
                 mapping: dict[int, int] = {}
-                for tag in sorted(self.selected_nodes):
+                for tag in sorted(effective_nodes):
                     source_u, source_v = self._uv(self.nodes[tag])
                     mapping[tag] = self.add_node(source_u + dx * step, source_v + dy * step)
                     if tag in self.hinge_nodes:
@@ -145,7 +179,8 @@ class _TransformMixin:
         copy cannot reach without the user pre-computing each copy's offset
         by hand.
         """
-        if not self.selected_nodes or count < 1 or angle_degrees == 0.0:
+        effective_nodes = self._effective_transform_nodes()
+        if not effective_nodes or count < 1 or angle_degrees == 0.0:
             return 0
         self.begin_history_group()
         original_elements = list(self.elements.values())
@@ -155,7 +190,7 @@ class _TransformMixin:
                 theta = math.radians(angle_degrees * step)
                 cos_t, sin_t = math.cos(theta), math.sin(theta)
                 mapping: dict[int, int] = {}
-                for tag in sorted(self.selected_nodes):
+                for tag in sorted(effective_nodes):
                     source_u, source_v = self._uv(self.nodes[tag])
                     du, dv = source_u - center_u, source_v - center_v
                     rotated_u = center_u + du * cos_t - dv * sin_t

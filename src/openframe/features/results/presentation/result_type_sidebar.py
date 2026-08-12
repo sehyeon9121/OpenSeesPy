@@ -1,6 +1,7 @@
 """Post-processing result-type navigation."""
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -14,6 +15,51 @@ from PySide6.QtWidgets import (
 )
 
 _ANIMATION_MS = 200
+
+#: One short, standard engineering symbol per result *category* - drawn onto a
+#: rounded chip instead of shipping per-category icon assets, and shown next
+#: to the collapsible group's own title (e.g. the "REACTIONS" header), not on
+#: every individual button inside it.
+_GROUP_ICON_GLYPHS: dict[str, str] = {
+    "OVERVIEW": "Σ",
+    "SHAPE & NODE": "Δ",
+    "DISPLACEMENT": "Δ",
+    "REACTIONS": "R",
+    "MEMBER FORCES": "F",
+    "NONLINEAR": "P",
+    "DATA": "▦",
+    "MODAL RESPONSE": "φ",
+    "TIME HISTORY": "t",
+}
+_ICON_CACHE: dict[str, QIcon] = {}
+
+
+def _glyph_icon(glyph: str) -> QIcon:
+    """A small rounded chip with ``glyph`` centered in it, in the app's own
+    navy-on-light-blue accent colors - built once per glyph and cached, since
+    every sidebar instance (main results view, the compact 2D one) needs the
+    same handful of icons."""
+    cached = _ICON_CACHE.get(glyph)
+    if cached is not None:
+        return cached
+    size = 28
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QColor("#b7cdec"))
+    painter.setBrush(QColor("#e7effb"))
+    painter.drawRoundedRect(1, 1, size - 2, size - 2, 7, 7)
+    painter.setPen(QColor("#174ea6"))
+    font = painter.font()
+    font.setPointSizeF(size * 0.42)
+    font.setBold(True)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, glyph)
+    painter.end()
+    icon = QIcon(pixmap)
+    _ICON_CACHE[glyph] = icon
+    return icon
 
 
 class _CollapsibleResultGroup(QFrame):
@@ -37,19 +83,24 @@ class _CollapsibleResultGroup(QFrame):
         self._header.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._header.mousePressEvent = self._on_header_pressed  # type: ignore[method-assign]
         header_layout = QHBoxLayout(self._header)
-        header_layout.setContentsMargins(2, 4, 2, 4)
-        header_layout.setSpacing(5)
+        header_layout.setContentsMargins(2, 4, 1, 4)
+        header_layout.setSpacing(4)
 
         self._arrow = QLabel("▸")
         self._arrow.setObjectName("resultTypeGroupArrow")
+        icon_label = QLabel()
+        icon_label.setObjectName("resultTypeGroupIcon")
+        icon_label.setPixmap(_glyph_icon(_GROUP_ICON_GLYPHS.get(title, "•")).pixmap(18, 18))
         name = QLabel(title)
         name.setObjectName("resultTypeGroupTitle")
         count_badge = QLabel(str(count))
         count_badge.setObjectName("resultTypeGroupCount")
         header_layout.addWidget(self._arrow)
+        header_layout.addWidget(icon_label)
         header_layout.addWidget(name)
-        header_layout.addStretch(1)
+        header_layout.addSpacing(8)
         header_layout.addWidget(count_badge)
+        header_layout.addStretch(1)
         outer.addWidget(self._header)
 
         self._body = QWidget()
@@ -115,8 +166,8 @@ class ResultTypeSidebar(QFrame):
         super().__init__(parent)
         self.setObjectName("resultTypeSidebar")
         self.setProperty("compact2d", compact_2d)
-        self.setMinimumWidth(180 if compact_2d else 210)
-        self.setMaximumWidth(205 if compact_2d else 250)
+        self.setMinimumWidth(180 if compact_2d else 350)
+        self.setMaximumWidth(205 if compact_2d else 410)
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(8 if compact_2d else 10, 11, 8 if compact_2d else 10, 11)
         outer_layout.setSpacing(5 if compact_2d else 8)
@@ -158,7 +209,7 @@ class ResultTypeSidebar(QFrame):
         self._add_group(layout, "OVERVIEW", "" if compact_2d else "Overall model response", (("overview", "Summary" if compact_2d else "Overview"),))
         self._add_group(
             layout,
-            "DISPLACEMENT" if compact_2d else "SHAPE & NODE RESPONSE",
+            "DISPLACEMENT" if compact_2d else "SHAPE & NODE",
             "" if compact_2d else "Geometry, movement and restraints",
             (
                 ("deformation", "Deformed Shape"),
@@ -173,18 +224,18 @@ class ResultTypeSidebar(QFrame):
         )
         self._add_group(
             layout,
-            "MEMBER FORCES" if compact_2d else "MEMBER FORCE DIAGRAMS",
+            "MEMBER FORCES",
             "" if compact_2d else "Whole-frame local force plots",
             (
-                ("axial", "N    Axial Force"),
-                ("shear", "V    Shear Force"),
-                ("moment", "M    Bending Moment"),
+                ("axial", "N  Axial Force"),
+                ("shear", "V  Shear Force"),
+                ("moment", "M  Bending Moment"),
             ),
         )
         if not compact_2d:
             self._add_group(
                 layout,
-                "NONLINEAR RESPONSE",
+                "NONLINEAR",
                 "Incremental pushover history",
                 (("pushover", "Pushover Curve"),),
             )
@@ -203,16 +254,16 @@ class ResultTypeSidebar(QFrame):
             )
             self._add_group(
                 layout,
-                "TIME HISTORY RESPONSE",
+                "TIME HISTORY",
                 "Displacement/rotation vs. time",
                 (("time_history", "Response History"),),
             )
         layout.addStretch(1)
 
-        # Only the default category starts open; the rest stay collapsed
-        # until the user asks for them, so the panel reads as a short list
-        # of categories rather than a wall of buttons.
-        self._groups_by_key["overview"].set_expanded(True, animate=False)
+        # Every category starts collapsed - select_result_type("overview") below
+        # opens only the active one, via _make_button's toggled -> set_expanded
+        # wiring, so RESULTS opens as a short list of category headers rather
+        # than a page already full of every option.
         self.select_result_type("overview")
 
     def select_result_type(self, key: str) -> None:

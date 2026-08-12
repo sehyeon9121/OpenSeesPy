@@ -649,14 +649,18 @@ def test_blank_space_drag_selects_nodes_even_while_member_tool_is_active() -> No
     assert canvas.mode == "member"
 
 
-def test_node_transform_tool_activates_node_drag_selection_without_support_tool() -> None:
+def test_node_transform_tool_activates_select_mode_without_narrowing_the_filter() -> None:
+    """Move/copy/array/rotate/mirror all understand a selected *member* now (its
+    two endpoints move/copy along with it - MIDAS's separate Node/Element
+    move-copy mode), so activating the tool must leave whatever filter
+    (전체/노드만/부재만) the user already had, unlike the support tool below."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
 
     assert application is QApplication.instance()
     page._activate_node_transform_tool()
     assert page.canvas.mode == "select"
-    assert page.canvas.selection_filter == "nodes"
+    assert page.canvas.selection_filter == "all"
 
 
 def test_modal_solve_button_runs_an_eigenvalue_analysis_on_a_real_material_cantilever() -> None:

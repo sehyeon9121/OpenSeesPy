@@ -35,7 +35,7 @@ class TimeHistoryResultsPanel(QFrame):
         self.response_history_tab = QPushButton("Response History")
         self.animation_tab = QPushButton("Animation")
         for button in (self.response_history_tab, self.animation_tab):
-            button.setObjectName("resultCanvasButton")
+            button.setObjectName("resultViewTabButton")
             button.setCheckable(True)
             self._tab_group.addButton(button)
             tab_row.addWidget(button)

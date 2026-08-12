@@ -440,7 +440,8 @@ QFrame#panelHeader, QFrame#canvasHeader {
 }
 QFrame#panelHeader QLabel { font-size: 8pt; font-weight: 600; color: #415269; }
 QFrame#rightSection { background: #ffffff; border-bottom: 1px solid #dce3eb; }
-QPushButton#nonlinearSettingsButton, QPushButton#filterSettingsButton {
+QPushButton#nonlinearSettingsButton, QPushButton#filterSettingsButton,
+QPushButton#groundMotionPickerButton {
     min-height: 28px;
     padding: 0 8px;
     color: #174ea6;
@@ -450,8 +451,22 @@ QPushButton#nonlinearSettingsButton, QPushButton#filterSettingsButton {
     font-size: 8pt;
     font-weight: 700;
 }
-QPushButton#nonlinearSettingsButton:hover, QPushButton#filterSettingsButton:hover {
+QPushButton#nonlinearSettingsButton:hover, QPushButton#filterSettingsButton:hover,
+QPushButton#groundMotionPickerButton:hover {
     background: #dbe7f6;
+}
+QPushButton#groundMotionPickerButton {
+    min-width: 84px;
+    color: #ffffff;
+    background: #174ea6;
+    border: 1px solid #174ea6;
+    font-weight: 700;
+}
+QPushButton#groundMotionPickerButton:hover {
+    background: #123f89;
+}
+QPushButton#groundMotionPickerButton:pressed {
+    background: #0f3574;
 }
 QLabel#nonlinearSettingsSummary {
     color: #68778a;
@@ -547,70 +562,82 @@ QFrame#resultTypeSidebar {
     border-right: 1px solid #d7e0ea;
 }
 QLabel#resultSectionTitle {
-    color: #1f3452;
-    font-size: 9pt;
-    font-weight: 700;
+    color: #17273f;
+    font-size: 11pt;
+    font-weight: 800;
     padding: 2px 0 0 0;
 }
 QLabel#resultTypeDescription {
-    color: #77869a;
-    font-size: 7pt;
+    color: #6c7c92;
+    font-size: 8pt;
     padding-bottom: 2px;
 }
 QScrollArea#resultTypeScrollArea { background: transparent; border: 0; }
 QWidget#resultTypeScrollContent { background: transparent; }
 QFrame#resultTypeGroup {
     background: #ffffff;
-    border: 1px solid #dce4ed;
-    border-radius: 4px;
+    border: 1px solid #d3dce8;
+    border-radius: 6px;
 }
-QWidget#resultTypeGroupHeader { background: transparent; border-radius: 3px; }
+QWidget#resultTypeGroupHeader { background: transparent; border-radius: 4px; }
 QWidget#resultTypeGroupHeader:hover { background: #f0f5fb; }
 QLabel#resultTypeGroupArrow {
-    color: #8996a6;
-    font-size: 7pt;
-    min-width: 9px;
-    max-width: 9px;
+    color: #7c8ca1;
+    font-size: 8pt;
+    min-width: 11px;
+    max-width: 11px;
 }
 QLabel#resultTypeGroupTitle {
-    color: #40546d;
-    font-size: 7pt;
-    font-weight: 700;
+    color: #1f3452;
+    font-size: 9pt;
+    font-weight: 800;
+    letter-spacing: 0.2px;
 }
 QLabel#resultTypeGroupHint {
-    color: #8996a6;
-    font-size: 7pt;
-    padding: 0 2px 3px 2px;
+    color: #7c8ca1;
+    font-size: 7.5pt;
+    padding: 0 2px 4px 2px;
 }
 QLabel#resultTypeGroupCount {
-    min-width: 16px;
-    max-width: 16px;
-    min-height: 16px;
-    max-height: 16px;
-    border-radius: 8px;
-    background: #e9eff7;
-    color: #5f7188;
-    font-size: 7pt;
-    font-weight: 700;
+    min-width: 19px;
+    max-width: 19px;
+    min-height: 19px;
+    max-height: 19px;
+    border-radius: 9px;
+    background: #e2ebf8;
+    color: #345a86;
+    font-size: 7.5pt;
+    font-weight: 800;
     qproperty-alignment: AlignCenter;
 }
+QLabel#resultTypeGroupIcon {
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
+}
 QToolButton#resultTypeButton {
-    min-height: 28px;
+    min-height: 46px;
     padding: 0 8px;
     border: 0;
-    border-left: 3px solid transparent;
-    border-radius: 2px;
+    border-left: 4px solid transparent;
+    border-radius: 3px;
     background: #ffffff;
-    color: #53657a;
+    color: #33475f;
     text-align: left;
-    font-size: 8pt;
+    font-size: 9.5pt;
+    font-weight: 400;
 }
-QToolButton#resultTypeButton:hover { background: #f0f5fb; color: #174ea6; }
-QToolButton#resultTypeButton:checked {
-    background: #e7effb;
-    border-left-color: #174ea6;
+QToolButton#resultTypeButton:hover {
+    background: #eef4fc;
     color: #174ea6;
-    font-weight: 700;
+    border-left-color: #b7cdec;
+}
+QToolButton#resultTypeButton:checked {
+    background: #dfeafc;
+    border-left-color: #174ea6;
+    color: #123f89;
+    font-weight: 600;
 }
 QFrame#resultViewport { background: #ffffff; }
 QFrame#resultCanvasHeader, QFrame#resultViewportControls {
@@ -640,6 +667,44 @@ QPushButton#resultCanvasButton:checked {
     border-color: #174ea6;
     color: #174ea6;
     font-weight: 700;
+}
+QPushButton#resultViewTabButton {
+    min-height: 30px;
+    padding: 0 18px;
+    color: #5b6b80;
+    background: #ffffff;
+    border: 1px solid #d3dbe6;
+    border-radius: 15px;
+    font-size: 8pt;
+    font-weight: 600;
+}
+QPushButton#resultViewTabButton:hover {
+    background: #f3f6fb;
+    color: #174ea6;
+    border-color: #b7cbe9;
+}
+QPushButton#resultViewTabButton:checked {
+    background: #174ea6;
+    border-color: #174ea6;
+    color: #ffffff;
+}
+QPushButton#resultActionButton {
+    min-height: 26px;
+    padding: 0 12px;
+    color: #174ea6;
+    background: #eaf0f8;
+    border: 1px solid #b7cbe9;
+    border-radius: 3px;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QPushButton#resultActionButton:hover {
+    background: #dbe7f6;
+}
+QPushButton#resultActionButton:disabled {
+    color: #b6c0cc;
+    background: #f5f7fa;
+    border-color: #e1e7ee;
 }
 QGraphicsView#resultGraphicsView { background: #fbfcfe; border: 0; }
 QLabel#resultScaleValue { color: #174ea6; font-weight: 700; min-width: 30px; }
@@ -1570,6 +1635,14 @@ QFrame#setupConfigCard QComboBox { min-height: 25px; max-height: 25px; }
 QFrame#setupConfigCard QPushButton#nonlinearSettingsButton {
     min-height: 27px; padding: 0 10px; border-radius: 2px;
     color: #00288e; background: #ffffff; border: 1px solid #1e40af;
+}
+QFrame#setupConfigCard QPushButton#groundMotionPickerButton {
+    min-height: 27px; min-width: 84px; padding: 0 10px; border-radius: 2px;
+    color: #ffffff; background: #00288e; border: 1px solid #00288e;
+    font-weight: 700;
+}
+QFrame#setupConfigCard QPushButton#groundMotionPickerButton:hover {
+    background: #1e40af;
 }
 
 /* Direct 2D modeling and student result workspace. The geometry follows the

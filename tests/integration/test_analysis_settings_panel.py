@@ -315,17 +315,56 @@ def test_selecting_modal_shows_its_own_settings_and_hides_nonlinear() -> None:
     application.processEvents()
 
 
-def test_modal_build_options_is_just_the_mode_count() -> None:
-    """The modal solver's own kwargs (run_modal_analysis) are only num_modes - handing
-    it the nonlinear-shaped dict (system/num_steps/tolerance/...) would raise a
-    TypeError on the unexpected keyword arguments, so this must be a clean, separate
-    shape rather than the nonlinear dict with modal fields merged in."""
+def test_modal_build_options_defaults_to_fixed_mode_count() -> None:
+    """The modal solver's own kwargs (run_modal_analysis) never overlap with the
+    nonlinear-shaped dict (system/num_steps/tolerance/...) - handing it that shape
+    would raise a TypeError on the unexpected keyword arguments, so this must stay a
+    clean, separate shape rather than the nonlinear dict with modal fields merged in."""
     application = QApplication.instance() or QApplication([])
     panel = AnalysisSettingsPanel()
     panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.MODAL))
     panel.num_modes.setValue(6)
 
-    assert panel.build_options() == {"num_modes": 6}
+    assert panel.build_options() == {"extraction_method": "fixed", "num_modes": 6}
+    application.processEvents()
+
+
+def test_modal_build_options_for_target_participation() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.MODAL))
+    panel.modal_extraction_method.setCurrentIndex(
+        panel.modal_extraction_method.findData("target")
+    )
+    panel.modal_target_participation.setValue(95.0)
+    panel.modal_max_modes.setValue(30)
+    for direction, checkbox in panel.modal_target_direction_checks.items():
+        checkbox.setChecked(direction in ("X", "Y", "Z"))
+
+    assert panel.build_options() == {
+        "extraction_method": "target",
+        "target_participation": 95.0,
+        "target_directions": "X,Y,Z",
+        "max_modes": 30,
+    }
+    application.processEvents()
+
+
+def test_modal_extraction_method_toggles_fixed_and_target_field_groups() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.show()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.MODAL))
+
+    assert panel.modal_fixed_group.isVisible()
+    assert not panel.modal_target_group.isVisible()
+
+    panel.modal_extraction_method.setCurrentIndex(
+        panel.modal_extraction_method.findData("target")
+    )
+
+    assert panel.modal_target_group.isVisible()
+    assert not panel.modal_fixed_group.isVisible()
     application.processEvents()
 
 

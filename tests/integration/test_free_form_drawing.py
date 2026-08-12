@@ -629,6 +629,62 @@ def test_node_copy_notifies_the_page_of_the_newly_created_selection() -> None:
     assert seen, "copying nodes must emit selection_changed"
 
 
+def test_selecting_a_member_and_copying_carries_both_its_endpoints() -> None:
+    """MIDAS's separate Node/Element move-copy mode: selecting the *member*
+    (not its two endpoint nodes by hand) and copying must duplicate both ends
+    and reconnect them - this is what "부재만" in the selection filter is for."""
+    canvas = _canvas()
+    canvas.place_point(0.0, 0.0)
+    canvas.place_point(4.0, 0.0)
+    canvas.end_chain()
+    member = next(iter(canvas.elements))
+    canvas.selected_nodes = set()
+    canvas.selected_elements = {member}
+
+    created = canvas.transform_selected_nodes("copy", 0.0, 3.0)
+
+    assert created == 2, "both endpoints of the selected member must be copied"
+    assert len(canvas.elements) == 2, "the selected member must be reconnected at the copy"
+    new_member = next(tag for tag in canvas.elements if tag != member)
+    new_element = canvas.elements[new_member]
+    copied_left = canvas.nodes[new_element.node_i]
+    copied_right = canvas.nodes[new_element.node_j]
+    assert {copied_left.y, copied_right.y} == {3.0}
+    assert canvas.selected_elements == {new_member}
+
+
+def test_selecting_only_nodes_still_copies_without_inventing_a_member() -> None:
+    """The existing, tested plain-copy contract must survive untouched: two
+    endpoint nodes picked by hand (not the member itself) copy as bare points."""
+    canvas = _canvas()
+    left = canvas.place_point(0.0, 0.0)
+    right = canvas.place_point(4.0, 0.0)
+    canvas.end_chain()
+    canvas.selected_nodes = {left, right}
+    canvas.selected_elements = set()
+
+    created = canvas.transform_selected_nodes("copy", 0.0, 3.0)
+
+    assert created == 2
+    assert len(canvas.elements) == 1, "no member was selected, so none should be invented"
+
+
+def test_selecting_a_member_and_moving_drags_both_its_endpoints() -> None:
+    canvas = _canvas()
+    left = canvas.place_point(0.0, 0.0)
+    right = canvas.place_point(4.0, 0.0)
+    canvas.end_chain()
+    member = next(iter(canvas.elements))
+    canvas.selected_nodes = set()
+    canvas.selected_elements = {member}
+
+    moved = canvas.transform_selected_nodes("move", 0.0, 2.0)
+
+    assert moved == 2
+    assert canvas.nodes[left].y == pytest.approx(2.0)
+    assert canvas.nodes[right].y == pytest.approx(2.0)
+
+
 def test_mirroring_without_a_selection_does_nothing() -> None:
     canvas = _canvas()
     canvas.place_point(0.0, 0.0)

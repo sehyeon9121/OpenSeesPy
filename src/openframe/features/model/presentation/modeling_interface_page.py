@@ -1016,6 +1016,13 @@ class ModelingInterfacePage(QFrame):
         Its own 이동·복사·배열 category page in the 우측 워크트리 panel.
         """
         section, root = self._section("노드 이동 · 복사 · 배열", show_title=False)
+        transform_hint = QLabel(
+            "위쪽 툴바의 '선택 필터'를 노드만/부재만으로 바꿔 옮기거나 복사할 대상을 "
+            "고르세요 — 부재를 선택하면 양쪽 끝 노드까지 함께 이동·복사됩니다."
+        )
+        transform_hint.setWordWrap(True)
+        transform_hint.setObjectName("setupSectionHint")
+        root.addWidget(transform_hint)
         self.node_transform_operation = QComboBox()
         self.node_transform_operation.addItem("이동", "move")
         self.node_transform_operation.addItem("복사", "copy")
@@ -1042,7 +1049,7 @@ class ModelingInterfacePage(QFrame):
         form.addRow("반복/배열 개수", self.node_transform_repeat)
         root.addLayout(form)
         self._sync_transform_form()
-        apply_button = QPushButton("선택 노드에 적용")
+        apply_button = QPushButton("선택 항목에 적용")
         apply_button.clicked.connect(self._apply_node_transform)
         root.addWidget(apply_button)
 
@@ -1901,8 +1908,13 @@ class ModelingInterfacePage(QFrame):
 
     def _activate_node_transform_tool(self) -> None:
         self.select_tool.setChecked(True)
-        self._set_mode("select", "이동·복사·배열할 노드를 선택한 뒤 오른쪽 패널에서 적용하세요.")
-        self.selection_filter.setCurrentIndex(self.selection_filter.findData("nodes"))
+        # Deliberately left at whatever the user last set (전체/노드만/부재만) - unlike
+        # the support tool below, move/copy/array/rotate/mirror all understand a
+        # selected member: picking "부재만" and clicking a member carries both its
+        # endpoints along, MIDAS's separate Node/Element move-copy mode.
+        self._set_mode(
+            "select", "이동·복사·배열할 노드 또는 부재를 선택한 뒤 오른쪽 패널에서 적용하세요."
+        )
         self._sync_property_panel()
         self._show_category("move")
 

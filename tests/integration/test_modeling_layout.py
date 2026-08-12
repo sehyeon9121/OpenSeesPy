@@ -340,14 +340,15 @@ def test_inserting_a_member_station_node_from_the_panel_reaches_the_canvas() -> 
     assert spans == {(first, inserted), (inserted, second)}
 
 
-def test_the_node_transform_tool_filters_selection_to_nodes_only() -> None:
-    """이동·복사·배열 works on nodes, so activating it from the rail narrows the
-    selection filter to nodes-only - the same "no dead zone left behind" rule
-    the load/support tools follow, checked below by the returning-to-select test."""
+def test_the_node_transform_tool_leaves_the_selection_filter_alone() -> None:
+    """이동·복사·배열 now understands a selected *member* too (its endpoints move
+    or copy along with it, matching MIDAS's separate Node/Element move-copy
+    mode) - unlike the load/support tools, activating it from the rail must
+    not narrow the filter, or picking "부재만" would be undone immediately."""
     page = _page()
 
     page._activate_node_transform_tool()
-    assert page.selection_filter.currentData() == "nodes"
+    assert page.selection_filter.currentData() == "all"
 
 
 def test_the_two_rail_tools_are_mutually_exclusive() -> None:
