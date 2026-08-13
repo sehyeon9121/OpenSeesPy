@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QToolButton,
@@ -604,6 +605,44 @@ class ModelingInterfacePage(QFrame):
         if button is not None:
             button.setChecked(True)
         self.category_stack.setCurrentIndex(self.category_pages[key])
+        # The category bar (this method) is the one place every category
+        # switch passes through, from either entry point: the rail's 지점
+        # button (_activate_support_tool, which narrows the filter to
+        # "노드만" for convenience *before* calling this) or a direct click
+        # on this bar's own 이동·복사/부재/노드 추가/etc. buttons (which never
+        # touch the filter at all). Without this, a filter narrowed by 지점
+        # stayed narrowed no matter which category was opened next - a
+        # member click during 이동·복사 (or any other non-지점 category)
+        # would be silently ignored with no visible reason why, the same
+        # trap ``_load_target_changed`` stopped causing on the load side.
+        # Widening here whenever a different category shows keeps 지점's
+        # own narrowed filter intact only while its own page is up.
+        if key != "support":
+            self.selection_filter.setCurrentIndex(self.selection_filter.findData("all"))
+        self._resize_editor_pane_to_content()
+
+    def _resize_editor_pane_to_content(self) -> None:
+        """Give the top (editor) pane roughly what its current category
+        actually needs instead of always keeping whatever split ratio was
+        last set - a fixed ratio means a short category (지점: a handful of
+        icons and an angle field, 하중: a few number fields) sits inside a
+        pane sized for the tallest one (노드 추가, 이동·복사), leaving a big
+        empty gap below its content every time. ``self.category_stack``'s
+        sizeHint is already the *current page's own* natural height (see
+        ``_CurrentPageOnlyStack``), so the editor panel's sizeHint - title +
+        selection summary + this one page, nothing else - is exactly how
+        tall the pane needs to be. The SELECTION STATUS pane gets whatever
+        that frees up, respecting both panes' minimum heights."""
+        splitter = getattr(self, "_right_splitter", None)
+        editor_scroll = getattr(self, "_editor_scroll", None)
+        if splitter is None or editor_scroll is None:
+            return
+        total = sum(splitter.sizes())
+        if total <= 0:
+            return
+        content_height = editor_scroll.widget().sizeHint().height() + 2 * splitter.handleWidth()
+        editor_height = max(editor_scroll.minimumHeight(), min(content_height, total - 140))
+        splitter.setSizes([editor_height, total - editor_height])
 
     def _build_property_panel(self) -> QSplitter:
         """우측 워크트리, 세로로 분할된 두 창 — 위쪽은 기존 편집 패널
@@ -621,7 +660,9 @@ class ModelingInterfacePage(QFrame):
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(6)
 
-        splitter.addWidget(self._build_editor_scroll())
+        editor_scroll = self._build_editor_scroll()
+        editor_scroll.setMinimumHeight(160)
+        splitter.addWidget(editor_scroll)
 
         self.selection_status_panel = SelectionStatusPanel()
         status_scroll = QScrollArea()
@@ -634,10 +675,16 @@ class ModelingInterfacePage(QFrame):
 
         # ~65:35 initial split - QSplitter renormalizes setSizes() to its
         # actual available height, so these only need to hold that ratio,
-        # not match the panel's real pixel height.
+        # not match the panel's real pixel height. ``_resize_editor_pane_to_
+        # content`` (called from ``_show_category``) overrides this the
+        # first time a category with real content is chosen - see there for
+        # why a fixed ratio otherwise leaves a short category (지점, 하중, ...)
+        # sitting in a pane sized for the tallest one (노드 추가, 이동·복사).
         splitter.setStretchFactor(0, 65)
         splitter.setStretchFactor(1, 35)
         splitter.setSizes([650, 350])
+        self._right_splitter = splitter
+        self._editor_scroll = editor_scroll
         return splitter
 
     def _build_editor_scroll(self) -> QScrollArea:
@@ -665,6 +712,14 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(self.selection_summary)
 
         self.category_stack = _CurrentPageOnlyStack()
+        # QStackedWidget's own vertical size policy still allows it to grow
+        # past sizeHint() when this scroll area's widgetResizable(True) hands
+        # it more height than the current page needs (every category shorter
+        # than 노드 추가/이동·복사 - 지점, 하중, 노드 유형, 부재, 아치). Capping
+        # it at Maximum forces that surplus into the trailing addStretch(1)
+        # below instead, where it reads as one predictable gap after the
+        # panel rather than the stack silently inflating the current page.
+        self.category_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         self.category_stack.currentChanged.connect(lambda _index: self.category_stack.updateGeometry())
         self.category_pages: dict[str, int] = {}
         empty = QLabel("위에서 카테고리를 고르면\n여기에 설정이 표시됩니다.")
@@ -728,21 +783,25 @@ class ModelingInterfacePage(QFrame):
             custom_layout.addWidget(box, i // 3, i % 3)
         self.support_custom_row.setVisible(False)
         root.addWidget(self.support_custom_row)
+        root.addStretch(1)
         return section
 
     def _build_node_kind_category(self) -> QWidget:
         section, root = self._section("노드 유형", show_title=False)
         root.addWidget(self._build_node_kind_icon_row())
+        root.addStretch(1)
         return section
 
     def _build_member_category(self) -> QWidget:
         section, root = self._section("부재", show_title=False)
         root.addWidget(self._build_member_bar_content())
+        root.addStretch(1)
         return section
 
     def _build_load_category(self) -> QWidget:
         section, root = self._section("하중", show_title=False)
         root.addWidget(self._build_load_bar_content())
+        root.addStretch(1)
         return section
 
     def _build_add_category(self) -> QWidget:
@@ -759,6 +818,7 @@ class ModelingInterfacePage(QFrame):
         root.setSpacing(10)
         root.addWidget(self._build_create_section())
         root.addWidget(self._build_member_edit_section())
+        root.addStretch(1)
         return page
 
     def _build_arch_category(self) -> QWidget:
@@ -808,6 +868,7 @@ class ModelingInterfacePage(QFrame):
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
         root.addWidget(hint)
+        root.addStretch(1)
         return section
 
     def _generate_arch(self) -> None:
@@ -1083,6 +1144,21 @@ class ModelingInterfacePage(QFrame):
         mirror_button = QPushButton("선택 노드 대칭 복사")
         mirror_button.clicked.connect(self._apply_mirror)
         root.addWidget(mirror_button)
+        # Without this, the two setupSectionHint labels above (transform_hint,
+        # mirror_hint) were the only vertically-growable items in this layout -
+        # every field/button/combo around them has a Fixed policy - so whenever
+        # this page was allocated more height than its content needs (which
+        # the scroll area's widgetResizable(True) does for any page shorter
+        # than the splitter's editor pane), Qt had nowhere else to put the
+        # surplus and stretched those two labels instead. A QLabel's text
+        # stays top-aligned inside its own box, so the label itself looked
+        # unchanged while a large blank gap opened up right below it - twice
+        # (once after each hint), not once at the end where it would read as
+        # ordinary trailing whitespace. An explicit trailing stretch gives Qt
+        # something that actually wants the surplus, so every control here
+        # keeps its natural size and any leftover space collects in one place
+        # at the bottom instead.
+        root.addStretch(1)
         return section
 
     def _build_member_edit_section(self) -> QWidget:
@@ -1828,10 +1904,17 @@ class ModelingInterfacePage(QFrame):
 
     def _activate_node_transform_tool(self) -> None:
         self.select_tool.setChecked(True)
-        # Deliberately left at whatever the user last set (전체/노드만/부재만) - unlike
-        # the support tool below, move/copy/array/rotate/mirror all understand a
-        # selected member: picking "부재만" and clicking a member carries both its
-        # endpoints along, MIDAS's separate Node/Element move-copy mode.
+        # Move/copy/array/rotate/mirror all understand a selected member -
+        # picking "부재만" and clicking a member carries both its endpoints
+        # along, MIDAS's separate Node/Element move-copy mode - but if the
+        # 지점 tool ran right before this one, the filter it narrowed to
+        # "노드만" would otherwise still be in effect here, silently
+        # swallowing every member click with no visible reason why (the
+        # exact "복사가 안 된다" trap _activate_select_tool's own filter
+        # reset already exists to prevent). Reset to "전체" on entry, same
+        # as every other tool activator below - the filter dropdown is
+        # still right there to narrow it back down once inside this tool.
+        self.selection_filter.setCurrentIndex(self.selection_filter.findData("all"))
         self._set_mode(
             "select", "이동·복사·배열할 노드 또는 부재를 선택한 뒤 오른쪽 패널에서 적용하세요."
         )

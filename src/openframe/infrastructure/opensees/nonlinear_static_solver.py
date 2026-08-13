@@ -39,11 +39,13 @@ _NONLINEAR_ELEMENT_TYPES = frozenset(
         "corottrusssection",
     }
 )
-#: Geometric transformation types Setup's dropdown may choose between - the only
-#: three whose ``ops.geomTransf(type, tag, *transfArgs)`` argument shape is
-#: identical, which is what makes overriding the type safe (see
-#: ModelCommandCollector.install(geom_transf_override=...)).
-_GEOMETRIC_TRANSFORM_TYPES = frozenset({"Linear", "PDelta", "Corotational"})
+#: Geometric transformation types Setup's dropdown may choose between - the three
+#: overridable types (see ModelCommandCollector.install(geom_transf_override=...))
+#: plus "UseModelDefinition", which installs no override at all and keeps every
+#: element's own geomTransf exactly as the model script/import defines it.
+_OVERRIDE_GEOMETRIC_TRANSFORM_TYPES = frozenset({"Linear", "PDelta", "Corotational"})
+_USE_MODEL_DEFINITION = "UseModelDefinition"
+_GEOMETRIC_TRANSFORM_TYPES = _OVERRIDE_GEOMETRIC_TRANSFORM_TYPES | {_USE_MODEL_DEFINITION}
 #: Adaptive Step's growth rate after a reporting step converges cleanly at its
 #: current starting fraction - geometric, not additive, so recovery from a very
 #: small fraction does not take as many steps as the descent into it did.
@@ -147,6 +149,34 @@ def _load_warnings(collector: ElementLoadCollector, element_tags: list[int]) -> 
             f"부재 {listed}에 등분포하중이 아닌 구간하중이 적용되어, "
             "해당 부재의 다이어그램은 양단값만으로 표시됩니다."
         )
+    ]
+
+
+def _geometric_transform_reference_warnings(collector: ModelCommandCollector) -> list[str]:
+    """Elements whose geomTransf reference could not be resolved with
+    confidence (an ambiguous/unrecognized argument shape - see
+    ModelCommandCollector._element_properties) - surfaced as a warning,
+    never guessed at.
+
+    Every 3D beam-column whose reference *was* resolved is instead validated
+    live, during model building itself: ModelCommandCollector's own
+    ops.element(...) wrapper raises before calling through to real OpenSeesPy
+    if the referenced geomTransf's orientation vector is missing, zero,
+    parallel to the member's own axis, or otherwise degenerate (see
+    model_collector.py's ``_raise_if_orientation_invalid``) - required
+    because OpenSeesPy itself does not raise a catchable Python exception for
+    a degenerate 3D orientation vector, it crashes the whole process. That
+    check runs unconditionally, for Import and Direct Modeling alike and
+    regardless of GEOMETRIC TRANSFORMATION policy, so by the time this
+    function runs the model has already built successfully and only the
+    "could not judge at all" elements remain to report.
+    """
+    if collector.ndm != 3:
+        return []
+    return [
+        f"부재 {tag}의 geomTransf 참조를 해석하지 못해 3D orientation 검증을 "
+        "건너뛰었습니다."
+        for tag in sorted(collector.unparsed_transform_references)
     ]
 
 
@@ -407,10 +437,17 @@ def run_nonlinear_static_analysis(
     Set ``automatic_recovery=False`` to disable both of these and run exactly the
     configured algorithm/increment, failing the run at the first non-convergent step.
 
-    ``geometric_transform_type`` (``"Linear"``/``"PDelta"``/``"Corotational"``)
-    overrides every ``ops.geomTransf(...)`` call the source script makes, so a
-    single Setup choice controls P-Delta/large-displacement behavior regardless of
-    what the imported script itself specifies.
+    ``geometric_transform_type`` (``"Linear"``/``"PDelta"``/``"Corotational"``) overrides
+    every ``ops.geomTransf(...)`` call the source script makes, so a single Setup choice
+    controls P-Delta/large-displacement behavior regardless of what the script itself
+    specifies - if any transform in the model is not one of those three (unknown or
+    unsupported), the override is rejected atomically for the whole run rather than
+    applied to some elements and not others. ``"UseModelDefinition"`` installs no
+    override at all: every element keeps exactly the transformation its own script
+    defines. Either way, every 3D beam-column's orientation vector is validated before
+    the analysis starts (missing/zero/parallel-to-axis vector, or a degenerate member
+    axis all block the run outright); only a transformation reference this project could
+    not confidently parse is reported as a warning instead.
 
     ``target_load_factor`` scales ``LoadControl``'s per-step increment
     (``target_load_factor / num_steps``); ``adaptive_step``, when enabled, carries
@@ -468,14 +505,23 @@ def run_nonlinear_static_analysis(
     # to restore the push pattern after the gravity-only phase, so a 3D model run
     # with ``gravity_pattern`` set would have actually pushed with the wrong
     # distributed load, not merely reported one.
+    # "UseModelDefinition" installs no override at all - every element keeps
+    # exactly the geomTransf its own script/import defines (Setup's default
+    # for Import; Direct Modeling always sends an explicit Linear/PDelta/
+    # Corotational instead, see analysis_settings_panel.py).
+    effective_geom_transf_override = (
+        None if geometric_transform_type == _USE_MODEL_DEFINITION else geometric_transform_type
+    )
     property_collector = ModelCommandCollector()
-    property_collector.install(geom_transf_override=geometric_transform_type)
+    property_collector.install(geom_transf_override=effective_geom_transf_override)
     try:
         run_model_script(source)
     finally:
         property_collector.restore()
     load_collector = property_collector.element_loads
     _report_progress(5, "Model built; preparing nonlinear solution strategy...")
+
+    orientation_warnings = _geometric_transform_reference_warnings(property_collector)
 
     node_tags = [int(tag) for tag in ops.getNodeTags()]
     element_tags = [int(tag) for tag in ops.getEleTags()]
@@ -526,7 +572,7 @@ def run_nonlinear_static_analysis(
     ops.test(test_type, tolerance, max_iterations)
     ops.algorithm(algorithm)
 
-    messages: list[str] = []
+    messages: list[str] = list(orientation_warnings)
     baseline_base_shear = 0.0
     total_attempts = 0
     total_substeps = 0
@@ -712,6 +758,7 @@ def run_nonlinear_static_analysis(
         },
         "nonlinearity": {
             "geometric_transform_type": geometric_transform_type,
+            "geometric_transform_override_applied": effective_geom_transf_override is not None,
             "material_nonlinearity_detected": detection.material_or_section,
         },
         "messages": messages,

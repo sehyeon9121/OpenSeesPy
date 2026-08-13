@@ -895,6 +895,32 @@ def test_splitter_pane_heights_can_be_dragged_by_the_user() -> None:
     assert application is QApplication.instance()
 
 
+def test_a_short_category_shrinks_the_editor_pane_instead_of_leaving_it_blank() -> None:
+    """지점 (a handful of icons + one angle field) needs far less height than
+    이동·복사 (dropdown + dX/dY/repeat + apply + mirror row + mirror button) -
+    the editor pane should size itself to whichever is actually showing
+    rather than keeping one fixed split that leaves a short category's page
+    sitting in mostly blank space."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    page.resize(1600, 900)
+    page.show()
+    QApplication.processEvents()
+
+    page._show_category("move")
+    QApplication.processEvents()
+    tall_editor_height = page._right_splitter.sizes()[0]
+
+    page._show_category("support")
+    QApplication.processEvents()
+    short_editor_height = page._right_splitter.sizes()[0]
+
+    assert short_editor_height < tall_editor_height
+    # Still tall enough for its own title + content, never squeezed away.
+    assert short_editor_height >= page._editor_scroll.minimumHeight()
+    assert application is QApplication.instance()
+
+
 def test_editor_and_status_panes_are_independent_scroll_areas() -> None:
     """15. 상단과 하단의 독립 스크롤."""
     application = QApplication.instance() or QApplication([])

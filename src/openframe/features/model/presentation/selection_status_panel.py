@@ -434,6 +434,17 @@ class SelectionStatusPanel(QWidget):
             checks.append(self._close(snapshot.dims.get(key), value))
         return all(checks)
 
+    @staticmethod
+    def _sub_heading(form: QFormLayout, text: str) -> None:
+        """A full-width divider label inside an existing form - groups
+        related rows (dimensions, then computed properties) under one
+        SECTION card instead of a separate bordered card per group, which
+        is what previously turned one member's section info into three
+        stacked cards for what is really one topic."""
+        label = QLabel(text)
+        label.setObjectName("setupSectionSubHeading")
+        form.addRow(label)
+
     def _add_section_material_cards(self, snapshot: _SectionSnapshot, unit: UnitSystem) -> None:
         _, section_layout = self._card("SECTION")
         section_form = self._form_in(section_layout)
@@ -454,20 +465,18 @@ class SelectionStatusPanel(QWidget):
         except SectionDimensionError:
             fields = ()
         if fields:
-            _, geometry_layout = self._card("Geometry")
-            geometry_form = self._form_in(geometry_layout)
+            self._sub_heading(section_form, "GEOMETRY")
             for dim_field in fields:
-                geometry_form.addRow(
+                section_form.addRow(
                     dim_field.label,
                     self._value_label(self._format_or_dash(snapshot.dims.get(dim_field.key), unit.length)),
                 )
 
-        _, properties_layout = self._card("SECTION PROPERTIES")
-        properties_form = self._form_in(properties_layout)
-        properties_form.addRow("A", self._value_label(self._format_or_dash(snapshot.area, f"{unit.length}²")))
-        properties_form.addRow("Iy", self._value_label(self._format_or_dash(snapshot.iy, f"{unit.length}⁴")))
-        properties_form.addRow("Iz", self._value_label(self._format_or_dash(snapshot.iz, f"{unit.length}⁴")))
-        properties_form.addRow("J", self._value_label(self._format_or_dash(snapshot.j, f"{unit.length}⁴")))
+        self._sub_heading(section_form, "PROPERTIES")
+        section_form.addRow("A", self._value_label(self._format_or_dash(snapshot.area, f"{unit.length}²")))
+        section_form.addRow("Iy", self._value_label(self._format_or_dash(snapshot.iy, f"{unit.length}⁴")))
+        section_form.addRow("Iz", self._value_label(self._format_or_dash(snapshot.iz, f"{unit.length}⁴")))
+        section_form.addRow("J", self._value_label(self._format_or_dash(snapshot.j, f"{unit.length}⁴")))
 
         _, material_layout = self._card("MATERIAL")
         material_form = self._form_in(material_layout)
@@ -502,14 +511,14 @@ class SelectionStatusPanel(QWidget):
             length = math.dist((node_i.x, node_i.y, node_i.z), (node_j.x, node_j.y, node_j.z))
             form.addRow("Length", self._value_label(f"{length:.3f} {unit.length}"))
 
-        snapshot = self._section_snapshot(element)
-        self._add_section_material_cards(snapshot, unit)
-
-        _, status_layout = self._card("STATUS")
         applied = self._is_applied(element, pending_edit)
         state, text = ("applied", "Applied") if applied else ("pending", "Pending Changes")
         badge_row, badge = self._badge_row(state, text)
-        status_layout.addWidget(badge_row)
+        form.addRow("Status", badge_row)
+
+        snapshot = self._section_snapshot(element)
+        self._add_section_material_cards(snapshot, unit)
+
         self._status_elements = [element]
         self._status_badges = [badge]
 

@@ -90,6 +90,12 @@ def export_opensees_script(
     lines: list[str] = [
         "import openseespy.opensees as ops",
         "",
+        # Read literally (never executed) by OpenSeesModelImporter to tell a
+        # canvas-authored model apart from a hand-authored/third-party import
+        # - see model_importer.py's _apply_model_origin, which is the only
+        # consumer of this declaration.
+        "OPENFRAME_MODEL_ORIGIN = 'direct'",
+        "",
         "ops.wipe()",
         f"ops.model('basic', '-ndm', 2, '-ndf', {model.ndf})",
         "",

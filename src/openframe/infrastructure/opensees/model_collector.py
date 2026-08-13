@@ -5,6 +5,13 @@ from typing import Any
 
 import openseespy.opensees as ops
 
+from openframe.core.domain.geometric_transform import (
+    ORIENTATION_ERROR_MESSAGES,
+    ORIENTATION_VECTOR_MISSING,
+    OVERRIDABLE_TRANSFORM_TYPES,
+    GeometricTransform,
+    validate_orientation_vector,
+)
 from openframe.infrastructure.opensees.element_load_collector import ElementLoadCollector
 from openframe.infrastructure.opensees.script_execution import AnalysisStageTracker
 
@@ -24,6 +31,17 @@ class ModelCommandCollector:
         self.material_types: set[str] = set()
         self.section_types: set[str] = set()
         self.geom_transf_types: set[str] = set()
+        #: Every ``ops.geomTransf(...)`` call, keyed by tag, as originally
+        #: given by the script - captured before any override substitution so
+        #: Import's own collection (which never installs an override) always
+        #: preserves the model's real transformation data. Values:
+        #: ``{"tag": int, "transform_type": str, "arguments": list[float|str]}``.
+        self.geom_transf_definitions: dict[int, dict[str, Any]] = {}
+        #: Beam-column element tags whose ``geomTransf``/integration argument
+        #: position could not be determined from the call shape alone (not
+        #: even attempted with a guess) - surfaced as a warning, never as a
+        #: silently wrong tag.
+        self.unparsed_transform_references: set[int] = set()
         self.element_loads = ElementLoadCollector()
         self._originals: dict[str, Callable[..., Any]] = {}
         self._tracker: AnalysisStageTracker | None = None
@@ -87,6 +105,9 @@ class ModelCommandCollector:
             ],
             "nodal_loads": self.loads,
             "element_loads": self._element_load_payload(),
+            "geometric_transforms": [
+                dict(definition) for _tag, definition in sorted(self.geom_transf_definitions.items())
+            ],
             "metadata": {"source": "openseespy-worker"},
         }
 
@@ -110,6 +131,8 @@ class ModelCommandCollector:
                 self.material_types.clear()
                 self.section_types.clear()
                 self.geom_transf_types.clear()
+                self.geom_transf_definitions.clear()
+                self.unparsed_transform_references.clear()
                 self.element_loads.uniform_loads.clear()
                 self.element_loads.uniform_loads_3d.clear()
                 self.element_loads.uniform_load_cases.clear()
@@ -154,29 +177,100 @@ class ModelCommandCollector:
         x, y, z = (*values, 0.0, 0.0)[:3]
         return {"tag": int(tag), "x": x, "y": y, "z": z, "ndf": self.ndf}
 
+    #: Beam-column element types that reference a ``geomTransf`` tag - the
+    #: only ones this project parses a transformation reference out of.
+    _TRANSFORM_BEAM_COLUMN_TYPES = frozenset(
+        {"elasticbeamcolumn", "dispbeamcolumn", "forcebeamcolumn"}
+    )
+
     def _wrap_element(self, original: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped(element_type: str, tag: int, *arguments: Any, **kwargs: Any) -> Any:
+            if len(arguments) < 2:
+                return original(element_type, tag, *arguments, **kwargs)
+            properties, transf_tag, integration_tag = self._element_properties(
+                element_type, arguments
+            )
+            is_transform_element = element_type.lower() in self._TRANSFORM_BEAM_COLUMN_TYPES
+            if is_transform_element and transf_tag is None:
+                self.unparsed_transform_references.add(int(tag))
+            if is_transform_element and transf_tag is not None and self.ndm == 3:
+                # Checked - and raised, if invalid - *before* the real
+                # ops.element(...) call below: OpenSeesPy's own 3D local-axis
+                # computation does not raise a catchable Python exception on a
+                # zero-length or member-axis-parallel orientation vector, it
+                # crashes the whole process. A missing vecxz is the one case
+                # OpenSeesPy already rejects cleanly on its own (at the
+                # geomTransf(...) call, before this element is ever reached);
+                # this still checks it defensively since nothing here can
+                # assume that will always stay true.
+                self._raise_if_orientation_invalid(
+                    tag, arguments[0], arguments[1], transf_tag
+                )
             result = original(element_type, tag, *arguments, **kwargs)
-            if len(arguments) >= 2:
-                self.elements[int(tag)] = {
-                    "tag": int(tag),
-                    "node_i": int(arguments[0]),
-                    "node_j": int(arguments[1]),
-                    "element_type": str(element_type),
-                    "properties": self._element_properties(element_type, arguments),
-                }
+            self.elements[int(tag)] = {
+                "tag": int(tag),
+                "node_i": int(arguments[0]),
+                "node_j": int(arguments[1]),
+                "element_type": str(element_type),
+                "properties": properties,
+                "transf_tag": transf_tag,
+                "integration_tag": integration_tag,
+            }
             return result
 
         return wrapped
+
+    def _raise_if_orientation_invalid(
+        self, tag: int, node_i_tag: Any, node_j_tag: Any, transf_tag: int
+    ) -> None:
+        """Block a 3D beam-column whose ``geomTransf`` orientation vector
+        cannot define local axes - missing, zero-length, parallel to the
+        member's own axis, or otherwise degenerate. Only genuine parsing
+        uncertainty (the transform definition or an endpoint's coordinates
+        could not be resolved yet) is left unjudged here, never guessed at."""
+        definition = self.geom_transf_definitions.get(int(transf_tag))
+        if definition is None:
+            return
+        node_i = self.nodes.get(self._as_int(node_i_tag))
+        node_j = self.nodes.get(self._as_int(node_j_tag))
+        if node_i is None or node_j is None:
+            return
+        axis_vector = (
+            node_j["x"] - node_i["x"],
+            node_j["y"] - node_i["y"],
+            node_j["z"] - node_i["z"],
+        )
+        transform = GeometricTransform(
+            tag=int(definition["tag"]),
+            transform_type=str(definition["transform_type"]),
+            arguments=tuple(definition["arguments"]),
+        )
+        reason = validate_orientation_vector(transform.vector_xz, axis_vector)
+        if reason is not None:
+            raise RuntimeError(
+                f"부재 {tag}(geomTransf {transf_tag}) 3D orientation 검증 실패: "
+                f"{ORIENTATION_ERROR_MESSAGES[reason]}. 해석을 시작하지 않았습니다."
+            )
 
     def _element_properties(
         self,
         element_type: str,
         arguments: tuple[Any, ...],
-    ) -> dict[str, float | str]:
+    ) -> tuple[dict[str, float | str], int | None, int | None]:
+        """Return ``(properties, transf_tag, integration_tag)``.
+
+        ``transf_tag``/``integration_tag`` are parsed only for the openseespy
+        Python-binding argument shapes actually documented for each element
+        (no legacy Tcl-only positional forms) - when a call does not match
+        that shape, both come back ``None`` rather than a guessed index, and
+        the caller records the element as unparsed.
+        """
         properties: dict[str, float | str] = {}
+        transf_tag: int | None = None
+        integration_tag: int | None = None
         element_name = element_type.lower()
         if element_name == "elasticbeamcolumn" and self.ndm == 3 and len(arguments) >= 9:
+            transf_tag = self._as_int(arguments[8])
             properties.update(
                 {
                     "A": float(arguments[2]),
@@ -189,6 +283,7 @@ class ModelCommandCollector:
                 }
             )
         elif element_name == "elasticbeamcolumn" and len(arguments) >= 6:
+            transf_tag = self._as_int(arguments[5])
             properties.update(
                 {
                     "A": float(arguments[2]),
@@ -197,6 +292,16 @@ class ModelCommandCollector:
                     "transf_tag": str(arguments[5]),
                 }
             )
+        elif element_name in {"dispbeamcolumn", "forcebeamcolumn"} and len(arguments) >= 4:
+            # openseespy's Python binding only exposes the integration-object
+            # form for both: (eleTag, iNode, jNode, transfTag, integrationTag,
+            # <optional flags>) - no legacy inline numIntgrPts/secTag form.
+            transf_tag = self._as_int(arguments[2])
+            integration_tag = self._as_int(arguments[3])
+            if transf_tag is not None:
+                properties["transf_tag"] = str(arguments[2])
+            if integration_tag is not None:
+                properties["integration_tag"] = str(arguments[3])
         elif element_name in {"truss", "trusssection", "corottruss"} and len(arguments) >= 4:
             properties.update(
                 {
@@ -204,7 +309,14 @@ class ModelCommandCollector:
                     "material_tag": str(arguments[3]),
                 }
             )
-        return properties
+        return properties, transf_tag, integration_tag
+
+    @staticmethod
+    def _as_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _wrap_fix(self, original: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped(node_tag: int, *restraints: Any, **kwargs: Any) -> Any:
@@ -250,9 +362,64 @@ class ModelCommandCollector:
 
     def _wrap_geom_transf(self, original: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped(command_type: str, *arguments: Any, **kwargs: Any) -> Any:
+            if (
+                self._geom_transf_override is not None
+                and str(command_type) not in OVERRIDABLE_TRANSFORM_TYPES
+            ):
+                # Setup's GEOMETRIC TRANSFORMATION override is all-or-nothing:
+                # a model containing even one transform type the override
+                # cannot safely substitute (unknown, or a real OpenSees type
+                # this project does not support overriding) must fail the
+                # entire run rather than override some elements and silently
+                # leave others on their original type - raised here, before
+                # the model finishes building and before any analysis
+                # command runs, so nothing partial is ever reported.
+                tag_text = str(arguments[0]) if arguments else "?"
+                raise RuntimeError(
+                    f"GEOMETRIC TRANSFORMATION 재정의({self._geom_transf_override})는 "
+                    f"tag {tag_text}의 '{command_type}' 변환에 적용할 수 없습니다. "
+                    "지원하지 않거나 알 수 없는 변환이 포함된 모델은 전체 재정의를 적용할 수 "
+                    "없으므로 해석을 시작하지 않았습니다. GEOMETRIC TRANSFORMATION을 "
+                    "'Use model definition'으로 바꾸거나 모델의 변환을 Linear/PDelta/"
+                    "Corotational로 통일하세요."
+                )
+            if self.ndm == 3 and arguments:
+                # OpenSeesPy itself already rejects a 3D geomTransf missing
+                # its orientation vector (vecxz) - but with a cryptic native
+                # message ("insufficient arguments for LinearCrdTransf3d"),
+                # not this project's own clear one. Caught here, before that
+                # call, so every orientation failure reads the same way.
+                vecxz_candidate = arguments[1:4]
+                if len(vecxz_candidate) < 3 or not all(
+                    isinstance(value, (int, float)) for value in vecxz_candidate
+                ):
+                    raise RuntimeError(
+                        f"geomTransf {arguments[0]}: "
+                        f"{ORIENTATION_ERROR_MESSAGES[ORIENTATION_VECTOR_MISSING]}. "
+                        "해석을 시작하지 않았습니다."
+                    )
             effective_type = self._geom_transf_override or command_type
             result = original(effective_type, *arguments, **kwargs)
             self.geom_transf_types.add(str(effective_type))
+            if arguments:
+                tag = self._as_int(arguments[0])
+                if tag is not None:
+                    # Recorded under the script's own original type, never the
+                    # (possibly overridden) effective one - Import's own
+                    # collection never installs an override, so this is
+                    # already the model's true definition there; when this
+                    # collector *is* running with an override (an analysis
+                    # run, not an import), the stored StructuralModel/payload
+                    # this feeds is never touched, so the override's effect
+                    # stays confined to the transient analysis-only model.
+                    self.geom_transf_definitions[tag] = {
+                        "tag": tag,
+                        "transform_type": str(command_type),
+                        "arguments": [
+                            float(value) if isinstance(value, (int, float)) else str(value)
+                            for value in arguments[1:]
+                        ],
+                    }
             return result
 
         return wrapped
@@ -317,6 +484,8 @@ class ModelCommandCollector:
                     "node_j": int(nodes[1]),
                     "element_type": "unknown",
                     "properties": {},
+                    "transf_tag": None,
+                    "integration_tag": None,
                 }
 
         for raw_tag in ops.getFixedNodes():

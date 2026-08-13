@@ -7,6 +7,15 @@ from openframe.core.domain.analysis_capabilities import (
     ComponentField,
     FieldState,
 )
+from openframe.core.domain.geometric_transform import (
+    ORIENTATION_LOCAL_AXES_FAILED,
+    ORIENTATION_VECTOR_MISSING,
+    ORIENTATION_VECTOR_PARALLEL_TO_AXIS,
+    ORIENTATION_VECTOR_ZERO,
+    OVERRIDABLE_TRANSFORM_TYPES,
+    GeometricTransform,
+    validate_orientation_vector,
+)
 from openframe.core.domain.ground_motion import GroundMotion, GroundMotionRecord, GroundMotionSource
 from openframe.core.domain.material_section_db import (
     DataStatus,
@@ -80,6 +89,11 @@ __all__ = [
     "DEFAULT_UNIT_SYSTEM",
     "FORCE_UNITS",
     "LENGTH_UNITS",
+    "ORIENTATION_LOCAL_AXES_FAILED",
+    "ORIENTATION_VECTOR_MISSING",
+    "ORIENTATION_VECTOR_PARALLEL_TO_AXIS",
+    "ORIENTATION_VECTOR_ZERO",
+    "OVERRIDABLE_TRANSFORM_TYPES",
     "STANDARD_GRAVITY_M_S2",
     "SUPPORTED_SHAPES",
     "TIME_UNITS",
@@ -95,6 +109,7 @@ __all__ = [
     "Element",
     "ElementResult",
     "FieldState",
+    "GeometricTransform",
     "GroundMotion",
     "GroundMotionRecord",
     "GroundMotionSource",
@@ -139,4 +154,5 @@ __all__ = [
     "mm4_to_length_unit",
     "mm_to_length_unit",
     "mpa_to_stress_unit",
+    "validate_orientation_vector",
 ]

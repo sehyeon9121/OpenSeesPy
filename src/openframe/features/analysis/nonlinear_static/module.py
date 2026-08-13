@@ -64,7 +64,12 @@ class NonlinearStaticAnalysis(AnalysisModule):
             "system": {"BandGeneral", "UmfPack", "ProfileSPD"},
             "constraints_type": {"Plain", "Transformation"},
             "numberer": {"RCM", "Plain", "AMD"},
-            "geometric_transform_type": {"Linear", "PDelta", "Corotational"},
+            "geometric_transform_type": {
+                "Linear",
+                "PDelta",
+                "Corotational",
+                "UseModelDefinition",
+            },
         }
         for field, allowed in allowed_values.items():
             value = options.get(field)

@@ -688,6 +688,266 @@ class TestGeometricTransformType:
         finally:
             ops.wipe()
 
+    def test_use_model_definition_installs_no_override_and_keeps_the_scripts_choice(
+        self, tmp_path: Path
+    ) -> None:
+        """"UseModelDefinition" must behave exactly like the script's own
+        geomTransf('Linear', 1) - no override installed at all - so this
+        otherwise-elastic model still gets the "might behave elastically"
+        advisory, exactly as the explicit-Linear default case does."""
+        source = _write_pdelta_cantilever(tmp_path)
+        try:
+            result = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=10,
+                gravity_pattern=1,
+                lateral_pattern=2,
+                gravity_steps=5,
+                geometric_transform_type="UseModelDefinition",
+            )
+        finally:
+            ops.wipe()
+
+        assert result["status"] == "completed"
+        assert result["nonlinearity"]["geometric_transform_type"] == "UseModelDefinition"
+        assert result["nonlinearity"]["geometric_transform_override_applied"] is False
+        assert any("탄성 증분해석" in message for message in result["messages"])
+
+    def test_use_model_definition_preserves_a_pdelta_choice_the_script_itself_made(
+        self, tmp_path: Path
+    ) -> None:
+        """Proof "Use model definition" reflects the *model's own* transform,
+        not a hardcoded default: a script whose own geomTransf is PDelta must
+        show the same P-Delta amplification under "UseModelDefinition" as it
+        does under an explicit PDelta override, with no override installed."""
+        source = tmp_path / "pdelta_by_script.py"
+        source.write_text(
+            _PDELTA_CANTILEVER_MODEL.replace("ops.geomTransf('Linear', 1)", "ops.geomTransf('PDelta', 1)"),
+            encoding="utf-8",
+        )
+        try:
+            linear = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=10,
+                gravity_pattern=1,
+                lateral_pattern=2,
+                gravity_steps=5,
+                geometric_transform_type="Linear",
+            )
+            ops.wipe()
+            model_defined = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                num_steps=10,
+                gravity_pattern=1,
+                lateral_pattern=2,
+                gravity_steps=5,
+                geometric_transform_type="UseModelDefinition",
+            )
+        finally:
+            ops.wipe()
+
+        assert model_defined["nonlinearity"]["geometric_transform_override_applied"] is False
+        # No "might behave elastically" advisory - the script's own PDelta is
+        # real geometric nonlinearity, correctly detected without any override.
+        assert model_defined["messages"] == []
+        linear_tip = linear["load_displacement_curve"][-1]["control_displacement"]
+        model_defined_tip = model_defined["load_displacement_curve"][-1]["control_displacement"]
+        assert model_defined_tip > linear_tip * 1.10
+
+    def test_override_atomically_rejects_a_model_containing_any_unsupported_transform(
+        self, tmp_path: Path
+    ) -> None:
+        """A second, unsupported geomTransf tag (never even referenced by any
+        element) must block the override for the *entire* model - the
+        unsupported call itself raises before reaching real OpenSeesPy at
+        all, so nothing partial is ever built or analyzed."""
+        source = tmp_path / "mixed_transform.py"
+        source.write_text(
+            """
+import openseespy.opensees as ops
+ops.wipe()
+ops.model('basic', '-ndm', 2, '-ndf', 3)
+ops.node(1, 0.0, 0.0)
+ops.node(2, 0.0, 3.0)
+ops.fix(1, 1, 1, 1)
+ops.geomTransf('Linear', 1)
+ops.geomTransf('Corotational02', 2)
+ops.element('elasticBeamColumn', 1, 1, 2, 0.01, 200000.0, 0.0002, 1)
+ops.timeSeries('Linear', 1)
+ops.pattern('Plain', 1, 1)
+ops.load(2, 1.0, 0.0, 0.0)
+""",
+            encoding="utf-8",
+        )
+        try:
+            with pytest.raises(RuntimeError, match="GEOMETRIC TRANSFORMATION"):
+                run_nonlinear_static_analysis(
+                    source,
+                    control_node=2,
+                    control_dof=1,
+                    geometric_transform_type="PDelta",
+                )
+        finally:
+            ops.wipe()
+
+    def test_use_model_definition_does_not_reject_the_same_mixed_model(
+        self, tmp_path: Path
+    ) -> None:
+        """The atomic override guard only ever fires when an override is
+        actually requested - "Use model definition" installs none at all, so
+        a real, valid geomTransf type this project simply does not offer as
+        an override target must still build and analyze normally."""
+        source = tmp_path / "unreferenced_transform.py"
+        source.write_text(
+            """
+import openseespy.opensees as ops
+ops.wipe()
+ops.model('basic', '-ndm', 2, '-ndf', 3)
+ops.node(1, 0.0, 0.0)
+ops.node(2, 0.0, 3.0)
+ops.fix(1, 1, 1, 1)
+ops.geomTransf('Corotational', 1)
+ops.element('elasticBeamColumn', 1, 1, 2, 0.01, 200000.0, 0.0002, 1)
+ops.timeSeries('Linear', 1)
+ops.pattern('Plain', 1, 1)
+ops.load(2, 1.0, 0.0, 0.0)
+""",
+            encoding="utf-8",
+        )
+        try:
+            result = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=1,
+                geometric_transform_type="UseModelDefinition",
+            )
+        finally:
+            ops.wipe()
+
+        assert result["status"] == "completed"
+
+
+def _write_3d_cantilever_with_transform(tmp_path: Path, geom_transf_call: str) -> Path:
+    source = tmp_path / "cantilever_3d_orientation.py"
+    source.write_text(
+        f"""
+import openseespy.opensees as ops
+ops.wipe()
+ops.model('basic', '-ndm', 3, '-ndf', 6)
+ops.node(1, 0.0, 0.0, 0.0)
+ops.node(2, 4.0, 0.0, 0.0)
+ops.fix(1, 1, 1, 1, 1, 1, 1)
+{geom_transf_call}
+ops.element(
+    'elasticBeamColumn', 1, 1, 2,
+    0.01, 200000000.0, 80000000.0, 0.0001, 0.0002, 0.0002, 1,
+)
+ops.timeSeries('Linear', 1)
+ops.pattern('Plain', 1, 1)
+ops.load(2, 0.0, 0.0, -0.001, 0.0, 0.0, 0.0)
+""",
+        encoding="utf-8",
+    )
+    return source
+
+
+class TestThreeDOrientationValidation:
+    """Every 3D beam-column's orientation vector must be checked before the
+    analysis starts, regardless of GEOMETRIC TRANSFORMATION policy - this is
+    unconditional, not something "Use model definition" vs. an explicit
+    override changes."""
+
+    def test_missing_orientation_vector_blocks_the_run(self, tmp_path: Path) -> None:
+        source = _write_3d_cantilever_with_transform(tmp_path, "ops.geomTransf('Linear', 1)")
+        try:
+            with pytest.raises(RuntimeError, match="orientation"):
+                run_nonlinear_static_analysis(
+                    source,
+                    control_node=2,
+                    control_dof=3,
+                    geometric_transform_type="UseModelDefinition",
+                )
+        finally:
+            ops.wipe()
+
+    def test_zero_orientation_vector_blocks_the_run(self, tmp_path: Path) -> None:
+        source = _write_3d_cantilever_with_transform(
+            tmp_path, "ops.geomTransf('Linear', 1, 0.0, 0.0, 0.0)"
+        )
+        try:
+            with pytest.raises(RuntimeError, match="orientation"):
+                run_nonlinear_static_analysis(
+                    source,
+                    control_node=2,
+                    control_dof=3,
+                    geometric_transform_type="UseModelDefinition",
+                )
+        finally:
+            ops.wipe()
+
+    def test_orientation_vector_parallel_to_member_axis_blocks_the_run(
+        self, tmp_path: Path
+    ) -> None:
+        # The member runs along global X (node 1 -> node 2); a vecxz also
+        # along X is degenerate - it cannot define a local z axis.
+        source = _write_3d_cantilever_with_transform(
+            tmp_path, "ops.geomTransf('Linear', 1, 1.0, 0.0, 0.0)"
+        )
+        try:
+            with pytest.raises(RuntimeError, match="orientation"):
+                run_nonlinear_static_analysis(
+                    source,
+                    control_node=2,
+                    control_dof=3,
+                    geometric_transform_type="UseModelDefinition",
+                )
+        finally:
+            ops.wipe()
+
+    def test_valid_orientation_vector_does_not_block_the_run(self, tmp_path: Path) -> None:
+        source = _write_3d_cantilever_with_transform(
+            tmp_path, "ops.geomTransf('Linear', 1, 0.0, 0.0, 1.0)"
+        )
+        try:
+            result = run_nonlinear_static_analysis(
+                source,
+                control_node=2,
+                control_dof=3,
+                geometric_transform_type="UseModelDefinition",
+            )
+        finally:
+            ops.wipe()
+
+        assert result["status"] == "completed"
+
+    def test_orientation_is_blocked_even_under_an_explicit_override(
+        self, tmp_path: Path
+    ) -> None:
+        """Overriding the transform *type* (Linear/PDelta/Corotational) never
+        touches the vecxz arguments, which still come from the model's own
+        geomTransf call - so a bad vector blocks the run even when Setup asks
+        for an explicit override, exactly as it does under "Use model
+        definition"."""
+        source = _write_3d_cantilever_with_transform(
+            tmp_path, "ops.geomTransf('Linear', 1, 0.0, 0.0, 0.0)"
+        )
+        try:
+            with pytest.raises(RuntimeError, match="orientation"):
+                run_nonlinear_static_analysis(
+                    source,
+                    control_node=2,
+                    control_dof=3,
+                    geometric_transform_type="PDelta",
+                )
+        finally:
+            ops.wipe()
+
 
 class TestTargetLoadFactor:
     """TARGET LOAD FACTOR scales LoadControl's per-step increment - a request

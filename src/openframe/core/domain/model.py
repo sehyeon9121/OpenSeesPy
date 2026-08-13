@@ -4,6 +4,8 @@ import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from openframe.core.domain.geometric_transform import GeometricTransform
+
 
 class SupportKind(StrEnum):
     FIXED = "fixed"
@@ -42,6 +44,15 @@ class Element:
     properties: dict[str, float | str] = field(default_factory=dict)
     moment_release_i: bool = False
     moment_release_j: bool = False
+    #: Tag of the ``geomTransf(...)`` this element references, when it is one
+    #: of the transformation-bearing beam-column types (``elasticBeamColumn``,
+    #: ``dispBeamColumn``, ``forceBeamColumn``) and the reference could be
+    #: parsed - look it up in ``StructuralModel.geometric_transforms``.
+    #: ``None`` for non-beam-column elements or when parsing failed.
+    transf_tag: int | None = None
+    #: Tag of the ``beamIntegration(...)``/section this element references
+    #: (``dispBeamColumn``/``forceBeamColumn`` only). ``None`` otherwise.
+    integration_tag: int | None = None
 
     @property
     def release_count(self) -> int:
@@ -150,6 +161,10 @@ class StructuralModel:
     nodal_loads: list[NodalLoad] = field(default_factory=list)
     element_loads: list[UniformElementLoad] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
+    #: Every ``ops.geomTransf(...)`` call collected from the model, keyed by
+    #: tag - absent (``{}``) for models imported before this field existed
+    #: (old payloads), which is why every reader treats it as optional.
+    geometric_transforms: dict[int, GeometricTransform] = field(default_factory=dict)
 
     def validate(self) -> list[str]:
         """Return validation errors without depending on a GUI dialog."""

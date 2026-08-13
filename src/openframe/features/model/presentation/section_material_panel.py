@@ -61,7 +61,7 @@ from openframe.core.domain import (
     mm_to_length_unit,
     mpa_to_stress_unit,
 )
-from openframe.features.model.presentation.safe_spinbox import SafeDoubleSpinBox
+from openframe.features.model.presentation.safe_spinbox import SafeComboBox, SafeDoubleSpinBox
 
 #: Master DB ``Sections`` sheet dimension-column names, per shape, mapped to
 #: the canonical dimension keys ``core.domain.section_properties`` expects.
@@ -551,7 +551,7 @@ class SectionMaterialPanel(QWidget):
 
         type_row = QFormLayout()
         type_row.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.shape_combo = QComboBox()
+        self.shape_combo = SafeComboBox()
         self.shape_combo.addItems(SUPPORTED_SHAPES)
         self.shape_combo.setMaximumWidth(_COMBO_WIDTH)
         self.shape_combo.currentTextChanged.connect(self._shape_changed)
@@ -576,7 +576,7 @@ class SectionMaterialPanel(QWidget):
         designation_layout = QFormLayout(self.designation_row)
         designation_layout.setContentsMargins(0, 0, 0, 0)
         designation_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.designation_combo = QComboBox()
+        self.designation_combo = SafeComboBox()
         self.designation_combo.setMaximumWidth(_COMBO_WIDTH)
         self.designation_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
@@ -643,11 +643,11 @@ class SectionMaterialPanel(QWidget):
         material_group = _CollapsibleSection("MATERIAL")
         material_form = QFormLayout()
         material_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.material_category_combo = QComboBox()
+        self.material_category_combo = SafeComboBox()
         self.material_category_combo.setMaximumWidth(_COMBO_WIDTH)
         self.material_category_combo.currentTextChanged.connect(self._material_category_changed)
         material_form.addRow("Category", self.material_category_combo)
-        self.material_grade_combo = QComboBox()
+        self.material_grade_combo = SafeComboBox()
         self.material_grade_combo.setMaximumWidth(_COMBO_WIDTH)
         self.material_grade_combo.currentIndexChanged.connect(self._material_grade_changed)
         material_form.addRow("Grade", self.material_grade_combo)

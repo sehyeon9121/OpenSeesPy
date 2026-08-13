@@ -952,6 +952,10 @@ QFrame#propertySectionCard {
 QLabel#setupSectionTitle {
     color: #213953; font-size: 10pt; font-weight: 700;
 }
+QLabel#setupSectionSubHeading {
+    color: #62738c; font-size: 7pt; font-weight: 700;
+    padding-top: 4px; border-top: 1px solid #e4e9f0; margin-top: 2px;
+}
 QLabel#setupSectionHint, QLabel#setupSummaryHint {
     color: #8290a0; font-size: 8pt;
 }

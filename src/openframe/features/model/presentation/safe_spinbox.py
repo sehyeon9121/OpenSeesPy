@@ -1,6 +1,6 @@
-"""Numeric input fields that don't misbehave under a scroll gesture."""
+"""Input fields that don't misbehave under a scroll gesture."""
 
-from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
+from PySide6.QtWidgets import QComboBox, QDoubleSpinBox, QSpinBox
 
 
 class SafeDoubleSpinBox(QDoubleSpinBox):
@@ -22,5 +22,15 @@ class SafeDoubleSpinBox(QDoubleSpinBox):
 
 
 class SafeSpinBox(QSpinBox):
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+class SafeComboBox(QComboBox):
+    """Same fix as ``SafeDoubleSpinBox``, for dropdowns - scrolling past one
+    (e.g. a section/material selector in a scrollable property panel) must
+    scroll the page, not silently swap the selected item out from under the
+    user."""
+
     def wheelEvent(self, event) -> None:
         event.ignore()

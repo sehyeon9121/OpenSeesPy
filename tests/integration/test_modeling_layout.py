@@ -358,6 +358,36 @@ def test_the_node_transform_tool_leaves_the_selection_filter_alone() -> None:
     assert page.selection_filter.currentData() == "all"
 
 
+def test_switching_away_from_support_category_widens_a_narrowed_filter() -> None:
+    """지점 (rail button) narrows the selection filter to "노드만" so picking a
+    node to support is easier. Without a reliable "leave 지점" step, that
+    narrowed filter used to survive into every category opened afterward -
+    the 이동·복사 category bar button, for instance, never touched the filter
+    itself, so a member click there was silently ignored with no visible
+    reason why. ``_show_category`` is the one choke point every category
+    switch passes through (rail buttons and the category bar alike), so it
+    is where the filter gets widened back - except when 지점's own page is
+    what is being shown, since that would immediately undo the narrowing
+    ``_activate_support_tool`` just set."""
+    page = _page()
+    page._activate_support_tool()
+    assert page.selection_filter.currentData() == "nodes"
+
+    page._show_category("move")
+
+    assert page.selection_filter.currentData() == "all"
+
+
+def test_showing_the_support_category_again_does_not_disturb_its_own_filter() -> None:
+    page = _page()
+    page._activate_support_tool()
+    assert page.selection_filter.currentData() == "nodes"
+
+    page._show_category("support")
+
+    assert page.selection_filter.currentData() == "nodes"
+
+
 def test_the_two_rail_tools_are_mutually_exclusive() -> None:
     page = _page()
 

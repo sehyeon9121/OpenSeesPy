@@ -517,13 +517,22 @@ def test_nonlinear_static_material_nonlinearity_tile_reflects_the_model() -> Non
     assert settings.material_nonlinearity_value.property("state") == "off"
     assert "✓" not in settings.material_nonlinearity_value.text()
 
-    # Geometric nonlinearity is not derived from StructuralModel (the imported
-    # script's own geomTransf choice never reaches it) - it mirrors Setup's own
-    # GEOMETRIC TRANSFORMATION selection instead, which the solver applies by
-    # overriding every ops.geomTransf(...) call the script makes (see
-    # ModelCommandCollector.install(geom_transf_override=...)), so this tile is
-    # a real, editable state rather than an unknowable guess.
-    assert settings.geometric_transformation.currentData() == "Linear"
+    # This hand-built model carries no OPENFRAME_MODEL_ORIGIN, so it is treated
+    # as an import and defaults to "Use model definition" - no override is
+    # installed, and the tile summarizes the model's own (here empty)
+    # StructuralModel.geometric_transforms instead of Setup's own selection.
+    assert settings.geometric_transformation.currentData() == "UseModelDefinition"
+    assert settings.geometric_nonlinearity_value.property("state") == "off"
+    assert "Use model definition" in settings.geometric_nonlinearity_value.text()
+
+    # Switching to an explicit Linear override does mirror Setup's own
+    # selection - which the solver applies by overriding every
+    # ops.geomTransf(...) call the model makes (see
+    # ModelCommandCollector.install(geom_transf_override=...)), so this tile
+    # is a real, editable state rather than an unknowable guess.
+    settings.geometric_transformation.setCurrentIndex(
+        settings.geometric_transformation.findData("Linear")
+    )
     assert settings.geometric_nonlinearity_value.property("state") == "off"
     assert "Linear" in settings.geometric_nonlinearity_value.text()
 

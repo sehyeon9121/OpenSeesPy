@@ -53,11 +53,20 @@ from openframe.infrastructure.opensees.ground_motion import load_ground_motion
 _DOF_LABELS_2D = ("UX", "UY", "RZ")
 _DOF_LABELS_3D = ("UX", "UY", "UZ", "RX", "RY", "RZ")
 
+#: Sentinel GEOMETRIC TRANSFORMATION value meaning "install no override -
+#: keep each element's own geomTransf exactly as the model defines it".
+#: Mirrors nonlinear_static_solver.py's own ``_USE_MODEL_DEFINITION``.
+_USE_MODEL_DEFINITION = "UseModelDefinition"
+#: Geometrically-nonlinear transform type names (lowercased) - used both to
+#: judge an explicit override choice and to summarize a model's own
+#: transformations under "Use model definition".
+_GEOMETRIC_NONLINEAR_TRANSFORM_TYPES = frozenset({"pdelta", "corotational"})
+
 #: Mirrors nonlinear_static_solver.py's own `nonlinear_elements` set exactly -
-#: element_type is the only nonlinearity signal StructuralModel actually
-#: carries (material/section/geomTransf type names are collector-internal and
-#: never reach the imported StructuralModel - see model_importer.py), so this
-#: is duplicated here rather than imported, matching how the solver's other
+#: element_type is the only element-level nonlinearity signal StructuralModel
+#: carries (material/section type names are collector-internal and never
+#: reach the imported StructuralModel - see model_importer.py), so this is
+#: duplicated here rather than imported, matching how the solver's other
 #: allowed-value lists (algorithms, tests, ...) are already duplicated as this
 #: panel's combo box items.
 _NONLINEAR_ELEMENT_TYPES = frozenset(
@@ -344,15 +353,25 @@ class AnalysisSettingsPanel(QFrame):
 
         nonlinear_layout.addWidget(self._field_label("GEOMETRIC TRANSFORMATION"))
         self.geometric_transformation = QComboBox()
+        # "Linear" stays index 0 - the combo's own inert default before any
+        # model is loaded (nothing to derive an origin-aware default from
+        # yet); set_model() below immediately re-picks the origin-aware
+        # default for whatever model actually gets loaded.
         self.geometric_transformation.addItem("Linear", "Linear")
         self.geometric_transformation.addItem("P-Delta", "PDelta")
         self.geometric_transformation.addItem("Corotational", "Corotational")
+        self.geometric_transformation.addItem("Use model definition", _USE_MODEL_DEFINITION)
         self.geometric_transformation.setToolTip(
-            "Overrides every ops.geomTransf(...) call the model script makes, so "
-            "this choice - not whatever the script itself specifies - controls the "
-            "analysis. Linear ignores P-Delta/large-displacement effects entirely; "
-            "P-Delta adds axial-load-times-displacement moments; Corotational adds "
-            "full large-displacement/large-rotation kinematics on top of that."
+            "'Use model definition' installs no override - every element keeps exactly "
+            "the geomTransf its own script/import defines (the default for an imported "
+            "model). Linear/P-Delta/Corotational instead override every "
+            "ops.geomTransf(...) call the model makes, so the chosen type - not "
+            "whatever the model itself specifies - controls the analysis; this fails "
+            "atomically before the run starts if the model contains any transform type "
+            "the override cannot safely replace. Linear ignores P-Delta/large-"
+            "displacement effects entirely; P-Delta adds axial-load-times-displacement "
+            "moments; Corotational adds full large-displacement/large-rotation "
+            "kinematics on top of that."
         )
         self.geometric_transformation.currentIndexChanged.connect(
             self._update_nonlinear_behavior_tiles
@@ -1533,6 +1552,23 @@ class AnalysisSettingsPanel(QFrame):
         self.target_load_factor_group.setVisible(not displacement_control)
         self.load_increment_group.setVisible(not displacement_control)
 
+    def _apply_geometric_transformation_default(self, model: StructuralModel) -> None:
+        """Direct Modeling defaults to an explicit Linear override - its
+        canvas-exported script only ever contains one Linear geomTransf (see
+        opensees_script_export.py) - while an imported model defaults to "Use
+        model definition" so its own per-element transformations are
+        preserved until the user explicitly asks to override them. Absence of
+        the ``OPENFRAME_MODEL_ORIGIN`` declaration is always read as an
+        import (see ``OpenSeesModelImporter._apply_model_origin``), never
+        guessed at from model shape."""
+        origin = str(model.metadata.get("model_origin", "import"))
+        default_value = "Linear" if origin == "direct" else _USE_MODEL_DEFINITION
+        self.geometric_transformation.blockSignals(True)
+        self.geometric_transformation.setCurrentIndex(
+            self.geometric_transformation.findData(default_value)
+        )
+        self.geometric_transformation.blockSignals(False)
+
     def set_model(self, model: StructuralModel | None) -> None:
         self._model = model
         self.control_node.clear()
@@ -1541,6 +1577,7 @@ class AnalysisSettingsPanel(QFrame):
             self._update_linear_static_summary()
             self._update_nonlinear_behavior_tiles()
             return
+        self._apply_geometric_transformation_default(model)
         for tag, node in sorted(model.nodes.items()):
             coordinates = (
                 f"({node.x:g}, {node.y:g}, {node.z:g})"
@@ -2106,11 +2143,16 @@ class AnalysisSettingsPanel(QFrame):
         the module docstring), so this never claims more than element type
         alone actually supports.
 
-        GEOMETRIC NONLINEARITY mirrors ``self.geometric_transformation`` -
-        Setup's own selection, which ``run_nonlinear_static_analysis`` applies
-        by overriding every ``ops.geomTransf(...)`` call the model script makes
-        (see ModelCommandCollector.install(geom_transf_override=...)) - so this
-        tile is never a guess about what the script might contain."""
+        GEOMETRIC NONLINEARITY mirrors ``self.geometric_transformation``. For
+        an explicit Linear/P-Delta/Corotational choice this is Setup's own
+        selection, which ``run_nonlinear_static_analysis`` applies by
+        overriding every ``ops.geomTransf(...)`` call the model makes (see
+        ModelCommandCollector.install(geom_transf_override=...)). For "Use
+        model definition" it instead summarizes the model's own
+        ``StructuralModel.geometric_transforms`` (real per-element data,
+        collected without any override - see model_collector.py/
+        model_importer.py) - either way this tile is never a guess about what
+        the model might contain."""
         if self._model is None:
             self.material_nonlinearity_value.setText("—")
             self.material_nonlinearity_value.setProperty("state", "off")
@@ -2133,7 +2175,9 @@ class AnalysisSettingsPanel(QFrame):
 
         transform = self.geometric_transformation.currentData()
         transform_label = self.geometric_transformation.currentText()
-        if transform == "Linear":
+        if transform == _USE_MODEL_DEFINITION:
+            self._show_model_defined_geometric_transform()
+        elif transform == "Linear":
             self.geometric_nonlinearity_value.setText("○  Linear (disabled)")
             self.geometric_nonlinearity_value.setProperty("state", "off")
             self.geometric_nonlinearity_notice.setText(
@@ -2146,10 +2190,46 @@ class AnalysisSettingsPanel(QFrame):
             self.geometric_nonlinearity_value.setProperty("state", "ok")
             self.geometric_nonlinearity_notice.setText(
                 f"ⓘ  {transform_label} is applied to every frame element, overriding "
-                "whatever geomTransf the model script itself defines."
+                "whatever geomTransf the model itself defines - blocked before the run "
+                "starts if the model contains a transform type this override cannot "
+                "safely replace."
             )
         self.geometric_nonlinearity_value.style().unpolish(self.geometric_nonlinearity_value)
         self.geometric_nonlinearity_value.style().polish(self.geometric_nonlinearity_value)
+
+    def _show_model_defined_geometric_transform(self) -> None:
+        """"Use model definition" tile content - a real summary of
+        ``StructuralModel.geometric_transforms`` rather than Setup's own
+        selection, since no override is being applied at all."""
+        types = sorted(
+            {
+                transform.transform_type
+                for transform in (self._model.geometric_transforms.values() if self._model else ())
+            }
+        )
+        if not types:
+            self.geometric_nonlinearity_value.setText("—  Use model definition")
+            self.geometric_nonlinearity_value.setProperty("state", "off")
+            self.geometric_nonlinearity_notice.setText(
+                "ⓘ  Each element keeps its own geomTransf from the model. No "
+                "transformation data was found to summarize."
+            )
+            return
+        has_geometric_nonlinearity = any(
+            transform_type.lower() in _GEOMETRIC_NONLINEAR_TRANSFORM_TYPES
+            for transform_type in types
+        )
+        listed = ", ".join(types)
+        if has_geometric_nonlinearity:
+            self.geometric_nonlinearity_value.setText(f"✓  Model-defined ({listed})")
+            self.geometric_nonlinearity_value.setProperty("state", "ok")
+        else:
+            self.geometric_nonlinearity_value.setText(f"○  Model-defined ({listed})")
+            self.geometric_nonlinearity_value.setProperty("state", "off")
+        self.geometric_nonlinearity_notice.setText(
+            f"ⓘ  Each element keeps its own geomTransf from the model - types found: "
+            f"{listed}."
+        )
 
     def _update_engine_capability_display(self) -> None:
         """Make SOLUTION METHOD/CONVERGENCE show what the current AnalysisKind's
