@@ -766,3 +766,170 @@ def test_export_button_reports_missing_material_without_opening_a_dialog() -> No
     assert exported_paths == []
     assert "내보내기 실패" in page.determinacy_status.text()
     assert "E/A/I" in page.determinacy_status.text()
+
+
+# -- Selection Status inspector: Applied/Pending Changes end-to-end ---------
+
+
+def _select_member_and_apply_custom_rectangle(page, member: int, *, elastic: float = 200_000.0) -> None:
+    """Drives the *real* SectionMaterialPanel -> apply_button click path
+    (not the legacy ``apply_section_to_selection`` shortcut, which never
+    stores Iz/J/material - a real gap in that old format, not something the
+    Applied/Pending comparison should paper over). Matches exactly what a
+    user does the first time they configure a freshly drawn member."""
+    canvas = page.canvas
+    canvas.selected_elements = {member}
+    canvas.selection_changed.emit()
+    page.category_buttons["member"].click()
+    panel = page.section_material_panel
+    panel.shape_combo.setCurrentText("Rectangle")
+    panel.source_custom.setChecked(True)
+    panel._dimension_spinboxes["b"].setValue(0.3)
+    panel._dimension_spinboxes["h"].setValue(0.5)
+    panel.material_e.setValue(elastic)
+    panel.material_unit_weight.setValue(24.0)
+    panel.apply_button.click()
+
+
+def test_editing_the_editor_without_applying_leaves_the_inspectors_value_shown() -> None:
+    """5. 상단 값을 수정했지만 적용 전이면 하단 값 유지."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    n1 = canvas.add_node(0.0, 0.0)
+    n2 = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(n1, n2)
+    _select_member_and_apply_custom_rectangle(page, member)
+
+    before = " ".join(label.text() for label in page.selection_status_panel.findChildren(QLabel))
+    assert "200000" in before
+
+    page.section_material_panel.material_e.setValue(999_999.0)
+
+    after = " ".join(label.text() for label in page.selection_status_panel.findChildren(QLabel))
+    assert "200000" in after
+    assert "999999" not in after
+    assert application is QApplication.instance()
+
+
+def test_editing_without_applying_shows_pending_changes() -> None:
+    """6. 적용 전 Pending Changes."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    n1 = canvas.add_node(0.0, 0.0)
+    n2 = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(n1, n2)
+    _select_member_and_apply_custom_rectangle(page, member)
+    assert [b.text() for b in page.selection_status_panel._status_badges] == ["Applied"]
+
+    page.section_material_panel.material_e.setValue(999_999.0)
+
+    assert [b.text() for b in page.selection_status_panel._status_badges] == ["Pending Changes"]
+    assert application is QApplication.instance()
+
+
+def test_clicking_apply_updates_the_inspector_back_to_applied() -> None:
+    """7. 적용 후 Applied."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    n1 = canvas.add_node(0.0, 0.0)
+    n2 = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(n1, n2)
+    _select_member_and_apply_custom_rectangle(page, member)
+    page.section_material_panel.material_e.setValue(999_999.0)
+    assert [b.text() for b in page.selection_status_panel._status_badges] == ["Pending Changes"]
+
+    page.section_material_panel.apply_button.click()
+
+    assert [b.text() for b in page.selection_status_panel._status_badges] == ["Applied"]
+    after = " ".join(label.text() for label in page.selection_status_panel.findChildren(QLabel))
+    assert "999999" in after
+    assert application is QApplication.instance()
+
+
+def test_reselecting_a_member_restores_its_stored_value_not_an_unapplied_edit() -> None:
+    """8. 부재 재선택 시 저장값 복원."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    n1 = canvas.add_node(0.0, 0.0)
+    n2 = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(n1, n2)
+    _select_member_and_apply_custom_rectangle(page, member)
+    page.section_material_panel.material_e.setValue(999_999.0)  # never applied
+
+    canvas.selected_elements = set()
+    canvas.selection_changed.emit()
+    canvas.selected_elements = {member}
+    canvas.selection_changed.emit()
+
+    assert page.section_material_panel.material_e.value() == 200_000.0
+    assert [b.text() for b in page.selection_status_panel._status_badges] == ["Applied"]
+    assert application is QApplication.instance()
+
+
+# -- Splitter layout ----------------------------------------------------------
+
+
+def test_splitter_pane_heights_can_be_dragged_by_the_user() -> None:
+    """14. Splitter 높이 조절."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    page.resize(1600, 900)
+    page.show()
+    QApplication.processEvents()
+
+    splitter = page.findChild(QSplitter, "modelingRightSplitter")
+    assert splitter is not None
+    assert splitter.orientation() == Qt.Orientation.Vertical
+    original_sizes = list(splitter.sizes())
+
+    splitter.setSizes([150, 600])
+    QApplication.processEvents()
+    new_sizes = splitter.sizes()
+
+    assert new_sizes != original_sizes
+    assert new_sizes[1] > new_sizes[0]
+    assert application is QApplication.instance()
+
+
+def test_editor_and_status_panes_are_independent_scroll_areas() -> None:
+    """15. 상단과 하단의 독립 스크롤."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    splitter = page.findChild(QSplitter, "modelingRightSplitter")
+    top, bottom = splitter.widget(0), splitter.widget(1)
+
+    assert isinstance(top, QScrollArea)
+    assert isinstance(bottom, QScrollArea)
+    assert top is not bottom
+    assert top.verticalScrollBar() is not bottom.verticalScrollBar()
+    assert bottom.widget() is page.selection_status_panel
+    assert application is QApplication.instance()
+
+
+def test_inspector_reflects_values_after_a_project_save_and_reload_roundtrip() -> None:
+    """16. 프로젝트 저장·불러오기 후 값 유지."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    n1 = canvas.add_node(0.0, 0.0)
+    n2 = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(n1, n2)
+    _select_member_and_apply_custom_rectangle(page, member)
+
+    data = page.to_project_dict()
+
+    fresh_page = ModelingInterfacePage()
+    fresh_page.load_project_dict(data)
+    fresh_page.canvas.selected_elements = {member}
+    fresh_page.canvas.selection_changed.emit()
+
+    after = " ".join(
+        label.text() for label in fresh_page.selection_status_panel.findChildren(QLabel)
+    )
+    assert "200000" in after
+    assert [b.text() for b in fresh_page.selection_status_panel._status_badges] == ["Applied"]
+    assert application is QApplication.instance()

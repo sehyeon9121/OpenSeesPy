@@ -401,27 +401,37 @@ class SelectionStatusPanel(QWidget):
             return False
 
     def _is_applied(self, element: Element, pending_edit: dict[str, object] | None) -> bool:
+        """Compares against the *same* ``_SectionSnapshot`` the SECTION/
+        MATERIAL cards render (not a second, separately-written read of
+        ``element.properties``) so this can never silently disagree with
+        what is actually on screen - e.g. a legacy element with no
+        ``section_source``/``dim_*`` keys at all (just the old width/
+        height/E/density quartet) resolves through the exact same
+        Rectangle/"custom" fallback ``_section_snapshot`` already applies,
+        instead of comparing a raw missing key against ``current_
+        application_kwargs()``'s always-filled-in "custom" and reporting a
+        false Pending Changes for a member nothing has actually edited."""
         if pending_edit is None:
             return False
-        props = element.properties
+        snapshot = self._section_snapshot(element)
         checks = [
-            str(props.get("section_shape", "Rectangle")) == pending_edit["shape"],
-            str(props.get("section_source", "")) == pending_edit["source"],
-            self._close(props.get("A"), pending_edit["area"]),
-            self._close(props.get("I"), pending_edit["iy"]),
-            self._close(props.get("Iz"), pending_edit["iz"]),
-            self._close(props.get("J"), pending_edit["j"]),
-            self._close(props.get("E"), pending_edit["elastic"]),
-            self._close(props.get("density"), pending_edit["density"]),
-            (props.get("section_id") or None) == pending_edit["section_id"],
-            (props.get("material_id") or None) == pending_edit["material_id"],
-            (props.get("material_category") or None) == pending_edit["material_category"],
-            (props.get("material_grade") or None) == pending_edit["material_grade"],
+            snapshot.shape == pending_edit["shape"],
+            snapshot.source == pending_edit["source"],
+            self._close(snapshot.area, pending_edit["area"]),
+            self._close(snapshot.iy, pending_edit["iy"]),
+            self._close(snapshot.iz, pending_edit["iz"]),
+            self._close(snapshot.j, pending_edit["j"]),
+            self._close(snapshot.elastic, pending_edit["elastic"]),
+            self._close(snapshot.density, pending_edit["density"]),
+            snapshot.section_id == pending_edit["section_id"],
+            snapshot.material_id == pending_edit["material_id"],
+            snapshot.material_category == pending_edit["material_category"],
+            snapshot.material_grade == pending_edit["material_grade"],
         ]
         dimensions = pending_edit["dimensions"]
         assert isinstance(dimensions, dict)
         for key, value in dimensions.items():
-            checks.append(self._close(props.get(f"dim_{key}"), value))
+            checks.append(self._close(snapshot.dims.get(key), value))
         return all(checks)
 
     def _add_section_material_cards(self, snapshot: _SectionSnapshot, unit: UnitSystem) -> None:
