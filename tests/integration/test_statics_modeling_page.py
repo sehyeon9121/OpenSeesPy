@@ -5,7 +5,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from _solve_helpers import solve_and_wait, solve_modal_and_wait
+from _solve_helpers import solve_and_wait
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -663,11 +663,12 @@ def test_node_transform_tool_activates_select_mode_without_narrowing_the_filter(
     assert page.canvas.selection_filter == "all"
 
 
-def test_modal_solve_button_runs_an_eigenvalue_analysis_on_a_real_material_cantilever() -> None:
-    """End-to-end through the actual UI trigger (solve_modal), not just the
-    solver directly - a cantilever with a real section/material and nonzero
-    density (so it has both stiffness and mass), matching this app's own
-    apply_section_to_selection API a user would actually click through."""
+def test_a_database_h_section_applied_through_the_panel_reaches_the_real_solver() -> None:
+    """실제 해석 모델에 단면값 전달 확인: a Database H-section's Area/Iy applied
+    through SectionMaterialPanel (not the solver's own properties dict) must
+    be exactly what MaterialFreeStaticsSolver uses - checked against the
+    closed-form cantilever tip deflection P*L^3/(3*E*I), independent of this
+    codebase."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     canvas = page.canvas
@@ -676,72 +677,35 @@ def test_modal_solve_button_runs_an_eigenvalue_analysis_on_a_real_material_canti
     member = canvas.add_member(base, tip)
     canvas.set_support(base, (True, True, True))
     canvas.selected_elements = {member}
-    canvas.apply_section_to_selection(width=0.3, height=0.5, elastic=200_000.0, density=10.0)
 
-    solve_modal_and_wait(page)
-
-    assert application is QApplication.instance()
-    assert page.workspace_stack.currentIndex() == 1
-    result = page.viewport._result
-    assert result.status.value == "completed"
-    assert len(result.mode_shapes) == page.modal_num_modes.value()
-    assert all(mode.angular_frequency > 0.0 for mode in result.mode_shapes)
-    # Ascending order: fundamental (softest, longest period) mode first.
-    periods = [mode.period for mode in result.mode_shapes]
-    assert periods == sorted(periods, reverse=True)
-
-
-def test_modal_solve_button_reports_missing_material_without_a_popup() -> None:
-    """No section/density applied - the same everyday-not-an-error philosophy
-    solve() already has for an indeterminate structure with no material."""
-    application = QApplication.instance() or QApplication([])
-    page = ModelingInterfacePage()
-    canvas = page.canvas
-    base = canvas.add_node(0.0, 0.0)
-    tip = canvas.add_node(4.0, 0.0)
-    canvas.add_member(base, tip)
-    canvas.set_support(base, (True, True, True))
-
-    solve_modal_and_wait(page)
-
-    assert application is QApplication.instance()
-    assert page.workspace_stack.currentIndex() == 0
-    assert "재료" in page.determinacy_status.text()
-
-
-def test_pdelta_toggle_amplifies_deflection_on_a_real_material_cantilever() -> None:
-    """End-to-end through the actual UI trigger (solve(), not the solver
-    directly): a cantilever with real section/material carrying a lateral load
-    plus a large compressive axial load - the pdelta_toggle checkbox must
-    change the result (larger deflection than the linear solve), and toggling
-    it off again must reproduce the exact linear result."""
-    application = QApplication.instance() or QApplication([])
-    page = ModelingInterfacePage()
-    canvas = page.canvas
-    base = canvas.add_node(0.0, 0.0)
-    tip = canvas.add_node(0.0, 4.0)
-    member = canvas.add_member(base, tip)
-    canvas.set_support(base, (True, True, True))
-    canvas.selected_elements = {member}
-    canvas.apply_section_to_selection(width=0.3, height=0.5, elastic=200_000.0)
-    canvas.set_nodal_load(tip, (1.0, -2.0, 0.0))
-
-    solve_and_wait(page)
-    linear_ux = page.viewport._result.node_results[tip].displacement[0]
-
-    page.pdelta_toggle.setChecked(True)
-    solve_and_wait(page)
-
-    assert application is QApplication.instance()
-    result = page.viewport._result
-    assert result.status.value == "completed"
-    assert result.node_results[tip].displacement[0] > linear_ux
-
-    page.pdelta_toggle.setChecked(False)
-    solve_and_wait(page)
-    assert page.viewport._result.node_results[tip].displacement[0] == pytest.approx(
-        linear_ux, abs=1.0e-9
+    panel = page.section_material_panel
+    panel.shape_combo.setCurrentText("H/I Section")
+    panel.source_database.setChecked(True)
+    panel.designation_combo.setCurrentIndex(
+        panel.designation_combo.findText("H-300x300x10x15")
     )
+    kwargs = panel.current_application_kwargs()
+    canvas.apply_full_section_to_selection(**kwargs)
+
+    element = canvas.elements[member]
+    assert element.properties["A"] == kwargs["area"]
+    assert element.properties["I"] == kwargs["iy"]
+    assert element.properties["section_id"] == "SEC-H-300X300X10X15"
+
+    load = 10.0
+    canvas.set_nodal_load(tip, (0.0, -load, 0.0))
+    solve_and_wait(page)
+
+    result = page.viewport._result
+    assert result.status.value == "completed"
+    length = 4.0
+    elastic = kwargs["elastic"]
+    inertia = kwargs["iy"]
+    expected_tip_deflection = -load * length**3 / (3.0 * elastic * inertia)
+    assert result.node_results[tip].displacement[1] == pytest.approx(
+        expected_tip_deflection, rel=1.0e-9
+    )
+    assert application is QApplication.instance()
 
 
 def test_export_button_writes_a_runnable_script_and_emits_its_path(tmp_path: Path) -> None:

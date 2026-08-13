@@ -741,10 +741,11 @@ def test_applying_a_member_section_confirms_how_many_members_it_reached() -> Non
     canvas.selected_elements = {member}
     canvas.selection_changed.emit()
 
-    page.member_width.setValue(0.3)
-    page.member_height.setValue(0.5)
-    page.member_elastic.setValue(200_000.0)
-    page.member_density.setValue(24.0)
+    panel = page.section_material_panel
+    panel._dimension_spinboxes["b"].setValue(0.3)
+    panel._dimension_spinboxes["h"].setValue(0.5)
+    panel.material_e.setValue(200_000.0)
+    panel.material_unit_weight.setValue(24.0)
     page._apply_member_section()
 
     element = canvas.elements[member]

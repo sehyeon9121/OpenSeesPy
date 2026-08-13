@@ -9,6 +9,29 @@ from dataclasses import replace
 
 from openframe.core.domain import BoundaryCondition, NodalLoad, UniformElementLoad
 
+#: Every key apply_full_section_to_selection ever writes - cleared before
+#: writing a fresh set so a shape switch (e.g. H/I Section, which has tw/tf,
+#: back to Rectangle, which does not) can never leave a stale dimension key
+#: behind from the member's previous section.
+_SECTION_PROPERTY_KEYS = frozenset(
+    {
+        "E",
+        "A",
+        "I",
+        "Iz",
+        "J",
+        "width",
+        "height",
+        "density",
+        "section_shape",
+        "section_source",
+        "section_id",
+        "material_id",
+        "material_category",
+        "material_grade",
+    }
+)
+
 
 class _PropertyApplicationMixin:
     def apply_support_to_selection(
@@ -102,6 +125,85 @@ class _PropertyApplicationMixin:
                     "density": density,
                 },
             )
+        self._changed()
+
+    def apply_full_section_to_selection(
+        self,
+        *,
+        shape: str,
+        source: str,
+        dimensions: dict[str, float],
+        area: float,
+        iy: float,
+        iz: float,
+        j: float,
+        elastic: float,
+        density: float = 0.0,
+        section_id: str | None = None,
+        material_id: str | None = None,
+        material_category: str | None = None,
+        material_grade: str | None = None,
+    ) -> None:
+        """General section+material application - any of the seven supported
+        shapes (Rectangle/Circle/H-I/Box/Pipe/Channel/Angle) or a fully
+        user-defined section, Custom (computed via
+        ``core.domain.section_properties``) or Database (read straight from
+        the Master DB's ``SectionRecord``/``MaterialRecord``, already
+        converted to this model's own unit system by the caller - this mixin
+        never converts units itself, matching ``apply_section_to_selection``).
+
+        ``element.properties`` keeps ``A``/``I`` as the exact keys every 2D
+        solver already reads (``I`` is Iy in this app's established
+        convention - see ``section_properties.py``'s module docstring). A
+        Rectangle also gets ``width``/``height`` so the existing section
+        preview widget keeps working unchanged; every other shape's
+        dimensions are dropped (no solver reads them) rather than invented
+        under a key that would look like it means something it does not.
+
+        Unlike ``apply_section_to_selection``, this *replaces* every section-
+        related key instead of merging - switching shape (or from a Database
+        section back to Custom) must not leave a stale key from what the
+        member carried before.
+        """
+        if not self.selected_elements:
+            return
+        self._record_history()
+        new_properties: dict[str, float | str] = {
+            "E": elastic,
+            "A": area,
+            "I": iy,
+            "Iz": iz,
+            "J": j,
+            "density": density,
+            "section_shape": shape,
+            "section_source": source,
+        }
+        if shape == "Rectangle":
+            new_properties["width"] = dimensions.get("b", 0.0)
+            new_properties["height"] = dimensions.get("h", 0.0)
+        if section_id is not None:
+            new_properties["section_id"] = section_id
+        if material_id is not None:
+            new_properties["material_id"] = material_id
+        if material_category is not None:
+            new_properties["material_category"] = material_category
+        if material_grade is not None:
+            new_properties["material_grade"] = material_grade
+        for element_tag in self.selected_elements:
+            element = self.elements.get(element_tag)
+            if element is None:
+                continue
+            retained = {
+                key: value
+                for key, value in element.properties.items()
+                if key not in _SECTION_PROPERTY_KEYS and not key.startswith("dim_")
+            }
+            merged = {
+                **retained,
+                **new_properties,
+                **{f"dim_{key}": value for key, value in dimensions.items()},
+            }
+            self.elements[element_tag] = replace(element, properties=merged)
         self._changed()
 
     def apply_uniform_load_to_selection(

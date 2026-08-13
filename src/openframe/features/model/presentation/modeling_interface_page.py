@@ -34,7 +34,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -46,8 +45,6 @@ from openframe.core.domain import DEFAULT_UNIT_SYSTEM, FORCE_UNITS, LENGTH_UNITS
 from openframe.features.analysis.statics import (
     MaterialFreeSolveThread,
     MaterialFreeStaticsSolver,
-    ModalSolveThread,
-    ModalStaticsSolver,
     check_determinacy,
     export_opensees_script,
 )
@@ -61,10 +58,8 @@ from openframe.features.model.presentation.canvas_glyphs import (
     _paint_support_glyph,
     _render_glyph_icon,
 )
-from openframe.features.model.presentation.rectangle_section_preview import (
-    _RectangleSectionPreview,
-)
 from openframe.features.model.presentation.safe_spinbox import SafeDoubleSpinBox, SafeSpinBox
+from openframe.features.model.presentation.section_material_panel import SectionMaterialPanel
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
@@ -109,8 +104,6 @@ class ModelingInterfacePage(QFrame):
         self._unit_system = DEFAULT_UNIT_SYSTEM
         self._solver = MaterialFreeStaticsSolver()
         self._solve_thread: MaterialFreeSolveThread | None = None
-        self._modal_solver = ModalStaticsSolver()
-        self._modal_solve_thread: ModalSolveThread | None = None
         self.analysis_progress = AnalysisProgressBanner(self)
         self.canvas = StaticsDrawingCanvas()
         # Default 집중하중 input mode - plain Fx/Fy, same as every other axis
@@ -226,7 +219,7 @@ class ModelingInterfacePage(QFrame):
         self.model_ready_badge.setObjectName("direct2DReadyBadge")
         layout.addWidget(self.model_ready_badge)
 
-        # These controls are created here so their public attributes and solver
+        # This toggle is created here so its public attribute and solver
         # wiring remain unchanged, then placed in the bottom analysis strip.
         self.truss_mode_toggle = QPushButton("트러스 모드")
         self.truss_mode_toggle.setObjectName("modelingToggleButton")
@@ -243,36 +236,21 @@ class ModelingInterfacePage(QFrame):
             "자중을 등분포하중처럼 더합니다. 단위중량을 입력하지 않은 부재는 빠집니다."
         )
         self.self_weight_toggle.toggled.connect(self._toggle_self_weight)
-        self.pdelta_toggle = QCheckBox("P-Delta 포함")
-        self.pdelta_toggle.setToolTip(
-            "켜면 2차효과(P-Delta, 기하비선형)를 포함해 해석합니다. 정정성과 무관하게 "
-            "모든 부재에 실제 재료·단면(E/A/I)이 필요합니다. 부재 하나로 그려진 기둥의 "
-            "축하중이 좌굴하중에 가까울수록(대략 30% 초과) 오차가 커질 수 있습니다."
+        self.export_analysis_button = QPushButton("정밀해석으로 내보내기…")
+        self.export_analysis_button.setObjectName("direct2DSecondaryButton")
+        self.export_analysis_button.setToolTip(
+            "이 모델을 실행 가능한 OpenSeesPy 스크립트(.py)로 저장하고, "
+            "\"OpenSeesPy 파일 불러오기\" 화면에서 엽니다 - 비선형정적·시간이력·"
+            "고유치(모드)·P-Delta 등 이 캔버스의 자체 솔버가 지원하지 않는 정밀 "
+            "해석을 그대로 돌릴 수 있습니다. 2D 모델만 가능하며, 모든 부재에 실제 "
+            "재료·단면이 필요합니다."
         )
+        self.export_analysis_button.clicked.connect(self._export_for_full_analysis)
+        layout.addWidget(self.export_analysis_button)
         self.solve_button = QPushButton("정정성 검사 및 해석")
         self.solve_button.setObjectName("setupContinueButton")
         self.solve_button.clicked.connect(self.solve)
-        self.modal_num_modes = QSpinBox()
-        self.modal_num_modes.setRange(1, 50)
-        self.modal_num_modes.setValue(3)
-        self.modal_num_modes.setToolTip("계산할 모드 수")
-        self.modal_num_modes.setMaximumWidth(56)
-        self.modal_solve_button = QPushButton("모드해석 실행")
-        self.modal_solve_button.setToolTip(
-            "고유치(모드) 해석 - 2D 프레임 모델만 지원하며, 모든 부재에 실제 "
-            "재료·단면(E/A/I)과 단위중량(밀도)이 입력되어 있어야 합니다. 질량은 "
-            "부재 자중(단위중량 x 단면적)에서 절점으로 환산해 계산됩니다."
-        )
-        self.modal_solve_button.clicked.connect(self.solve_modal)
-        self.export_analysis_button = QPushButton("정밀해석으로 내보내기…")
-        self.export_analysis_button.setToolTip(
-            "이 모델을 실행 가능한 OpenSeesPy 스크립트(.py)로 저장하고, "
-            "\"OpenSeesPy 파일 불러오기\" 화면에서 엽니다 - 비선형정적·시간이력 "
-            "해석 등 이 캔버스의 자체 솔버가 지원하지 않는 정밀 해석을 그대로 "
-            "돌릴 수 있습니다. 2D 모델만 가능하며, 모든 부재에 실제 재료·단면이 "
-            "필요합니다."
-        )
-        self.export_analysis_button.clicked.connect(self._export_for_full_analysis)
+        layout.addWidget(self.solve_button)
         # Re-running solve() re-checks determinacy against whatever the canvas
         # holds *right now* — if the user only wants to look at the results
         # they already computed, that must not require a fresh solve (which
@@ -1108,63 +1086,33 @@ class ModelingInterfacePage(QFrame):
         return section
 
     def _build_member_bar_content(self) -> QWidget:
-        """Section/material (단면·재료) plus per-end pin release, for one
-        selected member — the content shown on the 부재 category page. Mid-
-        span node insertion and equal subdivision live on their own 노드 분할
-        category page instead (``_build_member_edit_section``) — they add
+        """Section/material plus per-end pin release, for one selected member
+        — the content shown on the 부재 category page. Mid-span node
+        insertion and equal subdivision live on their own 노드 분할 category
+        page instead (``_build_member_edit_section``) — they add
         nodes/geometry rather than set a property on the member itself.
 
         A member always has two ends regardless of which node tags they land on, so
         the checkboxes are labelled with the actual node numbers when the selection
         changes rather than fixed "start/end" text.
 
-        Section input is per member (select one, type its own b/h/E), not one
-        global value for the whole model — a hand-drawn cantilever, portal
-        frame etc. can freely mix member sizes, and this is also what makes a
-        width unambiguous: b and h are just two ordinary fields next to a
-        member you already picked, not something a canvas drag would need to
-        somehow guess a third dimension for.
+        Section input is per member (select one, type its own dimensions or
+        pick a Master DB designation), not one global value for the whole
+        model — a hand-drawn cantilever, portal frame etc. can freely mix
+        member sizes. ``SectionMaterialPanel`` owns everything section/
+        material-shaped (see its own module docstring for the Custom/
+        Database split); this method only wires its ``apply_requested``
+        signal to the canvas and keeps the two pin-release checkboxes, which
+        are a per-member property but not a section/material one.
         """
         content = QWidget()
         root = QVBoxLayout(content)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
 
-        root.addWidget(QLabel("단면 (사각형) · 재료"))
-        self.member_section_preview = _RectangleSectionPreview()
-        preview_row = QHBoxLayout()
-        preview_row.addStretch(1)
-        preview_row.addWidget(self.member_section_preview)
-        preview_row.addStretch(1)
-        root.addLayout(preview_row)
-        section_form = QFormLayout()
-        self.member_width = self._number(0.3)
-        self.member_width.setRange(0.001, 100.0)
-        self.member_height = self._number(0.5)
-        self.member_height.setRange(0.001, 100.0)
-        self.member_elastic = self._number(200_000_000.0)
-        self.member_elastic.setRange(0.0, 1.0e12)
-        self.member_density = self._number(0.0)
-        self.member_density.setRange(0.0, 1.0e6)
-        self.member_density.setToolTip(
-            "자중(自重) 계산에 쓰이는 단위중량. 0이면 상단 \"자중 포함\" 체크박스를 켜도 "
-            "이 부재는 자중 계산에서 빠집니다."
-        )
-        self.member_width.valueChanged.connect(self._refresh_member_section_preview)
-        self.member_height.valueChanged.connect(self._refresh_member_section_preview)
-        width_row, self.member_width_unit = self._field_with_unit(self.member_width)
-        height_row, self.member_height_unit = self._field_with_unit(self.member_height)
-        elastic_row, self.member_elastic_unit = self._field_with_unit(self.member_elastic)
-        density_row, self.member_density_unit = self._field_with_unit(self.member_density)
-        section_form.addRow("폭 b", width_row)
-        section_form.addRow("높이 h", height_row)
-        section_form.addRow("탄성계수 E", elastic_row)
-        section_form.addRow("단위중량 ρ", density_row)
-        self._refresh_member_unit_hint()
-        root.addLayout(section_form)
-        apply_section = QPushButton("선택 부재에 적용")
-        apply_section.clicked.connect(self._apply_member_section)
-        root.addWidget(apply_section)
+        self.section_material_panel = SectionMaterialPanel()
+        self.section_material_panel.apply_requested.connect(self._apply_member_section)
+        root.addWidget(self.section_material_panel)
         section_hint = QLabel(
             "정정구조는 없어도 풀리지만, 부정정 구조를 풀거나 실제 처짐 값을 보려면 "
             "선택한 부재마다 입력해야 합니다."
@@ -1184,26 +1132,6 @@ class ModelingInterfacePage(QFrame):
         )
         root.addWidget(self.member_end_j)
         return content
-
-    def _field_with_unit(self, field: QWidget) -> tuple[QWidget, QLabel]:
-        """Pair an engineering-value field with a small, live unit label next
-        to it — reading "0.3 [m]" beside the field itself is one less lookup
-        than a single combined line below several fields at once."""
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        layout.addWidget(field, 1)
-        unit_label = QLabel()
-        unit_label.setObjectName("setupSectionHint")
-        layout.addWidget(unit_label)
-        return row, unit_label
-
-    def _refresh_member_unit_hint(self) -> None:
-        self.member_width_unit.setText(self._unit_system.length)
-        self.member_height_unit.setText(self._unit_system.length)
-        self.member_elastic_unit.setText(self._unit_system.stress)
-        self.member_density_unit.setText(self._unit_system.volumetric_force)
 
     def _build_load_bar_content(self) -> QWidget:
         """Every applicable load component as its own field, applied together.
@@ -1517,13 +1445,7 @@ class ModelingInterfacePage(QFrame):
         layout.addWidget(self.unit_length)
         layout.addSpacing(10)
         layout.addWidget(self.self_weight_toggle)
-        layout.addWidget(self.pdelta_toggle)
-        layout.addWidget(QLabel("MODES"))
-        layout.addWidget(self.modal_num_modes)
-        layout.addWidget(self.modal_solve_button)
-        layout.addWidget(self.export_analysis_button)
         layout.addWidget(self.view_results_button)
-        layout.addWidget(self.solve_button)
         return bar
 
     def _build_result_status_bar(self) -> QFrame:
@@ -1579,7 +1501,7 @@ class ModelingInterfacePage(QFrame):
             combo.setCurrentText(value)
             combo.blockSignals(False)
         self._load_target_changed()
-        self._refresh_member_unit_hint()
+        self.section_material_panel.set_unit_system(unit_system)
 
     def to_project_dict(self) -> dict[str, object]:
         """The canvas's own raw state plus the bits of UI chrome that a
@@ -1648,10 +1570,7 @@ class ModelingInterfacePage(QFrame):
         self.determinacy_status.setText(f"정정성: {check.message}")
         self.solve_button.setEnabled(False)
         self.analysis_progress.show_running("정정성 해석")
-        geometric_nonlinearity = "PDelta" if self.pdelta_toggle.isChecked() else "Linear"
-        thread = MaterialFreeSolveThread(
-            self._solver, model, geometric_nonlinearity=geometric_nonlinearity
-        )
+        thread = MaterialFreeSolveThread(self._solver, model)
         thread.completed.connect(lambda result: self._solve_completed(model, check, result))
         thread.finished.connect(self._solve_thread_finished)
         self._solve_thread = thread
@@ -1687,54 +1606,12 @@ class ModelingInterfacePage(QFrame):
         if thread is not None:
             thread.deleteLater()
 
-    def solve_modal(self) -> None:
-        """Same no-popup, status-bar-only failure philosophy as ``solve()`` -
-        modal analysis has real, everyday reasons to fail early while a model is
-        still being authored (2D only, needs real E/A/I and unit weight
-        everywhere), not just genuine errors."""
-        if self._modal_solve_thread is not None and self._modal_solve_thread.isRunning():
-            return
-        model = self.canvas.build_model()
-        self.modal_solve_button.setEnabled(False)
-        self.analysis_progress.show_running("모드해석")
-        thread = ModalSolveThread(
-            self._modal_solver,
-            model,
-            num_modes=self.modal_num_modes.value(),
-            length_unit=self._unit_system.length,
-        )
-        thread.completed.connect(lambda result: self._modal_solve_completed(model, result))
-        thread.finished.connect(self._modal_solve_thread_finished)
-        self._modal_solve_thread = thread
-        thread.start()
-
-    def _modal_solve_completed(self, model, result) -> None:
-        if result.status.value != "completed":
-            self.analysis_progress.show_failed(
-                " ".join(result.messages) or "모드해석에 실패했습니다."
-            )
-            self.determinacy_status.setText(f"모드해석: {' '.join(result.messages)}")
-            return
-        self.analysis_progress.show_completed(f"모드 {len(result.mode_shapes)}개가 계산되었습니다.")
-        self.results.set_model(model)
-        self.results.show_result(result)
-        self.results.set_result_type("mode_shapes")
-        self.view_results_button.setEnabled(True)
-        self.workspace_stack.setCurrentIndex(1)
-
-    def _modal_solve_thread_finished(self) -> None:
-        self.modal_solve_button.setEnabled(True)
-        thread = self._modal_solve_thread
-        self._modal_solve_thread = None
-        if thread is not None:
-            thread.deleteLater()
-
     def _export_for_full_analysis(self) -> None:
         """Text generation is fast (no OpenSeesPy solve involved) so this runs
-        synchronously, unlike ``solve()``/``solve_modal()``'s background
-        threads. Same no-popup-for-everyday-failures philosophy: a model that
-        cannot be exported yet (still 3D, or missing section properties) gets
-        the same status-bar message a doomed solve() would, not a dialog."""
+        synchronously, unlike ``solve()``'s background thread. Same
+        no-popup-for-everyday-failures philosophy: a model that cannot be
+        exported yet (still 3D, or missing section properties) gets the same
+        status-bar message a doomed solve() would, not a dialog."""
         model = self.canvas.build_model()
         try:
             script = export_opensees_script(
@@ -2014,49 +1891,22 @@ class ModelingInterfacePage(QFrame):
         self.member_end_j.blockSignals(True)
         self.member_end_j.setChecked(element.moment_release_j)
         self.member_end_j.blockSignals(False)
-
-        width = element.properties.get("width")
-        height = element.properties.get("height")
-        elastic = element.properties.get("E")
-        density = element.properties.get("density")
-        if width is not None and height is not None:
-            self.member_width.blockSignals(True)
-            self.member_width.setValue(float(width))
-            self.member_width.blockSignals(False)
-            self.member_height.blockSignals(True)
-            self.member_height.setValue(float(height))
-            self.member_height.blockSignals(False)
-        if elastic is not None:
-            self.member_elastic.blockSignals(True)
-            self.member_elastic.setValue(float(elastic))
-            self.member_elastic.blockSignals(False)
-        self.member_density.blockSignals(True)
-        self.member_density.setValue(float(density) if density is not None else 0.0)
-        self.member_density.blockSignals(False)
-        self._refresh_member_section_preview()
-
-    def _refresh_member_section_preview(self) -> None:
-        self.member_section_preview.set_dimensions(
-            self.member_width.value(), self.member_height.value()
-        )
+        self.section_material_panel.load_from_element(element)
 
     def _apply_member_section(self) -> None:
-        """``apply_section_to_selection`` silently no-ops with nothing selected
-        (see its own docstring) - exactly the same "reads as the button doesn't
-        work" trap ``_apply_load`` already guards against, extended here so a
-        member click that missed (or a stale 노드 selection) says so instead of
-        leaving the user unsure whether 적용 did anything at all."""
+        """``SectionMaterialPanel`` only emits ``apply_requested`` once its own
+        validation (valid dimensions, positive Area/Iy/Iz/J) already passed -
+        the one thing left to guard here is the same "reads as the button
+        doesn't work" trap ``_apply_load``/the old rectangle-only apply
+        already guarded against: nothing selected."""
         if not self.canvas.selected_elements:
             self.selection_summary.setText(
                 "⚠ 선택된 부재가 없어 단면·재료를 적용하지 못했습니다 — 적용할 부재를 클릭하세요."
             )
             return
         count = len(self.canvas.selected_elements)
-        self.canvas.apply_section_to_selection(
-            self.member_width.value(),
-            self.member_height.value(),
-            self.member_elastic.value(),
-            self.member_density.value(),
+        self.canvas.apply_full_section_to_selection(
+            **self.section_material_panel.current_application_kwargs()
         )
         self.selection_summary.setText(
             f"✓ 부재 {count}개에 단면·재료(E/A/I)와 단위중량을 적용했습니다."

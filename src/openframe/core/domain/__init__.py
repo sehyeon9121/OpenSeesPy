@@ -52,6 +52,13 @@ from openframe.core.domain.results import (
     NonlinearConvergence,
     TimeHistoryStep,
 )
+from openframe.core.domain.section_properties import (
+    SUPPORTED_SHAPES,
+    SectionDimensionError,
+    SectionProperties,
+    compute_section_properties,
+    dimension_fields,
+)
 from openframe.core.domain.units import (
     DEFAULT_UNIT_SYSTEM,
     FORCE_UNITS,
@@ -60,6 +67,12 @@ from openframe.core.domain.units import (
     TIME_UNITS,
     UnitSystem,
     density_kg_m3_to_unit_weight_kN_m3,
+    kN_m3_to_volumetric_force_unit,
+    length_unit_to_mm,
+    mm2_to_length_unit,
+    mm4_to_length_unit,
+    mm_to_length_unit,
+    mpa_to_stress_unit,
 )
 
 __all__ = [
@@ -68,6 +81,7 @@ __all__ = [
     "FORCE_UNITS",
     "LENGTH_UNITS",
     "STANDARD_GRAVITY_M_S2",
+    "SUPPORTED_SHAPES",
     "TIME_UNITS",
     "AnalysisCapabilities",
     "AnalysisKind",
@@ -104,6 +118,8 @@ __all__ = [
     "PropertyType",
     "RCSectionRecord",
     "RecordNotFoundError",
+    "SectionDimensionError",
+    "SectionProperties",
     "SectionRecord",
     "ShearDeformationSettings",
     "ShearModulusMode",
@@ -114,5 +130,13 @@ __all__ = [
     "UniformElementLoad",
     "UnitSystem",
     "UnsupportedConditionTypeError",
+    "compute_section_properties",
     "density_kg_m3_to_unit_weight_kN_m3",
+    "dimension_fields",
+    "kN_m3_to_volumetric_force_unit",
+    "length_unit_to_mm",
+    "mm2_to_length_unit",
+    "mm4_to_length_unit",
+    "mm_to_length_unit",
+    "mpa_to_stress_unit",
 ]

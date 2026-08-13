@@ -42,7 +42,9 @@ def test_bundled_excel_file_exists() -> None:
 
 def test_loading_the_real_workbook_finds_every_sheet_worth_of_records(db) -> None:
     assert len(db.all_materials()) == 43
-    assert len(db.all_sections()) == 8
+    # 8 original seed sections (1 per shape) + 26 standard KS D 3502 H-beam
+    # sizes added on top of the single H/I Section seed row.
+    assert len(db.all_sections()) == 34
     assert len(db.all_rc_sections()) == 3
     assert len(db.all_property_rules()) == 10
     assert len(db.all_sources()) == 15
