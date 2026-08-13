@@ -98,6 +98,15 @@ _GOVERNING_THICKNESS_KEY: dict[str, str] = {
 #: designation or a default-sized QDoubleSpinBox can never force a horizontal
 #: scrollbar onto the whole panel. Also satisfies this feature's own "작은
 #: 입력창" (small input boxes) design requirement.
+#:
+#: Width regressions here must be checked on the *real* Qt platform, not
+#: ``QT_QPA_PLATFORM=offscreen`` - the offscreen platform's fallback font has
+#: measurably worse (wider) metrics than any real font, which once produced
+#: a phantom ~340px ``minimumSizeHint()`` for this exact panel that the real
+#: platform rendered at 232px with zero overflow. ``setMaximumWidth()`` also
+#: caps how wide a widget may *grow*, never how small ``minimumSizeHint()``
+#: says it may *shrink* - it does not, by itself, prevent a horizontal
+#: scrollbar the way the comment below once assumed.
 _COMBO_WIDTH = 168
 _NUMBER_WIDTH = 92
 
@@ -509,6 +518,15 @@ def _load_database_safely() -> MaterialDatabase | None:
 
 class SectionMaterialPanel(QWidget):
     apply_requested = Signal()
+    #: Fires whenever any field that feeds ``current_application_kwargs()``
+    #: changes *by the user's own typing* - never while ``load_from_element``
+    #: is repopulating the panel from a freshly (re)selected member. The
+    #: Selection Status inspector listens for this to re-evaluate its
+    #: Applied/Pending Changes badge live, without touching any of its own
+    #: displayed values (those only ever come from the model itself, on a
+    #: full refresh - see ``modeling_interface_page.py``'s
+    #: ``_sync_selection_status``/``_selection_status_edited``).
+    edited = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -522,6 +540,7 @@ class SectionMaterialPanel(QWidget):
         self._dimension_labels: dict[str, QLabel] = {}
         self._selected_material: MaterialRecord | None = None
         self._updating = False  # guards against feedback loops while repopulating fields
+        self._loading_element = False  # True only while load_from_element() runs
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -636,6 +655,7 @@ class SectionMaterialPanel(QWidget):
         self.material_e.setRange(0.0, 1.0e12)
         self.material_e.setDecimals(3)
         self.material_e.setMaximumWidth(_NUMBER_WIDTH)
+        self.material_e.valueChanged.connect(self._notify_edited)
         self._material_e_label = QLabel("E")
         material_form.addRow(self._material_e_label, self.material_e)
         self.material_unit_weight = SafeDoubleSpinBox()
@@ -645,6 +665,7 @@ class SectionMaterialPanel(QWidget):
         self.material_unit_weight.setToolTip(
             "자중(自重) 계산에 쓰이는 단위중량 - 0이면 이 부재는 자중 계산에서 빠집니다."
         )
+        self.material_unit_weight.valueChanged.connect(self._notify_edited)
         self._material_unit_weight_label = QLabel("Unit Weight")
         material_form.addRow(self._material_unit_weight_label, self.material_unit_weight)
         self.material_fy = SafeDoubleSpinBox()
@@ -870,6 +891,7 @@ class SectionMaterialPanel(QWidget):
     def _recompute_from_dimensions(self) -> None:
         shape = self.shape_combo.currentText()
         self._refresh_preview()
+        self._notify_edited()
         if shape == "User Defined":
             self._refresh_property_display()
             return
@@ -877,6 +899,10 @@ class SectionMaterialPanel(QWidget):
             return
         self._properties = self._safe_compute(shape, self._dimensions_mm)
         self._refresh_property_display()
+
+    def _notify_edited(self) -> None:
+        if not self._loading_element:
+            self.edited.emit()
 
     def _refresh_preview(self) -> None:
         shape = self.shape_combo.currentText()
@@ -901,6 +927,7 @@ class SectionMaterialPanel(QWidget):
         self._sync_user_defined_properties()
 
     def _sync_user_defined_properties(self) -> None:
+        self._notify_edited()
         length = self._unit_system.length
         area = self._property_spinboxes["area"].value()
         iy = self._property_spinboxes["Iy"].value()
@@ -984,6 +1011,7 @@ class SectionMaterialPanel(QWidget):
             return
         self._selected_material = self._database.get_material(material_id)
         self._refresh_material_display()
+        self._notify_edited()
 
     def _refresh_material_display(self) -> None:
         if self._database is None or self._selected_material is None:
@@ -1015,7 +1043,19 @@ class SectionMaterialPanel(QWidget):
         through the legacy ``apply_section_to_selection``) has no
         ``section_shape`` key at all, so it falls back to Rectangle/Custom
         using the old width/height/E/density keys, exactly what it used to
-        show."""
+        show.
+
+        The whole body runs under ``_loading_element`` - repopulating every
+        field here is not a user edit, so none of it should fire ``edited``
+        (that would make the Selection Status inspector misreport a
+        freshly-(re)selected, untouched member as "Pending Changes")."""
+        self._loading_element = True
+        try:
+            self._load_from_element(element)
+        finally:
+            self._loading_element = False
+
+    def _load_from_element(self, element: Element) -> None:
         self._updating = True
         try:
             shape = str(element.properties.get("section_shape", "Rectangle"))
@@ -1148,6 +1188,25 @@ class SectionMaterialPanel(QWidget):
             "material_category": self.material_category_combo.currentText() or None,
             "material_grade": self.material_grade_combo.currentText() or None,
         }
+
+    def current_edit_kwargs(self) -> dict[str, object] | None:
+        """Same payload as ``current_application_kwargs()``, but ``None``
+        instead of asserting when there is nothing valid to apply yet (e.g.
+        invalid Custom dimensions, or a freshly selected member that never
+        had any section applied at all) - for read-only comparison against a
+        selection's actually-stored properties (the Selection Status
+        inspector's Applied/Pending Changes check), never for applying
+        anything. Checks ``self._properties`` directly (the exact condition
+        ``current_application_kwargs()`` asserts) rather than
+        ``apply_button.isEnabled()`` - the button's enabled state is not
+        always kept in sync for a case that never disabled it to begin with
+        (``load_from_element`` on an element with no dimensions at all
+        leaves ``_properties`` as ``None`` without touching the button - see
+        ``_apply_clicked``, which guards the same way for exactly this
+        reason)."""
+        if self._properties is None:
+            return None
+        return self.current_application_kwargs()
 
 
 def _pow_mm(length_unit: str, power: int) -> float:

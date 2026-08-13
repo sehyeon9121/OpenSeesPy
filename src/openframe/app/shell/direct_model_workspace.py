@@ -32,6 +32,9 @@ class DirectModelWorkspace(QFrame):
     #: sibling top-level workspace owns that), so the actual open happens
     #: further up, in MainWindow.
     analysis_script_exported = Signal(Path)
+    project_opening = Signal()
+    project_opened = Signal(Path)
+    project_saved = Signal(Path)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -111,6 +114,7 @@ class DirectModelWorkspace(QFrame):
         are usually determinate textbook statics that need no material or
         section input at all — jump straight to the 2D canvas, skip the
         wizard entirely."""
+        self.geometry_page.load_project_dict({"ndm": 2})
         self._wizard_geometry_target = "geometry"
         self.set_current_step("geometry")
 
@@ -118,6 +122,7 @@ class DirectModelWorkspace(QFrame):
         """3D models generally do need real materials and sections to mean
         anything — start the setup wizard, arriving at the 3D canvas only
         once it (or its material-free shortcut) is complete."""
+        self.geometry_page_3d.load_project_dict({"ndm": 3})
         self._wizard_geometry_target = "geometry_3d"
         self.setup_page.dimension.setCurrentIndex(1)
         self.set_current_step("setup")
@@ -151,6 +156,32 @@ class DirectModelWorkspace(QFrame):
         current = self.stage_stack.currentWidget()
         return current if current in (self.geometry_page, self.geometry_page_3d) else None
 
+    def current_session_step(self) -> str:
+        """Return the resumable authoring step without exposing widget objects."""
+        current = self.stage_stack.currentWidget()
+        for step, page in self._pages.items():
+            if page is current:
+                return "geometry" if step == "geometry_3d" else step
+        return "geometry"
+
+    def snapshot_project(self) -> dict[str, object]:
+        """Serialize the active 2D/3D authoring canvas for a recent session."""
+        page = (
+            self.geometry_page_3d
+            if self._wizard_geometry_target == "geometry_3d"
+            else self.geometry_page
+        )
+        return page.to_project_dict()
+
+    def restore_project(self, data: dict[str, object], *, step: str = "geometry") -> None:
+        """Restore an in-memory recent session and return to its last step."""
+        is_3d = int(data.get("ndm", 2)) == 3
+        target = self.geometry_page_3d if is_3d else self.geometry_page
+        target.load_project_dict(data)
+        self._wizard_geometry_target = "geometry_3d" if is_3d else "geometry"
+        self.setup_page.dimension.setCurrentIndex(1 if is_3d else 0)
+        self.set_current_step(step)
+
     def _save_project(self) -> None:
         page = self._current_geometry_page()
         if page is None:
@@ -167,6 +198,8 @@ class DirectModelWorkspace(QFrame):
             page.save_to_file(path)
         except OSError as error:
             QMessageBox.critical(self, "프로젝트 저장", f"저장하지 못했습니다: {error}")
+            return
+        self.project_saved.emit(path.resolve())
 
     def open_project_file(self, path: Path) -> None:
         """Load a saved project and land on its own (2D or 3D) canvas.
@@ -183,6 +216,7 @@ class DirectModelWorkspace(QFrame):
         target.load_project_dict(data)
         self._wizard_geometry_target = "geometry_3d" if is_3d else "geometry"
         self.set_current_step("geometry")
+        self.project_opened.emit(path.resolve())
 
     def _open_project(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(
@@ -190,6 +224,7 @@ class DirectModelWorkspace(QFrame):
         )
         if not path_str:
             return
+        self.project_opening.emit()
         try:
             self.open_project_file(Path(path_str))
         except (OSError, ValueError, KeyError, TypeError) as error:

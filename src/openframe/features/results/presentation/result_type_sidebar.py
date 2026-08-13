@@ -106,23 +106,18 @@ class _CollapsibleResultGroup(QFrame):
             icon_label.setObjectName("resultTypeGroupIcon")
             icon_label.setPixmap(_glyph_icon(_GROUP_ICON_GLYPHS.get(title, "•")).pixmap(18, 18))
             header_layout.addWidget(icon_label, 0, _LEFT)
-        # A fixed width (set once every group in the sidebar exists - see
-        # ResultTypeSidebar._align_group_counts) keeps every row's count badge
-        # in the same column. The explicit AlignLeft passed to addWidget below
-        # (not just the label's own setAlignment) is what actually pins arrow/
-        # icon/title/badge to the left edge instead of letting Qt spread them
-        # out across the row's full width when nothing has a stretch factor -
-        # the trailing addStretch is what claims the leftover space instead,
-        # in one place, after the badge.
         self.title_label = QLabel(title)
         self.title_label.setObjectName("resultTypeGroupTitle")
         self.title_label.setAlignment(_LEFT)
-        count_badge = QLabel(str(count))
+        self.title_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        count_badge = QLabel(
+            str(count) if not show_icon else f"{count} {'item' if count == 1 else 'items'}"
+        )
         count_badge.setObjectName("resultTypeGroupCount")
-        header_layout.addWidget(self.title_label, 0, _LEFT)
-        header_layout.addSpacing(10)
+        header_layout.addWidget(self.title_label, 1, _LEFT)
         header_layout.addWidget(count_badge, 0, Qt.AlignmentFlag.AlignVCenter)
-        header_layout.addStretch(1)
         outer.addWidget(self._header)
 
         self._body = QWidget()
@@ -189,13 +184,13 @@ class ResultTypeSidebar(QFrame):
         self.setObjectName("resultTypeSidebar")
         self._compact_2d = compact_2d
         self.setProperty("compact2d", compact_2d)
-        self.setMinimumWidth(180 if compact_2d else 280)
-        self.setMaximumWidth(205 if compact_2d else 340)
+        self.setMinimumWidth(180 if compact_2d else 260)
+        self.setMaximumWidth(205 if compact_2d else 520)
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(6 if compact_2d else 7, 8, 6 if compact_2d else 7, 8)
         outer_layout.setSpacing(5 if compact_2d else 6)
 
-        title = QLabel("RESULT NAVIGATOR" if compact_2d else "RESULT TYPES")
+        title = QLabel("RESULT NAVIGATOR" if compact_2d else "Results")
         title.setObjectName("resultSectionTitle")
         outer_layout.addWidget(title)
         if not compact_2d:
@@ -229,11 +224,11 @@ class ResultTypeSidebar(QFrame):
         self.buttons: dict[str, QToolButton] = {}
         self._groups_by_key: dict[str, _CollapsibleResultGroup] = {}
 
-        self._add_group(layout, "OVERVIEW", "" if compact_2d else "Overall model response", (("overview", "Summary" if compact_2d else "Overview"),))
+        self._add_group(layout, "OVERVIEW", "", (("overview", "Summary" if compact_2d else "Overall model response"),))
         self._add_group(
             layout,
             "DISPLACEMENT" if compact_2d else "SHAPE & NODE",
-            "" if compact_2d else "Geometry, movement and restraints",
+            "",
             (
                 ("deformation", "Deformed Shape"),
                 # Not "Nodal Displacements" - the category header above already
@@ -245,14 +240,14 @@ class ResultTypeSidebar(QFrame):
         self._add_group(
             layout,
             "REACTIONS",
-            "" if compact_2d else "Support response",
+            "",
             # Same trim as above - "Support" is already the category itself.
             (("reaction", "Reactions"),),
         )
         self._add_group(
             layout,
             "MEMBER FORCES",
-            "" if compact_2d else "Whole-frame local force plots",
+            "",
             # "Force"/"Moment" dropped - MEMBER FORCES above already says so;
             # this was the widest button in the whole sidebar.
             (
@@ -265,53 +260,37 @@ class ResultTypeSidebar(QFrame):
             self._add_group(
                 layout,
                 "NONLINEAR",
-                "Incremental pushover history",
+                "",
                 (("pushover", "Pushover Curve"),),
             )
         self._add_group(
             layout,
             "DATA",
-            "" if compact_2d else "Numerical verification",
+            "",
             (("tables", "Result Tables"),),
         )
         if not compact_2d:
             self._add_group(
                 layout,
                 "MODAL RESPONSE",
-                "Natural mode shapes",
+                "",
                 (("mode_shapes", "Mode Shapes"),),
             )
             self._add_group(
                 layout,
                 "TIME HISTORY",
-                "Displacement/rotation vs. time",
+                "",
                 # Not "Response History" - "History" already duplicates the
                 # category name above.
                 (("time_history", "Response"),),
             )
         layout.addStretch(1)
 
-        self._align_group_counts()
-
         # Every category starts collapsed - select_result_type("overview") below
         # opens only the active one, via _make_button's toggled -> set_expanded
         # wiring, so RESULTS opens as a short list of category headers rather
         # than a page already full of every option.
         self.select_result_type("overview")
-
-    def _align_group_counts(self) -> None:
-        """Give every category's title label the same fixed width - the
-        widest one's - so every count badge lands in the same column instead
-        of trailing right behind however long that row's own title happens
-        to be (OVERVIEW's short "8" landing nowhere near TIME HISTORY's)."""
-        seen: dict[int, _CollapsibleResultGroup] = {
-            id(group): group for group in self._groups_by_key.values()
-        }
-        if not seen:
-            return
-        widest = max(group.title_label.sizeHint().width() for group in seen.values())
-        for group in seen.values():
-            group.title_label.setFixedWidth(widest)
 
     def select_result_type(self, key: str) -> None:
         button = self.buttons.get(key)

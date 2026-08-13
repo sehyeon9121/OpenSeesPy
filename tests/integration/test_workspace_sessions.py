@@ -81,3 +81,66 @@ def test_switching_workspaces_restores_each_imported_models_native_units() -> No
     assert window.analysis_settings.target_displacement.suffix() == " in"
     assert window.results_workspace.viewport._unit_system == UnitSystem("kip", "in")
     window.close()
+
+
+def test_recent_projects_restores_a_hand_drawn_2d_model() -> None:
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    window._start_new_model_workspace()
+    canvas = window.direct_model_workspace.geometry_page.canvas
+    canvas.add_node(0.0, 0.0)
+    canvas.add_node(4.0, 0.0)
+    application.processEvents()
+
+    window._show_start_workspace()
+
+    assert len(window._direct_workspace_sessions) == 1
+    assert window.start_workspace._session_names[0].text() == "Untitled 2D Model"
+    assert "Nodes 2" in window.start_workspace._session_details[0].text()
+    assert not window.start_workspace._session_buttons[0].isHidden()
+
+    # Prove that RETURN restores the stored snapshot, rather than merely
+    # revealing whatever happens to remain in the shared canvas widget.
+    canvas.load_dict({"ndm": 2})
+    assert not canvas.nodes
+    window.start_workspace._session_buttons[0].click()
+    application.processEvents()
+
+    assert window.workspace_stack.currentWidget() is window.direct_model_workspace
+    assert window.direct_model_workspace.stage_stack.currentWidget() is window.direct_model_workspace.geometry_page
+    assert len(canvas.nodes) == 2
+    window.close()
+
+
+def test_recent_projects_lists_2d_and_3d_models_and_keeps_them_separate() -> None:
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    window._start_new_model_workspace()
+    window.direct_model_workspace.geometry_page.canvas.add_node(1.0, 2.0)
+    window._show_start_workspace()
+
+    window._start_new_3d_model_workspace()
+    window.direct_model_workspace.geometry_page_3d.canvas.add_node(3.0, 4.0)
+    window._show_start_workspace()
+
+    names = [label.text() for label in window.start_workspace._session_names[:2]]
+    assert names == ["Untitled 3D Model", "Untitled 2D Model"]
+
+    two_d_index = names.index("Untitled 2D Model")
+    window.start_workspace._session_buttons[two_d_index].click()
+    application.processEvents()
+    direct = window.direct_model_workspace
+    assert direct.stage_stack.currentWidget() is direct.geometry_page
+    assert direct.geometry_page.canvas.ndm == 2
+    assert len(direct.geometry_page.canvas.nodes) == 1
+
+    window._show_start_workspace()
+    visible_names = [label.text() for label in window.start_workspace._session_names[:2]]
+    three_d_index = visible_names.index("Untitled 3D Model")
+    window.start_workspace._session_buttons[three_d_index].click()
+    application.processEvents()
+    assert direct.geometry_page_3d.canvas.ndm == 3
+    assert len(direct.geometry_page_3d.canvas.nodes) == 1
+    window.close()

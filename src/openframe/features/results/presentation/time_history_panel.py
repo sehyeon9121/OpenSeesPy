@@ -16,6 +16,7 @@ via the shared ``nearest_step_index`` helper) - ``TimeHistoryResultsPanel``
 is the one place that turns that into an Animation call.
 """
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -25,7 +26,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Signal
 
 from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
@@ -318,11 +318,33 @@ class TimeHistoryPanel(QFrame):
             )
             self.status_note.setVisible(True)
 
-        selected_time = (
-            self._result_times[self._clicked_step_index]
-            if self._clicked_step_index is not None
-            else None
-        )
+        selected_time: float | None = None
+        selected_point: tuple[float, float] | None = None
+        selected_label = ""
+        if self._clicked_step_index is not None:
+            selected_step = self._result.time_history[self._clicked_step_index]
+            selected_time = selected_step.time
+            selected_node = selected_step.node_results.get(node_tag)
+            selected_series = (
+                getattr(selected_node, response_field) if selected_node is not None else ()
+            )
+            if dof_index < len(selected_series):
+                selected_value = selected_series[dof_index]
+                selected_point = (selected_time, selected_value)
+                selected_label = (
+                    f"t = {selected_time:.3f} s · {response_label} {dof_label} "
+                    f"= {selected_value:+.4g} {unit}"
+                )
+                self.selected_time_label.setText(
+                    f"Selected: {selected_time:.3f} s (Step {self._clicked_step_index})"
+                    f"  ·  {response_label} {dof_label}: {selected_value:+.4g} {unit}"
+                )
+            else:
+                selected_label = f"t = {selected_time:.3f} s · Value unavailable"
+                self.selected_time_label.setText(
+                    f"Selected: {selected_time:.3f} s "
+                    f"(Step {self._clicked_step_index}) · Value unavailable"
+                )
         self.curve_view.set_empty_message("시간이력해석을 먼저 실행하세요")
         self.curve_view.set_series(
             tuple(times),
@@ -331,4 +353,6 @@ class TimeHistoryPanel(QFrame):
             marker=(abs_max_time, values[abs_max_index]),
             marker_label=f"Abs Max {abs_max_value:.3g} {unit} @ {abs_max_time:.2f}s",
             selected_time=selected_time,
+            selected_point=selected_point,
+            selected_label=selected_label,
         )

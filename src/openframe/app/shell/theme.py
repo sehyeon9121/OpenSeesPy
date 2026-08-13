@@ -558,29 +558,30 @@ QLabel#resultToolbarValue {
     font-weight: 600;
 }
 QFrame#resultTypeSidebar {
-    background: #f3f6fa;
+    background: #f7f9fc;
     border-right: 1px solid #d7e0ea;
 }
 QLabel#resultSectionTitle {
     color: #17273f;
-    font-size: 11pt;
-    font-weight: 800;
-    padding: 2px 0 0 0;
+    font-size: 13pt;
+    font-weight: 700;
+    padding: 4px 2px 0 2px;
 }
 QLabel#resultTypeDescription {
     color: #6c7c92;
     font-size: 8pt;
-    padding-bottom: 2px;
+    padding: 0 2px 8px 2px;
 }
 QScrollArea#resultTypeScrollArea { background: transparent; border: 0; }
 QWidget#resultTypeScrollContent { background: transparent; }
 QFrame#resultTypeGroup {
-    background: #ffffff;
-    border: 1px solid #d3dce8;
-    border-radius: 6px;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid #dce4ee;
+    border-radius: 0;
 }
-QWidget#resultTypeGroupHeader { background: transparent; border-radius: 4px; }
-QWidget#resultTypeGroupHeader:hover { background: #f0f5fb; }
+QWidget#resultTypeGroupHeader { background: transparent; border-radius: 6px; }
+QWidget#resultTypeGroupHeader:hover { background: #edf3fb; }
 QLabel#resultTypeGroupArrow {
     color: #7c8ca1;
     font-size: 8pt;
@@ -590,8 +591,7 @@ QLabel#resultTypeGroupArrow {
 QLabel#resultTypeGroupTitle {
     color: #1f3452;
     font-size: 9pt;
-    font-weight: 800;
-    letter-spacing: 0.2px;
+    font-weight: 700;
 }
 QLabel#resultTypeGroupHint {
     color: #7c8ca1;
@@ -599,16 +599,13 @@ QLabel#resultTypeGroupHint {
     padding: 0 2px 4px 2px;
 }
 QLabel#resultTypeGroupCount {
-    min-width: 19px;
-    max-width: 19px;
-    min-height: 19px;
-    max-height: 19px;
-    border-radius: 9px;
-    background: #e2ebf8;
-    color: #345a86;
+    min-width: 42px;
+    min-height: 18px;
+    background: transparent;
+    color: #7b899a;
     font-size: 7.5pt;
-    font-weight: 800;
-    qproperty-alignment: AlignCenter;
+    font-weight: 500;
+    qproperty-alignment: AlignRight;
 }
 QLabel#resultTypeGroupIcon {
     min-width: 22px;
@@ -617,12 +614,12 @@ QLabel#resultTypeGroupIcon {
     max-height: 22px;
 }
 QToolButton#resultTypeButton {
-    min-height: 42px;
-    padding: 0 6px;
+    min-height: 34px;
+    padding: 0 10px;
     border: 0;
-    border-left: 4px solid transparent;
-    border-radius: 3px;
-    background: #ffffff;
+    border-left: 3px solid transparent;
+    border-radius: 5px;
+    background: transparent;
     color: #33475f;
     text-align: left;
     font-size: 9.5pt;
@@ -634,7 +631,7 @@ QToolButton#resultTypeButton:hover {
     border-left-color: #b7cdec;
 }
 QToolButton#resultTypeButton:checked {
-    background: #dfeafc;
+    background: #e4eefc;
     border-left-color: #174ea6;
     color: #123f89;
     font-weight: 600;
@@ -843,7 +840,8 @@ QLabel#readinessReady { color: #2e7048; background: #e4f4ea; }
 QLabel#readinessMissing { color: #926117; background: #fff1cf; }
 QLabel#readinessError { color: #a42f36; background: #fde7e8; }
 QLabel#readinessWaiting { color: #69778a; background: #eceff3; }
-QSplitter#resultWorkspaceSplitter::handle,
+QSplitter#resultWorkspaceSplitter::handle { background: #d7e0ea; }
+QSplitter#resultWorkspaceSplitter::handle:hover { background: #8aa8d2; }
 QSplitter#resultNormalSplitter::handle { background: #d7e0ea; }
 QSplitter#workspaceSplitter::handle { background: #dce3eb; width: 1px; }
 QStatusBar {
@@ -1797,6 +1795,25 @@ QFrame#modelingPropertyPanel QFrame#propertySectionCard {
     border: 1px solid #c4c5d5;
     border-radius: 2px;
 }
+QWidget#selectionStatusPanel { background: #f8f9fa; }
+QSplitter#modelingRightSplitter::handle {
+    background: #dce3eb;
+    height: 6px;
+}
+QSplitter#modelingRightSplitter::handle:hover { background: #b9c6d6; }
+QLabel#selectionStatusBadge {
+    border-radius: 9px;
+    padding: 2px 8px;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QLabel#selectionStatusBadge[state="db"] { color: #174ea6; background: #e9f0fb; }
+QLabel#selectionStatusBadge[state="calculated"] { color: #174ea6; background: #e9f0fb; }
+QLabel#selectionStatusBadge[state="rule"] { color: #006a61; background: #dff7f2; }
+QLabel#selectionStatusBadge[state="custom"] { color: #778493; background: #f0f2f5; }
+QLabel#selectionStatusBadge[state="pending"] { color: #925c1a; background: #fff1cf; }
+QLabel#selectionStatusBadge[state="mixed"] { color: #778493; background: #f0f2f5; }
+QLabel#selectionStatusBadge[state="applied"] { color: #2e7048; background: #e4f4ea; }
 QStackedWidget#direct2DFooterStack {
     min-height: 42px;
     max-height: 42px;
@@ -1844,9 +1861,14 @@ QFrame#resultTypeSidebar[compact2d="true"] QFrame#resultTypeGroup {
     border-radius: 0;
 }
 QFrame#resultTypeSidebar[compact2d="true"] QLabel#resultTypeGroupCount {
+    min-width: 19px;
+    max-width: 19px;
+    min-height: 19px;
+    max-height: 19px;
     background: transparent;
     border: 0;
     color: #a3a6ad;
+    qproperty-alignment: AlignCenter;
 }
 QFrame#resultTypeSidebar[compact2d="true"] QLabel#resultTypeGroupArrow {
     color: #a3a6ad;

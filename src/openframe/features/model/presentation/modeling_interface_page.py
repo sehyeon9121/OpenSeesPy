@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -60,6 +61,7 @@ from openframe.features.model.presentation.canvas_glyphs import (
 )
 from openframe.features.model.presentation.safe_spinbox import SafeDoubleSpinBox, SafeSpinBox
 from openframe.features.model.presentation.section_material_panel import SectionMaterialPanel
+from openframe.features.model.presentation.selection_status_panel import SelectionStatusPanel
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
@@ -603,15 +605,50 @@ class ModelingInterfacePage(QFrame):
             button.setChecked(True)
         self.category_stack.setCurrentIndex(self.category_pages[key])
 
-    def _build_property_panel(self) -> QScrollArea:
-        """우측 워크트리: 아무 카테고리도 고르지 않았으면 비어 있고, 상단
-        카테고리 바(``_build_category_bar``)에서 하나를 고르면 그 내용만
-        여기 나타난다 — 예전엔 노드 추가·이동복사배열만 항상 떠 있고
-        나머지(지점/노드유형/부재/하중)는 캔버스 위 아코디언에 있었는데,
-        그 비대칭 자체가 발견성 문제였다(부재 노드 삽입은 스크롤해야 보이는
-        마지막 섹션이라 처음 쓰는 사람은 있는지도 몰랐다). 지금은 카테고리
-        전부 같은 자격으로, 클릭하기 전엔 아무것도 차지하지 않고
-        클릭하면 그 하나만 이 폭(300px) 안에서 세로로 펼쳐진다 — 가로 폭
+    def _build_property_panel(self) -> QSplitter:
+        """우측 워크트리, 세로로 분할된 두 창 — 위쪽은 기존 편집 패널
+        (``_build_editor_scroll``, 카테고리별 설정 + 적용 버튼), 아래쪽은
+        선택한 대상에 실제 저장된 값만 보여주는 읽기 전용 Selection Status
+        Inspector(``SelectionStatusPanel``, 편집 기능 없음). ``QSplitter``라
+        사용자가 경계선을 드래그해 비율을 조절할 수 있고, 두 창 모두 독립된
+        스크롤 영역을 갖는다 — 패널 전체 폭(320px)은 이 splitter 하나에만
+        고정하고 자식 스크롤 영역들은 그 폭을 그대로 채우도록 둔다(예전처럼
+        각자 ``setFixedWidth``를 걸면 splitter 리사이즈와 어긋날 수 있음).
+        """
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setObjectName("modelingRightSplitter")
+        splitter.setFixedWidth(320)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(6)
+
+        splitter.addWidget(self._build_editor_scroll())
+
+        self.selection_status_panel = SelectionStatusPanel()
+        status_scroll = QScrollArea()
+        status_scroll.setObjectName("selectionStatusScroll")
+        status_scroll.setWidgetResizable(True)
+        status_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        status_scroll.setMinimumHeight(140)
+        status_scroll.setWidget(self.selection_status_panel)
+        splitter.addWidget(status_scroll)
+
+        # ~65:35 initial split - QSplitter renormalizes setSizes() to its
+        # actual available height, so these only need to hold that ratio,
+        # not match the panel's real pixel height.
+        splitter.setStretchFactor(0, 65)
+        splitter.setStretchFactor(1, 35)
+        splitter.setSizes([650, 350])
+        return splitter
+
+    def _build_editor_scroll(self) -> QScrollArea:
+        """The splitter's top pane: 아무 카테고리도 고르지 않았으면
+        비어 있고, 상단 카테고리 바(``_build_category_bar``)에서 하나를
+        고르면 그 내용만 여기 나타난다 — 예전엔 노드 추가·이동복사배열만
+        항상 떠 있고 나머지(지점/노드유형/부재/하중)는 캔버스 위 아코디언에
+        있었는데, 그 비대칭 자체가 발견성 문제였다(부재 노드 삽입은 스크롤해야
+        보이는 마지막 섹션이라 처음 쓰는 사람은 있는지도 몰랐다). 지금은
+        카테고리 전부 같은 자격으로, 클릭하기 전엔 아무것도 차지하지 않고
+        클릭하면 그 하나만 이 폭(320px) 안에서 세로로 펼쳐진다 — 가로 폭
         한계 때문에 글자가 잘리던 문제도 이걸로 같이 해결된다.
         """
         panel = QFrame()
@@ -619,7 +656,7 @@ class ModelingInterfacePage(QFrame):
         root = QVBoxLayout(panel)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
-        inspector_title = QLabel("PROPERTIES")
+        inspector_title = QLabel("PROPERTY EDITOR")
         inspector_title.setObjectName("direct2DInspectorTitle")
         root.addWidget(inspector_title)
         self.selection_summary = QLabel()
@@ -652,7 +689,6 @@ class ModelingInterfacePage(QFrame):
         scroll = QScrollArea()
         scroll.setObjectName("modelingInspectorScroll")
         scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(320)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(panel)
         return scroll
@@ -987,6 +1023,7 @@ class ModelingInterfacePage(QFrame):
         else:
             restraints = template
         self.canvas.apply_support_to_selection(restraints, self.support_angle.value())
+        self._sync_selection_status()
 
     def _build_transform_section(self) -> QWidget:
         """Move, copy, array-copy and mirror — every operation that turns a hand-
@@ -1112,6 +1149,7 @@ class ModelingInterfacePage(QFrame):
 
         self.section_material_panel = SectionMaterialPanel()
         self.section_material_panel.apply_requested.connect(self._apply_member_section)
+        self.section_material_panel.edited.connect(self._selection_status_edited)
         root.addWidget(self.section_material_panel)
         section_hint = QLabel(
             "정정구조는 없어도 풀리지만, 부정정 구조를 풀거나 실제 처짐 값을 보려면 "
@@ -1502,6 +1540,7 @@ class ModelingInterfacePage(QFrame):
             combo.blockSignals(False)
         self._load_target_changed()
         self.section_material_panel.set_unit_system(unit_system)
+        self._sync_selection_status()
 
     def to_project_dict(self) -> dict[str, object]:
         """The canvas's own raw state plus the bits of UI chrome that a
@@ -1880,6 +1919,30 @@ class ModelingInterfacePage(QFrame):
         else:
             summary = "선택된 대상이 없습니다."
         self.selection_summary.setText(summary)
+        self._sync_selection_status()
+
+    def _sync_selection_status(self) -> None:
+        """Full re-render of the read-only Selection Status inspector (bottom
+        splitter pane) from the model itself - called wherever
+        ``_sync_property_panel`` already is (selection change, apply, undo/
+        redo, project load), never from a bare keystroke. ``pending_edit``
+        only matters when a member is selected; the panel ignores it
+        otherwise."""
+        self.selection_status_panel.refresh(
+            self.canvas,
+            pending_edit=self.section_material_panel.current_edit_kwargs(),
+            unit_system=self._unit_system,
+        )
+
+    def _selection_status_edited(self) -> None:
+        """``SectionMaterialPanel.edited`` fired from a real keystroke -
+        re-evaluate only the Applied/Pending Changes badge already on
+        screen, never a full ``_sync_selection_status()`` (that would be
+        indistinguishable from re-reading the model, which typing alone
+        must never trigger)."""
+        self.selection_status_panel.update_pending_status(
+            self.section_material_panel.current_edit_kwargs()
+        )
 
     def _refresh_member_section(self, member_tag: int) -> None:
         element = self.canvas.elements[member_tag]
@@ -1911,6 +1974,7 @@ class ModelingInterfacePage(QFrame):
         self.selection_summary.setText(
             f"✓ 부재 {count}개에 단면·재료(E/A/I)와 단위중량을 적용했습니다."
         )
+        self._sync_selection_status()
 
     def _apply_member_end_release(self, end: str, released: bool) -> None:
         member_tag = self._selected_member_tag()

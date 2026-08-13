@@ -80,3 +80,22 @@ def test_no_series_means_no_click_handling() -> None:
     _click_at(view, 250.0, 150.0)
 
     assert received == []
+
+
+def test_selected_time_can_show_its_curve_point_and_value_callout() -> None:
+    view = _view()
+
+    view.set_series(
+        view._times,
+        view._values,
+        y_label="U [m]",
+        selected_time=2.0,
+        selected_point=(2.0, 3.0),
+        selected_label="t = 2.000 s · Displacement UX = +3 m",
+    )
+    image = view.grab().toImage()
+
+    assert view._selected_time == pytest.approx(2.0)
+    assert view._selected_point == pytest.approx((2.0, 3.0))
+    assert "Displacement UX" in view._selected_label
+    assert not image.isNull()

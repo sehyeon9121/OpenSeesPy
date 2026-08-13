@@ -31,6 +31,8 @@ class TimeHistoryCurveView(QWidget):
         self._marker: tuple[float, float] | None = None
         self._marker_label = ""
         self._selected_time: float | None = None
+        self._selected_point: tuple[float, float] | None = None
+        self._selected_label = ""
         self._last_plot_rect: QRectF | None = None
         self._last_max_time = 0.0
 
@@ -43,18 +45,24 @@ class TimeHistoryCurveView(QWidget):
         marker: tuple[float, float] | None = None,
         marker_label: str = "",
         selected_time: float | None = None,
+        selected_point: tuple[float, float] | None = None,
+        selected_label: str = "",
     ) -> None:
         """``marker`` is an optional (time, value) point to highlight - e.g.
         where the absolute-max response occurs - drawn as a dot with a small
         text label next to it. ``selected_time`` is a separate, independent
         highlight - the point the user last clicked in the graph - drawn as a
-        vertical guide line so it stays visually distinct from the marker."""
+        vertical guide line so it stays visually distinct from the marker.
+        ``selected_point`` and ``selected_label`` add the curve value at that
+        guide, so a click is useful without opening the animation panel."""
         self._times = times
         self._values = values
         self._y_label = y_label
         self._marker = marker
         self._marker_label = marker_label
         self._selected_time = selected_time
+        self._selected_point = selected_point
+        self._selected_label = selected_label
         self.update()
 
     def set_empty_message(self, message: str) -> None:
@@ -205,10 +213,60 @@ class TimeHistoryCurveView(QWidget):
 
         if self._selected_time is not None:
             selected_x, _ = to_screen(self._selected_time, 0.0)
-            selection_pen = QPen(QColor("#b4530a"), 1.4, Qt.PenStyle.DashLine)
+            selection_color = QColor("#c7352e")
+            selection_pen = QPen(selection_color, 1.4, Qt.PenStyle.DashLine)
             selection_pen.setCosmetic(True)
             painter.setPen(selection_pen)
             painter.drawLine(selected_x, plot_rect.top(), selected_x, plot_rect.bottom())
+
+            if self._selected_point is not None:
+                point_x, point_y = to_screen(*self._selected_point)
+                painter.setPen(QPen(QColor("#ffffff"), 1.5))
+                painter.setBrush(selection_color)
+                point_radius = 4.5
+                painter.drawEllipse(
+                    QRectF(
+                        point_x - point_radius,
+                        point_y - point_radius,
+                        2 * point_radius,
+                        2 * point_radius,
+                    )
+                )
+
+            if self._selected_label:
+                max_text_width = max(40, int(plot_rect.width() - 18.0))
+                display_label = font_metrics.elidedText(
+                    self._selected_label,
+                    Qt.TextElideMode.ElideRight,
+                    max_text_width - 12,
+                )
+                callout_width = min(
+                    float(max_text_width),
+                    float(font_metrics.horizontalAdvance(display_label) + 14),
+                )
+                callout_height = label_height + 6.0
+                callout_x = selected_x + 7.0
+                if callout_x + callout_width > plot_rect.right() - 3.0:
+                    callout_x = selected_x - callout_width - 7.0
+                callout_x = min(
+                    max(callout_x, plot_rect.left() + 3.0),
+                    plot_rect.right() - callout_width - 3.0,
+                )
+                callout_rect = QRectF(
+                    callout_x,
+                    plot_rect.top() + 5.0,
+                    callout_width,
+                    callout_height,
+                )
+                painter.setPen(QPen(selection_color, 1.0))
+                painter.setBrush(QColor("#fff5f4"))
+                painter.drawRoundedRect(callout_rect, 4.0, 4.0)
+                painter.setPen(selection_color)
+                painter.drawText(
+                    callout_rect.adjusted(7.0, 0.0, -7.0, 0.0),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    display_label,
+                )
 
         if self._marker is not None:
             marker_time, marker_value = self._marker

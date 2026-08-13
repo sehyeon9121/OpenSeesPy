@@ -61,6 +61,16 @@ class _WorkspaceSession:
     section: str = "model"
 
 
+@dataclass(slots=True)
+class _DirectWorkspaceSession:
+    key: str
+    title: str
+    ndm: int
+    project_data: dict[str, object]
+    step: str = "geometry"
+    source_path: Path | None = None
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -82,7 +92,11 @@ class MainWindow(QMainWindow):
         self._resume_section = "model"
         self._has_active_workspace = False
         self._workspace_sessions: dict[str, _WorkspaceSession] = {}
+        self._direct_workspace_sessions: dict[str, _DirectWorkspaceSession] = {}
+        self._recent_session_keys: list[str] = []
         self._current_session_key: str | None = None
+        self._current_direct_session_key: str | None = None
+        self._direct_session_sequence = 0
         self.setWindowTitle("OpenFrame Studio")
         if APP_ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
@@ -256,6 +270,15 @@ class MainWindow(QMainWindow):
         self.direct_model_workspace.analysis_script_exported.connect(
             self._open_exported_analysis_script
         )
+        self.direct_model_workspace.project_opening.connect(
+            self._snapshot_current_direct_session
+        )
+        self.direct_model_workspace.project_opened.connect(
+            self._direct_project_opened
+        )
+        self.direct_model_workspace.project_saved.connect(
+            self._direct_project_saved
+        )
         self.start_workspace.template_requested.connect(
             lambda: self._show_pending_workflow("Template Browser")
         )
@@ -302,6 +325,8 @@ class MainWindow(QMainWindow):
         return selected
 
     def _show_start_workspace(self) -> None:
+        if self.workspace_stack.currentWidget() is self.direct_model_workspace:
+            self._snapshot_current_direct_session()
         if self.workspace_stack.currentWidget() is not self.start_workspace:
             self._resume_section = self.navigation.current_section()
             self._store_current_session_section(self._resume_section)
@@ -319,6 +344,7 @@ class MainWindow(QMainWindow):
 
     def _start_import_workspace(self) -> None:
         self._has_active_workspace = True
+        self._current_direct_session_key = None
         if self._workspace_sessions:
             self._refresh_start_sessions()
         else:
@@ -339,6 +365,7 @@ class MainWindow(QMainWindow):
         self.header.show()
         self.header.set_direct_model_mode(True)
         self.direct_model_workspace.start_2d_model()
+        self._begin_direct_session(2)
         self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
         self.statusBar().showMessage("New 2D Model · 2D 캔버스에서 바로 시작합니다")
 
@@ -354,6 +381,7 @@ class MainWindow(QMainWindow):
         self.header.show()
         self.header.set_direct_model_mode(True)
         self.direct_model_workspace.start_3d_model()
+        self._begin_direct_session(3)
         self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
         self.statusBar().showMessage(
             "New 3D Model · 기본 설정부터 새 모델을 작성합니다"
@@ -374,15 +402,11 @@ class MainWindow(QMainWindow):
         if not path_str:
             return
         try:
+            self._snapshot_current_direct_session()
             self.direct_model_workspace.open_project_file(Path(path_str))
         except (OSError, ValueError, KeyError, TypeError) as error:
             QMessageBox.critical(self, "프로젝트 열기", f"프로젝트를 열지 못했습니다: {error}")
             return
-        self._current_model_source = None
-        self.navigation.hide()
-        self.header.show()
-        self.header.set_direct_model_mode(True)
-        self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
         self.statusBar().showMessage(f"프로젝트 열기 · {Path(path_str).name}")
 
     def _save_project_from_header(self) -> None:
@@ -517,6 +541,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._current_session_key = key
+        self._current_direct_session_key = None
         self._refresh_start_sessions()
         self._show_model_workspace()
         self.statusBar().showMessage(
@@ -721,27 +746,131 @@ class MainWindow(QMainWindow):
     def _remember_session(self, session: _WorkspaceSession) -> None:
         self._workspace_sessions.pop(session.key, None)
         self._workspace_sessions[session.key] = session
-        while len(self._workspace_sessions) > 4:
-            oldest_key = next(iter(self._workspace_sessions))
-            del self._workspace_sessions[oldest_key]
+        self._touch_recent_session(session.key)
+
+    def _touch_recent_session(self, key: str) -> None:
+        if key in self._recent_session_keys:
+            self._recent_session_keys.remove(key)
+        self._recent_session_keys.append(key)
+        while len(self._recent_session_keys) > 4:
+            oldest_key = self._recent_session_keys.pop(0)
+            self._workspace_sessions.pop(oldest_key, None)
+            self._direct_workspace_sessions.pop(oldest_key, None)
+
+    def _begin_direct_session(self, ndm: int) -> None:
+        """Register a blank hand-drawn model as a resumable recent project."""
+        self._direct_session_sequence += 1
+        key = f"direct:{self._direct_session_sequence}"
+        session = _DirectWorkspaceSession(
+            key=key,
+            title=f"Untitled {ndm}D Model",
+            ndm=ndm,
+            project_data=self.direct_model_workspace.snapshot_project(),
+            step=self.direct_model_workspace.current_session_step(),
+        )
+        self._direct_workspace_sessions[key] = session
+        self._touch_recent_session(key)
+        self._current_direct_session_key = key
+        self._current_session_key = None
+        self._current_model_source = None
+        self._has_active_workspace = True
+
+    def _snapshot_current_direct_session(self) -> None:
+        key = self._current_direct_session_key
+        session = self._direct_workspace_sessions.get(key or "")
+        if session is None:
+            return
+        session.project_data = self.direct_model_workspace.snapshot_project()
+        session.ndm = int(session.project_data.get("ndm", session.ndm))
+        session.step = self.direct_model_workspace.current_session_step()
+        self._touch_recent_session(session.key)
+
+    def _direct_project_opened(self, path: Path) -> None:
+        """Create/update a recent entry after an .ofsm project is opened."""
+        resolved = path.resolve()
+        key = f"direct-file:{resolved}"
+        session = _DirectWorkspaceSession(
+            key=key,
+            title=resolved.name,
+            ndm=int(self.direct_model_workspace.snapshot_project().get("ndm", 2)),
+            project_data=self.direct_model_workspace.snapshot_project(),
+            step=self.direct_model_workspace.current_session_step(),
+            source_path=resolved,
+        )
+        self._direct_workspace_sessions[key] = session
+        self._touch_recent_session(key)
+        self._current_direct_session_key = key
+        self._current_session_key = None
+        self._current_model_source = None
+        self._has_active_workspace = True
+        self.navigation.hide()
+        self.header.show()
+        self.header.set_welcome_mode(False)
+        self.header.set_direct_model_mode(True)
+        self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
+        self._refresh_start_sessions()
+
+    def _direct_project_saved(self, path: Path) -> None:
+        resolved = path.resolve()
+        key = self._current_direct_session_key
+        session = self._direct_workspace_sessions.get(key or "")
+        if session is None:
+            self._direct_project_opened(resolved)
+            return
+        old_key = session.key
+        new_key = f"direct-file:{resolved}"
+        session.key = new_key
+        session.title = resolved.name
+        session.source_path = resolved
+        session.project_data = self.direct_model_workspace.snapshot_project()
+        session.step = self.direct_model_workspace.current_session_step()
+        if old_key != new_key:
+            self._direct_workspace_sessions.pop(old_key, None)
+            if old_key in self._recent_session_keys:
+                self._recent_session_keys.remove(old_key)
+        self._direct_workspace_sessions[new_key] = session
+        self._current_direct_session_key = new_key
+        self._touch_recent_session(new_key)
+        self._refresh_start_sessions()
 
     def _store_current_session_section(self, section: str) -> None:
         if self._current_session_key in self._workspace_sessions:
             self._workspace_sessions[self._current_session_key].section = section
 
     def _refresh_start_sessions(self) -> None:
-        sessions = [
-            (
-                session.key,
-                session.title,
-                f"{session.title} · OpenSeesPy · {session.source_path.parent}",
-            )
-            for session in reversed(self._workspace_sessions.values())
-        ]
+        sessions: list[tuple[str, str, str]] = []
+        for key in reversed(self._recent_session_keys):
+            imported = self._workspace_sessions.get(key)
+            if imported is not None:
+                sessions.append(
+                    (
+                        imported.key,
+                        imported.title,
+                        f"{imported.title} · OpenSeesPy · {imported.source_path.parent}",
+                    )
+                )
+                continue
+            direct = self._direct_workspace_sessions.get(key)
+            if direct is not None:
+                nodes = len(direct.project_data.get("nodes", []))
+                elements = len(direct.project_data.get("elements", []))
+                source = str(direct.source_path.parent) if direct.source_path else "Unsaved project"
+                sessions.append(
+                    (
+                        direct.key,
+                        direct.title,
+                        f"{direct.ndm}D Model · Nodes {nodes} · Members {elements} · {source}",
+                    )
+                )
         if sessions:
-            self.start_workspace.set_sessions(sessions, self._current_session_key)
+            active_key = self._current_direct_session_key or self._current_session_key
+            self.start_workspace.set_sessions(sessions, active_key)
 
     def _activate_workspace_session(self, key: str) -> None:
+        direct = self._direct_workspace_sessions.get(key)
+        if direct is not None:
+            self._activate_direct_workspace_session(direct)
+            return
         session = self._workspace_sessions.get(key)
         if session is None:
             return
@@ -750,6 +879,7 @@ class MainWindow(QMainWindow):
         self._workspace_sessions.pop(key)
         self._workspace_sessions[key] = session
         self._current_session_key = key
+        self._current_direct_session_key = None
         self._current_model_source = session.source_path
         self._has_active_workspace = True
 
@@ -773,5 +903,24 @@ class MainWindow(QMainWindow):
         self.header.set_welcome_mode(False)
         self.navigation.set_current_section(session.section)
         self._change_workspace_section(session.section)
+        self._refresh_start_sessions()
+        self.statusBar().showMessage(f"Workspace restored | {session.title}")
+
+    def _activate_direct_workspace_session(self, session: _DirectWorkspaceSession) -> None:
+        self._direct_workspace_sessions.pop(session.key, None)
+        self._direct_workspace_sessions[session.key] = session
+        self._touch_recent_session(session.key)
+        self._current_direct_session_key = session.key
+        self._current_session_key = None
+        self._current_model_source = None
+        self._has_active_workspace = True
+        self.direct_model_workspace.restore_project(
+            session.project_data, step=session.step
+        )
+        self.navigation.hide()
+        self.header.show()
+        self.header.set_welcome_mode(False)
+        self.header.set_direct_model_mode(True)
+        self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
         self._refresh_start_sessions()
         self.statusBar().showMessage(f"Workspace restored | {session.title}")

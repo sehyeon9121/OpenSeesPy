@@ -208,3 +208,18 @@ class TestSummaryStatistics:
         _select(panel, response="acceleration", node=2, dof=0)
 
         assert panel.curve_view._marker == pytest.approx((0.1, -8.0))
+
+
+def test_graph_click_displays_the_selected_curve_value_and_unit() -> None:
+    panel = _panel()
+    panel.set_model(StructuralModel(ndm=2))
+    panel.show_result(_full_response_result())
+    _select(panel, response="acceleration", node=2, dof=0)
+
+    panel.curve_view.time_clicked.emit(0.18)  # nearest step: 0.2 s, value +5
+
+    assert panel._clicked_step_index == 2
+    assert panel.curve_view._selected_point == pytest.approx((0.2, 5.0))
+    assert "t = 0.200 s" in panel.curve_view._selected_label
+    assert "Acceleration UX = +5 m/s²" in panel.curve_view._selected_label
+    assert "Acceleration UX: +5 m/s²" in panel.selected_time_label.text()

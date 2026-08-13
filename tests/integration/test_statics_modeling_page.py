@@ -8,7 +8,7 @@ import pytest
 from _solve_helpers import solve_and_wait
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QSplitter
 
 from openframe.features.analysis.statics import check_determinacy
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
@@ -745,8 +745,8 @@ def test_export_button_writes_a_runnable_script_and_emits_its_path(tmp_path: Pat
 
 
 def test_export_button_reports_missing_material_without_opening_a_dialog() -> None:
-    """No section applied - same everyday-not-an-error philosophy solve_modal's
-    missing-material test already covers. The file dialog must never open for
+    """No section applied - same everyday-not-an-error philosophy ``solve()``'s
+    missing-material path already covers. The file dialog must never open for
     a model that cannot be exported, so patching it is deliberately omitted -
     the dialog would raise (or hang) here if the guard were ever removed."""
     application = QApplication.instance() or QApplication([])

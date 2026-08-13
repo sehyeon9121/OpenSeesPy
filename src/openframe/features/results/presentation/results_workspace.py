@@ -72,7 +72,8 @@ class ResultsWorkspace(QFrame):
         body.addWidget(self.content_stack)
         body.setStretchFactor(0, 0)
         body.setStretchFactor(1, 1)
-        body.setSizes((190 if compact_2d else 300, 1190 if compact_2d else 1080))
+        body.setHandleWidth(1 if compact_2d else 7)
+        body.setSizes((190 if compact_2d else 320, 1190 if compact_2d else 1060))
         layout.addWidget(body, 1)
 
         self.result_types.result_type_changed.connect(self._set_result_type)
