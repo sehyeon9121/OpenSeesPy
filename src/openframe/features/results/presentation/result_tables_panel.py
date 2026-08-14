@@ -9,6 +9,7 @@ row - each block stays narrow enough to read without horizontal scrolling.
 
 from PySide6.QtWidgets import (
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -96,6 +97,46 @@ class ResultTablesPanel(QFrame):
             modal_layout, "누적 질량참여율 (%)"
         )
 
+        # Elastic Buckling - never mixed with the modal tab above: a buckling
+        # factor is not a period/frequency, and this analysis never forms a
+        # mass matrix, so there is no mass-participation column to show either
+        # (see core/domain/results.py's BucklingMode docstring).
+        buckling_layout = self._new_tab_page("좌굴 모드")
+        self._buckling_tab_index = self.tabs.count() - 1
+        summary_caption = QLabel("요약")
+        summary_caption.setObjectName("resultGroupLabel")
+        buckling_layout.addWidget(summary_caption)
+        summary_grid = QGridLayout()
+        summary_grid.setHorizontalSpacing(18)
+        summary_grid.setVerticalSpacing(4)
+        self.buckling_summary_labels: dict[str, QLabel] = {}
+        for row, (key, title) in enumerate(
+            (
+                ("factor", "Critical Buckling Factor"),
+                ("case", "Reference Load Case"),
+                ("state", "Critical State"),
+            )
+        ):
+            title_label = QLabel(f"{title}:")
+            title_label.setObjectName("resultGroupLabel")
+            value_label = QLabel("—")
+            value_label.setObjectName("resultDetailsText")
+            summary_grid.addWidget(title_label, row, 0)
+            summary_grid.addWidget(value_label, row, 1)
+            self.buckling_summary_labels[key] = value_label
+        buckling_layout.addLayout(summary_grid)
+        self.buckling_scope_note = QLabel(
+            "Elastic global buckling based on the selected reference load pattern. "
+            "Material yielding, imperfections and local section buckling are not "
+            "included."
+        )
+        self.buckling_scope_note.setObjectName("resultDetailsText")
+        self.buckling_scope_note.setWordWrap(True)
+        buckling_layout.addWidget(self.buckling_scope_note)
+        self.buckling_modes_table = self._add_table_section(
+            buckling_layout, "모드별 좌굴하중계수"
+        )
+
         self._refresh()
 
     def _new_tab_page(self, title: str) -> QVBoxLayout:
@@ -160,6 +201,7 @@ class ResultTablesPanel(QFrame):
         self._refresh_reactions()
         self._refresh_member_forces()
         self._refresh_modal()
+        self._refresh_buckling()
 
     def _refresh_displacements(self) -> None:
         unit = self._unit_system
@@ -384,3 +426,36 @@ class ResultTablesPanel(QFrame):
 
         if self._modal_tab_index >= 0:
             self.tabs.setTabVisible(self._modal_tab_index, bool(modes))
+
+    def _refresh_buckling(self) -> None:
+        result = self._result
+        modes = () if result is None else result.buckling_modes
+
+        headers = ["MODE", "BUCKLING FACTOR", "RAW EIGENVALUE"]
+        table = self.buckling_modes_table
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setRowCount(len(modes))
+        for row, mode in enumerate(modes):
+            table.setItem(row, 0, QTableWidgetItem(str(mode.mode_number)))
+            table.setItem(row, 1, QTableWidgetItem(f"{mode.buckling_load_factor:.6g}"))
+            table.setItem(row, 2, QTableWidgetItem(f"{mode.raw_eigenvalue:.6g}"))
+
+        if modes:
+            critical = modes[0]
+            scale_note = (
+                f" (scale x{critical.reference_load_scale:g})"
+                if critical.reference_load_scale != 1.0
+                else ""
+            )
+            self.buckling_summary_labels["factor"].setText(f"{critical.buckling_load_factor:.6g}")
+            self.buckling_summary_labels["case"].setText(critical.reference_load_case)
+            self.buckling_summary_labels["state"].setText(
+                f"{critical.buckling_load_factor:.6g} x {critical.reference_load_case}{scale_note}"
+            )
+        else:
+            for label in self.buckling_summary_labels.values():
+                label.setText("—")
+
+        if self._buckling_tab_index >= 0:
+            self.tabs.setTabVisible(self._buckling_tab_index, bool(modes))

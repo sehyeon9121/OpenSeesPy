@@ -20,6 +20,7 @@ def run_desktop_app() -> int:
     from openframe.app.shell.theme import apply_application_theme
     from openframe.core.domain import AnalysisKind
     from openframe.features.analysis.application.run_analysis import RunAnalysisService
+    from openframe.features.analysis.buckling.module import BucklingAnalysis
     from openframe.features.analysis.linear_static.module import LinearStaticAnalysis
     from openframe.features.analysis.modal.module import ModalAnalysis
     from openframe.features.analysis.nonlinear_static.module import NonlinearStaticAnalysis
@@ -43,12 +44,14 @@ def run_desktop_app() -> int:
     nonlinear_static = NonlinearStaticAnalysis(analysis_runner)
     modal = ModalAnalysis(analysis_runner)
     time_history = TimeHistoryAnalysis(analysis_runner)
+    buckling = BucklingAnalysis(analysis_runner)
     run_analysis_service = RunAnalysisService(
         {
             AnalysisKind.LINEAR_STATIC: linear_static,
             AnalysisKind.NONLINEAR_STATIC: nonlinear_static,
             AnalysisKind.MODAL: modal,
             AnalysisKind.TIME_HISTORY: time_history,
+            AnalysisKind.BUCKLING: buckling,
         }
     )
 

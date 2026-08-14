@@ -41,6 +41,7 @@ class ResultToolbar(QFrame):
             AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
             AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
+            AnalysisKind.BUCKLING: "Elastic Buckling",
         }
         self.result_case.setText(labels[kind])
 

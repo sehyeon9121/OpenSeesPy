@@ -42,6 +42,13 @@ class ModelCommandCollector:
         #: even attempted with a guess) - surfaced as a warning, never as a
         #: silently wrong tag.
         self.unparsed_transform_references: set[int] = set()
+        #: ``ops.timeSeries(type, tag, ...)`` calls, keyed by tag - not needed by
+        #: any static solver so far, but buckling_solver.py cross-references this
+        #: against a pattern's own tsTag argument (``pattern_definitions``) to
+        #: tell a genuinely static reference load (Linear/Constant series) apart
+        #: from a Path/Trig one, which cannot be reduced to a single reference
+        #: load state without guessing.
+        self.time_series_definitions: dict[int, str] = {}
         self.element_loads = ElementLoadCollector()
         self._originals: dict[str, Callable[..., Any]] = {}
         self._tracker: AnalysisStageTracker | None = None
@@ -85,6 +92,7 @@ class ModelCommandCollector:
             lambda original: self._wrap_typed_command(original, self.section_types),
         )
         self._patch("geomTransf", self._wrap_geom_transf)
+        self._patch("timeSeries", self._wrap_time_series)
 
     def restore(self) -> None:
         """Put the real OpenSees commands back once the script has finished."""
@@ -133,6 +141,7 @@ class ModelCommandCollector:
                 self.geom_transf_types.clear()
                 self.geom_transf_definitions.clear()
                 self.unparsed_transform_references.clear()
+                self.time_series_definitions.clear()
                 self.element_loads.uniform_loads.clear()
                 self.element_loads.uniform_loads_3d.clear()
                 self.element_loads.uniform_load_cases.clear()
@@ -420,6 +429,14 @@ class ModelCommandCollector:
                             for value in arguments[1:]
                         ],
                     }
+            return result
+
+        return wrapped
+
+    def _wrap_time_series(self, original: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapped(series_type: str, tag: int, *arguments: Any, **kwargs: Any) -> Any:
+            result = original(series_type, tag, *arguments, **kwargs)
+            self.time_series_definitions[int(tag)] = str(series_type)
             return result
 
         return wrapped

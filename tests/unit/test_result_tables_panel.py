@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 from openframe.core.domain import (
     AnalysisResult,
     AnalysisStatus,
+    BucklingMode,
     Element,
     ElementResult,
     ModeShape,
@@ -101,6 +102,73 @@ def test_modal_tab_is_hidden_without_mode_shapes_and_shown_once_present() -> Non
     assert float(cumulative.item(0, 1).text()) == 75.0
     assert float(cumulative.item(0, 2).text()) == 10.0
     assert float(cumulative.item(0, 3).text()) == 15.0
+
+
+def test_buckling_tab_is_hidden_without_buckling_modes_and_shown_once_present() -> None:
+    panel = _panel()
+    panel.set_model(StructuralModel(ndm=2))
+    panel.show_result(AnalysisResult(status=AnalysisStatus.COMPLETED))
+    assert panel.tabs.isTabVisible(panel._buckling_tab_index) is False
+
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            buckling_modes=(
+                BucklingMode(
+                    mode_number=1,
+                    buckling_load_factor=12.45,
+                    raw_eigenvalue=12.45,
+                    reference_load_case="Pattern 1",
+                    reference_load_scale=1.0,
+                ),
+                BucklingMode(
+                    mode_number=2,
+                    buckling_load_factor=37.18,
+                    raw_eigenvalue=37.18,
+                    reference_load_case="Pattern 1",
+                    reference_load_scale=1.0,
+                ),
+            ),
+        )
+    )
+    assert panel.tabs.isTabVisible(panel._buckling_tab_index) is True
+
+    table = panel.buckling_modes_table
+    assert table.rowCount() == 2
+    assert table.item(0, 0).text() == "1"
+    assert float(table.item(0, 1).text()) == pytest.approx(12.45)
+    assert table.item(1, 0).text() == "2"
+    assert float(table.item(1, 1).text()) == pytest.approx(37.18)
+
+    # The critical (first, lowest-factor) mode drives the summary block.
+    assert panel.buckling_summary_labels["factor"].text() == "12.45"
+    assert panel.buckling_summary_labels["case"].text() == "Pattern 1"
+    assert "12.45" in panel.buckling_summary_labels["state"].text()
+    assert "Pattern 1" in panel.buckling_summary_labels["state"].text()
+
+    # Modal and buckling tabs never share a table - this must never populate
+    # modal_properties_table (no period/frequency exists for a buckling mode).
+    assert panel.modal_properties_table.rowCount() == 0
+
+
+def test_buckling_summary_shows_the_reference_load_scale_when_not_one() -> None:
+    panel = _panel()
+    panel.set_model(StructuralModel(ndm=2))
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            buckling_modes=(
+                BucklingMode(
+                    mode_number=1,
+                    buckling_load_factor=6.2,
+                    raw_eigenvalue=6.2,
+                    reference_load_case="All Patterns",
+                    reference_load_scale=2.0,
+                ),
+            ),
+        )
+    )
+    assert "x2" in panel.buckling_summary_labels["state"].text()
 
 
 def test_displacement_table_lists_every_node_regardless_of_selected_result_type() -> None:

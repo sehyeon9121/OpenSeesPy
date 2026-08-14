@@ -29,6 +29,7 @@ _GROUP_ICON_GLYPHS: dict[str, str] = {
     "NONLINEAR": "P",
     "DATA": "▦",
     "MODAL RESPONSE": "φ",
+    "BUCKLING RESPONSE": "λ",
     "TIME HISTORY": "t",
 }
 _ICON_CACHE: dict[str, QIcon] = {}
@@ -275,6 +276,12 @@ class ResultTypeSidebar(QFrame):
                 "MODAL RESPONSE",
                 "",
                 (("mode_shapes", "Mode Shapes"),),
+            )
+            self._add_group(
+                layout,
+                "BUCKLING RESPONSE",
+                "",
+                (("buckling_modes", "Buckling Modes"),),
             )
             self._add_group(
                 layout,

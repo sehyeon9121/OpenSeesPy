@@ -26,6 +26,7 @@ from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
     AnalysisResult,
     AnalysisStatus,
+    BucklingMode,
     LoadDisplacementPoint,
     ModeShape,
     NodeResult,
@@ -73,7 +74,17 @@ RESULT_TYPE_NAMES = {
     "pushover": "PUSHOVER CURVE",
     "tables": "RESULT TABLES",
     "mode_shapes": "MODE SHAPES",
+    "buckling_modes": "BUCKLING MODES",
 }
+
+#: result_types whose header shows the shared mode selector combo (self.mode_shape_selector)
+#: - Modal's ModeShape and Buckling's BucklingMode are different dataclasses (see
+#: core/domain/results.py: a buckling factor is not a natural frequency, and this
+#: analysis never forms a mass matrix), but both need the exact same "pick one
+#: mode, draw its shape" UI, so they share the one selector widget/rendering path
+#: rather than duplicating it - only the entries feeding it and the underlying
+#: AnalysisResult field differ.
+_MODE_SELECTOR_RESULT_TYPES = frozenset({"mode_shapes", "buckling_modes"})
 
 
 class ResultViewport(QFrame):
@@ -231,14 +242,14 @@ class ResultViewport(QFrame):
 
     def show_result(self, result: AnalysisResult) -> None:
         self._result = result
-        self._fill_mode_shape_selector(result.mode_shapes)
+        self._refresh_mode_selector()
         self._redraw()
         self.fit_model()
 
     def clear_result(self) -> None:
         """Drop the drawn result so a new model never shows the previous one."""
         self._result = None
-        self._fill_mode_shape_selector(())
+        self._refresh_mode_selector()
         self._redraw()
         self.fit_model()
 
@@ -250,14 +261,30 @@ class ResultViewport(QFrame):
     def set_result_type(self, result_type: str) -> None:
         self._result_type = result_type
         self.mode_badge.setText(RESULT_TYPE_NAMES.get(result_type, result_type.upper()))
-        is_mode_shapes = result_type == "mode_shapes"
-        self.mode_shape_label.setVisible(is_mode_shapes)
-        self.mode_shape_selector.setVisible(is_mode_shapes)
+        is_mode_selector = result_type in _MODE_SELECTOR_RESULT_TYPES
+        self.mode_shape_label.setVisible(is_mode_selector)
+        self.mode_shape_selector.setVisible(is_mode_selector)
+        # The combo's entries depend on which of the two (differently-shaped)
+        # mode lists is active - refilled on every switch, not just on a new
+        # result, so toggling between Mode Shapes and Buckling Modes always
+        # shows the right list even when the underlying result hasn't changed.
+        self._refresh_mode_selector()
         self._update_picking_mode()
         self._redraw()
         self.fit_model()
 
-    def _fill_mode_shape_selector(self, mode_shapes: tuple[ModeShape, ...]) -> None:
+    def _refresh_mode_selector(self) -> None:
+        if self._result_type == "buckling_modes":
+            buckling_modes = () if self._result is None else self._result.buckling_modes
+            self.mode_shape_selector.blockSignals(True)
+            self.mode_shape_selector.clear()
+            for index, mode in enumerate(buckling_modes):
+                self.mode_shape_selector.addItem(
+                    f"Mode {mode.mode_number}  (λ={mode.buckling_load_factor:.4g})", index
+                )
+            self.mode_shape_selector.blockSignals(False)
+            return
+        mode_shapes = () if self._result is None else self._result.mode_shapes
         self.mode_shape_selector.blockSignals(True)
         self.mode_shape_selector.clear()
         for index, mode in enumerate(mode_shapes):
@@ -273,6 +300,14 @@ class ResultViewport(QFrame):
         if index is None or not (0 <= index < len(self._result.mode_shapes)):
             return None
         return self._result.mode_shapes[index]
+
+    def _current_buckling_mode(self) -> BucklingMode | None:
+        if self._result is None:
+            return None
+        index = self.mode_shape_selector.currentData()
+        if index is None or not (0 <= index < len(self._result.buckling_modes)):
+            return None
+        return self._result.buckling_modes[index]
 
     def _scale_value_text(self, force_diagram: bool) -> str:
         if force_diagram:
@@ -299,6 +334,13 @@ class ResultViewport(QFrame):
         if self._result_type == "mode_shapes":
             mode = self._current_mode_shape()
             return {} if mode is None else mode.node_results
+        if self._result_type == "buckling_modes":
+            buckling_mode = self._current_buckling_mode()
+            # The normalized shape (max translational component = 1.0), not the
+            # raw eigenvector - so DEFORMATION SCALE has a consistent, predictable
+            # effect regardless of whatever arbitrary magnitude scipy happened to
+            # return the eigenvector at.
+            return {} if buckling_mode is None else buckling_mode.normalized_node_results
         return {} if self._result is None else self._result.node_results
 
     def _compute_auto_scale(self) -> int | None:
@@ -414,6 +456,9 @@ class ResultViewport(QFrame):
             return
         if self._result_type == "mode_shapes":
             self._redraw_mode_shape()
+            return
+        if self._result_type == "buckling_modes":
+            self._redraw_buckling_mode()
             return
 
         self.controls_stack.setCurrentIndex(0)
@@ -577,6 +622,44 @@ class ResultViewport(QFrame):
         finally:
             self._result, self._result_type = saved_result, saved_type
         self.scale_caption.setText("MODE SHAPE SCALE")
+
+    def _redraw_buckling_mode(self) -> None:
+        """Same state-swap-and-recurse trick as ``_redraw_mode_shape`` - drawn
+        with the ordinary "nodal displacements" pipeline fed the picked
+        buckling mode's *normalized* shape (max translational component =
+        1.0, not the raw eigenvector - see ``_active_node_results``, which
+        this pipeline reads through ``_draw_nodal_displacements`` et al.)."""
+        mode = self._current_buckling_mode()
+        self.real_deform.setVisible(True)
+        self.auto_scale_button.setVisible(True)
+        if self._model is None or mode is None:
+            self.controls_stack.setCurrentIndex(0)
+            self.scale_caption.setText("BUCKLING MODE SHAPE SCALE")
+            self.scale_value.setText(self._scale_value_text(force_diagram=False))
+            if self._model is None:
+                self.scene.clear()
+                self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))
+                return
+            self.canvas_stack.setCurrentWidget(
+                self.quick3d_view if self._model.ndm == 3 else self.view
+            )
+            self.view_selector.setVisible(self._model.ndm == 3)
+            if self._model.ndm == 3:
+                self.quick3d_view.clear_result()
+            else:
+                self.scene.set_model(self._model)
+            return
+
+        synthetic_result = AnalysisResult(
+            status=AnalysisStatus.COMPLETED, node_results=mode.normalized_node_results
+        )
+        saved_result, saved_type = self._result, self._result_type
+        self._result, self._result_type = synthetic_result, "displacement"
+        try:
+            self._redraw()
+        finally:
+            self._result, self._result_type = saved_result, saved_type
+        self.scale_caption.setText("BUCKLING MODE SHAPE SCALE")
 
     def _is_truss_model(self) -> bool:
         """Whole-model, matching how ``check_determinacy``/the solver already

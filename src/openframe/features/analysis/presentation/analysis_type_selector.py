@@ -10,7 +10,7 @@ so picking it in SETUP is still what MODEL's summary reflects.
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from openframe.core.domain import AnalysisKind
+from openframe.core.domain import ANALYSIS_CAPABILITIES, AnalysisKind, FieldState
 from openframe.features.analysis.presentation.analysis_config_store import (
     AnalysisConfigStore,
 )
@@ -20,6 +20,7 @@ _KIND_LABELS = {
     AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
     AnalysisKind.MODAL: "Modal (Eigenvalue)",
     AnalysisKind.TIME_HISTORY: "Time History",
+    AnalysisKind.BUCKLING: "Elastic Buckling",
 }
 
 
@@ -61,7 +62,16 @@ class AnalysisTypeSelector(QFrame):
 
     def _update_summary(self) -> None:
         kind_label = _KIND_LABELS.get(self.config_store.kind, str(self.config_store.kind))
-        solver = self.config_store.options.get("system", "BandGeneral")
+        # options["system"] only exists (and only means anything) when the kind's
+        # equation solver is actually user-editable (Nonlinear Static) - reading
+        # it unconditionally used to always show "BandGeneral" for every other
+        # kind regardless of what solver that kind actually, always uses.
+        equation_solver = ANALYSIS_CAPABILITIES[self.config_store.kind].equation_solver
+        solver = (
+            self.config_store.options.get("system", "BandGeneral")
+            if equation_solver.state == FieldState.EDITABLE
+            else equation_solver.value or "BandGeneral"
+        )
         self.summary_label.setText(
             f"Selected: {kind_label}\nSolver: {solver}\n\nChange the analysis type on the SETUP page."
         )

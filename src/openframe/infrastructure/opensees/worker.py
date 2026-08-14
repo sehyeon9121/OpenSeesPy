@@ -14,6 +14,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 import openseespy.opensees as ops
 
+from openframe.infrastructure.opensees.buckling_solver import run_buckling_analysis
 from openframe.infrastructure.opensees.linear_static_solver import run_linear_static_analysis
 from openframe.infrastructure.opensees.modal_solver import run_modal_analysis
 from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
@@ -74,6 +75,8 @@ def run_analysis(
         )
     if kind == "modal":
         return run_modal_analysis(source, **options)
+    if kind == "buckling":
+        return run_buckling_analysis(source, **options)
     if kind == "time_history":
         time_history_options = dict(options)
         time_history_options["ground_motion_path"] = Path(

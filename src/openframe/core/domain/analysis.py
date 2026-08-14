@@ -10,6 +10,7 @@ class AnalysisKind(StrEnum):
     NONLINEAR_STATIC = "nonlinear_static"
     TIME_HISTORY = "time_history"
     MODAL = "modal"
+    BUCKLING = "buckling"
 
 
 @dataclass(frozen=True, slots=True)

@@ -53,6 +53,7 @@ def test_main_window_can_be_constructed() -> None:
         "pushover",
         "tables",
         "mode_shapes",
+        "buckling_modes",
         "time_history",
     }
     assert window.analysis_settings.analysis_type.currentText() == "Linear Static"

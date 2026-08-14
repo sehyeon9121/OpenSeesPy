@@ -468,6 +468,102 @@ def test_precheck_flags_arc_length_radius_out_of_order() -> None:
     panel.close()
 
 
+def test_buckling_group_visible_only_when_buckling_is_selected() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.show()
+    application.processEvents()
+
+    assert panel.buckling_group.isVisible() is False
+    assert panel.buckling_precheck_card.isVisible() is False
+
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.BUCKLING))
+
+    assert panel.buckling_group.isVisible() is True
+    assert panel.buckling_precheck_card.isVisible() is True
+    assert panel.nonlinear_group.isVisible() is False
+    assert panel.modal_group.isVisible() is False
+    assert panel.time_history_group.isVisible() is False
+    panel.close()
+
+
+def test_buckling_geometric_transform_is_restricted_to_p_delta_only() -> None:
+    """Officially restricted to P-Delta for now - Corotational/"From Model"
+    are not offered until separately validated for buckling (closing check
+    after the feature's initial implementation)."""
+    panel = AnalysisSettingsPanel()
+
+    values = {
+        panel.buckling_geometric_transform.itemData(index)
+        for index in range(panel.buckling_geometric_transform.count())
+    }
+
+    assert values == {"PDelta"}
+    assert panel.buckling_geometric_transform.currentData() == "PDelta"
+    assert panel.buckling_geometric_transform.isEnabled() is False
+
+
+def test_build_options_returns_buckling_shape_when_buckling_selected() -> None:
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.BUCKLING))
+
+    options = panel.build_options()
+
+    assert options["reference_load_scale"] == 1.0
+    assert options["num_modes"] == 5
+    assert options["geometric_transform_type"] == "PDelta"
+    assert "reference_load_pattern" not in options
+    assert "eigenvalue_tolerance" not in options
+    # LoadControl/DisplacementControl/ArcLength-only keys must not leak through.
+    assert "integrator_type" not in options
+    assert "control_node" not in options
+
+
+def test_build_options_includes_explicit_load_case_and_tolerance_once_set() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.set_model(model)
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.BUCKLING))
+    panel.buckling_load_case.setCurrentIndex(panel.buckling_load_case.findData(1))
+    panel.buckling_reference_load_scale.setValue(2.5)
+    panel.buckling_num_modes.setValue(10)
+    panel.buckling_eigenvalue_tolerance.setValue(0.001)
+
+    options = panel.build_options()
+
+    assert options["reference_load_pattern"] == 1
+    assert options["reference_load_scale"] == 2.5
+    assert options["num_modes"] == 10
+    assert options["eigenvalue_tolerance"] == 0.001
+    application.processEvents()
+
+
+def test_buckling_precheck_flags_a_model_with_no_load_pattern() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.BUCKLING))
+    panel.show()
+    application.processEvents()
+
+    assert panel.buckling_precheck_status.property("state") == "warning"
+    assert "모델이 비어" in panel.buckling_precheck_status.text()
+    panel.close()
+
+
+def test_buckling_precheck_clears_once_a_model_with_a_load_pattern_is_set() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.BUCKLING))
+    panel.set_model(model)
+    panel.show()
+    application.processEvents()
+
+    assert panel.buckling_precheck_status.property("state") == "ok"
+    panel.close()
+
+
 def test_precheck_flags_a_missing_control_node_then_clears_once_one_is_picked() -> None:
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)

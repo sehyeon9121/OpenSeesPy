@@ -184,4 +184,42 @@ ANALYSIS_CAPABILITIES: dict[AnalysisKind, AnalysisCapabilities] = {
             ),
         ),
     ),
+    AnalysisKind.BUCKLING: AnalysisCapabilities(
+        # infrastructure/opensees/buckling_solver.py: run_buckling_analysis(source, *,
+        # reference_load_pattern=, reference_load_scale=, num_modes=, geometric_transform_type=,
+        # eigenvalue_tolerance=) - a linearized elastic eigenvalue buckling solve, not a
+        # modal (mass-matrix) eigenproblem. Two single-step linear static solves
+        # (unloaded, then at the reference load) extract K_material/K_loaded via
+        # ops.printA("-ret"); K_geometric = K_material - K_loaded feeds
+        # scipy.linalg.eig(K_material, K_geometric) directly (never an explicit
+        # inverse). GEOMETRIC TRANSFORMATION is the one real user choice, reusing
+        # ModelCommandCollector's existing geom_transf_override mechanism.
+        equation_solver=ComponentField(
+            FieldState.ENGINE_FIXED,
+            "FullGeneral",
+            (("purpose", "printA(\"-ret\")로 전체 조밀 강성행렬을 뽑아내려면 필요"),),
+        ),
+        algorithm=ComponentField(FieldState.ENGINE_FIXED, "Linear"),
+        static_integrator=ComponentField(
+            FieldState.ENGINE_FIXED,
+            "LoadControl",
+            (
+                ("unloaded_step", "0.0 (K_material)"),
+                ("reference_load_step", "1.0 (K_loaded)"),
+            ),
+        ),
+        dynamic_integrator=ComponentField(FieldState.NOT_APPLICABLE),
+        convergence_test=ComponentField(FieldState.NOT_APPLICABLE),
+        constraint_handler=ComponentField(FieldState.ENGINE_FIXED, "Transformation"),
+        numberer=ComponentField(FieldState.ENGINE_FIXED, "RCM"),
+        eigen_solver=ComponentField(
+            FieldState.ENGINE_FIXED,
+            "scipy.linalg.eig",
+            (
+                ("problem", "K_material . phi = lambda . K_geometric . phi"),
+                ("purpose", "ops.eigen()의 질량행렬 기반 고유치와는 다른 문제 - 사용하지 않음"),
+            ),
+        ),
+        damping=ComponentField(FieldState.NOT_APPLICABLE),
+    ),
 }

@@ -40,6 +40,7 @@ def test_direct_2d_workspace_uses_the_compact_modeling_and_result_shell() -> Non
         "pushover",
         "tables",
         "mode_shapes",
+        "buckling_modes",
         "time_history",
     }
     assert page.results.property("compact2d") is False

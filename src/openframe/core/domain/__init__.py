@@ -54,6 +54,7 @@ from openframe.core.domain.model import (
 from openframe.core.domain.results import (
     AnalysisResult,
     AnalysisStatus,
+    BucklingMode,
     ElementResult,
     LoadDisplacementPoint,
     ModeShape,
@@ -103,6 +104,7 @@ __all__ = [
     "AnalysisResult",
     "AnalysisStatus",
     "BoundaryCondition",
+    "BucklingMode",
     "ComponentField",
     "DataStatus",
     "DuplicateRecordError",

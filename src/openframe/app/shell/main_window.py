@@ -598,6 +598,7 @@ class MainWindow(QMainWindow):
             AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
             AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
+            AnalysisKind.BUCKLING: "Elastic Buckling",
         }
         self.results_workspace.set_analysis_kind(kind)
         self.statusBar().showMessage(f"Analysis type · {names[kind]}")
@@ -626,6 +627,7 @@ class MainWindow(QMainWindow):
             AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
             AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
+            AnalysisKind.BUCKLING: "Elastic Buckling",
         }[kind]
         self.analysis_progress.show_running(analysis_name)
         self.header.set_busy(True, None)
@@ -669,6 +671,9 @@ class MainWindow(QMainWindow):
             if result.mode_shapes:
                 summary_line = f"Results are ready for {len(result.mode_shapes)} modes."
                 detail_line = f"모드 결과: {len(result.mode_shapes)}개\n\n"
+            elif result.buckling_modes:
+                summary_line = f"Results are ready for {len(result.buckling_modes)} buckling modes."
+                detail_line = f"좌굴모드 결과: {len(result.buckling_modes)}개\n\n"
             elif result.time_history:
                 summary_line = f"Results are ready for {len(result.time_history)} time steps."
                 detail_line = f"시간이력 스텝 결과: {len(result.time_history)}개\n\n"
@@ -687,6 +692,21 @@ class MainWindow(QMainWindow):
                 self,
                 "해석 완료",
                 "해석이 완료되었습니다.\n\n" + detail_line + "RESULTS 탭에서 결과를 확인할 수 있습니다.",
+            )
+        elif result.status == AnalysisStatus.PARTIAL and result.buckling_modes:
+            # Buckling's own PARTIAL meaning ("fewer valid modes than requested",
+            # see buckling_solver.py) - distinct from the nonlinear pushover
+            # convergence.completed_steps/requested_steps wording below, which
+            # would be misleading here since buckling has no NonlinearConvergence.
+            detail = "\n".join(result.messages) or "요청한 모드 수보다 적은 유효 모드를 찾았습니다."
+            summary = f"{len(result.buckling_modes)} valid buckling mode(s) found"
+            self.analysis_progress.show_failed(f"Partial result: {summary}")
+            self.statusBar().showMessage(f"Analysis partially completed | {summary}")
+            QMessageBox.warning(
+                self,
+                "좌굴해석 부분 결과",
+                f"요청한 모드 수보다 적은 유효 모드를 찾았습니다.\n\n{detail}\n\n"
+                "찾은 모드까지의 결과는 RESULTS 탭에서 확인할 수 있습니다.",
             )
         elif result.status == AnalysisStatus.PARTIAL:
             convergence = result.convergence

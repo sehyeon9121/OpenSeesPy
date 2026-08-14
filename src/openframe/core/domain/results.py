@@ -124,6 +124,45 @@ class ModeShape:
 
 
 @dataclass(frozen=True, slots=True)
+class BucklingMode:
+    """One mode from an elastic global eigenvalue buckling analysis.
+
+    Deliberately its own dataclass rather than a reuse of ``ModeShape`` - a
+    buckling factor is not a natural frequency, and this analysis never forms a
+    mass matrix, so period/frequency_hz/mass_participation_ratio would all be
+    meaningless here (and are simply absent, not zeroed out, so nothing can
+    mistake this for a modal result - see AnalysisResult.buckling_modes).
+    """
+
+    mode_number: int
+    #: The factor this mode's reference load state must be scaled by to reach
+    #: this buckling mode - Critical Load = buckling_load_factor * reference load.
+    #: Identical to raw_eigenvalue for every mode actually reported here (both
+    #: kept, per spec, as separate named facts rather than one value doing
+    #: double duty).
+    buckling_load_factor: float
+    #: The solved generalized eigenvalue (K_material . phi = lambda . K_geometric
+    #: . phi), already filtered to finite/effectively-real/positive - never a
+    #: raw, unfiltered scipy.linalg.eig output.
+    raw_eigenvalue: float
+    #: Raw eigenvector mapped to nodes/DOFs, arbitrary scale/sign (whatever
+    #: scipy.linalg.eig returned) - kept alongside the normalized version below
+    #: so nothing about the original solution is lost to the display normalization.
+    node_results: dict[int, NodeResult] = field(default_factory=dict)
+    #: Same shape as node_results, scaled so the largest-magnitude translational
+    #: component is 1.0 (or, if every translational component is ~0, the
+    #: largest-magnitude component of any kind) - for rendering the buckled
+    #: shape at a consistent, legible amplitude. The eigenvector's sign is
+    #: arbitrary either way; this does not attempt to fix a "positive" direction.
+    normalized_node_results: dict[int, NodeResult] = field(default_factory=dict)
+    #: Human-readable identity of the load pattern(s) this mode's factor scales -
+    #: e.g. "Pattern 2" or "All Patterns" (see buckling_solver.py's pattern
+    #: selection) - not a tag alone, since more than one pattern can be combined.
+    reference_load_case: str = ""
+    reference_load_scale: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
 class TimeHistoryStep:
     """One recorded time step of a transient (time-history) analysis.
 
@@ -153,3 +192,7 @@ class AnalysisResult:
     mode_shapes: tuple[ModeShape, ...] = ()
     #: Empty except for time-history analysis, one entry per recorded time step.
     time_history: tuple[TimeHistoryStep, ...] = ()
+    #: Empty except for elastic eigenvalue buckling analysis, one entry per
+    #: computed buckling mode - never populated alongside mode_shapes for the
+    #: same result (see AnalysisKind.BUCKLING vs AnalysisKind.MODAL).
+    buckling_modes: tuple[BucklingMode, ...] = ()

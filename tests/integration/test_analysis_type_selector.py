@@ -27,6 +27,7 @@ ALL_KINDS = {
     AnalysisKind.NONLINEAR_STATIC,
     AnalysisKind.MODAL,
     AnalysisKind.TIME_HISTORY,
+    AnalysisKind.BUCKLING,
 }
 
 

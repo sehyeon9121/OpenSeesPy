@@ -1,5 +1,6 @@
 """Analysis type and solver settings panel."""
 
+import importlib.util
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
@@ -214,6 +215,7 @@ class AnalysisSettingsPanel(QFrame):
         self.analysis_type.addItem("Nonlinear Static", AnalysisKind.NONLINEAR_STATIC)
         self.analysis_type.addItem("Modal (Eigenvalue)", AnalysisKind.MODAL)
         self.analysis_type.addItem("Time History", AnalysisKind.TIME_HISTORY)
+        self.analysis_type.addItem("Elastic Buckling", AnalysisKind.BUCKLING)
         self.analysis_type.setCurrentIndex(self.analysis_type.findData(self.config_store.kind))
         self.analysis_type.currentIndexChanged.connect(self._analysis_type_changed)
         kind_layout.addWidget(self.analysis_type, 1)
@@ -609,6 +611,169 @@ class AnalysisSettingsPanel(QFrame):
         self.modal_engine_details_body.setVisible(False)
         modal_engine_layout.addWidget(self.modal_engine_details_body)
         settings_layout.addWidget(self.modal_engine_card)
+
+        # Elastic Buckling - Model -> Reference Load -> Buckling Parameters ->
+        # Pre-check -> Run, a short flow like Modal's (no "3. SOLUTION METHOD"/
+        # "4. CONVERGENCE" cards: buckling_solver.py's engine components are all
+        # ENGINE_FIXED, see ANALYSIS_CAPABILITIES[AnalysisKind.BUCKLING]).
+        self.buckling_group = QFrame()
+        self.buckling_group.setObjectName("setupConfigCard")
+        buckling_layout = QVBoxLayout(self.buckling_group)
+        buckling_layout.setContentsMargins(12, 10, 12, 10)
+        buckling_layout.setSpacing(12)
+
+        reference_load_title = QLabel("REFERENCE LOAD")
+        reference_load_title.setObjectName("setupConfigTitle")
+        buckling_layout.addWidget(reference_load_title)
+        reference_load_grid = QGridLayout()
+        reference_load_grid.setHorizontalSpacing(16)
+        reference_load_grid.setVerticalSpacing(9)
+        reference_load_grid.setColumnStretch(0, 1)
+        reference_load_grid.setColumnStretch(1, 1)
+
+        self.buckling_load_case = QComboBox()
+        self.buckling_load_case.addItem("All Patterns (current static load)", None)
+        self.buckling_load_case.setToolTip(
+            "Which static load pattern(s) make up the reference load - 'All "
+            "Patterns' combines every load pattern currently defined in the "
+            "model, or pick one specific pattern. Only plain, static (Linear/"
+            "Constant TimeSeries) patterns can be used as a reference load."
+        )
+        self.buckling_load_case.currentIndexChanged.connect(self._update_buckling_summary)
+
+        self.buckling_reference_load_scale = QDoubleSpinBox()
+        self.buckling_reference_load_scale.setDecimals(6)
+        self.buckling_reference_load_scale.setRange(-1.0e6, 1.0e6)
+        self.buckling_reference_load_scale.setSingleStep(0.1)
+        self.buckling_reference_load_scale.setValue(1.0)
+        self.buckling_reference_load_scale.setToolTip(
+            "Scales the reference load pattern before the buckling solve - the "
+            "reported Buckling Load Factor already accounts for this, so "
+            "Critical Load = Buckling Load Factor x (Reference Load Case x this "
+            "scale) either way. Cannot be 0."
+        )
+        self.buckling_reference_load_scale.valueChanged.connect(self._update_buckling_summary)
+
+        reference_load_grid.addWidget(
+            self._field_block("LOAD CASE", self.buckling_load_case), 0, 0
+        )
+        reference_load_grid.addWidget(
+            self._field_block("REFERENCE LOAD SCALE", self.buckling_reference_load_scale), 0, 1
+        )
+        buckling_layout.addLayout(reference_load_grid)
+
+        buckling_divider = QFrame()
+        buckling_divider.setObjectName("setupGuideDivider")
+        buckling_divider.setFrameShape(QFrame.Shape.HLine)
+        buckling_layout.addWidget(buckling_divider)
+
+        buckling_params_title = QLabel("BUCKLING PARAMETERS")
+        buckling_params_title.setObjectName("setupConfigTitle")
+        buckling_layout.addWidget(buckling_params_title)
+        buckling_params_grid = QGridLayout()
+        buckling_params_grid.setHorizontalSpacing(16)
+        buckling_params_grid.setVerticalSpacing(9)
+        buckling_params_grid.setColumnStretch(0, 1)
+        buckling_params_grid.setColumnStretch(1, 1)
+
+        self.buckling_num_modes = QSpinBox()
+        self.buckling_num_modes.setRange(1, 100)
+        self.buckling_num_modes.setValue(5)
+        self.buckling_num_modes.setToolTip(
+            "How many buckling modes to report, sorted by ascending Buckling Load "
+            "Factor - the first is the Critical Buckling Factor. Fewer may be "
+            "returned than requested if fewer valid (finite, real, positive) "
+            "eigenvalues exist."
+        )
+        self.buckling_num_modes.valueChanged.connect(self._update_buckling_summary)
+
+        self.buckling_geometric_transform = QComboBox()
+        # Officially restricted to P-Delta for now - the Euler-column closed-
+        # form validation this feature's accuracy rests on was only ever run
+        # against PDelta. Corotational/"From Model" are not offered here yet
+        # (buckling_solver.py rejects them with a clear "not yet supported"
+        # message if ever reached some other way); Linear is never offered
+        # for a separate, permanent reason - it produces no geometric
+        # stiffness at all, so a buckling run against it can only ever fail
+        # (buckling_solver.py's own explicit rejection is the real guard,
+        # this combo is a second line of defense).
+        self.buckling_geometric_transform.addItem("P-Delta", "PDelta")
+        self.buckling_geometric_transform.setEnabled(False)
+        self.buckling_geometric_transform.setToolTip(
+            "P-Delta overrides every ops.geomTransf(...) call the model makes "
+            "(same mechanism as Nonlinear Static's own GEOMETRIC "
+            "TRANSFORMATION). Only P-Delta is offered for now - Corotational "
+            "and 'From Model' will be added once separately validated for "
+            "buckling."
+        )
+        self.buckling_geometric_transform.currentIndexChanged.connect(
+            self._update_buckling_summary
+        )
+
+        self.buckling_eigenvalue_tolerance = QDoubleSpinBox()
+        self.buckling_eigenvalue_tolerance.setDecimals(8)
+        self.buckling_eigenvalue_tolerance.setRange(0.0, 1.0)
+        self.buckling_eigenvalue_tolerance.setSpecialValueText("AUTO")
+        self.buckling_eigenvalue_tolerance.setToolTip(
+            "How large an eigenvalue's imaginary part may be (relative to its "
+            "magnitude) and still be accepted as real. AUTO (0) uses 1e-6."
+        )
+        self.buckling_eigenvalue_tolerance.valueChanged.connect(self._update_buckling_summary)
+
+        buckling_params_grid.addWidget(
+            self._field_block("NUMBER OF MODES", self.buckling_num_modes), 0, 0
+        )
+        buckling_params_grid.addWidget(
+            self._field_block("GEOMETRIC TRANSFORM", self.buckling_geometric_transform), 0, 1
+        )
+        buckling_params_grid.addWidget(
+            self._field_block("EIGENVALUE TOLERANCE", self.buckling_eigenvalue_tolerance), 1, 0
+        )
+        buckling_layout.addLayout(buckling_params_grid)
+        settings_layout.addWidget(self.buckling_group)
+
+        self.buckling_precheck_card = QFrame()
+        self.buckling_precheck_card.setObjectName("setupConfigCard")
+        buckling_precheck_layout = QVBoxLayout(self.buckling_precheck_card)
+        buckling_precheck_layout.setContentsMargins(12, 10, 12, 10)
+        buckling_precheck_layout.setSpacing(9)
+        buckling_precheck_title = QLabel("PRE-CHECK")
+        buckling_precheck_title.setObjectName("setupConfigTitle")
+        buckling_precheck_layout.addWidget(buckling_precheck_title)
+        buckling_precheck_grid = QGridLayout()
+        buckling_precheck_grid.setHorizontalSpacing(24)
+        buckling_precheck_grid.setVerticalSpacing(5)
+        self.buckling_precheck_value_labels: dict[str, QLabel] = {}
+        for row, key in enumerate(
+            (
+                "Reference Load",
+                "Geometric Transform",
+                "Number of Modes",
+                "SciPy",
+            )
+        ):
+            key_label = QLabel(f"{key}:")
+            key_label.setObjectName("setupMetricLabel")
+            value_label = QLabel("—")
+            value_label.setObjectName("setupMetricValue")
+            buckling_precheck_grid.addWidget(key_label, row, 0)
+            buckling_precheck_grid.addWidget(value_label, row, 1)
+            self.buckling_precheck_value_labels[key] = value_label
+        buckling_precheck_layout.addLayout(buckling_precheck_grid)
+        self.buckling_precheck_note = QLabel(
+            "Elastic global buckling based on the selected reference load pattern. "
+            "Material yielding, imperfections and local section buckling are not "
+            "included."
+        )
+        self.buckling_precheck_note.setObjectName("secondaryText")
+        self.buckling_precheck_note.setWordWrap(True)
+        buckling_precheck_layout.addWidget(self.buckling_precheck_note)
+        self.buckling_precheck_status = QLabel("Ready for Analysis")
+        self.buckling_precheck_status.setObjectName("setupBehaviorValue")
+        self.buckling_precheck_status.setProperty("state", "ok")
+        self.buckling_precheck_status.setWordWrap(True)
+        buckling_precheck_layout.addWidget(self.buckling_precheck_status)
+        settings_layout.addWidget(self.buckling_precheck_card)
 
         # Time history needs a ground-motion file plus three small numbers - a
         # dialog would be overkill, but it earns its own group (unlike modal's
@@ -1759,10 +1924,13 @@ class AnalysisSettingsPanel(QFrame):
         self.arc_length_control_node.addItem("Use Control Node", None)
         self.arc_length_control_dof.clear()
         self.arc_length_control_dof.addItem("Use Control DOF", None)
+        self.buckling_load_case.clear()
+        self.buckling_load_case.addItem("All Patterns (current static load)", None)
         if model is None:
             self._update_nonlinear_summary()
             self._update_linear_static_summary()
             self._update_nonlinear_behavior_tiles()
+            self._update_buckling_summary()
             return
         self._apply_geometric_transformation_default(model)
         for tag, node in sorted(model.nodes.items()):
@@ -1806,10 +1974,15 @@ class AnalysisSettingsPanel(QFrame):
         for tag in self._pattern_tags(model):
             self.lateral_pattern.addItem(f"Pattern {tag}", tag)
         self.lateral_pattern.blockSignals(False)
+        self.buckling_load_case.blockSignals(True)
+        for tag in self._pattern_tags(model):
+            self.buckling_load_case.addItem(f"Pattern {tag}", tag)
+        self.buckling_load_case.blockSignals(False)
         self._update_gravity_visibility()
         self._update_nonlinear_summary()
         self._update_linear_static_summary()
         self._update_nonlinear_behavior_tiles()
+        self._update_buckling_summary()
 
     @staticmethod
     def _pattern_tags(model: StructuralModel) -> list[int]:
@@ -1866,6 +2039,21 @@ class AnalysisSettingsPanel(QFrame):
                     "max_modes": self.modal_max_modes.value(),
                 }
             return {"extraction_method": "fixed", "num_modes": self.num_modes.value()}
+        if self.selected_analysis_kind() == AnalysisKind.BUCKLING:
+            options: dict[str, float | int | str | bool] = {
+                "reference_load_scale": self.buckling_reference_load_scale.value(),
+                "num_modes": self.buckling_num_modes.value(),
+                "geometric_transform_type": self.buckling_geometric_transform.currentData(),
+            }
+            reference_load_pattern = self.buckling_load_case.currentData()
+            if reference_load_pattern is not None:
+                options["reference_load_pattern"] = int(reference_load_pattern)
+            # 0 is this field's "AUTO" sentinel - only send an explicit override
+            # when the user actually typed one, matching MIN/MAX INCREMENT's
+            # "Auto" convention elsewhere in this panel.
+            if self.buckling_eigenvalue_tolerance.value() > 0:
+                options["eigenvalue_tolerance"] = self.buckling_eigenvalue_tolerance.value()
+            return options
         if self.selected_analysis_kind() == AnalysisKind.TIME_HISTORY:
             direction = self.time_history_direction.currentData()
             return {
@@ -1964,8 +2152,13 @@ class AnalysisSettingsPanel(QFrame):
         is_modal = kind == AnalysisKind.MODAL
         is_nonlinear_static = kind == AnalysisKind.NONLINEAR_STATIC
         is_time_history = kind == AnalysisKind.TIME_HISTORY
+        is_buckling = kind == AnalysisKind.BUCKLING
         self.nonlinear_group.setVisible(is_nonlinear_static)
         self.time_history_group.setVisible(is_time_history)
+        self.buckling_group.setVisible(is_buckling)
+        self.buckling_precheck_card.setVisible(is_buckling)
+        if is_buckling:
+            self._update_buckling_summary()
         # Linear Static gets its own compact LOADS/ANALYSIS METHOD card instead
         # of the shared "1. LOAD & CONTROL" card (Gravity/Lateral/Control/Steps
         # describe Nonlinear Static's pushover staging, not a single-step linear
@@ -2015,6 +2208,56 @@ class AnalysisSettingsPanel(QFrame):
         self.modal_engine_details_body.setVisible(expanded)
         arrow = "▾" if expanded else "▸"
         self.modal_engine_details_toggle.setText(f"{arrow}  ADVANCED ENGINE DETAILS")
+
+    def _update_buckling_summary(self) -> None:
+        self._update_buckling_precheck()
+        self._sync_store_options()
+
+    def _update_buckling_precheck(self) -> None:
+        """Item 7's synchronous, model-shape-only pre-check - deeper checks that
+        need the solver's own collector state (e.g. whether the reference
+        load's TimeSeries is genuinely static) can only be judged once the
+        solver actually runs; those surface as a clear RuntimeError there
+        instead of being guessed at here."""
+        labels = self.buckling_precheck_value_labels
+        patterns = self._pattern_tags(self._model) if self._model is not None else []
+        selected = self.buckling_load_case.currentData()
+        load_case_text = (
+            f"Pattern {selected}" if selected is not None else f"All Patterns ({len(patterns)})"
+        )
+        labels["Reference Load"].setText(
+            f"{load_case_text}  x  {self.buckling_reference_load_scale.value():g}"
+        )
+        labels["Geometric Transform"].setText(self.buckling_geometric_transform.currentText())
+        labels["Number of Modes"].setText(str(self.buckling_num_modes.value()))
+        scipy_available = importlib.util.find_spec("scipy") is not None
+        labels["SciPy"].setText("Available" if scipy_available else "Not Installed")
+
+        issues: list[str] = []
+        if self._model is None or not self._model.nodes or not self._model.elements:
+            issues.append("모델이 비어 있습니다.")
+        else:
+            if not patterns:
+                issues.append("REFERENCE LOAD로 사용할 정적 하중 패턴이 모델에 없습니다.")
+            if not self._model.boundaries:
+                issues.append(
+                    "경계조건이 없습니다 - 강체운동만 가능해 좌굴해석이 성립하지 않습니다."
+                )
+        if self.buckling_reference_load_scale.value() == 0:
+            issues.append("REFERENCE LOAD SCALE은 0이 될 수 없습니다.")
+        if self.buckling_num_modes.value() <= 0:
+            issues.append("NUMBER OF MODES는 1 이상이어야 합니다.")
+        if not scipy_available:
+            issues.append("SciPy가 설치되어 있지 않아 좌굴해석을 실행할 수 없습니다.")
+
+        if issues:
+            self.buckling_precheck_status.setText("⚠  " + "  ·  ".join(issues))
+            self.buckling_precheck_status.setProperty("state", "warning")
+        else:
+            self.buckling_precheck_status.setText("✓  Ready for Analysis")
+            self.buckling_precheck_status.setProperty("state", "ok")
+        self.buckling_precheck_status.style().unpolish(self.buckling_precheck_status)
+        self.buckling_precheck_status.style().polish(self.buckling_precheck_status)
 
     def _toggle_nonlinear_advanced_settings(self, expanded: bool) -> None:
         self.nonlinear_advanced_body.setVisible(expanded)

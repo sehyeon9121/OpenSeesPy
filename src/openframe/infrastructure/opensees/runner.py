@@ -14,6 +14,7 @@ from openframe.core.domain import (
     AnalysisRequest,
     AnalysisResult,
     AnalysisStatus,
+    BucklingMode,
     ElementResult,
     LoadDisplacementPoint,
     ModeShape,
@@ -54,11 +55,14 @@ class OpenSeesProcessRunner:
         requested_timeout = solver_options.pop("execution_timeout_seconds", None)
         if requested_timeout is not None:
             timeout_seconds = max(1.0, min(float(requested_timeout), 86_400.0))
-        elif str(request.kind) in ("nonlinear_static", "time_history"):
+        elif str(request.kind) in ("nonlinear_static", "time_history", "buckling"):
             # A time-history run repeats the same per-step solve as many times
             # as the ground motion has points (often thousands) - the same
             # "this can genuinely take a while" reasoning as the nonlinear
             # pushover's own extended timeout, not the plain 30s default.
+            # Buckling's own two solves are cheap, but extracting/reshaping a
+            # dense N-by-N FullGeneral matrix and running scipy.linalg.eig on it
+            # is O(n^3) - slow enough on a large model to need the same room.
             timeout_seconds = self._nonlinear_timeout_seconds
         else:
             timeout_seconds = self._timeout_seconds
@@ -263,6 +267,30 @@ class OpenSeesProcessRunner:
             )
             for item in payload.get("mode_shapes", [])
         )
+        buckling_modes = tuple(
+            BucklingMode(
+                mode_number=int(item["mode_number"]),
+                buckling_load_factor=float(item["buckling_load_factor"]),
+                raw_eigenvalue=float(item["raw_eigenvalue"]),
+                node_results={
+                    int(node["node_tag"]): NodeResult(
+                        node_tag=int(node["node_tag"]),
+                        displacement=tuple(float(value) for value in node.get("displacement", [])),
+                    )
+                    for node in item.get("node_results", [])
+                },
+                normalized_node_results={
+                    int(node["node_tag"]): NodeResult(
+                        node_tag=int(node["node_tag"]),
+                        displacement=tuple(float(value) for value in node.get("displacement", [])),
+                    )
+                    for node in item.get("normalized_node_results", [])
+                },
+                reference_load_case=str(item.get("reference_load_case", "")),
+                reference_load_scale=float(item.get("reference_load_scale", 1.0)),
+            )
+            for item in payload.get("buckling_modes", [])
+        )
         time_history = tuple(
             TimeHistoryStep(
                 time=float(item["time"]),
@@ -292,4 +320,5 @@ class OpenSeesProcessRunner:
             convergence=convergence,
             mode_shapes=mode_shapes,
             time_history=time_history,
+            buckling_modes=buckling_modes,
         )

@@ -46,6 +46,7 @@ _KIND_LABELS: dict[AnalysisKind, str] = {
     AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
     AnalysisKind.MODAL: "Modal (Eigenvalue)",
     AnalysisKind.TIME_HISTORY: "Time History",
+    AnalysisKind.BUCKLING: "Elastic Buckling",
 }
 
 _FLOW_STEPS: dict[AnalysisKind, tuple[str, ...]] = {
@@ -72,6 +73,13 @@ _FLOW_STEPS: dict[AnalysisKind, tuple[str, ...]] = {
         "Damping",
         "Time Integration",
         "Solution",
+        "Pre-check",
+        "Run",
+    ),
+    AnalysisKind.BUCKLING: (
+        "Model",
+        "Reference Load",
+        "Buckling Parameters",
         "Pre-check",
         "Run",
     ),
@@ -113,6 +121,17 @@ _GUIDE_TEXT: dict[AnalysisKind, str] = {
         "Configure the ground-motion file, direction, scale factor and damping "
         "ratio below, then review the response history under RESULTS."
     ),
+    AnalysisKind.BUCKLING: (
+        "Elastic global buckling based on the selected reference load pattern. "
+        "Solves a generalized eigenvalue problem from two linear tangent "
+        "stiffness matrices (K_material, K_geometric) - not the same eigenvalue "
+        "problem Modal solves (no mass matrix is used).\n\n"
+        "Results include:\n"
+        "•  Buckling Load Factor per mode\n"
+        "•  Buckling Mode Shape\n\n"
+        "Material yielding, initial imperfections, post-buckling behavior and "
+        "local/section buckling are not included."
+    ),
 }
 
 _GUIDE_TOPIC: dict[AnalysisKind, str] = {
@@ -120,6 +139,7 @@ _GUIDE_TOPIC: dict[AnalysisKind, str] = {
     AnalysisKind.NONLINEAR_STATIC: "NONLINEARITY",
     AnalysisKind.MODAL: "MODAL ANALYSIS",
     AnalysisKind.TIME_HISTORY: "DYNAMIC RESPONSE",
+    AnalysisKind.BUCKLING: "ELASTIC BUCKLING",
 }
 
 _GUIDE_CALLOUT: dict[AnalysisKind, str] = {
@@ -136,6 +156,11 @@ _GUIDE_CALLOUT: dict[AnalysisKind, str] = {
     ),
     AnalysisKind.TIME_HISTORY: (
         "Ground-motion units, time step and damping must be consistent with the model."
+    ),
+    AnalysisKind.BUCKLING: (
+        "Not an actual collapse load, design buckling strength, inelastic buckling "
+        "strength, or a completed local-buckling check - an elastic global buckling "
+        "factor for the reference load pattern only."
     ),
 }
 
