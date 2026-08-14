@@ -53,6 +53,14 @@ _NOT_YET_SUPPORTED_TRANSFORM_TYPES = frozenset({"Corotational", _USE_MODEL_DEFIN
 #: outright instead of silently picking a value.
 _STATIC_TIME_SERIES_TYPES = frozenset({"linear", "constant"})
 
+#: System DOF count above which a warning about Dense FullGeneral matrix
+#: extraction + SciPy's O(n**3) dense generalized eigensolve is added to the
+#: result - both scale cubically in time and quadratically in memory with
+#: system size, unlike the sparse/banded solvers this project's other
+#: analyses use. Not a hard limit - a run above this still completes, just
+#: slower - so this only ever adds a message, never blocks anything.
+_LARGE_SYSTEM_DOF_WARNING_THRESHOLD = 500
+
 #: K_geometric is treated as (numerically) the zero matrix once its largest-
 #: magnitude entry is this many times smaller than K_material's largest entry -
 #: below that, any "eigenvalues" solved from it are floating-point noise, not

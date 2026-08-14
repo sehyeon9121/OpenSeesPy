@@ -80,6 +80,14 @@ _NONLINEAR_ELEMENT_TYPES = frozenset(
     }
 )
 
+#: Mirrors buckling_solver.py's own ``_LARGE_SYSTEM_DOF_WARNING_THRESHOLD``.
+#: The PRE-CHECK card can only estimate this (nodes x ndf, ignoring
+#: constraints/restraints - the exact system DOF count is only known once the
+#: solver actually builds the model), so it is always an upper bound, never
+#: exact - fine for a "this may be slow" warning, which does not need to be
+#: precise to be useful.
+_LARGE_MODEL_ESTIMATED_DOF_THRESHOLD = 500
+
 
 class _SetupInputWheelGuard(QObject):
     """Prevent a setup value from changing merely because the pointer is over it.
@@ -749,6 +757,7 @@ class AnalysisSettingsPanel(QFrame):
                 "Reference Load",
                 "Geometric Transform",
                 "Number of Modes",
+                "Model Size",
                 "SciPy",
             )
         ):
@@ -768,6 +777,15 @@ class AnalysisSettingsPanel(QFrame):
         self.buckling_precheck_note.setObjectName("secondaryText")
         self.buckling_precheck_note.setWordWrap(True)
         buckling_precheck_layout.addWidget(self.buckling_precheck_note)
+        # Non-blocking - large models still run, just slowly (see
+        # buckling_solver.py's own _LARGE_SYSTEM_DOF_WARNING_THRESHOLD, mirrored
+        # here as an upper-bound estimate since the exact system DOF count after
+        # constraints is only known once the solver actually builds the model).
+        self.buckling_large_model_note = QLabel()
+        self.buckling_large_model_note.setObjectName("setupNotice")
+        self.buckling_large_model_note.setWordWrap(True)
+        self.buckling_large_model_note.setVisible(False)
+        buckling_precheck_layout.addWidget(self.buckling_large_model_note)
         self.buckling_precheck_status = QLabel("Ready for Analysis")
         self.buckling_precheck_status.setObjectName("setupBehaviorValue")
         self.buckling_precheck_status.setProperty("state", "ok")
@@ -2230,6 +2248,18 @@ class AnalysisSettingsPanel(QFrame):
         )
         labels["Geometric Transform"].setText(self.buckling_geometric_transform.currentText())
         labels["Number of Modes"].setText(str(self.buckling_num_modes.value()))
+        node_count = len(self._model.nodes) if self._model is not None else 0
+        ndf = self._model.ndf if self._model is not None else 0
+        estimated_dofs = node_count * ndf
+        labels["Model Size"].setText(f"{node_count} nodes (~{estimated_dofs} DOFs est.)")
+        is_large_model = estimated_dofs > _LARGE_MODEL_ESTIMATED_DOF_THRESHOLD
+        self.buckling_large_model_note.setVisible(is_large_model)
+        if is_large_model:
+            self.buckling_large_model_note.setText(
+                f"ⓘ  약 {estimated_dofs}개 자유도로 추정됩니다({_LARGE_MODEL_ESTIMATED_DOF_THRESHOLD}개 "
+                "초과) - 밀집(Dense) FullGeneral 행렬 계산과 SciPy 일반화고유치 해석은 "
+                "모델 크기에 따라 계산 시간과 메모리 사용량이 크게 늘어날 수 있습니다."
+            )
         scipy_available = importlib.util.find_spec("scipy") is not None
         labels["SciPy"].setText("Available" if scipy_available else "Not Installed")
 

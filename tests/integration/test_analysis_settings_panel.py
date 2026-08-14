@@ -16,7 +16,7 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication, QFileDialog, QScrollArea
 
-from openframe.core.domain import AnalysisKind
+from openframe.core.domain import AnalysisKind, Node, StructuralModel
 from openframe.features.analysis.presentation.analysis_config_store import (
     AnalysisConfigStore,
 )
@@ -561,6 +561,41 @@ def test_buckling_precheck_clears_once_a_model_with_a_load_pattern_is_set() -> N
     application.processEvents()
 
     assert panel.buckling_precheck_status.property("state") == "ok"
+    panel.close()
+
+
+def test_buckling_precheck_shows_no_large_model_warning_for_a_small_model() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.BUCKLING))
+    panel.set_model(model)
+    panel.show()
+    application.processEvents()
+
+    assert panel.buckling_large_model_note.isVisible() is False
+    panel.close()
+
+
+def test_buckling_precheck_warns_on_a_large_model_without_blocking_the_run() -> None:
+    """Closing check: Dense FullGeneral + SciPy's O(n**3) eigensolve deserve a
+    warning on a large model - non-blocking, since a large model still runs,
+    just slowly (see buckling_solver.py's own threshold)."""
+    application = QApplication.instance() or QApplication([])
+    # ndf=3 x 200 nodes = 600 estimated DOFs, comfortably over the 500 threshold.
+    model = StructuralModel(
+        ndm=2, nodes={tag: Node(tag, float(tag), 0.0) for tag in range(1, 201)}
+    )
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.BUCKLING))
+    panel.set_model(model)
+    panel.show()
+    application.processEvents()
+
+    assert panel.buckling_large_model_note.isVisible() is True
+    assert "600" in panel.buckling_large_model_note.text()
+    # Informational only - must not, by itself, block RUN.
+    assert "Model Size" not in panel.buckling_precheck_status.text()
     panel.close()
 
 

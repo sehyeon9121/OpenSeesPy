@@ -19,6 +19,7 @@ import openseespy.opensees as ops
 import pytest
 import scipy.linalg
 
+from openframe.infrastructure.opensees import buckling_solver as bs
 from openframe.infrastructure.opensees.buckling_solver import run_buckling_analysis
 
 _E = 200_000.0
@@ -101,6 +102,34 @@ def test_eigenvalue_filtering_rules_and_partial_status(tmp_path: Path) -> None:
     assert "무한/미해결 2개" in diagnostic_message
     assert "복소 2개" in diagnostic_message
     assert "0 이하 2개" in diagnostic_message
+
+
+def test_large_system_size_adds_a_dense_matrix_performance_warning(tmp_path: Path) -> None:
+    """Closing check: Dense FullGeneral + SciPy's O(n**3) dense generalized
+    eigensolve deserve a warning on a large model - the threshold itself is
+    patched down to a value this small fixture already exceeds instead of
+    building a genuinely large model, since only the threshold-crossing
+    behavior is under test here (real-model accuracy is covered elsewhere)."""
+    source = _write_euler_column(tmp_path, 3)  # system_size == 9 (see the other test)
+    try:
+        with patch.object(bs, "_LARGE_SYSTEM_DOF_WARNING_THRESHOLD", 5):
+            result = run_buckling_analysis(source, num_modes=1)
+    finally:
+        ops.wipe()
+
+    assert any(
+        "자유도 수가 9개" in message and "5개" in message for message in result["messages"]
+    )
+
+
+def test_small_system_size_does_not_add_the_performance_warning(tmp_path: Path) -> None:
+    source = _write_euler_column(tmp_path, 3)
+    try:
+        result = run_buckling_analysis(source, num_modes=1)
+    finally:
+        ops.wipe()
+
+    assert not any("Dense" in message or "밀집" in message for message in result["messages"])
 
 
 def test_no_valid_eigenvalues_raises_a_clear_error(tmp_path: Path) -> None:
