@@ -65,6 +65,10 @@ class _StepDiagnostics:
     #: step's starting_fraction, so a step that only succeeded at 1/4 size does
     #: not force the next step to rediscover that by bisecting down from 1.0 again.
     last_fraction: float = 1.0
+    #: ArcLength-only counterpart of ``last_fraction`` - the actual radius that
+    #: converged this step (possibly reduced from the fraction it started at),
+    #: Adaptive Radius's seed for the next step's starting radius.
+    last_radius: float | None = None
 
 
 def _record_test_iterations(diagnostics: _StepDiagnostics | None) -> None:
@@ -76,6 +80,24 @@ def _record_test_iterations(diagnostics: _StepDiagnostics | None) -> None:
         # Some OpenSees builds/equation tests do not expose an iteration count.
         # Attempts and substeps still provide deterministic convergence diagnostics.
         pass
+
+
+def _current_load_factor() -> float:
+    """Pseudo-time (``ops.getTime()``) reported as the applied load factor.
+
+    This equals the *actual* load factor only when every currently active pattern's
+    TimeSeries is Linear with factor 1.0 - true by construction for the synthetic
+    ``ops.timeSeries("Linear", ...)`` this solver creates whenever it replays a
+    pattern (see ``_replay_patterns``, used for the gravity-then-push workflow and
+    for any pattern rebuilt after a non-"Plain" definition), and true for a source
+    script's own pattern as long as *that script* also used a Linear timeSeries -
+    the common default for a pushover, but not guaranteed: an imported script that
+    deliberately declares a Constant/Path timeSeries for its push pattern keeps
+    that definition (``_replay_patterns`` reuses a "Plain" pattern's original
+    arguments verbatim, precisely so it does not silently coerce that into
+    Linear), and this value would then no longer track the load factor cleanly.
+    """
+    return float(ops.getTime())
 
 
 def _local_forces(element_tag: int) -> list[float]:
@@ -388,6 +410,52 @@ def _advance_one_step(
     return True
 
 
+def _advance_one_arc_length_step(
+    nominal_radius: float,
+    alpha: float,
+    *,
+    algorithm: str,
+    recovered_with: set[str],
+    max_reductions: int = _MAX_BISECTIONS,
+    diagnostics: _StepDiagnostics | None = None,
+    automatic_recovery: bool = True,
+    min_radius: float,
+) -> bool:
+    """One Arc-Length reporting step: ``ops.integrator("ArcLength", s, alpha)`` at a
+    shrinking radius ``s``, mirroring ``_advance_one_step``'s algorithm-fallback-then-
+    retry ladder - except there is no fixed "nominal total increment" to subdivide the
+    way LoadControl/DisplacementControl have, since ArcLength itself decides how far
+    the equilibrium path advances. Each ``ops.analyze(1)`` either is the whole step or
+    is retried at a smaller radius; there is no bisecting-to-cover-a-remaining-fraction
+    concept here.
+
+    ``automatic_recovery=False`` disables both the algorithm fallback ladder and the
+    radius reduction: the configured algorithm gets exactly one attempt at
+    ``nominal_radius``, matching Setup's "Use Settings Only" for the other integrators.
+    """
+    radius = nominal_radius
+    depth = 0
+    while True:
+        ops.integrator("ArcLength", radius, alpha)
+        if _analyze_with_fallback(
+            algorithm, recovered_with, diagnostics, automatic_recovery=automatic_recovery
+        ):
+            if diagnostics is not None:
+                diagnostics.last_radius = radius
+            return True
+        if not automatic_recovery:
+            return False
+        depth += 1
+        if depth > max_reductions:
+            return False
+        next_radius = radius / 2.0
+        if next_radius < min_radius:
+            return False
+        if diagnostics is not None:
+            diagnostics.bisections += 1
+        radius = next_radius
+
+
 def run_nonlinear_static_analysis(
     source: Path,
     *,
@@ -413,6 +481,15 @@ def run_nonlinear_static_analysis(
     min_increment: float | None = None,
     max_increment: float | None = None,
     adaptive_step: bool = False,
+    arc_length_radius: float = 0.01,
+    arc_length_alpha: float = 1.0,
+    arc_length_max_steps: int = 200,
+    arc_length_min_radius: float = 0.0001,
+    arc_length_max_radius: float = 0.01,
+    arc_length_adaptive: bool = False,
+    arc_length_control_node: int | None = None,
+    arc_length_control_dof: int | None = None,
+    arc_length_max_displacement: float | None = None,
     progress_callback: Callable[[int | None, str], None] | None = None,
 ) -> dict[str, Any]:
     """Build the model by executing ``source``, then push it in ``num_steps`` equal
@@ -454,6 +531,26 @@ def run_nonlinear_static_analysis(
     a shrunk increment forward after a step needed bisection and grows it back
     toward the nominal size after steps that converge cleanly, bounded by
     ``min_increment``/``max_increment`` when given.
+
+    ``integrator_type="ArcLength"`` uses ``ops.integrator("ArcLength", arc_length_radius,
+    arc_length_alpha)`` instead of a fixed load/displacement increment - the equilibrium
+    path itself decides how far each step advances, so (unlike LoadControl/
+    DisplacementControl) it can trace a softening/limit-point branch where the load
+    factor decreases while displacement keeps growing. ``target_load_factor``/
+    ``target_displacement`` are not used in this mode. Termination is
+    ``arc_length_max_steps`` by default (load-factor "crossing" a target is not tracked
+    in this initial implementation); an optional ``arc_length_max_displacement`` at the
+    monitor node/DOF (``arc_length_control_node``/``arc_length_control_dof`` -
+    ``control_node``/``control_dof`` when either is not given) ends the run early,
+    cleanly, once that node's absolute displacement reaches it. Automatic Recovery's
+    fallback-algorithm ladder is reused unchanged; when that alone cannot converge a step, the *radius*
+    (not a fixed increment) is halved down to ``arc_length_min_radius`` before the step
+    is reported non-convergent, and ``arc_length_adaptive`` - if enabled - grows a
+    reduced radius back toward ``arc_length_radius`` after steps that converge cleanly,
+    capped at ``arc_length_max_radius`` - mirroring ``adaptive_step`` for the other two
+    integrators. This changes which *solution algorithm* traces the path, not the mesh:
+    it does not correct for coarse element discretization - the same single-element-
+    per-member accuracy limits documented for PDelta/Corotational above still apply.
     """
     def _report_progress(value: int | None, stage: str) -> None:
         if progress_callback is not None:
@@ -476,8 +573,23 @@ def run_nonlinear_static_analysis(
         raise RuntimeError("MAX INCREMENT는 0보다 커야 합니다.")
     if min_increment is not None and max_increment is not None and min_increment > max_increment:
         raise RuntimeError("MIN INCREMENT는 MAX INCREMENT보다 클 수 없습니다.")
+    if integrator_type == "ArcLength":
+        if arc_length_radius <= 0:
+            raise RuntimeError("ARC-LENGTH RADIUS는 0보다 커야 합니다.")
+        if arc_length_alpha <= 0:
+            raise RuntimeError("ALPHA는 0보다 커야 합니다.")
+        if arc_length_max_steps <= 0:
+            raise RuntimeError("MAXIMUM STEPS는 1 이상이어야 합니다.")
+        if arc_length_min_radius <= 0:
+            raise RuntimeError("MINIMUM RADIUS는 0보다 커야 합니다.")
+        if not arc_length_min_radius <= arc_length_radius <= arc_length_max_radius:
+            raise RuntimeError(
+                "MINIMUM RADIUS ≤ ARC-LENGTH RADIUS ≤ MAXIMUM RADIUS 순서여야 합니다."
+            )
+        if arc_length_max_displacement is not None and arc_length_max_displacement <= 0:
+            raise RuntimeError("MAXIMUM ABSOLUTE DISPLACEMENT는 0보다 커야 합니다.")
     supported_settings = {
-        "INTEGRATOR": (integrator_type, {"LoadControl", "DisplacementControl"}),
+        "INTEGRATOR": (integrator_type, {"LoadControl", "DisplacementControl", "ArcLength"}),
         "ALGORITHM": (algorithm, set(_FALLBACK_ALGORITHMS)),
         "CONVERGENCE TEST": (
             test_type,
@@ -540,6 +652,20 @@ def run_nonlinear_static_analysis(
         )
     if integrator_type == "DisplacementControl" and not target_displacement:
         raise RuntimeError("DisplacementControl에는 0이 아닌 TARGET DISPLACEMENT 값이 필요합니다.")
+    if integrator_type == "ArcLength" and arc_length_control_node is not None:
+        if arc_length_control_node not in node_tags:
+            raise RuntimeError(
+                f"MONITOR NODE {arc_length_control_node}가 모델에 존재하지 않습니다."
+            )
+        target_dof_count = len(ops.nodeDisp(arc_length_control_node))
+        effective_target_dof = (
+            arc_length_control_dof if arc_length_control_dof is not None else control_dof
+        )
+        if not 1 <= effective_target_dof <= target_dof_count:
+            raise RuntimeError(
+                f"MONITOR DOF {effective_target_dof}가 MONITOR NODE "
+                f"{arc_length_control_node}의 자유도 범위(1~{target_dof_count})를 벗어났습니다."
+            )
 
     all_pattern_tags = _all_pattern_tags(property_collector, load_collector)
     if gravity_pattern is not None and gravity_pattern not in all_pattern_tags:
@@ -627,100 +753,210 @@ def run_nonlinear_static_analysis(
     elif lateral_pattern is not None:
         _remove_patterns(all_pattern_tags - push_pattern_tags)
 
-    nominal_increment = (
-        (target_displacement or 0.0) / num_steps
-        if integrator_type == "DisplacementControl"
-        else target_load_factor / num_steps
-    )
-    # An integrator must exist before ops.analysis() is created, or OpenSees falls
-    # back to its own default and warns about it - _advance_one_step redefines this
-    # every substep anyway, so the initial value only has to be valid, not final.
-    _set_integrator(integrator_type, control_node, control_dof, nominal_increment)
-    ops.analysis("Static")
-
     curve: list[dict[str, Any]] = []
     recovered_steps: dict[int, set[str]] = {}
     failed_step: int | None = None
     pushover_progress_start = 25 if gravity_pattern is not None else 5
     pushover_progress_span = 100 - pushover_progress_start
-    # Adaptive Step: the fraction (of nominal_increment) the *next* reporting step
-    # starts its own bisection ladder at. Persists across steps only when
-    # adaptive_step=True - otherwise every step starts at the full 1.0, exactly
-    # today's behavior. A step that needed bisection hands its last-converged
-    # fraction forward (skip re-discovering the same small size); a step that
-    # converged cleanly grows the starting fraction back toward 1.0.
-    adaptive_start_fraction = 1.0
-    adaptive_max_fraction = (
-        min(1.0, max_increment / abs(nominal_increment))
-        if adaptive_step and max_increment is not None and nominal_increment
-        else 1.0
-    )
-    for step in range(1, num_steps + 1):
-        recovered_with: set[str] = set()
-        diagnostics = _StepDiagnostics()
-        starting_fraction = adaptive_start_fraction if adaptive_step else 1.0
-        if not _advance_one_step(
-            nominal_increment,
-            integrator_type=integrator_type,
-            control_node=control_node,
-            control_dof=control_dof,
-            algorithm=algorithm,
-            recovered_with=recovered_with,
-            max_bisections=max_bisections,
-            diagnostics=diagnostics,
-            automatic_recovery=automatic_recovery,
-            min_increment=min_increment,
-            starting_fraction=starting_fraction,
-        ):
+
+    if integrator_type == "ArcLength":
+        arc_length_target_node = (
+            arc_length_control_node if arc_length_control_node is not None else control_node
+        )
+        arc_length_target_dof = (
+            arc_length_control_dof if arc_length_control_dof is not None else control_dof
+        )
+        ops.integrator("ArcLength", arc_length_radius, arc_length_alpha)
+        ops.analysis("Static")
+        # Adaptive Radius: the radius (not a fraction) the *next* step starts its own
+        # reduction ladder at - persists across steps only when arc_length_adaptive is
+        # True, exactly mirroring adaptive_start_fraction above but operating on the
+        # radius itself, since ArcLength has no separate nominal increment to scale.
+        current_radius = arc_length_radius
+        terminated_by_displacement = False
+        for step in range(1, arc_length_max_steps + 1):
+            recovered_with = set()
+            diagnostics = _StepDiagnostics()
+            starting_radius = current_radius if arc_length_adaptive else arc_length_radius
+            converged = _advance_one_arc_length_step(
+                starting_radius,
+                arc_length_alpha,
+                algorithm=algorithm,
+                recovered_with=recovered_with,
+                max_reductions=max_bisections,
+                diagnostics=diagnostics,
+                automatic_recovery=automatic_recovery,
+                min_radius=arc_length_min_radius,
+            )
+            if not converged:
+                total_attempts += diagnostics.attempts
+                total_substeps += diagnostics.substeps
+                failed_step = step
+                messages.append(
+                    f"{step}번째 스텝에서 수렴하지 않았습니다 (Arc-Length Radius가 MINIMUM "
+                    f"RADIUS {arc_length_min_radius:g} 이하로 줄어들었거나 재시도 한도를 "
+                    f"초과했습니다, 총 {arc_length_max_steps}스텝 중). 그 이전까지 수렴한 "
+                    "결과만 표시됩니다."
+                )
+                _report_progress(
+                    pushover_progress_start
+                    + round(pushover_progress_span * (step - 1) / arc_length_max_steps),
+                    f"Arc-Length stopped at step {step}/{arc_length_max_steps}: not converged",
+                )
+                break
             total_attempts += diagnostics.attempts
             total_substeps += diagnostics.substeps
-            failed_step = step
-            messages.append(
-                f"{step}번째 스텝에서 수렴하지 않았습니다 (총 {num_steps}스텝 중). "
-                "그 이전까지 수렴한 결과만 표시됩니다."
+            used_radius = (
+                diagnostics.last_radius if diagnostics.last_radius is not None else starting_radius
+            )
+            if recovered_with or diagnostics.bisections:
+                recovered_steps[step] = recovered_with
+            if arc_length_adaptive:
+                current_radius = (
+                    used_radius
+                    if diagnostics.bisections
+                    else min(arc_length_max_radius, current_radius * _ADAPTIVE_GROWTH_FACTOR)
+                )
+            base_shear = _base_shear() - baseline_base_shear
+            displacement = float(ops.nodeDisp(control_node, control_dof))
+            algorithm_used = algorithm if not recovered_with else ", ".join(sorted(recovered_with))
+            curve.append(
+                {
+                    "step": step,
+                    "control_displacement": displacement,
+                    "base_shear": base_shear,
+                    "load_factor": _current_load_factor(),
+                    "arc_length_radius": used_radius,
+                    "converged": True,
+                    "algorithm_used": algorithm_used,
+                    "recovered": bool(recovered_with) or diagnostics.bisections > 0,
+                    "retry_count": max(0, diagnostics.attempts - 1),
+                    "attempts": diagnostics.attempts,
+                    "substeps": diagnostics.substeps,
+                    "iterations": diagnostics.iterations,
+                    "recovered_with": sorted(recovered_with),
+                }
             )
             _report_progress(
                 pushover_progress_start
-                + round(pushover_progress_span * (step - 1) / num_steps),
-                f"Pushover stopped at step {step}/{num_steps}: not converged",
+                + round(pushover_progress_span * step / arc_length_max_steps),
+                f"Arc-Length step {step}/{arc_length_max_steps} converged",
             )
-            break
-        total_attempts += diagnostics.attempts
-        total_substeps += diagnostics.substeps
-        if recovered_with or diagnostics.bisections:
-            recovered_steps[step] = recovered_with
-        if adaptive_step:
-            adaptive_start_fraction = (
-                max(1.0e-9, diagnostics.last_fraction)
-                if diagnostics.bisections
-                else min(adaptive_max_fraction, adaptive_start_fraction * _ADAPTIVE_GROWTH_FACTOR)
+            if arc_length_max_displacement is not None:
+                target_displacement_value = float(
+                    ops.nodeDisp(arc_length_target_node, arc_length_target_dof)
+                )
+                if abs(target_displacement_value) >= arc_length_max_displacement:
+                    terminated_by_displacement = True
+                    break
+        if terminated_by_displacement:
+            messages.append(
+                "MONITOR NODE/DOF의 절대변위가 MAXIMUM ABSOLUTE DISPLACEMENT에 "
+                "도달해 정상 종료했습니다."
             )
-        base_shear = _base_shear() - baseline_base_shear
-        displacement = float(ops.nodeDisp(control_node, control_dof))
-        curve.append(
-            {
-                "step": step,
-                "control_displacement": displacement,
-                "base_shear": base_shear,
-                "attempts": diagnostics.attempts,
-                "substeps": diagnostics.substeps,
-                "iterations": diagnostics.iterations,
-                "recovered_with": sorted(recovered_with),
-            }
+        messages.append(
+            "Arc-Length Control은 하중계수-변위 평형경로가 극한점을 지나도 추적할 수 있게 "
+            "하는 해석 알고리즘입니다. 부재 분할 부족이나 모델링 이산화 오차를 보정하지는 "
+            "않습니다."
         )
-        _report_progress(
-            pushover_progress_start + round(pushover_progress_span * step / num_steps),
-            f"Pushover step {step}/{num_steps} converged",
+    else:
+        nominal_increment = (
+            (target_displacement or 0.0) / num_steps
+            if integrator_type == "DisplacementControl"
+            else target_load_factor / num_steps
         )
+        # An integrator must exist before ops.analysis() is created, or OpenSees falls
+        # back to its own default and warns about it - _advance_one_step redefines this
+        # every substep anyway, so the initial value only has to be valid, not final.
+        _set_integrator(integrator_type, control_node, control_dof, nominal_increment)
+        ops.analysis("Static")
+
+        # Adaptive Step: the fraction (of nominal_increment) the *next* reporting step
+        # starts its own bisection ladder at. Persists across steps only when
+        # adaptive_step=True - otherwise every step starts at the full 1.0, exactly
+        # today's behavior. A step that needed bisection hands its last-converged
+        # fraction forward (skip re-discovering the same small size); a step that
+        # converged cleanly grows the starting fraction back toward 1.0.
+        adaptive_start_fraction = 1.0
+        adaptive_max_fraction = (
+            min(1.0, max_increment / abs(nominal_increment))
+            if adaptive_step and max_increment is not None and nominal_increment
+            else 1.0
+        )
+        for step in range(1, num_steps + 1):
+            recovered_with = set()
+            diagnostics = _StepDiagnostics()
+            starting_fraction = adaptive_start_fraction if adaptive_step else 1.0
+            if not _advance_one_step(
+                nominal_increment,
+                integrator_type=integrator_type,
+                control_node=control_node,
+                control_dof=control_dof,
+                algorithm=algorithm,
+                recovered_with=recovered_with,
+                max_bisections=max_bisections,
+                diagnostics=diagnostics,
+                automatic_recovery=automatic_recovery,
+                min_increment=min_increment,
+                starting_fraction=starting_fraction,
+            ):
+                total_attempts += diagnostics.attempts
+                total_substeps += diagnostics.substeps
+                failed_step = step
+                messages.append(
+                    f"{step}번째 스텝에서 수렴하지 않았습니다 (총 {num_steps}스텝 중). "
+                    "그 이전까지 수렴한 결과만 표시됩니다."
+                )
+                _report_progress(
+                    pushover_progress_start
+                    + round(pushover_progress_span * (step - 1) / num_steps),
+                    f"Pushover stopped at step {step}/{num_steps}: not converged",
+                )
+                break
+            total_attempts += diagnostics.attempts
+            total_substeps += diagnostics.substeps
+            if recovered_with or diagnostics.bisections:
+                recovered_steps[step] = recovered_with
+            if adaptive_step:
+                adaptive_start_fraction = (
+                    max(1.0e-9, diagnostics.last_fraction)
+                    if diagnostics.bisections
+                    else min(adaptive_max_fraction, adaptive_start_fraction * _ADAPTIVE_GROWTH_FACTOR)
+                )
+            base_shear = _base_shear() - baseline_base_shear
+            displacement = float(ops.nodeDisp(control_node, control_dof))
+            algorithm_used = algorithm if not recovered_with else ", ".join(sorted(recovered_with))
+            curve.append(
+                {
+                    "step": step,
+                    "control_displacement": displacement,
+                    "base_shear": base_shear,
+                    "load_factor": _current_load_factor(),
+                    "arc_length_radius": None,
+                    "converged": True,
+                    "algorithm_used": algorithm_used,
+                    "recovered": bool(recovered_with) or diagnostics.bisections > 0,
+                    "retry_count": max(0, diagnostics.attempts - 1),
+                    "attempts": diagnostics.attempts,
+                    "substeps": diagnostics.substeps,
+                    "iterations": diagnostics.iterations,
+                    "recovered_with": sorted(recovered_with),
+                }
+            )
+            _report_progress(
+                pushover_progress_start + round(pushover_progress_span * step / num_steps),
+                f"Pushover step {step}/{num_steps} converged",
+            )
 
     if not curve:
         raise RuntimeError("첫 스텝부터 수렴하지 않았습니다. 해석 설정을 조정해 보세요.")
 
     if recovered_steps:
         step_list = ", ".join(str(step) for step in sorted(recovered_steps))
+        reduced_quantity = "축소된 Arc-Length Radius" if integrator_type == "ArcLength" else "축소된 증분"
         messages.append(
             f"{step_list}번째 스텝은 기본 알고리즘으로 수렴하지 않아 대체 알고리즘 또는 "
-            "축소된 증분으로 재시도해 수렴했습니다."
+            f"{reduced_quantity}으로 재시도해 수렴했습니다."
         )
     detection = _detect_nonlinearity(property_collector)
     messages.extend(_model_nonlinearity_warnings(property_collector))
@@ -748,7 +984,9 @@ def run_nonlinear_static_analysis(
         ],
         "load_displacement_curve": curve,
         "convergence": {
-            "requested_steps": num_steps,
+            "requested_steps": (
+                arc_length_max_steps if integrator_type == "ArcLength" else num_steps
+            ),
             "completed_steps": len(curve),
             "failed_step": failed_step,
             "total_attempts": total_attempts,

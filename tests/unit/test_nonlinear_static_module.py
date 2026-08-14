@@ -130,3 +130,73 @@ def test_validate_passes_with_consistent_min_and_max_increment() -> None:
     )
 
     assert errors == []
+
+
+def test_validate_accepts_arc_length_integrator_type() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(_request(control_node=2, integrator_type="ArcLength"))
+
+    assert errors == []
+
+
+def test_validate_rejects_non_positive_arc_length_radius() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(
+        _request(control_node=2, integrator_type="ArcLength", arc_length_radius=0.0)
+    )
+
+    assert errors == ["ARC-LENGTH RADIUS 값은 0보다 커야 합니다."]
+
+
+def test_validate_rejects_non_positive_arc_length_alpha() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(
+        _request(control_node=2, integrator_type="ArcLength", arc_length_alpha=-1.0)
+    )
+
+    assert errors == ["ALPHA 값은 0보다 커야 합니다."]
+
+
+def test_validate_rejects_non_positive_arc_length_max_steps() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(
+        _request(control_node=2, integrator_type="ArcLength", arc_length_max_steps=0)
+    )
+
+    assert errors == ["MAXIMUM STEPS 값은 0보다 커야 합니다."]
+
+
+def test_validate_rejects_arc_length_radius_outside_min_max_order() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(
+        _request(
+            control_node=2,
+            integrator_type="ArcLength",
+            arc_length_min_radius=1.0,
+            arc_length_radius=0.01,
+            arc_length_max_radius=0.5,
+        )
+    )
+
+    assert errors == ["MINIMUM RADIUS ≤ ARC-LENGTH RADIUS ≤ MAXIMUM RADIUS 순서여야 합니다."]
+
+
+def test_validate_passes_with_consistent_arc_length_radius_order() -> None:
+    module = NonlinearStaticAnalysis(_StubRunner(AnalysisResult()))
+
+    errors = module.validate(
+        _request(
+            control_node=2,
+            integrator_type="ArcLength",
+            arc_length_min_radius=0.0001,
+            arc_length_radius=0.01,
+            arc_length_max_radius=0.01,
+        )
+    )
+
+    assert errors == []

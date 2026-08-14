@@ -345,6 +345,129 @@ def test_automatic_recovery_off_disables_adaptive_and_increment_fields() -> None
     panel.close()
 
 
+def test_arc_length_fields_hidden_until_arc_length_control_is_chosen() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    panel.show()
+    application.processEvents()
+
+    assert panel.control_node_group.isVisible() is False
+    assert panel.control_dof_group.isVisible() is False
+    assert panel.num_steps_group.isVisible() is True
+    for group in panel.arc_length_field_groups:
+        assert group.isVisible() is False
+
+    panel.integrator_type.setCurrentIndex(panel.integrator_type.findData("ArcLength"))
+
+    assert panel.control_node_group.isVisible() is True
+    assert panel.control_dof_group.isVisible() is True
+    assert panel.target_load_factor_group.isVisible() is False
+    assert panel.load_increment_group.isVisible() is False
+    assert panel.target_displacement_group.isVisible() is False
+    assert panel.num_steps_group.isVisible() is False
+    for group in panel.arc_length_field_groups:
+        assert group.isVisible() is True
+    panel.close()
+
+
+def test_build_options_includes_arc_length_fields_when_selected() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.set_model(model)
+    panel.integrator_type.setCurrentIndex(panel.integrator_type.findData("ArcLength"))
+    panel.arc_length_radius.setValue(0.02)
+    panel.arc_length_alpha.setValue(2.0)
+    panel.arc_length_max_steps.setValue(150)
+    panel.arc_length_min_radius.setValue(0.0002)
+    panel.arc_length_max_radius.setValue(0.02)
+    panel.arc_length_adaptive.setChecked(True)
+
+    options = panel.build_options()
+
+    assert options["integrator_type"] == "ArcLength"
+    assert options["arc_length_radius"] == 0.02
+    assert options["arc_length_alpha"] == 2.0
+    assert options["arc_length_max_steps"] == 150
+    assert options["arc_length_min_radius"] == 0.0002
+    assert options["arc_length_max_radius"] == 0.02
+    assert options["arc_length_adaptive"] is True
+    # Optional fields left at their sentinel/default: not sent, matching the
+    # MIN/MAX INCREMENT "0 = Auto, don't send" convention above.
+    assert "arc_length_control_node" not in options
+    assert "arc_length_control_dof" not in options
+    assert "arc_length_max_displacement" not in options
+    # LoadControl/DisplacementControl-only fields must not leak through either.
+    assert "target_displacement" not in options
+    application.processEvents()
+
+
+def test_build_options_includes_optional_arc_length_target_and_limit_once_set() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.set_model(model)
+    panel.integrator_type.setCurrentIndex(panel.integrator_type.findData("ArcLength"))
+    panel.arc_length_control_node.setCurrentIndex(panel.arc_length_control_node.findData(4))
+    panel.arc_length_control_dof.setCurrentIndex(panel.arc_length_control_dof.findData(1))
+    panel.arc_length_max_displacement.setValue(5.0)
+
+    options = panel.build_options()
+
+    assert options["arc_length_control_node"] == 4
+    assert options["arc_length_control_dof"] == 1
+    assert options["arc_length_max_displacement"] == 5.0
+    application.processEvents()
+
+
+def test_automatic_recovery_off_disables_arc_length_adaptive_fields_too() -> None:
+    application = QApplication.instance() or QApplication([])
+    panel = AnalysisSettingsPanel()
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    panel.show()
+    application.processEvents()
+
+    assert panel.arc_length_adaptive.isEnabled() is True
+    panel.arc_length_adaptive.setChecked(True)
+
+    panel.automatic_recovery.setChecked(False)
+
+    assert panel.arc_length_adaptive.isEnabled() is False
+    assert panel.arc_length_adaptive.isChecked() is False
+    assert panel.arc_length_min_radius_group.isEnabled() is False
+    assert panel.arc_length_max_radius_group.isEnabled() is False
+    panel.close()
+
+
+def test_precheck_flags_arc_length_radius_out_of_order() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)
+    panel = AnalysisSettingsPanel()
+    panel.set_model(model)
+    panel.analysis_type.setCurrentIndex(
+        panel.analysis_type.findData(AnalysisKind.NONLINEAR_STATIC)
+    )
+    panel.integrator_type.setCurrentIndex(panel.integrator_type.findData("ArcLength"))
+    panel.show()
+    application.processEvents()
+
+    assert panel.precheck_status.property("state") == "ok"
+
+    panel.arc_length_min_radius.setValue(1.0)
+    panel.arc_length_max_radius.setValue(0.5)
+    panel._update_precheck()
+
+    assert panel.precheck_status.property("state") == "warning"
+    assert "MINIMUM RADIUS" in panel.precheck_status.text()
+    assert panel.arc_length_precheck_note.isVisible() is True
+    panel.close()
+
+
 def test_precheck_flags_a_missing_control_node_then_clears_once_one_is_picked() -> None:
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(TRUSS_MODEL)

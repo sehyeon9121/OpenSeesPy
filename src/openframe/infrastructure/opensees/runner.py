@@ -212,6 +212,15 @@ class OpenSeesProcessRunner:
                 substeps=int(item.get("substeps", 1)),
                 iterations=int(item.get("iterations", 0)),
                 recovered_with=tuple(str(value) for value in item.get("recovered_with", [])),
+                load_factor=float(item.get("load_factor", 0.0)),
+                arc_length_radius=(
+                    None
+                    if item.get("arc_length_radius") is None
+                    else float(item["arc_length_radius"])
+                ),
+                algorithm_used=str(item.get("algorithm_used", "")),
+                recovered=bool(item.get("recovered", False)),
+                retry_count=int(item.get("retry_count", 0)),
             )
             for item in payload.get("load_displacement_curve", [])
         )

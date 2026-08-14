@@ -35,6 +35,11 @@ class NonlinearStaticAnalysis(AnalysisModule):
             "target_load_factor": "TARGET LOAD FACTOR",
             "min_increment": "MIN INCREMENT",
             "max_increment": "MAX INCREMENT",
+            "arc_length_radius": "ARC-LENGTH RADIUS",
+            "arc_length_alpha": "ALPHA",
+            "arc_length_max_steps": "MAXIMUM STEPS",
+            "arc_length_min_radius": "MINIMUM RADIUS",
+            "arc_length_max_displacement": "MAXIMUM ABSOLUTE DISPLACEMENT",
         }
         for field, label in positive_fields.items():
             value = options.get(field)
@@ -51,6 +56,23 @@ class NonlinearStaticAnalysis(AnalysisModule):
             and float(min_increment) > float(max_increment)
         ):
             errors.append("MIN INCREMENT는 MAX INCREMENT보다 클 수 없습니다.")
+        arc_length_min_radius = options.get("arc_length_min_radius")
+        arc_length_radius = options.get("arc_length_radius")
+        arc_length_max_radius = options.get("arc_length_max_radius")
+        if (
+            options.get("integrator_type") == "ArcLength"
+            and arc_length_min_radius is not None
+            and arc_length_radius is not None
+            and arc_length_max_radius is not None
+            and not (
+                float(arc_length_min_radius)
+                <= float(arc_length_radius)
+                <= float(arc_length_max_radius)
+            )
+        ):
+            errors.append(
+                "MINIMUM RADIUS ≤ ARC-LENGTH RADIUS ≤ MAXIMUM RADIUS 순서여야 합니다."
+            )
         if (
             options.get("gravity_pattern") is not None
             and options.get("lateral_pattern") == options.get("gravity_pattern")
@@ -58,7 +80,7 @@ class NonlinearStaticAnalysis(AnalysisModule):
             errors.append("GRAVITY PATTERN과 LATERAL PATTERN은 서로 달라야 합니다.")
 
         allowed_values = {
-            "integrator_type": {"LoadControl", "DisplacementControl"},
+            "integrator_type": {"LoadControl", "DisplacementControl", "ArcLength"},
             "algorithm": {"Newton", "ModifiedNewton", "KrylovNewton", "NewtonLineSearch"},
             "test_type": {"NormDispIncr", "EnergyIncr", "NormUnbalance"},
             "system": {"BandGeneral", "UmfPack", "ProfileSPD"},

@@ -1174,10 +1174,15 @@ class AnalysisSettingsPanel(QFrame):
         self.integrator_type = QComboBox()
         self.integrator_type.addItem("Load Control", "LoadControl")
         self.integrator_type.addItem("Displacement Control", "DisplacementControl")
+        self.integrator_type.addItem("Arc-Length Control", "ArcLength")
         self.integrator_type.setToolTip(
             "LoadControl scales every pattern by an equal load factor each step - it "
             "cannot trace a softening/post-peak branch. DisplacementControl pushes "
-            "CONTROL NODE/DOF by a fixed increment and solves for the load, so it can."
+            "CONTROL NODE/DOF by a fixed increment and solves for the load, so it can. "
+            "Arc-Length Control instead lets the equilibrium path itself decide how far "
+            "each step advances (ops.integrator('ArcLength', radius, alpha)) - the only "
+            "one of the three that can trace past a limit point, where the load factor "
+            "decreases while displacement keeps growing."
         )
         self.integrator_type.currentIndexChanged.connect(self._update_integrator_visibility)
 
@@ -1227,18 +1232,149 @@ class AnalysisSettingsPanel(QFrame):
 
         self.control_node_group = self._field_block("CONTROL NODE", self.control_node)
         self.control_dof_group = self._field_block("CONTROL DOF", self.control_dof)
+        self.num_steps_group = self._field_block("ANALYSIS STEPS", self.num_steps)
+
+        # Arc-Length Control's own fields - shown only when INTEGRATOR is ArcLength
+        # (see _update_integrator_visibility). MAX STEP BISECTIONS (further below, in
+        # the advanced grid) is reused as-is for the radius-reduction retry limit - see
+        # _advance_one_arc_length_step in nonlinear_static_solver.py - so no separate
+        # "max reductions" field is introduced here.
+        self.arc_length_radius = QDoubleSpinBox()
+        self.arc_length_radius.setDecimals(6)
+        self.arc_length_radius.setRange(1.0e-6, 1.0e6)
+        self.arc_length_radius.setSingleStep(0.001)
+        self.arc_length_radius.setValue(0.01)
+        self.arc_length_radius.setToolTip(
+            "The arc-length radius 's' in ops.integrator('ArcLength', s, alpha) - how "
+            "far the equilibrium path advances each step, in a combined load/"
+            "displacement sense. Retried at half this size (down to MINIMUM RADIUS) "
+            "when a step will not converge."
+        )
+        self.arc_length_alpha = QDoubleSpinBox()
+        self.arc_length_alpha.setDecimals(4)
+        self.arc_length_alpha.setRange(0.0001, 1000.0)
+        self.arc_length_alpha.setSingleStep(0.1)
+        self.arc_length_alpha.setValue(1.0)
+        self.arc_length_alpha.setToolTip(
+            "The 'alpha' scale factor in ops.integrator('ArcLength', s, alpha), "
+            "weighting the load-factor term against the displacement term in the "
+            "arc-length constraint. 1.0 is the standard default."
+        )
+        self.arc_length_max_steps = QSpinBox()
+        self.arc_length_max_steps.setRange(1, 100_000)
+        self.arc_length_max_steps.setValue(200)
+        self.arc_length_max_steps.setToolTip(
+            "Arc-Length's own step count - independent of ANALYSIS STEPS (which "
+            "LoadControl/DisplacementControl use instead). This is the default "
+            "termination criterion: the run stops here unless MAXIMUM ABSOLUTE "
+            "DISPLACEMENT ends it earlier."
+        )
+        self.arc_length_min_radius = QDoubleSpinBox()
+        self.arc_length_min_radius.setDecimals(8)
+        self.arc_length_min_radius.setRange(1.0e-8, 1.0e6)
+        self.arc_length_min_radius.setSingleStep(0.0001)
+        self.arc_length_min_radius.setValue(0.0001)
+        self.arc_length_min_radius.setToolTip(
+            "Stop halving the radius once the next attempt would fall below this "
+            "size - a step still not converged there is reported as partial, not a "
+            "structural collapse."
+        )
+        self.arc_length_max_radius = QDoubleSpinBox()
+        self.arc_length_max_radius.setDecimals(6)
+        self.arc_length_max_radius.setRange(1.0e-6, 1.0e6)
+        self.arc_length_max_radius.setSingleStep(0.001)
+        self.arc_length_max_radius.setValue(0.01)
+        self.arc_length_max_radius.setToolTip(
+            "With ADAPTIVE RADIUS on, caps how far a reduced radius may grow back "
+            "after clean steps - never exceeds this even if it would otherwise grow "
+            "past it."
+        )
+        self.arc_length_adaptive = QCheckBox(
+            "Adaptive Radius - grow a reduced radius back toward ARC-LENGTH RADIUS "
+            "after steps that converge cleanly"
+        )
+        self.arc_length_adaptive.setToolTip(
+            "OFF (default): every step starts at the full ARC-LENGTH RADIUS. ON: a "
+            "step that needed reduction hands its smaller working radius to the next "
+            "step instead of rediscovering it from scratch, and grows back toward "
+            "ARC-LENGTH RADIUS after clean steps, bounded by MAXIMUM RADIUS."
+        )
+        self.arc_length_adaptive.toggled.connect(self._update_nonlinear_summary)
+        self.arc_length_control_node = QComboBox()
+        self.arc_length_control_node.addItem("Use Control Node", None)
+        self.arc_length_control_node.setToolTip(
+            "Optional - which node's displacement the MAXIMUM ABSOLUTE DISPLACEMENT "
+            "termination monitors. Defaults to CONTROL NODE above when left as 'Use "
+            "Control Node'."
+        )
+        self.arc_length_control_dof = QComboBox()
+        self.arc_length_control_dof.addItem("Use Control DOF", None)
+        self.arc_length_control_dof.setToolTip(
+            "Optional - paired with MONITOR NODE above. Defaults to CONTROL DOF "
+            "when left as 'Use Control DOF'."
+        )
+        self.arc_length_max_displacement = QDoubleSpinBox()
+        self.arc_length_max_displacement.setDecimals(6)
+        self.arc_length_max_displacement.setRange(0.0, 1.0e6)
+        self.arc_length_max_displacement.setSpecialValueText("None")
+        self.arc_length_max_displacement.setSuffix(f" {self._unit_system.length}")
+        self.arc_length_max_displacement.setToolTip(
+            "Optional early termination: stop (cleanly, not as a failure) once the "
+            "monitor node/DOF's absolute displacement reaches this value. 0 = None "
+            "(run until MAXIMUM STEPS instead)."
+        )
+        self.arc_length_radius_group = self._field_block(
+            "ARC-LENGTH RADIUS (s)", self.arc_length_radius
+        )
+        self.arc_length_alpha_group = self._field_block(
+            "REFERENCE LOAD SCALE (alpha)", self.arc_length_alpha
+        )
+        self.arc_length_max_steps_group = self._field_block(
+            "MAXIMUM STEPS", self.arc_length_max_steps
+        )
+        self.arc_length_min_radius_group = self._field_block(
+            "MINIMUM RADIUS", self.arc_length_min_radius
+        )
+        self.arc_length_max_radius_group = self._field_block(
+            "MAXIMUM RADIUS", self.arc_length_max_radius
+        )
+        self.arc_length_control_node_group = self._field_block(
+            "MONITOR NODE (optional)", self.arc_length_control_node
+        )
+        self.arc_length_control_dof_group = self._field_block(
+            "MONITOR DOF (optional)", self.arc_length_control_dof
+        )
+        self.arc_length_max_displacement_group = self._field_block(
+            "MAXIMUM ABSOLUTE DISPLACEMENT (optional)", self.arc_length_max_displacement
+        )
+        #: Every widget that only makes sense for Arc-Length Control - shown/hidden as
+        #: one group by _update_integrator_visibility, independent of the Load
+        #: Control/Displacement Control fields above.
+        self.arc_length_field_groups = [
+            self.arc_length_radius_group,
+            self.arc_length_alpha_group,
+            self.arc_length_max_steps_group,
+            self.arc_length_adaptive,
+            self.arc_length_min_radius_group,
+            self.arc_length_max_radius_group,
+            self.arc_length_control_node_group,
+            self.arc_length_control_dof_group,
+            self.arc_length_max_displacement_group,
+        ]
+
         left_column = [
             self._field_block("GRAVITY PATTERN", self.gravity_pattern),
             self.gravity_steps_group,
             self._field_block("LATERAL LOAD PATTERN", self.lateral_pattern),
             self._field_block("INTEGRATOR", self.integrator_type),
-            self._field_block("ANALYSIS STEPS", self.num_steps),
+            self.num_steps_group,
             self.target_load_factor_group,
             self.load_increment_group,
             self.target_displacement_group,
             self.initial_increment_group,
             self.control_node_group,
             self.control_dof_group,
+            *self.arc_length_field_groups,
         ]
 
         self.tolerance = QDoubleSpinBox()
@@ -1254,10 +1390,14 @@ class AnalysisSettingsPanel(QFrame):
         self.max_bisections = QSpinBox()
         self.max_bisections.setRange(0, 10)
         self.max_bisections.setValue(4)
-        self.max_bisections.setToolTip(
-            "When an increment does not converge, halve it this many times before "
-            "marking the run as partially converged."
-        )
+        #: This single field/label is shared by all three INTEGRATORs - a step
+        #: bisection depth for LoadControl/DisplacementControl, an Arc-Length
+        #: radius-reduction count for ArcLength (see _advance_one_arc_length_step) -
+        #: rather than adding a second field, per Setup's own "reuse the existing
+        #: Algorithm fallback structure" instruction. _update_integrator_visibility
+        #: swaps its label/tooltip text to match whichever meaning currently
+        #: applies, so "bisection" wording never shows while Arc-Length is selected.
+        self.max_bisections_label = self._field_label("MAX STEP BISECTIONS")
 
         self.execution_timeout = QSpinBox()
         self.execution_timeout.setRange(10, 86_400)
@@ -1292,7 +1432,7 @@ class AnalysisSettingsPanel(QFrame):
         right_column = [
             self._field_block("TOLERANCE", self.tolerance),
             self._field_block("MAX ITERATIONS", self.max_iterations),
-            self._field_block("MAX STEP BISECTIONS", self.max_bisections),
+            self._field_block(None, self.max_bisections, label=self.max_bisections_label),
             self._field_block("MAX RUNTIME (SECONDS)", self.execution_timeout),
             self._field_block("CONVERGENCE TEST", self.test_type),
         ]
@@ -1493,6 +1633,17 @@ class AnalysisSettingsPanel(QFrame):
             precheck_grid.addWidget(value_label, row, 1)
             self.precheck_value_labels[key] = value_label
         precheck_layout.addLayout(precheck_grid)
+        self.arc_length_precheck_note = QLabel(
+            "Arc-Length Control can trace the equilibrium path even without material "
+            "nonlinearity (an elastic model's geometric-nonlinearity path, for "
+            "example) - but it does not correct for coarse element discretization, "
+            "which still limits accuracy near a limit point the same way it does for "
+            "P-Delta/Corotational."
+        )
+        self.arc_length_precheck_note.setObjectName("secondaryText")
+        self.arc_length_precheck_note.setWordWrap(True)
+        self.arc_length_precheck_note.setVisible(False)
+        precheck_layout.addWidget(self.arc_length_precheck_note)
         self.precheck_status = QLabel("Ready for Analysis")
         self.precheck_status.setObjectName("setupBehaviorValue")
         self.precheck_status.setProperty("state", "ok")
@@ -1510,6 +1661,8 @@ class AnalysisSettingsPanel(QFrame):
             self.integrator_type,
             self.constraints_type,
             self.numberer,
+            self.arc_length_control_node,
+            self.arc_length_control_dof,
         ):
             combo.currentIndexChanged.connect(self._update_nonlinear_summary)
         for spinner in (
@@ -1523,6 +1676,12 @@ class AnalysisSettingsPanel(QFrame):
             self.target_load_factor,
             self.min_increment,
             self.max_increment,
+            self.arc_length_radius,
+            self.arc_length_alpha,
+            self.arc_length_max_steps,
+            self.arc_length_min_radius,
+            self.arc_length_max_radius,
+            self.arc_length_max_displacement,
         ):
             spinner.valueChanged.connect(self._update_nonlinear_summary)
 
@@ -1537,20 +1696,44 @@ class AnalysisSettingsPanel(QFrame):
             f"TARGET DISPLACEMENT ({unit_system.length})"
         )
         self.target_displacement.setSuffix(f" {unit_system.length}")
+        self.arc_length_max_displacement.setSuffix(f" {unit_system.length}")
 
     def _update_gravity_visibility(self) -> None:
         self.gravity_steps_group.setVisible(self.gravity_pattern.currentData() is not None)
 
     def _update_integrator_visibility(self) -> None:
-        displacement_control = (
-            self.integrator_type.currentData() == "DisplacementControl"
-        )
-        self.control_node_group.setVisible(displacement_control)
-        self.control_dof_group.setVisible(displacement_control)
+        method = self.integrator_type.currentData()
+        displacement_control = method == "DisplacementControl"
+        arc_length = method == "ArcLength"
+        load_control = method == "LoadControl"
+        # CONTROL NODE/DOF are also needed for Arc-Length - they still drive the
+        # load-displacement curve's x-axis and are the default MONITOR NODE/DOF
+        # for MAXIMUM ABSOLUTE DISPLACEMENT - not only for DisplacementControl.
+        self.control_node_group.setVisible(displacement_control or arc_length)
+        self.control_dof_group.setVisible(displacement_control or arc_length)
         self.target_displacement_group.setVisible(displacement_control)
         self.initial_increment_group.setVisible(displacement_control)
-        self.target_load_factor_group.setVisible(not displacement_control)
-        self.load_increment_group.setVisible(not displacement_control)
+        self.target_load_factor_group.setVisible(load_control)
+        self.load_increment_group.setVisible(load_control)
+        # ANALYSIS STEPS drives LoadControl/DisplacementControl's fixed per-step
+        # increment - Arc-Length has no such increment and uses its own MAXIMUM
+        # STEPS instead (arc_length_max_steps_group, part of arc_length_field_groups).
+        self.num_steps_group.setVisible(not arc_length)
+        for group in self.arc_length_field_groups:
+            group.setVisible(arc_length)
+        if arc_length:
+            self.max_bisections_label.setText("MAXIMUM RADIUS REDUCTIONS")
+            self.max_bisections.setToolTip(
+                "When a step's Arc-Length Radius does not converge, halve it this "
+                "many times (down to MINIMUM RADIUS) before marking the run as "
+                "partially converged."
+            )
+        else:
+            self.max_bisections_label.setText("MAX STEP BISECTIONS")
+            self.max_bisections.setToolTip(
+                "When an increment does not converge, halve it this many times "
+                "before marking the run as partially converged."
+            )
 
     def _apply_geometric_transformation_default(self, model: StructuralModel) -> None:
         """Direct Modeling defaults to an explicit Linear override - its
@@ -1572,6 +1755,10 @@ class AnalysisSettingsPanel(QFrame):
     def set_model(self, model: StructuralModel | None) -> None:
         self._model = model
         self.control_node.clear()
+        self.arc_length_control_node.clear()
+        self.arc_length_control_node.addItem("Use Control Node", None)
+        self.arc_length_control_dof.clear()
+        self.arc_length_control_dof.addItem("Use Control DOF", None)
         if model is None:
             self._update_nonlinear_summary()
             self._update_linear_static_summary()
@@ -1585,6 +1772,7 @@ class AnalysisSettingsPanel(QFrame):
                 else f"({node.x:g}, {node.y:g})"
             )
             self.control_node.addItem(f"Node {tag} {coordinates}", tag)
+            self.arc_length_control_node.addItem(f"Node {tag} {coordinates}", tag)
         # Node 1 (the combo's default selection) is, by convention, very often a
         # support - pushing it produces a curve that is a flat vertical line at zero
         # displacement forever, with no error to say why. Point at the loaded node
@@ -1600,6 +1788,7 @@ class AnalysisSettingsPanel(QFrame):
         # index past the end of OpenSeesPy's per-node result arrays and crash.
         for index, label in enumerate(full_labels[: model.ndf], start=1):
             self.control_dof.addItem(label, index)
+            self.arc_length_control_dof.addItem(label, index)
 
         self.time_history_direction.clear()
         for index, label in enumerate(full_labels[: model.ndf], start=1):
@@ -1727,6 +1916,23 @@ class AnalysisSettingsPanel(QFrame):
             options["lateral_pattern"] = int(lateral_pattern)
         if self.integrator_type.currentData() == "DisplacementControl":
             options["target_displacement"] = self.target_displacement.value()
+        if self.integrator_type.currentData() == "ArcLength":
+            options["arc_length_radius"] = self.arc_length_radius.value()
+            options["arc_length_alpha"] = self.arc_length_alpha.value()
+            options["arc_length_max_steps"] = self.arc_length_max_steps.value()
+            options["arc_length_min_radius"] = self.arc_length_min_radius.value()
+            options["arc_length_max_radius"] = self.arc_length_max_radius.value()
+            options["arc_length_adaptive"] = self.arc_length_adaptive.isChecked()
+            arc_length_control_node = self.arc_length_control_node.currentData()
+            if arc_length_control_node is not None:
+                options["arc_length_control_node"] = int(arc_length_control_node)
+            arc_length_control_dof = self.arc_length_control_dof.currentData()
+            if arc_length_control_dof is not None:
+                options["arc_length_control_dof"] = int(arc_length_control_dof)
+            # 0 is this field's "None / run until MAXIMUM STEPS" sentinel, same
+            # convention as MIN/MAX INCREMENT above.
+            if self.arc_length_max_displacement.value() > 0:
+                options["arc_length_max_displacement"] = self.arc_length_max_displacement.value()
         return options
 
     def _analysis_type_changed(self) -> None:
@@ -2062,8 +2268,15 @@ class AnalysisSettingsPanel(QFrame):
         self.adaptive_step.setEnabled(enabled)
         self.min_increment_group.setEnabled(enabled)
         self.max_increment_group.setEnabled(enabled)
+        # Arc-Length's radius reduction is itself part of Automatic Recovery (see
+        # _advance_one_arc_length_step) - Adaptive Radius and its MIN/MAX RADIUS
+        # bounds are just as moot without it as Adaptive Step/MIN/MAX INCREMENT are.
+        self.arc_length_adaptive.setEnabled(enabled)
+        self.arc_length_min_radius_group.setEnabled(enabled)
+        self.arc_length_max_radius_group.setEnabled(enabled)
         if not enabled:
             self.adaptive_step.setChecked(False)
+            self.arc_length_adaptive.setChecked(False)
 
     def _update_precheck(self) -> None:
         """Item 7's synchronous RUN-blocking check, computed entirely from the
@@ -2083,12 +2296,16 @@ class AnalysisSettingsPanel(QFrame):
         )
         labels["Control Method"].setText(self.integrator_type.currentText())
         num_steps = max(1, self.num_steps.value())
-        if self.integrator_type.currentData() == "DisplacementControl":
+        is_arc_length = self.integrator_type.currentData() == "ArcLength"
+        if is_arc_length:
+            labels["Initial Step"].setText(f"{self.arc_length_radius.value():.6g} (radius)")
+        elif self.integrator_type.currentData() == "DisplacementControl":
             initial_step = self.target_displacement.value() / num_steps
             labels["Initial Step"].setText(f"{initial_step:.6g} {self._unit_system.length}")
         else:
             initial_step = self.target_load_factor.value() / num_steps
             labels["Initial Step"].setText(f"{initial_step:.6g}")
+        self.arc_length_precheck_note.setVisible(is_arc_length)
         labels["Algorithm"].setText(self.algorithm.currentText())
         labels["Convergence"].setText(
             f"{self.test_type.currentText()} / {self.tolerance.value():.1E} / "
@@ -2121,6 +2338,12 @@ class AnalysisSettingsPanel(QFrame):
         if self.min_increment.value() > 0 and self.max_increment.value() > 0:
             if self.min_increment.value() > self.max_increment.value():
                 issues.append("MIN INCREMENT가 MAX INCREMENT보다 큽니다.")
+        if is_arc_length and not (
+            self.arc_length_min_radius.value()
+            <= self.arc_length_radius.value()
+            <= self.arc_length_max_radius.value()
+        ):
+            issues.append("MINIMUM RADIUS ≤ ARC-LENGTH RADIUS ≤ MAXIMUM RADIUS 순서여야 합니다.")
 
         if issues:
             self.precheck_status.setText("⚠  " + "  ·  ".join(issues))

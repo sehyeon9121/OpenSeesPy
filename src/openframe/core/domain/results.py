@@ -37,6 +37,31 @@ class LoadDisplacementPoint:
     substeps: int = 1
     iterations: int = 0
     recovered_with: tuple[str, ...] = ()
+    #: Cumulative pseudo-time (``ops.getTime()``) at this step - equal to the
+    #: applied load factor for every integrator (LoadControl, DisplacementControl,
+    #: ArcLength) *only when* the active pattern's TimeSeries is Linear with
+    #: factor 1.0. That is guaranteed for every pattern this solver replays
+    #: itself (gravity-then-push), but not for an imported script's own pattern
+    #: if that script deliberately used a different TimeSeries type - see
+    #: ``_current_load_factor()`` in nonlinear_static_solver.py. For ArcLength
+    #: this is still the only y-axis that keeps making sense past a limit point
+    #: (base_shear is still real, but the factor is what can decrease there).
+    load_factor: float = 0.0
+    #: Arc-length radius (``s`` in ``ops.integrator("ArcLength", s, alpha)``)
+    #: actually used to converge this step - None for LoadControl/
+    #: DisplacementControl, where no such radius exists.
+    arc_length_radius: float | None = None
+    #: Algorithm that actually converged this step - the configured ALGORITHM
+    #: unless one or more fallback algorithms were needed, in which case every
+    #: fallback algorithm that succeeded at some point during the step, comma-
+    #: joined.
+    algorithm_used: str = ""
+    #: Whether this step needed any recovery at all (fallback algorithm, step
+    #: bisection, or - for ArcLength - a radius reduction) to converge.
+    recovered: bool = False
+    #: Extra ``ops.analyze(1)`` attempts beyond the first that this step needed
+    #: (``attempts - 1``) - 0 when the first attempt converged outright.
+    retry_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
