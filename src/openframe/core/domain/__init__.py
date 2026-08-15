@@ -60,6 +60,8 @@ from openframe.core.domain.results import (
     ModeShape,
     NodeResult,
     NonlinearConvergence,
+    TimeHistoryDirectionSummary,
+    TimeHistorySettings,
     TimeHistoryStep,
 )
 from openframe.core.domain.section_properties import (
@@ -70,12 +72,14 @@ from openframe.core.domain.section_properties import (
     dimension_fields,
 )
 from openframe.core.domain.units import (
+    ACCELERATION_UNITS,
     DEFAULT_UNIT_SYSTEM,
     FORCE_UNITS,
     LENGTH_UNITS,
     STANDARD_GRAVITY_M_S2,
     TIME_UNITS,
     UnitSystem,
+    acceleration_to_model_unit_factor,
     density_kg_m3_to_unit_weight_kN_m3,
     kN_m3_to_volumetric_force_unit,
     length_unit_to_mm,
@@ -86,6 +90,7 @@ from openframe.core.domain.units import (
 )
 
 __all__ = [
+    "ACCELERATION_UNITS",
     "ANALYSIS_CAPABILITIES",
     "DEFAULT_UNIT_SYSTEM",
     "FORCE_UNITS",
@@ -143,10 +148,13 @@ __all__ = [
     "Source",
     "StructuralModel",
     "SupportKind",
+    "TimeHistoryDirectionSummary",
+    "TimeHistorySettings",
     "TimeHistoryStep",
     "UniformElementLoad",
     "UnitSystem",
     "UnsupportedConditionTypeError",
+    "acceleration_to_model_unit_factor",
     "compute_section_properties",
     "density_kg_m3_to_unit_weight_kN_m3",
     "dimension_fields",

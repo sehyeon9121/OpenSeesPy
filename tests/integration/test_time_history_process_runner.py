@@ -61,16 +61,18 @@ def test_runs_time_history_in_subprocess_and_populates_domain_time_history(
         source_path=source,
         kind=AnalysisKind.TIME_HISTORY,
         options={
-            "ground_motion_path": str(motion),
-            "direction": 1,
-            "damping_ratio": 0.0,
+            "directions": [{"dof": 1, "path": str(motion), "unit": "model", "scaling_method": "factor"}],
+            "damping": {"mode": "none"},
         },
     )
 
     result = runner.run(request)
 
     assert result.status == AnalysisStatus.COMPLETED
-    assert len(result.time_history) == _NUM_POINTS
+    # One fewer step than NUM_POINTS: End Time defaults to the record's own
+    # Duration (dt * (npts - 1) - see GroundMotion.duration), not a bare
+    # len(accelerations) step count.
+    assert len(result.time_history) == _NUM_POINTS - 1
     first_step = result.time_history[0]
     assert first_step.time == pytest.approx(_DT, rel=1e-6)
     assert 2 in first_step.node_results
@@ -95,7 +97,16 @@ def test_reports_a_missing_ground_motion_file_as_a_failure(tmp_path: Path) -> No
     request = AnalysisRequest(
         source_path=source,
         kind=AnalysisKind.TIME_HISTORY,
-        options={"ground_motion_path": str(tmp_path / "does_not_exist.txt"), "direction": 1},
+        options={
+            "directions": [
+                {
+                    "dof": 1,
+                    "path": str(tmp_path / "does_not_exist.txt"),
+                    "unit": "model",
+                    "scaling_method": "factor",
+                }
+            ],
+        },
     )
 
     result = runner.run(request)

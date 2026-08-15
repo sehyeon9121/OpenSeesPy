@@ -79,9 +79,14 @@ def run_analysis(
         return run_buckling_analysis(source, **options)
     if kind == "time_history":
         time_history_options = dict(options)
-        time_history_options["ground_motion_path"] = Path(
-            time_history_options["ground_motion_path"]
-        )
+        # Each direction's "path" arrives as a JSON string (round-tripped
+        # through AnalysisRequest.options -> subprocess --options) - the
+        # solver itself works with Path objects, same as every other kind's
+        # source path.
+        time_history_options["directions"] = [
+            {**direction, "path": Path(direction["path"])}
+            for direction in time_history_options.get("directions", [])
+        ]
         return run_time_history_analysis(
             source,
             **time_history_options,

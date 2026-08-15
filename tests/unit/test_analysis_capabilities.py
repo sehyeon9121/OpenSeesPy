@@ -25,12 +25,11 @@ _COMPONENT_FIELD_NAMES = tuple(field.name for field in dataclasses.fields(Analys
 _INFRASTRUCTURE_DIR = Path(__file__).parents[2] / "src" / "openframe" / "infrastructure" / "opensees"
 
 #: Only kinds whose solver hardcodes literal ops.* values as plain string
-#: arguments - Nonlinear Static's fields are all EDITABLE (no fixed value to
-#: check), so it has no entry here.
+#: arguments - Nonlinear Static's and Time History's fields are mostly
+#: EDITABLE (no fixed value to check), so neither has an entry here.
 _SOLVER_SOURCE_BY_KIND = {
     AnalysisKind.LINEAR_STATIC: _INFRASTRUCTURE_DIR / "linear_static_solver.py",
     AnalysisKind.MODAL: _INFRASTRUCTURE_DIR / "modal_solver.py",
-    AnalysisKind.TIME_HISTORY: _INFRASTRUCTURE_DIR / "time_history_solver.py",
 }
 
 
@@ -85,6 +84,32 @@ def test_nonlinear_static_editable_components_match_what_the_solver_actually_acc
         assert getattr(capabilities, name).state is FieldState.EDITABLE, name
     for name in not_applicable:
         assert getattr(capabilities, name).state is FieldState.NOT_APPLICABLE, name
+
+
+def test_time_history_editable_components_match_what_the_solver_actually_accepts() -> None:
+    """run_time_history_analysis(..., solution=..., integrator=..., damping=...)
+    really does take and use algorithm/test/tolerance/max_iterations/
+    constraints/numberer/system and the integrator type as real settings (see
+    time_history_solver.py's _resolve_solution/_resolve_integrator) - pins
+    that set the same way test_nonlinear_static_... does for Nonlinear Static."""
+    capabilities = ANALYSIS_CAPABILITIES[AnalysisKind.TIME_HISTORY]
+    editable = {
+        "equation_solver",
+        "algorithm",
+        "dynamic_integrator",
+        "convergence_test",
+        "constraint_handler",
+        "numberer",
+        "damping",
+    }
+    not_applicable = {"static_integrator"}
+    automatic = {"eigen_solver"}
+    for name in editable:
+        assert getattr(capabilities, name).state is FieldState.EDITABLE, name
+    for name in not_applicable:
+        assert getattr(capabilities, name).state is FieldState.NOT_APPLICABLE, name
+    for name in automatic:
+        assert getattr(capabilities, name).state is FieldState.AUTOMATIC, name
 
 
 def test_engine_fixed_and_automatic_values_still_appear_in_their_solver_source() -> None:

@@ -175,6 +175,61 @@ class TimeHistoryStep:
 
     time: float
     node_results: dict[int, NodeResult] = field(default_factory=dict)
+    #: The dt actually used for this step - equal to the user's configured
+    #: Analysis Time Step unless Adaptive Recovery reduced it to converge.
+    actual_dt: float = 0.0
+    #: The algorithm that actually converged this step - the configured
+    #: Algorithm unless one or more fallback algorithms were needed, in which
+    #: case every fallback algorithm that succeeded, comma-joined (mirrors
+    #: LoadDisplacementPoint.algorithm_used).
+    algorithm_used: str = ""
+    #: Whether this step needed any recovery at all (algorithm fallback or a
+    #: dt reduction) to converge.
+    recovered: bool = False
+    #: Extra ``ops.analyze(1, dt)`` attempts beyond the first this step
+    #: needed (mirrors LoadDisplacementPoint.retry_count).
+    retry_count: int = 0
+    #: How many times Adaptive Recovery halved the step dt (via
+    #: reduction_factor) before this step converged - 0 if it converged at
+    #: the caller's current working dt on the first try.
+    dt_reduction_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class TimeHistoryDirectionSummary:
+    """One active ground-motion direction, as actually applied to the run -
+    what SETUP's direction table configured, echoed back as a result fact
+    rather than re-derived from options the UI may have since changed."""
+
+    dof: int
+    record_name: str
+    effective_scale: float
+
+
+@dataclass(frozen=True, slots=True)
+class TimeHistorySettings:
+    """Whole-run configuration summary for a transient analysis - one entry
+    per active ground-motion direction plus the integrator/damping/time-step
+    settings that applied to every step, so a saved/exported result can be
+    read back without re-opening SETUP. ``rayleigh_*`` are the coefficients
+    actually passed to ``ops.rayleigh(...)`` (all zero for damping_mode
+    "none"), not merely the Modal Targets inputs that produced them.
+    """
+
+    directions: tuple[TimeHistoryDirectionSummary, ...] = ()
+    integrator_type: str = ""
+    #: e.g. (("gamma", 0.5), ("beta", 0.25)) or (("alpha", 0.9), ("gamma", 0.6), ("beta", 0.3025)).
+    integrator_params: tuple[tuple[str, float], ...] = ()
+    damping_mode: str = ""
+    rayleigh_alpha_m: float = 0.0
+    rayleigh_beta_k: float = 0.0
+    rayleigh_beta_k_init: float = 0.0
+    rayleigh_beta_k_comm: float = 0.0
+    initial_dt: float = 0.0
+    minimum_dt: float = 0.0
+    maximum_dt: float = 0.0
+    end_time: float = 0.0
+    status: str = "completed"
 
 
 @dataclass(slots=True)
@@ -196,3 +251,6 @@ class AnalysisResult:
     #: computed buckling mode - never populated alongside mode_shapes for the
     #: same result (see AnalysisKind.BUCKLING vs AnalysisKind.MODAL).
     buckling_modes: tuple[BucklingMode, ...] = ()
+    #: None except for time-history analysis - the whole-run ground-motion/
+    #: integrator/damping/time-step configuration that produced ``time_history``.
+    time_history_settings: TimeHistorySettings | None = None

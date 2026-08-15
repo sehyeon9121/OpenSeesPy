@@ -14,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QApplication, QFileDialog, QScrollArea
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QScrollArea
 
 from openframe.core.domain import AnalysisKind, Node, StructuralModel
 from openframe.features.analysis.presentation.analysis_config_store import (
@@ -766,44 +766,11 @@ def test_selecting_time_history_shows_its_own_settings_and_hides_the_others() ->
     application.processEvents()
 
 
-def test_time_history_build_options_matches_the_solvers_own_keyword_arguments() -> None:
-    """run_time_history_analysis's kwargs are ground_motion_path/direction/
-    damping_ratio/scale_factor - a different shape from both nonlinear's and
-    modal's, so this needs its own early return too."""
-    application = QApplication.instance() or QApplication([])
+def _time_history_panel() -> AnalysisSettingsPanel:
     panel = AnalysisSettingsPanel()
+    panel.show()
     panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
-    panel._ground_motion_path = Path("C:/motions/el_centro.AT2")
-    panel.time_history_direction.addItem("UY", 2)
-    panel.time_history_direction.setCurrentIndex(
-        panel.time_history_direction.findData(2)
-    )
-    panel.damping_ratio.setValue(0.02)
-    panel.ground_motion_scale.setValue(9.81)
-
-    options = panel.build_options()
-
-    assert options == {
-        "ground_motion_path": "C:\\motions\\el_centro.AT2",
-        "direction": 2,
-        "damping_ratio": 0.02,
-        "scale_factor": 9.81,
-    }
-    application.processEvents()
-
-
-def test_time_history_build_options_defaults_to_direction_1_with_no_model_loaded() -> None:
-    """set_model() is what normally populates time_history_direction - a panel
-    used before any model is loaded must not crash build_options()."""
-    application = QApplication.instance() or QApplication([])
-    panel = AnalysisSettingsPanel()
-    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
-
-    options = panel.build_options()
-
-    assert options["ground_motion_path"] == ""
-    assert options["direction"] == 1
-    application.processEvents()
+    return panel
 
 
 def _stub_file_dialog(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
@@ -812,14 +779,79 @@ def _stub_file_dialog(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     )
 
 
-class TestGroundMotionBrowse:
-    """Phase 3-F: picking a file now loads it through GroundMotion immediately
-    (not just at RUN time inside the worker subprocess), so a bad file is
-    caught, and the metadata it lets us verify (dt/NPTS/duration/PGA/unit) is
-    shown right away instead of only living inside build_options()'s opaque
-    path string."""
+def _stub_builtin_picker(monkeypatch: pytest.MonkeyPatch, record) -> None:
+    """Stand in for GroundMotionPickerDialog's modal exec()/selected_record()
+    - patched on the class itself, so it applies regardless of which module
+    (time_history_direction_row.py) actually instantiates it."""
+    from openframe.features.analysis.presentation.ground_motion_picker_dialog import (
+        GroundMotionPickerDialog,
+    )
 
-    def test_picking_a_valid_file_shows_its_metadata_and_syncs_the_store(
+    monkeypatch.setattr(GroundMotionPickerDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+    monkeypatch.setattr(GroundMotionPickerDialog, "selected_record", lambda self: record)
+
+
+class TestDirectionTable:
+    """Item 3/4's multi-direction Ground Motion table: one row per
+    translational DOF (X/Y for 2D, X/Y/Z for 3D - rotational excitation is
+    out of scope), so two rows can never activate the same direction by
+    construction."""
+
+    def test_two_dimensional_model_gets_exactly_x_and_y_rows(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        model = StructuralModel(ndm=2, ndf=3)
+
+        panel.set_model(model)
+
+        assert [row.dof for row in panel.time_history_direction_rows] == [1, 2]
+        application.processEvents()
+
+    def test_three_dimensional_model_gets_x_y_and_z_rows(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        model = StructuralModel(ndm=3, ndf=6)
+
+        panel.set_model(model)
+
+        assert [row.dof for row in panel.time_history_direction_rows] == [1, 2, 3]
+        application.processEvents()
+
+    def test_no_two_rows_can_ever_share_a_direction(self) -> None:
+        """Each row's DOF is fixed at construction (see
+        time_history_direction_row.py) - a structural guarantee, not a
+        runtime check, that duplicate activation is impossible."""
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        panel.set_model(StructuralModel(ndm=3, ndf=6))
+
+        dofs = [row.dof for row in panel.time_history_direction_rows]
+        assert len(dofs) == len(set(dofs))
+        application.processEvents()
+
+    def test_build_options_directions_is_empty_with_no_model_loaded(self) -> None:
+        """A panel used before any model is loaded must not crash
+        build_options() - directions simply come back empty."""
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+
+        options = panel.build_options()
+
+        assert options["directions"] == []
+        assert options["analysis_time"]["duration_mode"] == "full"
+        assert "damping" in options
+        assert "integrator" in options
+        assert "solution" in options
+        assert "recovery" in options
+        application.processEvents()
+
+
+class TestGroundMotionRowFileImport:
+    """Picking a file loads it through GroundMotion immediately (not just at
+    RUN time inside the worker subprocess), so a bad file is caught and the
+    metadata (dt/NPTS/Duration/Original PGA) is shown right away."""
+
+    def test_picking_a_valid_file_shows_its_metadata_and_is_included_once_enabled(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         application = QApplication.instance() or QApplication([])
@@ -833,21 +865,24 @@ class TestGroundMotionBrowse:
             encoding="utf-8",
         )
         _stub_file_dialog(monkeypatch, motion_path)
-        panel = AnalysisSettingsPanel()
-        panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+        panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
 
-        panel._choose_ground_motion_file()
+        row._choose_record_or_file()
 
-        assert panel._ground_motion is not None
-        assert panel._ground_motion.pga == pytest.approx(0.5)
-        # Phase 3-G moved the metadata out of the file-path label and into the
-        # shared info grid (Built-in and Imported both feed the same grid).
-        assert panel.ground_motion_path_label.text() == "motion.AT2"
-        assert panel.gm_dt_value.text() == "0.02 s"
-        assert panel.gm_npts_value.text() == "4"
-        assert "0.5" in panel.gm_pga_value.text()
-        assert "G" in panel.gm_pga_value.text()
-        assert panel.build_options()["ground_motion_path"] == str(motion_path)
+        assert row.active_motion() is not None
+        assert row.active_motion().pga == pytest.approx(0.5)
+        assert row.record_label.text() == "motion.AT2"
+        assert row.readout_values["Record dt"].text() == "0.02 s"
+        assert row.readout_values["NPTS"].text() == "4"
+
+        # Not active until the row is actually enabled.
+        assert panel.build_options()["directions"] == []
+        row.enabled_checkbox.setChecked(True)
+        directions = panel.build_options()["directions"]
+        assert len(directions) == 1
+        assert directions[0]["path"] == str(motion_path)
+        assert directions[0]["dof"] == row.dof
         application.processEvents()
 
     def test_picking_a_malformed_file_reports_an_error_and_clears_selection(
@@ -857,181 +892,271 @@ class TestGroundMotionBrowse:
         bad_path = tmp_path / "not_a_motion.txt"
         bad_path.write_text("this file has no numbers in it at all\n", encoding="utf-8")
         _stub_file_dialog(monkeypatch, bad_path)
-        panel = AnalysisSettingsPanel()
-        panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+        panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
+        row.enabled_checkbox.setChecked(True)
 
-        panel._choose_ground_motion_file()
+        row._choose_record_or_file()
 
-        assert panel._ground_motion is None
-        assert panel._ground_motion_path is None
-        assert panel.build_options()["ground_motion_path"] == ""
+        assert row.active_motion() is None
+        assert panel.build_options()["directions"] == []
         application.processEvents()
 
     def test_a_malformed_file_does_not_clobber_a_previously_valid_selection_state(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Selecting a bad file after a good one must not leave the store
-        pointing at the (now-replaced) good path while the label claims
-        failure - the two must agree, so the good selection is cleared too."""
         application = QApplication.instance() or QApplication([])
         good_path = tmp_path / "good.txt"
         good_path.write_text("NPTS=2, DT=0.01 SEC\n1.0 -2.0\n", encoding="utf-8")
         bad_path = tmp_path / "bad.txt"
         bad_path.write_text("no numbers here\n", encoding="utf-8")
-        panel = AnalysisSettingsPanel()
-        panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+        panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
+        row.enabled_checkbox.setChecked(True)
 
         _stub_file_dialog(monkeypatch, good_path)
-        panel._choose_ground_motion_file()
-        assert panel.build_options()["ground_motion_path"] == str(good_path)
+        row._choose_record_or_file()
+        assert len(panel.build_options()["directions"]) == 1
 
         _stub_file_dialog(monkeypatch, bad_path)
-        panel._choose_ground_motion_file()
+        row._choose_record_or_file()
 
-        assert panel.build_options()["ground_motion_path"] == ""
+        assert panel.build_options()["directions"] == []
         application.processEvents()
-
-
-def _time_history_panel() -> AnalysisSettingsPanel:
-    panel = AnalysisSettingsPanel()
-    panel.show()
-    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.TIME_HISTORY))
-    return panel
 
 
 class TestBuiltInGroundMotionLibrary:
-    """Phase 3-G: Built-in Library / Imported File as two selectable sources
-    for the same GROUND MOTION card, sharing one info grid, one preview, and
-    one scaling section - build_options() must never care which source was
-    used, only what wound up in _ground_motion/_ground_motion_path."""
+    """Built-in Library / Imported File as two selectable sources per row,
+    sharing one readout grid - build_options() never cares which source was
+    used, only what each row's active_motion()/active_path() resolve to."""
 
-    def test_built_in_library_lists_the_bundled_records_including_kobe(self) -> None:
+    def test_built_in_library_has_the_bundled_records_including_kobe(self) -> None:
         application = QApplication.instance() or QApplication([])
         panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
 
-        labels = [
-            panel.builtin_record_combo.itemText(index)
-            for index in range(panel.builtin_record_combo.count())
-        ]
-        assert panel.builtin_record_combo.count() == 65
-        assert any("Kobe" in label for label in labels)
+        records = row._catalog.list_records()
+
+        assert len(records) == 65
+        assert any("Kobe" in f"{record.event} {record.station}" for record in records)
         application.processEvents()
 
-    def test_selecting_built_in_populates_the_info_grid_and_preview(self) -> None:
+    def test_selecting_built_in_populates_the_readouts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         application = QApplication.instance() or QApplication([])
         panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
+        record = row._catalog.list_records()[0]
+        _stub_builtin_picker(monkeypatch, record)
+        row.builtin_radio.setChecked(True)
 
-        panel.source_builtin_radio.setChecked(True)
+        row._choose_record_or_file()
 
-        assert panel._ground_motion is not None
-        assert panel.builtin_record_row.isVisible()
-        assert not panel.imported_file_row.isVisible()
-        assert panel.gm_npts_value.text() == str(panel._ground_motion.npts)
-        assert panel.build_options()["ground_motion_path"] == str(panel._ground_motion.path)
+        motion = row.active_motion()
+        assert motion is not None
+        assert row.readout_values["NPTS"].text() == str(motion.npts)
+        row.enabled_checkbox.setChecked(True)
+        assert panel.build_options()["directions"][0]["path"] == str(record.path)
         application.processEvents()
 
-    def test_preview_series_matches_the_selected_motions_accelerations(self) -> None:
+    def test_scale_factor_change_updates_the_effective_scale_readout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         application = QApplication.instance() or QApplication([])
         panel = _time_history_panel()
-        panel.source_builtin_radio.setChecked(True)
-        motion = panel._ground_motion
+        row = panel.time_history_direction_rows[0]
+        record = row._catalog.list_records()[0]
+        _stub_builtin_picker(monkeypatch, record)
+        row.builtin_radio.setChecked(True)
+        row._choose_record_or_file()
+
+        row.scale_factor_spin.setValue(2.0)
+
+        assert row.readout_values["Effective Scale"].text() == "2"
+        application.processEvents()
+
+    def test_target_pga_mode_derives_the_correct_effective_scale(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
+        record = row._catalog.list_records()[0]
+        _stub_builtin_picker(monkeypatch, record)
+        row.builtin_radio.setChecked(True)
+        row.unit_combo.setCurrentIndex(row.unit_combo.findData("model"))
+        row._choose_record_or_file()
+        motion = row.active_motion()
         assert motion is not None
 
-        preview_values = panel.ground_motion_preview._values
-        preview_times = panel.ground_motion_preview._times
+        row.target_pga_radio.setChecked(True)
+        row.target_pga_spin.setValue(motion.pga * 1.5)
 
-        assert len(preview_values) == motion.npts
-        assert preview_values == pytest.approx(motion.accelerations)
-        assert preview_times[1] == pytest.approx(motion.dt)
+        scaling = row.scaling_summary()
+        assert scaling is not None
+        assert scaling.effective_scale == pytest.approx(1.5, rel=1e-6)
+        row.enabled_checkbox.setChecked(True)
+        directions = panel.build_options()["directions"]
+        assert directions[0]["scaling_method"] == "target_pga"
         application.processEvents()
 
-    def test_scale_factor_change_updates_applied_pga_and_preview(self) -> None:
-        application = QApplication.instance() or QApplication([])
-        panel = _time_history_panel()
-        panel.source_builtin_radio.setChecked(True)
-        motion = panel._ground_motion
-        assert motion is not None
-
-        panel.ground_motion_scale.setValue(2.0)
-
-        assert panel.applied_pga_value.text() == f"{motion.pga * 2.0:.4g} {motion.unit}"
-        assert panel.ground_motion_preview._values == pytest.approx(
-            tuple(value * 2.0 for value in motion.accelerations)
-        )
-        application.processEvents()
-
-    def test_target_pga_computes_the_correct_scale_factor(self) -> None:
-        application = QApplication.instance() or QApplication([])
-        panel = _time_history_panel()
-        panel.source_builtin_radio.setChecked(True)
-        motion = panel._ground_motion
-        assert motion is not None
-        target = motion.pga * 1.5
-
-        panel.target_pga_radio.setChecked(True)
-        panel.target_pga_input.setValue(target)
-
-        assert panel.ground_motion_scale.value() == pytest.approx(1.5, rel=1e-6)
-        assert panel.build_options()["scale_factor"] == pytest.approx(1.5, rel=1e-6)
-        application.processEvents()
-
-    def test_switching_source_leaves_no_stale_values(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_switching_source_leaves_no_stale_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         application = QApplication.instance() or QApplication([])
         imported_path = tmp_path / "imported.txt"
         imported_path.write_text("NPTS=3, DT=0.02 SEC\n0.1 0.2 -0.3\n", encoding="utf-8")
         panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
+        record = row._catalog.list_records()[0]
+        _stub_builtin_picker(monkeypatch, record)
 
-        panel.source_builtin_radio.setChecked(True)
-        builtin_motion = panel._ground_motion
+        row.builtin_radio.setChecked(True)
+        row._choose_record_or_file()
+        builtin_motion = row.active_motion()
         assert builtin_motion is not None
 
         _stub_file_dialog(monkeypatch, imported_path)
-        panel.source_imported_radio.setChecked(True)
-        panel._choose_ground_motion_file()
-        assert panel._ground_motion is not None
-        assert panel._ground_motion.path == imported_path
-        assert panel.build_options()["ground_motion_path"] == str(imported_path)
+        row.imported_radio.setChecked(True)
+        row._choose_record_or_file()
+        assert row.active_motion() is not None
+        assert row.active_path() == imported_path
 
-        panel.source_builtin_radio.setChecked(True)
-        assert panel._ground_motion is builtin_motion
-        assert panel.build_options()["ground_motion_path"] == str(builtin_motion.path)
+        row.builtin_radio.setChecked(True)
+        assert row.active_motion() is builtin_motion
 
-        panel.source_imported_radio.setChecked(True)
-        assert panel._ground_motion is not None
-        assert panel._ground_motion.path == imported_path
+        row.imported_radio.setChecked(True)
+        assert row.active_path() == imported_path
         application.processEvents()
 
-    def test_zero_pga_disables_target_pga_with_a_clear_note(self, tmp_path: Path) -> None:
+    def test_zero_pga_record_shows_a_dash_instead_of_crashing_target_pga(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         application = QApplication.instance() or QApplication([])
         zero_path = tmp_path / "zero.txt"
         zero_path.write_text("NPTS=3, DT=0.01 SEC\n0 0 0\n", encoding="utf-8")
+        _stub_file_dialog(monkeypatch, zero_path)
         panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
+        row.imported_radio.setChecked(True)
+        row._choose_record_or_file()
 
-        panel._imported_ground_motion_path = zero_path
-        from openframe.infrastructure.opensees.ground_motion import load_ground_motion
+        row.target_pga_radio.setChecked(True)
+        row.target_pga_spin.setValue(1.0)
 
-        panel._imported_ground_motion = load_ground_motion(zero_path)
-        panel._apply_active_ground_motion()
-
-        assert not panel.target_pga_radio.isEnabled()
-        assert panel.target_pga_unit_note.isVisible()
+        assert row.readout_values["Effective Scale"].text() == "—"
         application.processEvents()
 
-    def test_unknown_unit_disables_target_pga_with_a_clear_note(self, tmp_path: Path) -> None:
+
+class TestTimeHistoryStatusBadgesAndPrecheck:
+    """DEFAULT/CUSTOM/AUTO status + Reset to Default (item 2's Analysis Time,
+    item 7's PRE-CHECK) - mirrors Nonlinear Static's own
+    _SOLUTION_STRATEGY_DEFAULTS/_update_precheck pattern."""
+
+    def test_solution_strategy_starts_default_and_flags_custom_on_change(self) -> None:
         application = QApplication.instance() or QApplication([])
-        no_unit_path = tmp_path / "no_unit.csv"
-        no_unit_path.write_text("0.00,0.10\n0.02,0.20\n0.04,-0.15\n", encoding="utf-8")
         panel = _time_history_panel()
 
-        panel._imported_ground_motion_path = no_unit_path
-        from openframe.infrastructure.opensees.ground_motion import load_ground_motion
+        assert panel.th_solution_strategy_status.text() == "DEFAULT"
 
-        panel._imported_ground_motion = load_ground_motion(no_unit_path)
-        panel._apply_active_ground_motion()
+        panel.th_algorithm.setCurrentText("ModifiedNewton")
 
-        assert panel._ground_motion is not None
-        assert panel._ground_motion.unit is None
-        assert not panel.target_pga_radio.isEnabled()
-        assert panel.target_pga_unit_note.isVisible()
-        assert panel.gm_unit_value.text() == "Not detected"
+        assert panel.th_solution_strategy_status.text() == "CUSTOM"
+        application.processEvents()
+
+    def test_reset_to_default_restores_the_solution_strategy(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        panel.th_algorithm.setCurrentText("KrylovNewton")
+        panel.th_tolerance.setValue(1.0e-4)
+        assert panel.th_solution_strategy_status.text() == "CUSTOM"
+
+        panel.th_reset_solution_strategy_button.click()
+
+        assert panel.th_algorithm.currentText() == "Newton"
+        assert panel.th_tolerance.value() == pytest.approx(1.0e-8)
+        assert panel.th_solution_strategy_status.text() == "DEFAULT"
+        application.processEvents()
+
+    def test_analysis_time_starts_auto_and_flags_custom_on_a_manual_dt(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+
+        assert panel.analysis_time_status.text() == "AUTO"
+
+        panel.analysis_time_step.setValue(0.005)
+
+        assert panel.analysis_time_status.text() == "CUSTOM"
+
+        panel.reset_analysis_time_button.click()
+
+        assert panel.analysis_time_status.text() == "AUTO"
+        assert panel.analysis_time_step.value() == 0.0
+        application.processEvents()
+
+    def test_precheck_blocks_with_no_active_direction_and_clears_once_one_is_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+
+        assert panel.th_precheck_status.property("state") == "warning"
+
+        row = panel.time_history_direction_rows[0]
+        record = row._catalog.list_records()[0]
+        _stub_builtin_picker(monkeypatch, record)
+        row.builtin_radio.setChecked(True)
+        row._choose_record_or_file()
+        row.enabled_checkbox.setChecked(True)
+
+        assert panel.th_precheck_status.property("state") == "ok"
+        assert "Ready for Analysis" in panel.th_precheck_status.text()
+        application.processEvents()
+
+    def test_precheck_warns_when_damping_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
+        record = row._catalog.list_records()[0]
+        _stub_builtin_picker(monkeypatch, record)
+        row.builtin_radio.setChecked(True)
+        row._choose_record_or_file()
+        row.enabled_checkbox.setChecked(True)
+
+        panel.damping_none_radio.setChecked(True)
+
+        assert panel.th_precheck_status.property("state") == "warning"
+        assert "감쇠" in panel.th_precheck_status.text()
+        application.processEvents()
+
+    def test_hht_selected_shows_its_own_fields_and_hides_newmarks(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+
+        assert panel.newmark_group.isVisible()
+        assert not panel.hht_group.isVisible()
+
+        panel.integrator_hht_radio.setChecked(True)
+
+        assert not panel.newmark_group.isVisible()
+        assert panel.hht_group.isVisible()
+        assert not panel.hht_custom_group.isVisible()
+
+        panel.hht_custom_radio.setChecked(True)
+        assert panel.hht_custom_group.isVisible()
+        application.processEvents()
+
+    def test_modal_targets_damping_is_the_default_and_direct_hides_it(self) -> None:
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+
+        assert panel.damping_modal_radio.isChecked()
+        assert panel.damping_modal_group.isVisible()
+        assert not panel.damping_direct_group.isVisible()
+
+        panel.damping_direct_radio.setChecked(True)
+
+        assert not panel.damping_modal_group.isVisible()
+        assert panel.damping_direct_group.isVisible()
         application.processEvents()

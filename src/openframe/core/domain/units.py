@@ -96,3 +96,29 @@ def kN_m3_to_volumetric_force_unit(value_kN_m3: float, force_unit: str, length_u
     force/length^3 combination."""
     newtons_per_mm3 = value_kN_m3 * 1000.0 / _LENGTH_TO_MM["m"] ** 3
     return newtons_per_mm3 * _LENGTH_TO_MM[length_unit] ** 3 / _FORCE_TO_N[force_unit]
+
+
+#: Ground-motion acceleration units Time History's SETUP lets a user pick per
+#: direction - "model" means the record's own values are already expressed in
+#: this model's own length/s^2 unit (no conversion applied at all).
+ACCELERATION_UNITS = ("g", "m/s2", "cm/s2", "model")
+#: 1 g / 1 m/s^2 / 1 cm/s^2 expressed in meters/s^2 - the only step where a
+#: literal constant is introduced; every other acceleration unit conversion
+#: goes through this dict plus the length-unit tables above, so a value never
+#: gets its own separately-hardcoded g/cm conversion elsewhere in the program.
+_ACCELERATION_TO_M_S2: dict[str, float] = {
+    "g": STANDARD_GRAVITY_M_S2,
+    "m/s2": 1.0,
+    "cm/s2": 0.01,
+}
+
+
+def acceleration_to_model_unit_factor(unit: str, length_unit: str) -> float:
+    """Multiplier converting a raw acceleration value expressed in ``unit``
+    (one of :data:`ACCELERATION_UNITS`) into this model's own acceleration
+    unit (``length_unit`` per second squared). ``"model"`` is the identity
+    conversion - the record's values are already in the model's own unit."""
+    if unit == "model":
+        return 1.0
+    value_m_s2 = _ACCELERATION_TO_M_S2[unit]
+    return mm_to_length_unit(value_m_s2 * 1000.0, length_unit)

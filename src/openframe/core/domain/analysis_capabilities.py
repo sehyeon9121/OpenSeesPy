@@ -149,38 +149,43 @@ ANALYSIS_CAPABILITIES: dict[AnalysisKind, AnalysisCapabilities] = {
         damping=ComponentField(FieldState.NOT_APPLICABLE),
     ),
     AnalysisKind.TIME_HISTORY: AnalysisCapabilities(
-        # infrastructure/opensees/time_history_solver.py: run_time_history_analysis
-        # takes ground_motion_path/direction/damping_ratio/scale_factor/dt_override -
-        # none of them a solver/algorithm/integrator/test setting. Every ops.system/
-        # numberer/constraints/test/algorithm/integrator call is a bare literal.
-        equation_solver=ComponentField(FieldState.ENGINE_FIXED, "BandGeneral"),
-        algorithm=ComponentField(FieldState.ENGINE_FIXED, "Newton"),
+        # infrastructure/opensees/time_history_solver.py: run_time_history_analysis(...,
+        # solution=..., integrator=..., damping=..., recovery=...) - Solution Strategy,
+        # Time Integration (Newmark/HHT) and Damping (None/Modal Targets/Direct
+        # Coefficients) are all real, solver-consumed keyword arguments now (see
+        # AnalysisSettingsPanel.build_options()'s TIME_HISTORY branch), the same way
+        # Nonlinear Static's six EDITABLE fields already are.
+        equation_solver=ComponentField(FieldState.EDITABLE),
+        algorithm=ComponentField(FieldState.EDITABLE),
         static_integrator=ComponentField(FieldState.NOT_APPLICABLE),
         dynamic_integrator=ComponentField(
-            FieldState.ENGINE_FIXED,
-            "Newmark",
-            (("gamma", "0.5"), ("beta", "0.25")),
+            FieldState.EDITABLE,
+            details=(("choices", "Newmark, HHT"),),
         ),
-        convergence_test=ComponentField(
-            FieldState.ENGINE_FIXED,
-            "NormDispIncr",
-            (("tolerance", "1e-8"), ("maxIterations", "30")),
-        ),
-        constraint_handler=ComponentField(FieldState.ENGINE_FIXED, "Transformation"),
-        numberer=ComponentField(FieldState.ENGINE_FIXED, "RCM"),
+        convergence_test=ComponentField(FieldState.EDITABLE),
+        constraint_handler=ComponentField(FieldState.EDITABLE),
+        numberer=ComponentField(FieldState.EDITABLE),
         eigen_solver=ComponentField(
             FieldState.AUTOMATIC,
             details=(
                 ("primary", "ARPACK (ops.eigen)"),
                 ("fallback", "FullGenLapack"),
-                ("purpose", "Rayleigh damping 계수 계산용 내부 사용, 결과에 노출되지 않음"),
+                ("purpose", "Damping의 Modal Targets 모드에서만 내부적으로 사용, 결과에 노출되지 않음"),
             ),
         ),
+        # The damping *mode* (None/Modal Targets/Direct Coefficients) and, for
+        # Direct Coefficients, the four Rayleigh coefficients themselves are
+        # user-editable - but Modal Targets' alpha_M/beta_K are computed from
+        # the chosen modes' eigenfrequencies, not typed directly. EDITABLE
+        # here describes "the user controls this component", same as
+        # Nonlinear Static's own EDITABLE fields; the AUTOMATIC half of Modal
+        # Targets is called out in details rather than needing a second
+        # FieldState this dataclass has no room for (see its own docstring).
         damping=ComponentField(
-            FieldState.AUTOMATIC,
+            FieldState.EDITABLE,
             details=(
-                ("user_input", "damping_ratio (%)"),
-                ("computed", "Rayleigh alpha_M, beta_K"),
+                ("choices", "None, Rayleigh - Modal Targets, Rayleigh - Direct Coefficients"),
+                ("modal_targets_computed", "alpha_M, beta_K (or betaKInit/betaKComm) from mode i/j"),
             ),
         ),
     ),

@@ -11,6 +11,7 @@ the wrong value forever. Test B below is the regression test for that.
 """
 
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -28,6 +29,7 @@ from openframe.core.domain import (
     ANALYSIS_CAPABILITIES,
     AnalysisKind,
     Element,
+    FieldState,
     NodalLoad,
     Node,
     StructuralModel,
@@ -673,63 +675,93 @@ def test_time_history_shows_its_own_four_cards_and_hides_nonlinear_ones() -> Non
 
 
 def test_time_history_ground_motion_direction_and_scale_reach_the_config_store() -> None:
-    """Regression test for the sync bug found while implementing Phase 3-E:
-    time_history_direction/ground_motion_scale/damping_ratio had no
-    valueChanged/currentIndexChanged connection at all (the same gap
-    num_modes had in Phase 3-C), so a value picked here was silently dropped
-    from config_store.options until an unrelated event happened to sync it."""
+    """Regression test for the sync bug found while implementing Phase 3-E
+    (time_history_direction/ground_motion_scale/damping_ratio had no
+    valueChanged/currentIndexChanged connection at all) - now covering the
+    multi-direction table's own per-row Enabled/Scale Factor and the
+    Solution Strategy card's Algorithm, which replaced those single-value
+    widgets (see time_history_direction_row.py, build_options()'s
+    TIME_HISTORY branch)."""
     application, setup = _make_setup()
     settings = setup.settings_panel
 
     settings.config_store.set_kind(AnalysisKind.TIME_HISTORY)
     application.processEvents()
 
-    settings.time_history_direction.addItem("UY", 2)
-    settings.time_history_direction.setCurrentIndex(
-        settings.time_history_direction.findData(2)
+    row = settings.time_history_direction_rows[0]
+    row.imported_radio.setChecked(True)
+    row._imported_path = Path(__file__)  # any real file - only build_options() shape matters
+    from openframe.core.domain import GroundMotion
+
+    row._imported_motion = GroundMotion(
+        name="stub", path=row._imported_path, accelerations=(0.1, 0.2, -0.1), dt=0.01
     )
-    settings.ground_motion_scale.setValue(9.81)
-    settings.damping_ratio.setValue(0.02)
+    row._update_record_label()
+    row.enabled_checkbox.setChecked(True)
+    row.scale_factor_spin.setValue(9.81)
+    settings.th_algorithm.setCurrentText("KrylovNewton")
     application.processEvents()
 
-    assert settings.config_store.options.get("direction") == 2
-    assert settings.config_store.options.get("scale_factor") == 9.81
-    assert settings.config_store.options.get("damping_ratio") == 0.02
+    directions = settings.config_store.options.get("directions")
+    assert directions == [
+        {
+            "dof": row.dof,
+            "path": str(row._imported_path),
+            "unit": "g",
+            "scaling_method": "factor",
+            "scale_factor": 9.81,
+            "target_pga": 0.0,
+        }
+    ]
+    assert settings.config_store.options["solution"]["algorithm"] == "KrylovNewton"
 
     setup.close()
 
 
-def test_time_history_integration_and_solution_cards_match_the_capability_registry() -> None:
+def test_time_history_integration_and_solution_cards_offer_the_registrys_editable_choices() -> None:
+    """Time History's dynamic_integrator/algorithm/equation_solver/
+    constraint_handler/numberer/convergence_test are all EDITABLE now (see
+    analysis_capabilities.py) - SETUP's cards must actually offer the real,
+    solver-consumed choices the registry documents, not a read-only FIXED
+    label (that display was true before Phase covering this expansion, not
+    after)."""
     application, setup = _make_setup()
     settings = setup.settings_panel
 
     settings.config_store.set_kind(AnalysisKind.TIME_HISTORY)
     application.processEvents()
 
-    from PySide6.QtWidgets import QLabel
-
     capabilities = ANALYSIS_CAPABILITIES[AnalysisKind.TIME_HISTORY]
+    for field in (
+        capabilities.dynamic_integrator,
+        capabilities.algorithm,
+        capabilities.equation_solver,
+        capabilities.constraint_handler,
+        capabilities.numberer,
+        capabilities.convergence_test,
+        capabilities.damping,
+    ):
+        assert field.state == FieldState.EDITABLE
 
-    integration_labels = " | ".join(
-        label.text()
-        for label in settings.time_history_integration_card.findChildren(QLabel)
-    )
-    assert capabilities.dynamic_integrator.value in integration_labels
-    assert dict(capabilities.dynamic_integrator.details)["gamma"] in integration_labels
-    assert dict(capabilities.dynamic_integrator.details)["beta"] in integration_labels
+    integrator_choices = dict(capabilities.dynamic_integrator.details)["choices"]
+    assert "Newmark" in integrator_choices and "HHT" in integrator_choices
+    assert settings.integrator_newmark_radio.isChecked()
+    assert settings.integrator_hht_radio is not None
 
-    solution_labels = " | ".join(
-        label.text() for label in settings.time_history_solution_card.findChildren(QLabel)
-    )
-    assert capabilities.equation_solver.value in solution_labels
-    assert capabilities.algorithm.value in solution_labels
-    assert capabilities.constraint_handler.value in solution_labels
-    assert capabilities.numberer.value in solution_labels
-    assert capabilities.convergence_test.value in solution_labels
-    details = dict(capabilities.convergence_test.details)
-    assert details["tolerance"] in solution_labels
-    assert details["maxIterations"] in solution_labels
-    assert "FIXED" in solution_labels
+    algorithm_choices = {
+        settings.th_algorithm.itemText(index) for index in range(settings.th_algorithm.count())
+    }
+    assert algorithm_choices == {"Newton", "ModifiedNewton", "KrylovNewton", "NewtonLineSearch"}
+    test_choices = {
+        settings.th_test_type.itemText(index) for index in range(settings.th_test_type.count())
+    }
+    assert test_choices == {"NormDispIncr", "NormUnbalance", "EnergyIncr"}
+
+    damping_choices = dict(capabilities.damping.details)["choices"]
+    assert "Modal Targets" in damping_choices and "Direct Coefficients" in damping_choices
+    assert settings.damping_none_radio is not None
+    assert settings.damping_modal_radio is not None
+    assert settings.damping_direct_radio is not None
 
     setup.close()
 

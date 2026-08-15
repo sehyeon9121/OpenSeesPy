@@ -38,16 +38,31 @@ def test_a_real_kobe_run_loads_and_plays_in_the_animation_panel() -> None:
         source_path=_PORTAL_FRAME_MODEL,
         kind=AnalysisKind.TIME_HISTORY,
         options={
-            "ground_motion_path": str(_BUILT_IN_KOBE_AT2),
-            "direction": 1,
-            "damping_ratio": 0.05,
-            "scale_factor": 1.0,
+            "directions": [
+                {
+                    "dof": 1,
+                    "path": str(_BUILT_IN_KOBE_AT2),
+                    "unit": "model",
+                    "scaling_method": "factor",
+                    "scale_factor": 1.0,
+                }
+            ],
+            "damping": {
+                "mode": "modal",
+                "mode_i": 1,
+                "mode_j": 2,
+                "ratio_i": 0.05,
+                "ratio_j": 0.05,
+                "stiffness_term": "initial",
+            },
         },
     )
 
     result = runner.run(request)
     assert result.status == AnalysisStatus.COMPLETED
-    assert len(result.time_history) == 4096
+    # One fewer step than the record's NPTS: End Time defaults to the
+    # record's own Duration (dt * (npts - 1) - see GroundMotion.duration).
+    assert len(result.time_history) == 4095
 
     panel = TimeHistoryAnimationPanel()
     panel.show()
@@ -56,18 +71,18 @@ def test_a_real_kobe_run_loads_and_plays_in_the_animation_panel() -> None:
 
     assert panel._current_step_index == 0
     assert panel._playing is False
-    assert panel.slider.maximum() == 4095
+    assert panel.slider.maximum() == 4094
 
     panel._go_to_last()
-    assert panel._current_step_index == 4095
+    assert panel._current_step_index == 4094
 
     panel._go_to_first()
     panel._toggle_play()
     for _ in range(30):
         panel._on_tick()
-    assert 0 < panel._current_step_index < 4095
+    assert 0 < panel._current_step_index < 4094
 
-    panel.scale_selector.setCurrentIndex(0)  # Auto - full 4096-step scan
+    panel.scale_selector.setCurrentIndex(0)  # Auto - full 4095-step scan
     panel._apply_step(3000)
     assert panel._current_step_index == 3000
     assert panel.time_step_label.text() != "—"

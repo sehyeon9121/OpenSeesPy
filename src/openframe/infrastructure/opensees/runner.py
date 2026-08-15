@@ -20,6 +20,8 @@ from openframe.core.domain import (
     ModeShape,
     NodeResult,
     NonlinearConvergence,
+    TimeHistoryDirectionSummary,
+    TimeHistorySettings,
     TimeHistoryStep,
 )
 
@@ -304,8 +306,42 @@ class OpenSeesProcessRunner:
                     )
                     for node in item.get("node_results", [])
                 },
+                actual_dt=float(item.get("actual_dt", 0.0)),
+                algorithm_used=str(item.get("algorithm_used", "")),
+                recovered=bool(item.get("recovered", False)),
+                retry_count=int(item.get("retry_count", 0)),
+                dt_reduction_count=int(item.get("dt_reduction_count", 0)),
             )
             for item in payload.get("time_history", [])
+        )
+        settings_payload = payload.get("settings")
+        time_history_settings = (
+            TimeHistorySettings(
+                directions=tuple(
+                    TimeHistoryDirectionSummary(
+                        dof=int(item["dof"]),
+                        record_name=str(item.get("record_name", "")),
+                        effective_scale=float(item.get("effective_scale", 1.0)),
+                    )
+                    for item in settings_payload.get("directions", [])
+                ),
+                integrator_type=str(settings_payload.get("integrator_type", "")),
+                integrator_params=tuple(
+                    (str(name), float(value)) for name, value in settings_payload.get("integrator_params", [])
+                ),
+                damping_mode=str(settings_payload.get("damping_mode", "")),
+                rayleigh_alpha_m=float(settings_payload.get("rayleigh_alpha_m", 0.0)),
+                rayleigh_beta_k=float(settings_payload.get("rayleigh_beta_k", 0.0)),
+                rayleigh_beta_k_init=float(settings_payload.get("rayleigh_beta_k_init", 0.0)),
+                rayleigh_beta_k_comm=float(settings_payload.get("rayleigh_beta_k_comm", 0.0)),
+                initial_dt=float(settings_payload.get("initial_dt", 0.0)),
+                minimum_dt=float(settings_payload.get("minimum_dt", 0.0)),
+                maximum_dt=float(settings_payload.get("maximum_dt", 0.0)),
+                end_time=float(settings_payload.get("end_time", 0.0)),
+                status=str(settings_payload.get("status", "completed")),
+            )
+            if isinstance(settings_payload, dict)
+            else None
         )
         try:
             status = AnalysisStatus(str(payload.get("status", "completed")))
@@ -321,4 +357,5 @@ class OpenSeesProcessRunner:
             mode_shapes=mode_shapes,
             time_history=time_history,
             buckling_modes=buckling_modes,
+            time_history_settings=time_history_settings,
         )
