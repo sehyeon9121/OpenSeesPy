@@ -39,6 +39,9 @@ from openframe.core.domain import ACCELERATION_UNITS, GroundMotion, GroundMotion
 from openframe.features.analysis.presentation.ground_motion_picker_dialog import (
     GroundMotionPickerDialog,
 )
+from openframe.features.results.presentation.time_history_curve_view import (
+    TimeHistoryCurveView,
+)
 from openframe.infrastructure.ground_motions import BuiltInGroundMotionCatalog
 from openframe.infrastructure.opensees.ground_motion import load_ground_motion
 from openframe.infrastructure.opensees.ground_motion_scaling import (
@@ -160,6 +163,20 @@ class TimeHistoryDirectionRow(QFrame):
             self.readout_values[name] = value
         body_layout.addLayout(readout_grid)
 
+        preview_label = QLabel("ACCELERATION-TIME PREVIEW")
+        preview_label.setObjectName("setupMetricLabel")
+        body_layout.addWidget(preview_label)
+        self.preview = TimeHistoryCurveView()
+        # TimeHistoryCurveView's own paintEvent lays out ~5 Y-axis tick
+        # labels plus a rotated axis title - its constructor already
+        # declares setMinimumHeight(200) for exactly this reason. A smaller
+        # fixed height (140 was tried first) forces the axis text to
+        # overlap itself, so this stays at that natural floor rather than
+        # shrinking further to fit more rows on screen at once.
+        self.preview.setFixedHeight(200)
+        self.preview.set_empty_message("No ground motion selected")
+        body_layout.addWidget(self.preview)
+
         layout.addWidget(self.body)
         self._on_enabled_toggled(False)
         self._on_scaling_method_changed(True)
@@ -168,7 +185,11 @@ class TimeHistoryDirectionRow(QFrame):
     # -- source/record selection --------------------------------------
 
     def _on_enabled_toggled(self, checked: bool) -> None:
-        self.body.setVisible(checked)
+        # Always visible (not hidden) once a direction is disabled - only
+        # grayed out (setEnabled) - so Source/Record/Scaling stay
+        # discoverable and previewable without first hunting for the
+        # checkbox that reveals them.
+        self.body.setEnabled(checked)
         self.setProperty("active", checked)
         self.style().unpolish(self)
         self.style().polish(self)
@@ -264,6 +285,7 @@ class TimeHistoryDirectionRow(QFrame):
         if motion is None:
             for label in self.readout_values.values():
                 label.setText("—")
+            self.preview.set_series((), (), y_label="")
             return
         self.readout_values["Record dt"].setText(f"{motion.dt:g} s")
         self.readout_values["NPTS"].setText(str(motion.npts))
@@ -275,9 +297,18 @@ class TimeHistoryDirectionRow(QFrame):
         if scaling is None:
             self.readout_values["Original PGA"].setText("—")
             self.readout_values["Effective Scale"].setText("—")
+            self.preview.set_series((), (), y_label="")
             return
         self.readout_values["Original PGA"].setText(f"{scaling.original_pga_model_units:.4g}")
         self.readout_values["Effective Scale"].setText(f"{scaling.effective_scale:.4g}")
+
+        # The applied (unit-converted + scaled) waveform - what actually
+        # reaches ops.timeSeries("Path", ..., "-factor", total_factor) -
+        # not the record's raw values, so the preview matches what the
+        # solver will really run.
+        times = tuple(index * motion.dt for index in range(motion.npts))
+        values = tuple(value * scaling.total_factor for value in motion.accelerations)
+        self.preview.set_series(times, values, y_label=f"Accel [{self._length_unit}/s²]")
 
     def _emit_changed(self) -> None:
         self._refresh_readouts()

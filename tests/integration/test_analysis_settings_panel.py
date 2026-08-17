@@ -976,6 +976,30 @@ class TestBuiltInGroundMotionLibrary:
         assert row.readout_values["Effective Scale"].text() == "2"
         application.processEvents()
 
+    def test_selecting_a_record_populates_the_acceleration_time_preview(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each direction row keeps its own ACCELERATION-TIME PREVIEW chart
+        (unit-converted + scaled, matching what the solver actually applies) -
+        not merely the numeric readouts."""
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
+        record = row._catalog.list_records()[0]
+        _stub_builtin_picker(monkeypatch, record)
+        row.builtin_radio.setChecked(True)
+        row.unit_combo.setCurrentIndex(row.unit_combo.findData("model"))
+        row._choose_record_or_file()
+
+        motion = row.active_motion()
+        assert motion is not None
+        assert len(row.preview._values) == motion.npts
+        assert row.preview._values == pytest.approx(motion.accelerations)
+
+        row.scale_factor_spin.setValue(2.0)
+        assert row.preview._values == pytest.approx(tuple(v * 2.0 for v in motion.accelerations))
+        application.processEvents()
+
     def test_target_pga_mode_derives_the_correct_effective_scale(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
