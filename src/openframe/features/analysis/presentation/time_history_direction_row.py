@@ -243,6 +243,36 @@ class TimeHistoryDirectionRow(QFrame):
         self._refresh_readouts()
         self._emit_changed()
 
+    def set_builtin_record(self, record_id: str) -> bool:
+        """Selects a bundled catalog record by ``record_id`` without opening
+        ``GroundMotionPickerDialog`` - used by a Time History template preset
+        to fill this row programmatically. Returns ``False`` (row left
+        untouched) if the id isn't in the catalog, so a template-authoring
+        typo shows up as a missed assertion in its own test rather than a
+        silently empty row.
+
+        Sets ``_builtin_record``/``_builtin_motion`` and checks
+        ``builtin_radio`` before the explicit label/readouts/changed refresh
+        below - the same order ``_choose_record_or_file`` uses, rather than
+        relying on ``builtin_radio.toggled`` (which only fires on an actual
+        unchecked->checked transition, not if this is ever called a second
+        time on a row already showing Built-in).
+        """
+        record = next(
+            (candidate for candidate in self._catalog.list_records() if candidate.record_id == record_id),
+            None,
+        )
+        if record is None:
+            return False
+        values = tuple(self._catalog.load_series(record))
+        self._builtin_record = record
+        self._builtin_motion = GroundMotion.from_record(record, values)
+        self.builtin_radio.setChecked(True)
+        self._update_record_label()
+        self._refresh_readouts()
+        self._emit_changed()
+        return True
+
     def _update_record_label(self) -> None:
         if self.builtin_radio.isChecked():
             self.record_label.setText(

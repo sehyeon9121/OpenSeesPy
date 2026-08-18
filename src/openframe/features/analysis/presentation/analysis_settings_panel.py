@@ -2099,6 +2099,38 @@ class AnalysisSettingsPanel(QFrame):
         if "eigenvalue_tolerance" in options:
             self.buckling_eigenvalue_tolerance.setValue(float(options["eigenvalue_tolerance"]))
 
+    def apply_time_history_preset(self, options: dict) -> None:
+        """Pre-fills the TIME_HISTORY card's Ground Motion table from a
+        template's own manifest - ``options["directions"]`` is a list of
+        ``{"dof", "record_id"}`` dicts, each naming a row (by DOF) and a
+        bundled ``BuiltInGroundMotionCatalog`` record (by id) to select on it,
+        the same "already sensible, not blank" motivation as
+        ``apply_buckling_preset``.
+
+        Only handles Built-in records, not Imported files - a template ships
+        inside the package, so any ground motion it points at must already be
+        one of ``BuiltInGroundMotionCatalog``'s bundled ``.AT2`` files (see
+        ``TimeHistoryDirectionRow.set_builtin_record``); an imported file
+        would be a path on the *template author's* machine, meaningless on
+        the end user's. Unit/scaling method are deliberately left at each
+        row's own defaults (Unit "g", Direct Scale Factor 1.0) since PEER
+        ``.AT2`` files are already in g and a first look at a template's
+        response is meant to show the record applied as-is, unscaled.
+
+        Called after ``set_model()`` has already rebuilt
+        ``time_history_direction_rows`` for the real loaded model (see
+        ``MainWindow._model_loaded``) - a stale row list from before the
+        model loaded would silently match nothing.
+        """
+        self.analysis_type.setCurrentIndex(self.analysis_type.findData(AnalysisKind.TIME_HISTORY))
+        for direction in options.get("directions", []):
+            dof = int(direction["dof"])
+            row = next((r for r in self.time_history_direction_rows if r.dof == dof), None)
+            if row is None or "record_id" not in direction:
+                continue
+            if row.set_builtin_record(str(direction["record_id"])):
+                row.enabled_checkbox.setChecked(True)
+
     def build_options(self) -> dict[str, float | int | str | bool]:
         """Return the settings this panel controls, in the shape
         ``run_nonlinear_static_analysis`` (and its worker.py/runner.py plumbing)

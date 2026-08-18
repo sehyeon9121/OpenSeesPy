@@ -10,6 +10,7 @@ no separate "template loader" to keep in sync with the project-file format.
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 #: Same "plain Path(__file__)" convention app_header.py's APP_ICON_PATH uses
 #: for resources/icons - this package is always installed as regular files
@@ -35,7 +36,11 @@ class TemplateEntry:
     #: SETUP with ``analysis_options`` already applied to the matching kind's
     #: settings card - see MainWindow._open_template.
     analysis_kind: str | None = None
-    analysis_options: dict[str, float | int | str | bool] = field(default_factory=dict)
+    #: ``Any`` (not the flat scalar type its BUCKLING-only usage once
+    #: suggested) because a TIME_HISTORY template's options carry a nested
+    #: ``{"directions": [{"dof", "record_id", ...}, ...]}`` shape, not just
+    #: scalars - see AnalysisSettingsPanel.apply_time_history_preset.
+    analysis_options: dict[str, Any] = field(default_factory=dict)
 
 
 def load_template_catalog() -> list[TemplateEntry]:

@@ -406,7 +406,14 @@ class MainWindow(QMainWindow):
         model = canvas.build_model()
         unit_length = str(data.get("unit_length", "m"))
         unit_force = str(data.get("unit_force", "kN"))
-        script = export_opensees_script(model, include_mass=False, length_unit=unit_length)
+        kind = AnalysisKind(entry.analysis_kind)
+        # Buckling only needs stiffness (mass would be dead weight to the
+        # eigenvalue solve); Time History needs real nodal mass (from each
+        # element's own density*A) or run_time_history_analysis rejects the
+        # model outright with "절점 질량이 정의되어 있지 않습니다" - see
+        # time_history_solver.py's own total_mass check.
+        include_mass = kind == AnalysisKind.TIME_HISTORY
+        script = export_opensees_script(model, include_mass=include_mass, length_unit=unit_length)
         # export_opensees_script (shared with the canvas's own "정밀해석으로
         # 내보내기" button) never embeds OPENFRAME_UNITS - a hand-drawn
         # model's own length_unit isn't necessarily trustworthy enough to
@@ -425,11 +432,7 @@ class MainWindow(QMainWindow):
         scratch_dir.mkdir(parents=True, exist_ok=True)
         script_path = scratch_dir / f"{entry.id}.py"
         script_path.write_text(script, encoding="utf-8")
-        self._pending_analysis_preset = (
-            AnalysisKind(entry.analysis_kind),
-            dict(entry.analysis_options),
-            entry.hint,
-        )
+        self._pending_analysis_preset = (kind, dict(entry.analysis_options), entry.hint)
         self._open_exported_analysis_script(script_path)
 
     def _show_pending_workflow(self, workflow: str) -> None:
@@ -643,6 +646,8 @@ class MainWindow(QMainWindow):
             kind, options, hint = pending_preset
             if kind == AnalysisKind.BUCKLING:
                 self.analysis_settings.apply_buckling_preset(options)
+            elif kind == AnalysisKind.TIME_HISTORY:
+                self.analysis_settings.apply_time_history_preset(options)
             self._open_setup_workspace()
             self.statusBar().showMessage(
                 f"템플릿 · {kind.value} 설정이 이미 적용되었습니다"

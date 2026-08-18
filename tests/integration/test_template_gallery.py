@@ -22,7 +22,7 @@ def _window() -> MainWindow:
 
 
 _CANVAS_TEMPLATE_IDS = ["simple_beam", "three_hinge_arch", "simple_truss"]
-_PRECISION_TEMPLATE_IDS = ["euler_buckling_column"]
+_PRECISION_TEMPLATE_IDS = ["euler_buckling_column", "portal_frame_time_history"]
 
 
 def test_the_bundled_manifest_lists_every_template_with_readable_files() -> None:
@@ -44,6 +44,10 @@ def test_the_bundled_manifest_lists_every_template_with_readable_files() -> None
     precision_entries = {e.id: e for e in entries if e.id in _PRECISION_TEMPLATE_IDS}
     assert precision_entries["euler_buckling_column"].analysis_kind == "buckling"
     assert precision_entries["euler_buckling_column"].analysis_options == {"num_modes": 1}
+    assert precision_entries["portal_frame_time_history"].analysis_kind == "time_history"
+    assert precision_entries["portal_frame_time_history"].analysis_options == {
+        "directions": [{"dof": 1, "record_id": "RSN174_IMPVALL.H_H-E11140"}]
+    }
 
 
 def test_clicking_templates_on_the_home_hub_opens_the_gallery() -> None:
@@ -52,7 +56,7 @@ def test_clicking_templates_on_the_home_hub_opens_the_gallery() -> None:
     window.start_workspace.template_button.click()
 
     assert window.workspace_stack.currentWidget() is window.template_gallery_page
-    assert len(window.template_gallery_page._entries) == 4
+    assert len(window.template_gallery_page._entries) == 5
 
 
 def test_the_galerys_back_button_returns_to_the_home_hub() -> None:
@@ -239,3 +243,104 @@ def test_the_buckling_template_matches_the_euler_closed_form() -> None:
     assert result["status"] == "completed"
     pcr_fe = result["buckling_modes"][0]["buckling_load_factor"]
     assert pcr_fe == pytest.approx(pcr_closed_form, rel=0.01)
+
+
+def test_opening_the_time_history_template_exports_a_script_and_stages_the_preset() -> None:
+    """Mirrors the buckling template's own export/stage test - the precision
+    path never touches the canvas workspace, it exports straight to a script
+    (with mass this time - see include_mass in _open_precision_template) and
+    queues the analysis preset for _model_loaded to apply."""
+    entry = next(e for e in load_template_catalog() if e.id == "portal_frame_time_history")
+    data = json.loads(entry.path.read_text(encoding="utf-8"))
+    window = _window_with_import_service()
+
+    window.template_gallery_page.template_opened.emit(data, entry)
+    assert window._pending_analysis_preset is not None
+    kind, options, hint = window._pending_analysis_preset
+    assert kind == AnalysisKind.TIME_HISTORY
+    assert options == {"directions": [{"dof": 1, "record_id": "RSN174_IMPVALL.H_H-E11140"}]}
+    assert hint == entry.hint
+    assert len(window.direct_model_workspace.geometry_page.canvas.nodes) == 0
+
+    thread = window._model_load_thread
+    assert thread is not None
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    loop = QEventLoop()
+    thread.finished.connect(loop.quit)
+    QTimer.singleShot(10_000, loop.quit)
+    loop.exec()
+    window.close()
+
+
+def test_opening_the_time_history_template_lands_on_setup_with_ground_motion_applied() -> None:
+    """End-to-end through the real import pipeline, proving the preset
+    survives the async round trip and actually reaches the Ground Motion
+    table row a user would see - not just the config store."""
+    entry = next(e for e in load_template_catalog() if e.id == "portal_frame_time_history")
+    data = json.loads(entry.path.read_text(encoding="utf-8"))
+    window = _window_with_import_service()
+
+    _run_precision_template_to_completion(window, data, entry)
+
+    assert window._pending_analysis_preset is None
+    assert window.workspace_stack.currentWidget() is window.setup_workspace
+    assert window.analysis_settings.selected_analysis_kind() == AnalysisKind.TIME_HISTORY
+    assert window.config_store.kind == AnalysisKind.TIME_HISTORY
+    row = window.analysis_settings.time_history_direction_rows[0]
+    assert row.dof == 1
+    assert row.is_enabled_row()
+    assert row.has_valid_motion()
+    assert row.active_path().name == "RSN174_IMPVALL.H_H-E11140.AT2"
+    window.close()
+
+
+def test_the_time_history_template_runs_to_a_stable_finite_response() -> None:
+    """The template's own geometry/mass must actually survive a real
+    transient run against its bundled El Centro-area record - completes
+    without the solver's Adaptive Recovery ever having to kick in, and the
+    top-story drift stays small and finite (no divergence/instability),
+    checked here so a future edit to the template's section/height can't
+    silently turn it into an unstable or unrunnable example.
+
+    Exports the script directly (no MainWindow/UI trip needed) so this test
+    is independent of the precision-template pipeline's own async plumbing,
+    covered separately above."""
+    import math
+    import tempfile
+    from pathlib import Path
+
+    from openframe.features.analysis.statics import export_opensees_script
+    from openframe.features.model.presentation.statics_modeling_page import (
+        StaticsDrawingCanvas,
+    )
+    from openframe.infrastructure.opensees.time_history_solver import run_time_history_analysis
+    from openframe.infrastructure.ground_motions import BuiltInGroundMotionCatalog
+
+    entry = next(e for e in load_template_catalog() if e.id == "portal_frame_time_history")
+    data = json.loads(entry.path.read_text(encoding="utf-8"))
+    record_id = entry.analysis_options["directions"][0]["record_id"]
+    record = next(r for r in BuiltInGroundMotionCatalog().list_records() if r.record_id == record_id)
+
+    QApplication.instance() or QApplication([])
+    canvas = StaticsDrawingCanvas()
+    canvas.load_dict(data)
+    model = canvas.build_model()
+    script = export_opensees_script(model, include_mass=True, length_unit="m")
+    script_path = Path(tempfile.gettempdir()) / f"{entry.id}_stability_check.py"
+    script_path.write_text(script, encoding="utf-8")
+
+    result = run_time_history_analysis(
+        script_path,
+        directions=[{"dof": 1, "path": str(record.path), "unit": "g", "scaling_method": "factor", "scale_factor": 1.0}],
+        model_length_unit="m",
+    )
+    assert result["status"] == "completed"
+    steps = result["time_history"]
+    assert steps
+    assert not any(step["recovered"] for step in steps)
+    top_left_ux = [step["node_results"][1]["displacement"][0] for step in steps]
+    assert all(math.isfinite(value) for value in top_left_ux)
+    # Story drift ratio (peak sway / 4m story height) stays well under 1% -
+    # a sane elastic response, not a numerically-exploded one.
+    assert max(abs(value) for value in top_left_ux) < 0.04
