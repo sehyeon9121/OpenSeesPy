@@ -1,0 +1,431 @@
+{
+  "format": "openframe-canvas",
+  "version": 1,
+  "ndm": 2,
+  "element_family": "frame",
+  "include_self_weight": false,
+  "levels": [
+    {
+      "kind": "xy",
+      "offset": 0.0,
+      "label": "1F"
+    }
+  ],
+  "active_plane_index": 0,
+  "nodes": [
+    {
+      "tag": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 2,
+      "x": 0.0,
+      "y": 3.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 3,
+      "x": 0.0,
+      "y": 0.1875,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 4,
+      "x": 0.0,
+      "y": 0.375,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 5,
+      "x": 0.0,
+      "y": 0.5625,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 6,
+      "x": 0.0,
+      "y": 0.75,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 7,
+      "x": 0.0,
+      "y": 0.9375,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 8,
+      "x": 0.0,
+      "y": 1.125,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 9,
+      "x": 0.0,
+      "y": 1.3125,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 10,
+      "x": 0.0,
+      "y": 1.5,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 11,
+      "x": 0.0,
+      "y": 1.6875,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 12,
+      "x": 0.0,
+      "y": 1.875,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 13,
+      "x": 0.0,
+      "y": 2.0625,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 14,
+      "x": 0.0,
+      "y": 2.25,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 15,
+      "x": 0.0,
+      "y": 2.4375,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 16,
+      "x": 0.0,
+      "y": 2.625,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 17,
+      "x": 0.0,
+      "y": 2.8125,
+      "z": 0.0,
+      "ndf": 3
+    }
+  ],
+  "elements": [
+    {
+      "tag": 1,
+      "node_i": 1,
+      "node_j": 3,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 2,
+      "node_i": 3,
+      "node_j": 4,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 3,
+      "node_i": 4,
+      "node_j": 5,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 4,
+      "node_i": 5,
+      "node_j": 6,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 5,
+      "node_i": 6,
+      "node_j": 7,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 6,
+      "node_i": 7,
+      "node_j": 8,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 7,
+      "node_i": 8,
+      "node_j": 9,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 8,
+      "node_i": 9,
+      "node_j": 10,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 9,
+      "node_i": 10,
+      "node_j": 11,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 10,
+      "node_i": 11,
+      "node_j": 12,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 11,
+      "node_i": 12,
+      "node_j": 13,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 12,
+      "node_i": 13,
+      "node_j": 14,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 13,
+      "node_i": 14,
+      "node_j": 15,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 14,
+      "node_i": 15,
+      "node_j": 16,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 15,
+      "node_i": 16,
+      "node_j": 17,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 16,
+      "node_i": 17,
+      "node_j": 2,
+      "element_type": "frame",
+      "properties": {
+        "E": 200000000.0,
+        "A": 0.04000000000000001,
+        "I": 0.00013333333333333337,
+        "width": 0.2,
+        "height": 0.2,
+        "density": 0.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    }
+  ],
+  "boundaries": [
+    {
+      "node_tag": 1,
+      "restraints": [
+        true,
+        true,
+        false
+      ],
+      "angle": 0.0
+    },
+    {
+      "node_tag": 2,
+      "restraints": [
+        true,
+        false,
+        false
+      ],
+      "angle": 0.0
+    }
+  ],
+  "nodal_loads": [
+    {
+      "node_tag": 2,
+      "values": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "pattern_tag": null,
+      "case_type": "UNCLASSIFIED"
+    }
+  ],
+  "element_loads": [],
+  "embedded_nodes": [],
+  "hinge_nodes": [],
+  "unit_force": "kN",
+  "unit_length": "m"
+}

@@ -1,0 +1,163 @@
+{
+  "format": "openframe-canvas",
+  "version": 1,
+  "ndm": 2,
+  "element_family": "frame",
+  "include_self_weight": false,
+  "levels": [
+    {
+      "kind": "xy",
+      "offset": 0.0,
+      "label": "1F"
+    }
+  ],
+  "active_plane_index": 0,
+  "nodes": [
+    {
+      "tag": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 2,
+      "x": 1.7639320225002102,
+      "y": 1.4721359549995796,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 3,
+      "x": 4.0,
+      "y": 2.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 4,
+      "x": 6.23606797749979,
+      "y": 1.4721359549995796,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 5,
+      "x": 8.0,
+      "y": -8.881784197001252e-16,
+      "z": 0.0,
+      "ndf": 3
+    }
+  ],
+  "elements": [
+    {
+      "tag": 1,
+      "node_i": 1,
+      "node_j": 2,
+      "element_type": "frame",
+      "properties": {},
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 2,
+      "node_i": 2,
+      "node_j": 3,
+      "element_type": "frame",
+      "properties": {},
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 3,
+      "node_i": 3,
+      "node_j": 4,
+      "element_type": "frame",
+      "properties": {},
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 4,
+      "node_i": 4,
+      "node_j": 5,
+      "element_type": "frame",
+      "properties": {},
+      "moment_release_i": false,
+      "moment_release_j": false
+    }
+  ],
+  "boundaries": [
+    {
+      "node_tag": 1,
+      "restraints": [
+        true,
+        true,
+        false
+      ],
+      "angle": 0.0
+    },
+    {
+      "node_tag": 5,
+      "restraints": [
+        true,
+        true,
+        false
+      ],
+      "angle": 0.0
+    }
+  ],
+  "nodal_loads": [],
+  "element_loads": [
+    {
+      "element_tag": 1,
+      "wx": -3.2037371962288375,
+      "wy": -3.838758650592635,
+      "wz": 0.0,
+      "wx_j": -3.2037371962288375,
+      "wy_j": -3.838758650592635,
+      "wz_j": 0.0,
+      "pattern_tag": null,
+      "case_type": "UNCLASSIFIED"
+    },
+    {
+      "element_tag": 2,
+      "wx": -1.1487646027368055,
+      "wy": -4.866244947338651,
+      "wz": 0.0,
+      "wx_j": -1.1487646027368055,
+      "wy_j": -4.866244947338651,
+      "wz_j": 0.0,
+      "pattern_tag": null,
+      "case_type": "UNCLASSIFIED"
+    },
+    {
+      "element_tag": 3,
+      "wx": 1.1487646027368055,
+      "wy": -4.866244947338651,
+      "wz": 0.0,
+      "wx_j": 1.1487646027368055,
+      "wy_j": -4.866244947338651,
+      "wz_j": 0.0,
+      "pattern_tag": null,
+      "case_type": "UNCLASSIFIED"
+    },
+    {
+      "element_tag": 4,
+      "wx": 3.2037371962288392,
+      "wy": -3.8387586505926343,
+      "wz": 0.0,
+      "wx_j": 3.2037371962288392,
+      "wy_j": -3.8387586505926343,
+      "wz_j": 0.0,
+      "pattern_tag": null,
+      "case_type": "UNCLASSIFIED"
+    }
+  ],
+  "embedded_nodes": [],
+  "hinge_nodes": [
+    3
+  ],
+  "unit_force": "kN",
+  "unit_length": "m"
+}

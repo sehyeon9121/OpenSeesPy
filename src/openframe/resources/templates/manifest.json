@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "id": "simple_beam",
+      "title": "단순보 (Simple Beam)",
+      "subtitle": "핀 + 롤러 지점, 등분포하중",
+      "description": "가장 기본적인 정정보입니다. 한쪽은 핀, 반대쪽은 수평롤러로 지지된 6m 보에 등분포하중이 걸려 있습니다. 부재 단면(직사각형)과 탄성계수도 미리 입력돼 있어 바로 '정정성 검사 및 해석'을 눌러볼 수 있습니다.",
+      "file": "simple_beam.ofsm",
+      "tags": ["지점", "하중", "부재 단면"],
+      "hint": "정정구조라 재료값 없이도 바로 해석됩니다 — '정정성 검사 및 해석' 버튼을 눌러보세요."
+    },
+    {
+      "id": "three_hinge_arch",
+      "title": "3힌지 아치 (Three-Hinge Arch)",
+      "subtitle": "아치 생성 + 활절점",
+      "description": "카테고리 바의 '아치' 기능으로 만든 반원형 아치입니다. 양쪽 지점은 핀이고, 정점 노드를 '노드 유형'에서 활절점(모멘트 해제)으로 지정해 3힌지 조건을 만족시켜 정정 구조가 되었습니다. 모든 부재에 등분포하중이 걸려 있습니다.",
+      "file": "three_hinge_arch.ofsm",
+      "tags": ["아치 생성", "노드 유형(활절점)", "등분포하중"],
+      "hint": "정점 노드가 활절점(절점)이라 3힌지 아치가 정정 구조로 풀립니다."
+    },
+    {
+      "id": "simple_truss",
+      "title": "삼각 트러스 (Simple Truss)",
+      "subtitle": "트러스 모드 + 집중하중",
+      "description": "트러스 모드로 그린 3부재 삼각 트러스입니다. 정점에 집중하중이 걸려 있고, 해석 후에는 Result Tables에서 부재별 축력과 인장/압축 상태를 바로 확인할 수 있습니다.",
+      "file": "simple_truss.ofsm",
+      "tags": ["트러스 모드", "집중하중", "결과 표"],
+      "hint": "해석 후 Result Tables에서 부재별 인장/압축 상태를 확인해보세요."
+    },
+    {
+      "id": "euler_buckling_column",
+      "title": "오일러 좌굴 기둥 (Euler Buckling Column)",
+      "subtitle": "정밀해석 · Elastic Buckling",
+      "description": "양단 핀 지지된 기둥입니다. 캔버스의 정정성 해석으로는 좌굴하중을 구할 수 없어, 이 템플릿을 열면 자동으로 '정밀해석'(OpenSeesPy) 경로로 전달되고 SETUP 화면에서 해석 종류가 'Elastic Buckling'으로, 모드 개수가 1개로 이미 맞춰져 있습니다. RUN만 누르면 임계하중을 바로 볼 수 있고, 폐형해 Pcr = π²EI/L²과 비교해볼 수 있습니다.",
+      "file": "euler_buckling_column.ofsm",
+      "tags": ["정밀해석", "Elastic Buckling", "자동 설정"],
+      "hint": "SETUP에 Elastic Buckling·1개 모드가 이미 설정돼 있습니다 — RUN만 누르면 됩니다.",
+      "analysis": {
+        "kind": "buckling",
+        "options": { "num_modes": 1 }
+      }
+    }
+  ]
+}

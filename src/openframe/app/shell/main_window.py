@@ -1,5 +1,6 @@
 """Stitch-inspired structural analysis application shell."""
 
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,10 +44,14 @@ from openframe.features.analysis.presentation.analysis_config_store import (
     AnalysisConfigStore,
 )
 from openframe.features.analysis.presentation.analysis_run_thread import AnalysisRunThread
+from openframe.features.analysis.statics import export_opensees_script
 from openframe.features.model.application.open_model import OpenModelService
 from openframe.features.model.presentation.model_load_thread import ModelLoadThread
 from openframe.features.model.presentation.model_sidebar import ModelSidebar
+from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
+from openframe.features.templates.catalog import TemplateEntry
+from openframe.features.templates.presentation.template_gallery_page import TemplateGalleryPage
 from openframe.features.viewport.presentation.model_viewport import ModelViewport
 
 
@@ -87,6 +92,12 @@ class MainWindow(QMainWindow):
         )
         self._model_load_thread: ModelLoadThread | None = None
         self._analysis_run_thread: AnalysisRunThread | None = None
+        #: Set right before a precision-analysis template's generated script
+        #: starts loading (see _open_precision_template); consumed exactly
+        #: once, in _model_loaded, once the model has actually reached
+        #: setup_workspace/analysis_settings and their model-dependent
+        #: widgets are populated.
+        self._pending_analysis_preset: tuple[AnalysisKind, dict, str] | None = None
         self._current_model_source: Path | None = None
         self._model_generation = 0
         self._resume_section = "model"
@@ -113,6 +124,7 @@ class MainWindow(QMainWindow):
         self.navigation = WorkspaceNavigation()
         self.analysis_progress = AnalysisProgressBanner(self)
         self.start_workspace = StartWorkspace()
+        self.template_gallery_page = TemplateGalleryPage()
         self.direct_model_workspace = DirectModelWorkspace()
         self.model_sidebar = ModelSidebar()
         self.viewport = ModelViewport()
@@ -162,6 +174,7 @@ class MainWindow(QMainWindow):
         self.workspace_stack = QStackedWidget()
         self.workspace_stack.setObjectName("workspaceStack")
         self.workspace_stack.addWidget(self.start_workspace)
+        self.workspace_stack.addWidget(self.template_gallery_page)
         self.workspace_stack.addWidget(self.direct_model_workspace)
         self.workspace_stack.addWidget(self.model_workspace_page)
         self.workspace_stack.addWidget(self.setup_workspace)
@@ -279,9 +292,9 @@ class MainWindow(QMainWindow):
         self.direct_model_workspace.project_saved.connect(
             self._direct_project_saved
         )
-        self.start_workspace.template_requested.connect(
-            lambda: self._show_pending_workflow("Template Browser")
-        )
+        self.start_workspace.template_requested.connect(self._show_template_gallery)
+        self.template_gallery_page.back_requested.connect(self._show_start_workspace)
+        self.template_gallery_page.template_opened.connect(self._open_template)
         self.start_workspace.open_project_requested.connect(self._open_project_from_start)
         self.start_workspace.resume_workspace_requested.connect(self._resume_workspace)
         self.start_workspace.session_requested.connect(self._activate_workspace_session)
@@ -338,6 +351,86 @@ class MainWindow(QMainWindow):
         self.header.set_welcome_mode(True)
         self._set_status_mode("home")
         self.statusBar().showMessage("OpenFrame Studio v2.4.1  |  Ready  |  No project loaded")
+
+    def _show_template_gallery(self) -> None:
+        """"Templates" on the home screen - a full-page gallery, not a modal,
+        so a card's live preview/description/tags have real room instead of
+        being squeezed into a popup. Reuses home's own chrome mode (header
+        shown, nav hidden) since this is still part of the "start a project"
+        flow, just one page deeper than the hub itself."""
+        self.workspace_stack.setCurrentWidget(self.template_gallery_page)
+        self.header.show()
+        self.navigation.set_home_mode(True)
+        self.navigation.hide()
+        self.header.set_welcome_mode(True)
+        self._set_status_mode("home")
+        self.statusBar().showMessage("Templates | 완성된 예제 모델을 골라 바로 시작하세요")
+
+    def _open_template(self, data: dict, entry: TemplateEntry) -> None:
+        """A plain template is nothing but a bundled ``.ofsm`` project -
+        opening one lands on ``direct_model_workspace`` exactly the way
+        opening a user's own saved project does (``open_project_dict`` is
+        the same core ``open_project_file`` uses), it just skips the file
+        dialog and starts a fresh (unsaved) session instead of one tied to a
+        path the user never chose. A template whose manifest names an
+        ``analysis_kind`` needs a solver the canvas itself cannot run (e.g.
+        Elastic Buckling) and takes a different path entirely - see
+        ``_open_precision_template``."""
+        if entry.analysis_kind:
+            self._open_precision_template(data, entry)
+            return
+        self._snapshot_current_direct_session()
+        self.direct_model_workspace.open_project_dict(data)
+        self._begin_direct_session(int(data.get("ndm", 2)))
+        self.navigation.hide()
+        self.header.show()
+        self.header.set_welcome_mode(False)
+        self.header.set_direct_model_mode(True)
+        self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
+        self._refresh_start_sessions()
+        self.statusBar().showMessage(
+            f"템플릿 · {entry.title}" + (f"  |  {entry.hint}" if entry.hint else "")
+        )
+
+    def _open_precision_template(self, data: dict, entry: TemplateEntry) -> None:
+        """Exports the template's canvas geometry to an OpenSeesPy script
+        exactly like the canvas's own "정밀해석으로 내보내기" button would,
+        then opens it through the normal OpenSeesPy import pipeline
+        (``_open_exported_analysis_script``) so SETUP's model-dependent
+        widgets (load pattern lists, etc.) populate for real instead of
+        being guessed at. ``_pending_analysis_preset`` carries the
+        template's analysis kind/options across the load thread's async
+        completion - see ``_model_loaded``, the only place it is consumed."""
+        canvas = StaticsDrawingCanvas()
+        canvas.load_dict(data)
+        model = canvas.build_model()
+        unit_length = str(data.get("unit_length", "m"))
+        unit_force = str(data.get("unit_force", "kN"))
+        script = export_opensees_script(model, include_mass=False, length_unit=unit_length)
+        # export_opensees_script (shared with the canvas's own "정밀해석으로
+        # 내보내기" button) never embeds OPENFRAME_UNITS - a hand-drawn
+        # model's own length_unit isn't necessarily trustworthy enough to
+        # skip that confirmation, so the importer falls back to an
+        # interactive "pick your units" dialog. A template already carries
+        # real, author-verified units in its own .ofsm (unit_force/
+        # unit_length above), so prepending the declaration here lets this
+        # one path skip that dialog - exactly the point of a "settings
+        # already applied" template for a first-time user; the shared
+        # export function itself is left untouched.
+        script = (
+            f'OPENFRAME_UNITS = {{"force": {unit_force!r}, "length": {unit_length!r}, '
+            f'"time": "s"}}\n' + script
+        )
+        scratch_dir = Path(tempfile.gettempdir()) / "openframe_studio_templates"
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        script_path = scratch_dir / f"{entry.id}.py"
+        script_path.write_text(script, encoding="utf-8")
+        self._pending_analysis_preset = (
+            AnalysisKind(entry.analysis_kind),
+            dict(entry.analysis_options),
+            entry.hint,
+        )
+        self._open_exported_analysis_script(script_path)
 
     def _show_pending_workflow(self, workflow: str) -> None:
         self.statusBar().showMessage(f"{workflow} interface is ready for feature connection")
@@ -543,6 +636,20 @@ class MainWindow(QMainWindow):
         self._current_session_key = key
         self._current_direct_session_key = None
         self._refresh_start_sessions()
+
+        pending_preset = self._pending_analysis_preset
+        self._pending_analysis_preset = None
+        if pending_preset is not None:
+            kind, options, hint = pending_preset
+            if kind == AnalysisKind.BUCKLING:
+                self.analysis_settings.apply_buckling_preset(options)
+            self._open_setup_workspace()
+            self.statusBar().showMessage(
+                f"템플릿 · {kind.value} 설정이 이미 적용되었습니다"
+                + (f"  |  {hint}" if hint else "")
+            )
+            return
+
         self._show_model_workspace()
         self.statusBar().showMessage(
             f"Model loaded · Nodes {len(model.nodes)} · Elements {len(model.elements)} · "

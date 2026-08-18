@@ -201,8 +201,13 @@ class DirectModelWorkspace(QFrame):
             return
         self.project_saved.emit(path.resolve())
 
-    def open_project_file(self, path: Path) -> None:
-        """Load a saved project and land on its own (2D or 3D) canvas.
+    def open_project_dict(self, data: dict[str, object]) -> None:
+        """Load an already-parsed project dict and land on its own (2D or
+        3D) canvas — the shared core both ``open_project_file`` (a user's
+        saved ``.ofsm``) and the Templates gallery (a bundled ``.ofsm`` read
+        straight from package resources, no user file dialog involved) go
+        through, so there is exactly one place that decides which canvas a
+        project's own ``ndm`` routes to.
 
         A project's own ``ndm`` decides which of the two separate canvas
         instances receives it — never the one currently on screen — since a
@@ -210,12 +215,16 @@ class DirectModelWorkspace(QFrame):
         vice versa), the same separation ``start_2d_model``/``start_3d_model``
         already enforce.
         """
-        data = json.loads(path.read_text(encoding="utf-8"))
         is_3d = int(data.get("ndm", 2)) == 3
         target = self.geometry_page_3d if is_3d else self.geometry_page
         target.load_project_dict(data)
         self._wizard_geometry_target = "geometry_3d" if is_3d else "geometry"
         self.set_current_step("geometry")
+
+    def open_project_file(self, path: Path) -> None:
+        """Load a saved project and land on its own (2D or 3D) canvas."""
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.open_project_dict(data)
         self.project_opened.emit(path.resolve())
 
     def _open_project(self) -> None:

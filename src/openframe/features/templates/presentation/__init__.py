@@ -1,0 +1,1 @@
+"""Templates gallery presentation components."""

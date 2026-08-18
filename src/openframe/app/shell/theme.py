@@ -1914,6 +1914,27 @@ QLabel#direct2DResultLearningHint {
     padding: 8px;
     font-size: 8pt;
 }
+QFrame#templateGalleryPage { background: #f5f7fa; }
+QWidget#templateGalleryContent { background: transparent; }
+QFrame#templateCard {
+    background: #ffffff; border: 1px solid #d8e1eb; border-radius: 8px;
+}
+QFrame#templateCard:hover { border-color: #174ea6; }
+QLabel#templateCardPreview {
+    background: #eef1f6; border: 1px solid #e0e6ed; border-radius: 6px;
+}
+QLabel#templateCardTitle { color: #142b49; font-size: 11pt; font-weight: 700; }
+QLabel#templateCardSubtitle { color: #506178; font-size: 8pt; font-weight: 600; }
+QLabel#templateTagChip {
+    color: #174ea6; background: #eef3fb; border: 1px solid #d3e0f2;
+    border-radius: 8px; padding: 2px 8px; font-size: 7pt; font-weight: 700;
+}
+QPushButton#templateOpenButton {
+    min-height: 32px; padding: 0 14px; color: #ffffff; background: #174ea6;
+    border: 0; border-radius: 4px; font-weight: 700;
+}
+QPushButton#templateOpenButton:hover { background: #1e5fc4; }
+QPushButton#templateOpenButton:pressed { background: #143f87; }
 """
 
 

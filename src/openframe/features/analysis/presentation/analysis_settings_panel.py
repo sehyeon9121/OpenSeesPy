@@ -2068,6 +2068,37 @@ class AnalysisSettingsPanel(QFrame):
     def selected_analysis_kind(self) -> AnalysisKind:
         return AnalysisKind(self.analysis_type.currentData())
 
+    def apply_buckling_preset(self, options: dict[str, float | int | str | bool]) -> None:
+        """Pre-fills the BUCKLING card from a template's own manifest so a
+        first-time user opening a precision-analysis template lands on SETUP
+        with the analysis type already picked and its options already
+        sensible, instead of a blank "Linear Static" default they'd have no
+        way to know to change.
+
+        Deliberately scoped to buckling only - every other kind's options
+        (control node, ground motion, ...) depend on the loaded model in
+        ways a fixed preset dict cannot resolve on its own, unlike
+        buckling's small, model-independent card (see ``build_options``'s
+        BUCKLING branch: reference_load_scale/num_modes/geometric_transform_
+        type, with "All Patterns" already the correct default reference load
+        for a template with exactly one load pattern).
+
+        Setting the combo (rather than calling ``config_store.set_kind``
+        directly) is what actually drives the UI: it fires the same
+        ``currentIndexChanged`` -> ``_analysis_type_changed`` path a user
+        picking BUCKLING by hand would, which is what makes ``buckling_group``
+        visible and updates the store to match - a direct store write would
+        leave the combo (and the whole card) still showing whatever kind was
+        selected before.
+        """
+        self.analysis_type.setCurrentIndex(self.analysis_type.findData(AnalysisKind.BUCKLING))
+        if "num_modes" in options:
+            self.buckling_num_modes.setValue(int(options["num_modes"]))
+        if "reference_load_scale" in options:
+            self.buckling_reference_load_scale.setValue(float(options["reference_load_scale"]))
+        if "eigenvalue_tolerance" in options:
+            self.buckling_eigenvalue_tolerance.setValue(float(options["eigenvalue_tolerance"]))
+
     def build_options(self) -> dict[str, float | int | str | bool]:
         """Return the settings this panel controls, in the shape
         ``run_nonlinear_static_analysis`` (and its worker.py/runner.py plumbing)

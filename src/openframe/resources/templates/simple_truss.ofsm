@@ -1,0 +1,104 @@
+{
+  "format": "openframe-canvas",
+  "version": 1,
+  "ndm": 2,
+  "element_family": "truss",
+  "include_self_weight": false,
+  "levels": [
+    {
+      "kind": "xy",
+      "offset": 0.0,
+      "label": "1F"
+    }
+  ],
+  "active_plane_index": 0,
+  "nodes": [
+    {
+      "tag": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 2,
+      "x": 4.0,
+      "y": 0.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 3,
+      "x": 2.0,
+      "y": 2.0,
+      "z": 0.0,
+      "ndf": 3
+    }
+  ],
+  "elements": [
+    {
+      "tag": 1,
+      "node_i": 1,
+      "node_j": 2,
+      "element_type": "truss",
+      "properties": {},
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 2,
+      "node_i": 1,
+      "node_j": 3,
+      "element_type": "truss",
+      "properties": {},
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 3,
+      "node_i": 3,
+      "node_j": 2,
+      "element_type": "truss",
+      "properties": {},
+      "moment_release_i": false,
+      "moment_release_j": false
+    }
+  ],
+  "boundaries": [
+    {
+      "node_tag": 1,
+      "restraints": [
+        true,
+        true,
+        false
+      ],
+      "angle": 0.0
+    },
+    {
+      "node_tag": 2,
+      "restraints": [
+        false,
+        true,
+        false
+      ],
+      "angle": 0.0
+    }
+  ],
+  "nodal_loads": [
+    {
+      "node_tag": 3,
+      "values": [
+        0.0,
+        -20.0,
+        0.0
+      ],
+      "pattern_tag": null,
+      "case_type": "UNCLASSIFIED"
+    }
+  ],
+  "element_loads": [],
+  "embedded_nodes": [],
+  "hinge_nodes": [],
+  "unit_force": "kN",
+  "unit_length": "m"
+}

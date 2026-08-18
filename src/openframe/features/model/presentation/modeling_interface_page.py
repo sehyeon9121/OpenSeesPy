@@ -88,6 +88,22 @@ class _CurrentPageOnlyStack(QStackedWidget):
         current = self.currentWidget()
         return current.minimumSizeHint() if current is not None else super().minimumSizeHint()
 
+    def hasHeightForWidth(self) -> bool:
+        # Deliberately always False, even though the current page's own
+        # hasHeightForWidth() (from its word-wrapped QLabels - 노드 추가/이동·
+        # 복사/아치/부재 all have one) would say True. sizeHint() above already
+        # gives the parent layout a perfectly good static height for
+        # whichever page is current, computed at that page's own natural
+        # width. Letting hasHeightForWidth()/heightForWidth() propagate up
+        # instead put the outer QVBoxLayout (_build_editor_scroll's ``root``)
+        # into Qt's dynamic heightForWidth codepath for this item, which
+        # computed a wildly inflated height (~1000px panels for ~450px of
+        # actual content) and then centered this stack inside that oversized
+        # cell - the fields visibly sank toward the middle of the panel
+        # instead of staying pinned at the top. Reporting a plain, static
+        # size (no heightForWidth) avoids that codepath entirely.
+        return False
+
 
 class ModelingInterfacePage(QFrame):
     """One-screen workflow: draw, inspect, assign conditions, and review results."""
