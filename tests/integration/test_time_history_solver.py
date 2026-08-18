@@ -221,7 +221,9 @@ def test_a_real_bundled_kobe_at2_file_still_runs_end_to_end(tmp_path: Path) -> N
         / "openframe"
         / "infrastructure"
         / "ground_motions"
-        / "data"
+        # Real PEER record, not the shipped synthetic catalog - see
+        # reference_data_not_shipped/README.md.
+        / "reference_data_not_shipped"
         / "RSN1116_KOBE_SHI-UP.AT2"
     )
 

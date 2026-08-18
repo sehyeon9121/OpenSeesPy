@@ -27,8 +27,11 @@ floor. 20.0 kN*s^2/m per node is equivalent to a 392.4 kN seismic weight per
 floor (m = W/g, g = 9.81 m/s^2).
 
 To run a time history against this model, pair it with a ground-motion
-record such as the bundled Kobe .AT2 file at
-``src/openframe/infrastructure/ground_motions/data/RSN1116_KOBE_SHI-UP.AT2``.
+record such as one of the bundled synthetic records at
+``src/openframe/infrastructure/ground_motions/data/`` (e.g.
+``SYN02_SHORTPERIOD_HIGHPGA_LONG.AT2``), or a real record kept for local
+reference/testing only at
+``src/openframe/infrastructure/ground_motions/reference_data_not_shipped/RSN1116_KOBE_SHI-UP.AT2``.
 """
 
 import openseespy.opensees as ops

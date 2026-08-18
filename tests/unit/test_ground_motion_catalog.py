@@ -19,7 +19,7 @@ def test_built_in_catalog_lists_every_bundled_record() -> None:
 
     records = catalog.list_records()
 
-    assert len(records) == 65
+    assert len(records) == 8
     assert all(record.source == GroundMotionSource.BUILT_IN for record in records)
     assert all(record.npts > 0 and record.dt > 0 for record in records)
     assert len({record.record_id for record in records}) == len(records)

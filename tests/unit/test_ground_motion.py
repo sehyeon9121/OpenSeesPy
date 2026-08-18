@@ -13,7 +13,9 @@ _BUILT_IN_KOBE_AT2 = (
     / "openframe"
     / "infrastructure"
     / "ground_motions"
-    / "data"
+    # Real PEER record, not the shipped synthetic catalog - see
+    # reference_data_not_shipped/README.md.
+    / "reference_data_not_shipped"
     / "RSN1116_KOBE_SHI-UP.AT2"
 )
 
