@@ -19,6 +19,16 @@ from openframe.infrastructure.opensees.model_importer import OpenSeesModelImport
 EXAMPLE_MODEL = Path(__file__).parents[2] / "examples" / "cantilever_frame_3d.py"
 
 
+def _shown_model_viewport() -> ModelViewport:
+    # Quick3DViewport now defers QML loading (rootObject()/status becoming
+    # Ready) to its first showEvent - see quick3d_viewport.py's own comment -
+    # so tests that read the QML root must show() first, same as this
+    # viewport becoming visible on a real page would trigger it.
+    viewport = ModelViewport()
+    viewport.show()
+    return viewport
+
+
 def test_imports_3d_coordinates_dofs_and_section_properties() -> None:
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
 
@@ -63,7 +73,7 @@ def test_solves_3d_frame_and_returns_six_dof_results() -> None:
 def test_3d_viewport_switches_between_iso_and_orthographic_views() -> None:
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
-    viewport = ModelViewport()
+    viewport = _shown_model_viewport()
 
     viewport.set_model(model)
     application.processEvents()
@@ -104,7 +114,7 @@ def test_3d_viewport_switches_between_iso_and_orthographic_views() -> None:
 def test_middle_mouse_drag_orbits_the_3d_model() -> None:
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
-    viewport = ModelViewport()
+    viewport = _shown_model_viewport()
     viewport.resize(800, 600)
     viewport.show()
     viewport.set_model(model)
@@ -141,7 +151,7 @@ def test_middle_mouse_drag_orbits_the_3d_model() -> None:
 def test_shift_middle_mouse_drag_pans_even_after_fit() -> None:
     application = QApplication.instance() or QApplication([])
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
-    viewport = ModelViewport()
+    viewport = _shown_model_viewport()
     viewport.resize(800, 600)
     viewport.show()
     viewport.set_model(model)

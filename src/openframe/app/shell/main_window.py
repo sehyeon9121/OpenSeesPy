@@ -5,6 +5,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from openframe import __version__ as _APP_VERSION
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
@@ -203,7 +205,7 @@ class MainWindow(QMainWindow):
         status = QStatusBar(self)
         status.setObjectName("applicationStatusBar")
         status.setProperty("mode", "home")
-        status.showMessage("OpenFrame Studio v2.4.1  |  Ready  |  No project loaded")
+        status.showMessage(f"OpenFrame Studio v{_APP_VERSION}  |  Ready  |  No project loaded")
         self.setStatusBar(status)
 
     def _set_status_mode(self, mode: str) -> None:
@@ -350,7 +352,7 @@ class MainWindow(QMainWindow):
         self.navigation.hide()
         self.header.set_welcome_mode(True)
         self._set_status_mode("home")
-        self.statusBar().showMessage("OpenFrame Studio v2.4.1  |  Ready  |  No project loaded")
+        self.statusBar().showMessage(f"OpenFrame Studio v{_APP_VERSION}  |  Ready  |  No project loaded")
 
     def _show_template_gallery(self) -> None:
         """"Templates" on the home screen - a full-page gallery, not a modal,

@@ -15,7 +15,13 @@ from openframe.features.viewport.presentation.quick3d_viewport import Quick3DVie
 
 def _viewport() -> Quick3DViewport:
     QApplication.instance() or QApplication([])
-    return Quick3DViewport()
+    viewport = Quick3DViewport()
+    # QML loading (setSource(), which is what makes rootObject() non-None) is
+    # deferred to the widget's first showEvent - see quick3d_viewport.py's own
+    # comment on why - so tests that need the QML root loaded must show() it
+    # first, same as a real page becoming visible would.
+    viewport.show()
+    return viewport
 
 
 def test_plane_picked_inverts_the_view_coordinate_mapping() -> None:

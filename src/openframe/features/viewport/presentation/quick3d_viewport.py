@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, QUrl, Signal
+from PySide6.QtGui import QShowEvent
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
@@ -29,15 +30,38 @@ class Quick3DViewport(QFrame):
         self.quick_widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         self.quick_widget.setClearColor(Qt.GlobalColor.transparent)
         self.quick_widget.rootContext().setContextProperty("sceneBridge", self.bridge)
-        qml_path = Path(__file__).with_name("qml") / "structural_view.qml"
-        self.quick_widget.setSource(QUrl.fromLocalFile(str(qml_path)))
         layout.addWidget(self.quick_widget)
 
+        # setSource() itself (not just becoming visible) is what makes
+        # QQuickWidget stand up its scene graph/RHI context - three of these
+        # get constructed eagerly at app startup (main viewport, modeling
+        # page preview, result viewport), and doing that immediately in
+        # __init__ made all three flash a blank native surface before the
+        # app's own window ever appears. Deferred to this widget's first real
+        # showEvent instead, so a viewport nobody has scrolled to yet never
+        # touches the GPU at all. _pending_camera_preset lets a caller that
+        # sets a model/camera before the first show (e.g. set_model() while
+        # this page isn't the visible one) still take effect once loaded.
+        self._loaded = False
+        self._pending_camera_preset: str | None = None
+        self._qml_path = Path(__file__).with_name("qml") / "structural_view.qml"
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._ensure_loaded()
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        self.quick_widget.setSource(QUrl.fromLocalFile(str(self._qml_path)))
         root = self.quick_widget.rootObject()
         if root is not None:
             root.cameraModeChanged.connect(self.camera_mode_changed.emit)
             root.nodePicked.connect(self._on_node_picked)
             root.planePicked.connect(self._on_plane_picked)
+            if self._pending_camera_preset is not None:
+                root.setPreset(self._pending_camera_preset)
 
     def _on_node_picked(self, tag: int, x: float, y: float) -> None:
         global_pos = self.quick_widget.mapToGlobal(QPoint(int(x), int(y)))
@@ -119,6 +143,7 @@ class Quick3DViewport(QFrame):
     def set_camera_preset(self, preset: str) -> None:
         if preset not in {"iso", "xy", "xz", "yz"}:
             return
+        self._pending_camera_preset = preset
         root = self.quick_widget.rootObject()
         if root is not None:
             # QMetaObject.invokeMethod(root, "setPreset", Q_ARG(str, preset)) silently

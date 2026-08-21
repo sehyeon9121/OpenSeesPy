@@ -20,10 +20,20 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+def _result_viewport() -> ResultViewport:
+    # Quick3DViewport now defers QML loading (rootObject()/status becoming
+    # Ready) to its first showEvent - see quick3d_viewport.py's own comment -
+    # so tests that read the QML root must show() first, same as this
+    # viewport becoming visible on a real page would trigger it.
+    viewport = ResultViewport()
+    viewport.show()
+    return viewport
+
+
 def test_result_viewport_switches_to_quick3d_for_3d_models() -> None:
     application = _application()
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
-    viewport = ResultViewport()
+    viewport = _result_viewport()
 
     viewport.set_model(model)
     application.processEvents()
@@ -45,7 +55,7 @@ def test_result_viewport_shows_deformed_overlay_colours_and_load_arrows() -> Non
     )
     assert result.status == AnalysisStatus.COMPLETED, result.messages
 
-    viewport = ResultViewport()
+    viewport = _result_viewport()
     viewport.set_model(model)
     viewport.show_result(result)
     application.processEvents()
@@ -78,7 +88,7 @@ def test_displacement_mode_enables_node_picking_for_3d_models_only() -> None:
     )
     assert result.status == AnalysisStatus.COMPLETED, result.messages
 
-    viewport = ResultViewport()
+    viewport = _result_viewport()
     viewport.set_model(model)
     viewport.show_result(result)
     application.processEvents()
@@ -97,14 +107,19 @@ def test_displacement_mode_enables_node_picking_for_3d_models_only() -> None:
 def test_displacement_mode_does_not_enable_picking_for_2d_models() -> None:
     application = _application()
     model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL_2D)
-    viewport = ResultViewport()
+    viewport = _result_viewport()
 
     viewport.set_model(model)
     application.processEvents()
     viewport.set_result_type("displacement")
 
     assert viewport.quick3d_view.quick_widget.cursor().shape() != Qt.CursorShape.CrossCursor
-    assert viewport.quick3d_view.quick_widget.rootObject().property("pickingEnabled") is False
+    # A 2D model never makes quick3d_view the current canvas_stack widget, so
+    # it never receives a showEvent and its QML never loads (see
+    # quick3d_viewport.py's deferred-loading comment) - picking is "disabled"
+    # in the strongest possible sense: there is no QML root to enable it on.
+    assert viewport.canvas_stack.currentWidget() is not viewport.quick3d_view
+    assert viewport.quick3d_view.quick_widget.rootObject() is None
 
     viewport.close()
 
@@ -116,7 +131,7 @@ def test_node_displacement_text_reports_known_values_and_none_for_unknown_tag() 
     )
     assert result.status == AnalysisStatus.COMPLETED, result.messages
 
-    viewport = ResultViewport()
+    viewport = _result_viewport()
     viewport.set_model(model)
     viewport.show_result(result)
 
@@ -138,7 +153,7 @@ def test_picked_node_is_highlighted_and_clears_when_leaving_displacement_mode() 
     )
     assert result.status == AnalysisStatus.COMPLETED, result.messages
 
-    viewport = ResultViewport()
+    viewport = _result_viewport()
     viewport.set_model(model)
     viewport.show_result(result)
     application.processEvents()
@@ -177,7 +192,7 @@ def test_view_selector_and_zoom_buttons_actually_move_the_3d_camera() -> None:
     )
     assert result.status == AnalysisStatus.COMPLETED, result.messages
 
-    viewport = ResultViewport()
+    viewport = _result_viewport()
     viewport.set_model(model)
     viewport.show_result(result)
     application.processEvents()
