@@ -930,15 +930,15 @@ class TestBuiltInGroundMotionLibrary:
     sharing one readout grid - build_options() never cares which source was
     used, only what each row's active_motion()/active_path() resolve to."""
 
-    def test_built_in_library_has_the_bundled_synthetic_records(self) -> None:
+    def test_built_in_library_has_the_bundled_real_records(self) -> None:
         application = QApplication.instance() or QApplication([])
         panel = _time_history_panel()
         row = panel.time_history_direction_rows[0]
 
         records = row._catalog.list_records()
 
-        assert len(records) == 8
-        assert any("SYNTHETIC" in record.event for record in records)
+        assert len(records) == 65
+        assert any("Kobe" in record.event for record in records)
         application.processEvents()
 
     def test_selecting_built_in_populates_the_readouts(

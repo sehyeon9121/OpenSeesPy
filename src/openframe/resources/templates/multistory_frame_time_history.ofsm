@@ -1,0 +1,2076 @@
+{
+  "format": "openframe-canvas",
+  "version": 1,
+  "ndm": 2,
+  "element_family": "frame",
+  "include_self_weight": false,
+  "levels": [
+    {
+      "kind": "xy",
+      "offset": 0.0,
+      "label": "1F"
+    }
+  ],
+  "active_plane_index": 0,
+  "nodes": [
+    {
+      "tag": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 2,
+      "x": 4.0,
+      "y": 0.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 3,
+      "x": 8.0,
+      "y": 0.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 4,
+      "x": 12.0,
+      "y": 0.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 5,
+      "x": 16.0,
+      "y": 0.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 6,
+      "x": 0.0,
+      "y": 4.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 7,
+      "x": 4.0,
+      "y": 4.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 8,
+      "x": 8.0,
+      "y": 4.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 9,
+      "x": 12.0,
+      "y": 4.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 10,
+      "x": 16.0,
+      "y": 4.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 11,
+      "x": 0.0,
+      "y": 8.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 12,
+      "x": 4.0,
+      "y": 8.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 13,
+      "x": 8.0,
+      "y": 8.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 14,
+      "x": 12.0,
+      "y": 8.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 15,
+      "x": 16.0,
+      "y": 8.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 16,
+      "x": 0.0,
+      "y": 12.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 17,
+      "x": 4.0,
+      "y": 12.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 18,
+      "x": 8.0,
+      "y": 12.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 19,
+      "x": 12.0,
+      "y": 12.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 20,
+      "x": 16.0,
+      "y": 12.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 21,
+      "x": 0.0,
+      "y": 16.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 22,
+      "x": 4.0,
+      "y": 16.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 23,
+      "x": 8.0,
+      "y": 16.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 24,
+      "x": 12.0,
+      "y": 16.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 25,
+      "x": 16.0,
+      "y": 16.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 26,
+      "x": 0.0,
+      "y": 20.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 27,
+      "x": 4.0,
+      "y": 20.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 28,
+      "x": 8.0,
+      "y": 20.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 29,
+      "x": 12.0,
+      "y": 20.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 30,
+      "x": 16.0,
+      "y": 20.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 31,
+      "x": 0.0,
+      "y": 24.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 32,
+      "x": 4.0,
+      "y": 24.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 33,
+      "x": 8.0,
+      "y": 24.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 34,
+      "x": 12.0,
+      "y": 24.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 35,
+      "x": 16.0,
+      "y": 24.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 36,
+      "x": 0.0,
+      "y": 28.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 37,
+      "x": 4.0,
+      "y": 28.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 38,
+      "x": 8.0,
+      "y": 28.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 39,
+      "x": 12.0,
+      "y": 28.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 40,
+      "x": 16.0,
+      "y": 28.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 41,
+      "x": 0.0,
+      "y": 32.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 42,
+      "x": 4.0,
+      "y": 32.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 43,
+      "x": 8.0,
+      "y": 32.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 44,
+      "x": 12.0,
+      "y": 32.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 45,
+      "x": 16.0,
+      "y": 32.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 46,
+      "x": 0.0,
+      "y": 36.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 47,
+      "x": 4.0,
+      "y": 36.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 48,
+      "x": 8.0,
+      "y": 36.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 49,
+      "x": 12.0,
+      "y": 36.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 50,
+      "x": 16.0,
+      "y": 36.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 51,
+      "x": 0.0,
+      "y": 40.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 52,
+      "x": 4.0,
+      "y": 40.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 53,
+      "x": 8.0,
+      "y": 40.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 54,
+      "x": 12.0,
+      "y": 40.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 55,
+      "x": 16.0,
+      "y": 40.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 56,
+      "x": 0.0,
+      "y": 44.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 57,
+      "x": 4.0,
+      "y": 44.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 58,
+      "x": 8.0,
+      "y": 44.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 59,
+      "x": 12.0,
+      "y": 44.0,
+      "z": 0.0,
+      "ndf": 3
+    },
+    {
+      "tag": 60,
+      "x": 16.0,
+      "y": 44.0,
+      "z": 0.0,
+      "ndf": 3
+    }
+  ],
+  "elements": [
+    {
+      "tag": 1,
+      "node_i": 1,
+      "node_j": 6,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 2,
+      "node_i": 2,
+      "node_j": 7,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 3,
+      "node_i": 3,
+      "node_j": 8,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 4,
+      "node_i": 4,
+      "node_j": 9,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 5,
+      "node_i": 5,
+      "node_j": 10,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 6,
+      "node_i": 6,
+      "node_j": 11,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 7,
+      "node_i": 7,
+      "node_j": 12,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 8,
+      "node_i": 8,
+      "node_j": 13,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 9,
+      "node_i": 9,
+      "node_j": 14,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 10,
+      "node_i": 10,
+      "node_j": 15,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 11,
+      "node_i": 11,
+      "node_j": 16,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 12,
+      "node_i": 12,
+      "node_j": 17,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 13,
+      "node_i": 13,
+      "node_j": 18,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 14,
+      "node_i": 14,
+      "node_j": 19,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 15,
+      "node_i": 15,
+      "node_j": 20,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 16,
+      "node_i": 16,
+      "node_j": 21,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 17,
+      "node_i": 17,
+      "node_j": 22,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 18,
+      "node_i": 18,
+      "node_j": 23,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 19,
+      "node_i": 19,
+      "node_j": 24,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 20,
+      "node_i": 20,
+      "node_j": 25,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 21,
+      "node_i": 21,
+      "node_j": 26,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 22,
+      "node_i": 22,
+      "node_j": 27,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 23,
+      "node_i": 23,
+      "node_j": 28,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 24,
+      "node_i": 24,
+      "node_j": 29,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 25,
+      "node_i": 25,
+      "node_j": 30,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 26,
+      "node_i": 26,
+      "node_j": 31,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 27,
+      "node_i": 27,
+      "node_j": 32,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 28,
+      "node_i": 28,
+      "node_j": 33,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 29,
+      "node_i": 29,
+      "node_j": 34,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 30,
+      "node_i": 30,
+      "node_j": 35,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 31,
+      "node_i": 31,
+      "node_j": 36,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 32,
+      "node_i": 32,
+      "node_j": 37,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 33,
+      "node_i": 33,
+      "node_j": 38,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 34,
+      "node_i": 34,
+      "node_j": 39,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 35,
+      "node_i": 35,
+      "node_j": 40,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 36,
+      "node_i": 36,
+      "node_j": 41,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 37,
+      "node_i": 37,
+      "node_j": 42,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 38,
+      "node_i": 38,
+      "node_j": 43,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 39,
+      "node_i": 39,
+      "node_j": 44,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 40,
+      "node_i": 40,
+      "node_j": 45,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 41,
+      "node_i": 41,
+      "node_j": 46,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 42,
+      "node_i": 42,
+      "node_j": 47,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 43,
+      "node_i": 43,
+      "node_j": 48,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 44,
+      "node_i": 44,
+      "node_j": 49,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 45,
+      "node_i": 45,
+      "node_j": 50,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 46,
+      "node_i": 46,
+      "node_j": 51,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 47,
+      "node_i": 47,
+      "node_j": 52,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 48,
+      "node_i": 48,
+      "node_j": 53,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 49,
+      "node_i": 49,
+      "node_j": 54,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 50,
+      "node_i": 50,
+      "node_j": 55,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 51,
+      "node_i": 51,
+      "node_j": 56,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 52,
+      "node_i": 52,
+      "node_j": 57,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 53,
+      "node_i": 53,
+      "node_j": 58,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 54,
+      "node_i": 54,
+      "node_j": 59,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 55,
+      "node_i": 55,
+      "node_j": 60,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 56,
+      "node_i": 6,
+      "node_j": 7,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 57,
+      "node_i": 7,
+      "node_j": 8,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 58,
+      "node_i": 8,
+      "node_j": 9,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 59,
+      "node_i": 9,
+      "node_j": 10,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 60,
+      "node_i": 11,
+      "node_j": 12,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 61,
+      "node_i": 12,
+      "node_j": 13,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 62,
+      "node_i": 13,
+      "node_j": 14,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 63,
+      "node_i": 14,
+      "node_j": 15,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 64,
+      "node_i": 16,
+      "node_j": 17,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 65,
+      "node_i": 17,
+      "node_j": 18,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 66,
+      "node_i": 18,
+      "node_j": 19,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 67,
+      "node_i": 19,
+      "node_j": 20,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 68,
+      "node_i": 21,
+      "node_j": 22,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 69,
+      "node_i": 22,
+      "node_j": 23,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 70,
+      "node_i": 23,
+      "node_j": 24,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 71,
+      "node_i": 24,
+      "node_j": 25,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 72,
+      "node_i": 26,
+      "node_j": 27,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 73,
+      "node_i": 27,
+      "node_j": 28,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 74,
+      "node_i": 28,
+      "node_j": 29,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 75,
+      "node_i": 29,
+      "node_j": 30,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 76,
+      "node_i": 31,
+      "node_j": 32,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 77,
+      "node_i": 32,
+      "node_j": 33,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 78,
+      "node_i": 33,
+      "node_j": 34,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 79,
+      "node_i": 34,
+      "node_j": 35,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 80,
+      "node_i": 36,
+      "node_j": 37,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 81,
+      "node_i": 37,
+      "node_j": 38,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 82,
+      "node_i": 38,
+      "node_j": 39,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 83,
+      "node_i": 39,
+      "node_j": 40,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 84,
+      "node_i": 41,
+      "node_j": 42,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 85,
+      "node_i": 42,
+      "node_j": 43,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 86,
+      "node_i": 43,
+      "node_j": 44,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 87,
+      "node_i": 44,
+      "node_j": 45,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 88,
+      "node_i": 46,
+      "node_j": 47,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 89,
+      "node_i": 47,
+      "node_j": 48,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 90,
+      "node_i": 48,
+      "node_j": 49,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 91,
+      "node_i": 49,
+      "node_j": 50,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 92,
+      "node_i": 51,
+      "node_j": 52,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 93,
+      "node_i": 52,
+      "node_j": 53,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 94,
+      "node_i": 53,
+      "node_j": 54,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 95,
+      "node_i": 54,
+      "node_j": 55,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 96,
+      "node_i": 56,
+      "node_j": 57,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 97,
+      "node_i": 57,
+      "node_j": 58,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 98,
+      "node_i": 58,
+      "node_j": 59,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    },
+    {
+      "tag": 99,
+      "node_i": 59,
+      "node_j": 60,
+      "element_type": "frame",
+      "properties": {
+        "E": 25000000.0,
+        "A": 0.25,
+        "I": 0.005208333333333333,
+        "width": 0.5,
+        "height": 0.5,
+        "density": 24.0
+      },
+      "moment_release_i": false,
+      "moment_release_j": false
+    }
+  ],
+  "boundaries": [
+    {
+      "node_tag": 1,
+      "restraints": [
+        true,
+        true,
+        true
+      ],
+      "angle": 0.0
+    },
+    {
+      "node_tag": 2,
+      "restraints": [
+        true,
+        true,
+        true
+      ],
+      "angle": 0.0
+    },
+    {
+      "node_tag": 3,
+      "restraints": [
+        true,
+        true,
+        true
+      ],
+      "angle": 0.0
+    },
+    {
+      "node_tag": 4,
+      "restraints": [
+        true,
+        true,
+        true
+      ],
+      "angle": 0.0
+    },
+    {
+      "node_tag": 5,
+      "restraints": [
+        true,
+        true,
+        true
+      ],
+      "angle": 0.0
+    }
+  ],
+  "nodal_loads": [],
+  "element_loads": [],
+  "embedded_nodes": [],
+  "hinge_nodes": [],
+  "unit_force": "kN",
+  "unit_length": "m"
+}

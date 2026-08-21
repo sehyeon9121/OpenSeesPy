@@ -42,18 +42,18 @@
       }
     },
     {
-      "id": "portal_frame_time_history",
-      "title": "1층 라멘 시간이력 (Portal Frame Time History)",
-      "subtitle": "정밀해석 · Time History · 합성 지진파",
-      "description": "양쪽 기둥이 바닥에 고정된 1스팬 1층 라멘 구조물입니다. 캔버스의 정정성 해석은 동적 해석을 다루지 못해, 이 템플릿을 열면 자동으로 '정밀해석'(OpenSeesPy) 경로로 전달되고 SETUP 화면에서 해석 종류가 'Time History'로, Ground Motion 표의 X방향 행이 번들 지진파로 이미 채워져 있습니다. 이 지진파는 실제 관측 기록이 아니라, 실제 지진 기록(PEER RSN169, Imperial Valley)의 응답스펙트럼·Arias 강도·유효지속시간 등 공학적 특성만 통계적으로 보정해 독립 생성한 합성 가속도 기록(연약지반·매우 긴 지속시간형)입니다 — 원본 파형은 포함하지 않습니다. RUN만 누르면 시간이력 응답을 바로 볼 수 있습니다.",
-      "file": "portal_frame_time_history.ofsm",
-      "tags": ["정밀해석", "Time History", "합성 지진파"],
-      "hint": "SETUP에 Time History·X방향 합성 지진파(연약지반·장지속시간형)가 이미 설정돼 있습니다 — RUN만 누르면 됩니다.",
+      "id": "multistory_frame_time_history",
+      "title": "4베이 11층 라멘 시간이력 (4-Bay 11-Story Frame Time History)",
+      "subtitle": "정밀해석 · Time History · 실제 지진파",
+      "description": "4m 스팬 4베이, 4m 층고 11개층의 철근콘크리트 모멘트 프레임입니다(기둥·보 단면 0.5×0.5m, E=25,000,000 kN/m², 단위중량 24 kN/m³ - 부재 자중만으로 실제 층질량과 같은 질량이 계산되도록 맞춘 값). 5개 기둥 하부가 모두 바닥에 고정돼 있습니다. 캔버스의 정정성 해석은 동적 해석을 다루지 못해, 이 템플릿을 열면 자동으로 '정밀해석'(OpenSeesPy) 경로로 전달되고 SETUP 화면에서 해석 종류가 'Time History'로, Ground Motion 표의 X방향 행이 번들 지진파로 이미 채워져 있습니다. 이 지진파는 PEER NGA-West2 데이터베이스의 실제 관측 기록(RSN1633, 1990 Manjil 지진, Abbar 관측소, L 성분)입니다. RUN만 누르면 시간이력 응답을 바로 볼 수 있습니다.",
+      "file": "multistory_frame_time_history.ofsm",
+      "tags": ["정밀해석", "Time History", "실제 지진파"],
+      "hint": "SETUP에 Time History·X방향 실제 지진파(1990 Manjil, RSN1633)가 이미 설정돼 있습니다 — RUN만 누르면 됩니다.",
       "analysis": {
         "kind": "time_history",
         "options": {
           "directions": [
-            { "dof": 1, "record_id": "SYN06" }
+            { "dof": 1, "record_id": "RSN1633_MANJIL_ABBAR--L" }
           ]
         }
       }

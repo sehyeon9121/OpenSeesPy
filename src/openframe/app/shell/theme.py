@@ -1,7 +1,16 @@
 """Application shell theme shared by all feature presentation components."""
 
+from pathlib import Path
+
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
+
+#: Bundled font files - see resources/fonts/README.md. Registered at startup
+#: via QFontDatabase.addApplicationFont() so rendering is identical on every
+#: machine regardless of what's separately installed on that system, instead
+#: of relying on a same-name font happening to already be present.
+_FONTS_DIRECTORY = Path(__file__).resolve().parents[2] / "resources" / "fonts"
+_BUNDLED_FONT_FILES = ("NotoSansKR[wght].ttf", "JetBrainsMono[wght].ttf")
 
 APPLICATION_STYLE = """
 QMainWindow {
@@ -1940,9 +1949,11 @@ QPushButton#templateOpenButton:pressed { background: #143f87; }
 
 def apply_application_theme(application: QApplication) -> None:
     application.setStyle("Fusion")
+    for font_file in _BUNDLED_FONT_FILES:
+        QFontDatabase.addApplicationFont(str(_FONTS_DIRECTORY / font_file))
     families = set(QFontDatabase.families())
     family = next(
-        (name for name in ("Noto Sans", "Segoe UI", "Malgun Gothic") if name in families),
+        (name for name in ("Noto Sans KR", "Noto Sans", "Segoe UI", "Malgun Gothic") if name in families),
         application.font().family(),
     )
     application.setFont(QFont(family, 9))

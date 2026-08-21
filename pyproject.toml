@@ -43,6 +43,7 @@ openframe = [
   "infrastructure/material_section_db/data/*.xlsx",
   "infrastructure/material_section_db/data/*.json",
   "resources/icons/*",
+  "resources/fonts/*.ttf",
   "resources/templates/*.json",
   "resources/templates/*.ofsm",
 ]

@@ -22,7 +22,7 @@ def _window() -> MainWindow:
 
 
 _CANVAS_TEMPLATE_IDS = ["simple_beam", "three_hinge_arch", "simple_truss"]
-_PRECISION_TEMPLATE_IDS = ["euler_buckling_column", "portal_frame_time_history"]
+_PRECISION_TEMPLATE_IDS = ["euler_buckling_column", "multistory_frame_time_history"]
 
 
 def test_the_bundled_manifest_lists_every_template_with_readable_files() -> None:
@@ -44,9 +44,9 @@ def test_the_bundled_manifest_lists_every_template_with_readable_files() -> None
     precision_entries = {e.id: e for e in entries if e.id in _PRECISION_TEMPLATE_IDS}
     assert precision_entries["euler_buckling_column"].analysis_kind == "buckling"
     assert precision_entries["euler_buckling_column"].analysis_options == {"num_modes": 1}
-    assert precision_entries["portal_frame_time_history"].analysis_kind == "time_history"
-    assert precision_entries["portal_frame_time_history"].analysis_options == {
-        "directions": [{"dof": 1, "record_id": "SYN06"}]
+    assert precision_entries["multistory_frame_time_history"].analysis_kind == "time_history"
+    assert precision_entries["multistory_frame_time_history"].analysis_options == {
+        "directions": [{"dof": 1, "record_id": "RSN1633_MANJIL_ABBAR--L"}]
     }
 
 
@@ -250,7 +250,7 @@ def test_opening_the_time_history_template_exports_a_script_and_stages_the_prese
     path never touches the canvas workspace, it exports straight to a script
     (with mass this time - see include_mass in _open_precision_template) and
     queues the analysis preset for _model_loaded to apply."""
-    entry = next(e for e in load_template_catalog() if e.id == "portal_frame_time_history")
+    entry = next(e for e in load_template_catalog() if e.id == "multistory_frame_time_history")
     data = json.loads(entry.path.read_text(encoding="utf-8"))
     window = _window_with_import_service()
 
@@ -258,7 +258,7 @@ def test_opening_the_time_history_template_exports_a_script_and_stages_the_prese
     assert window._pending_analysis_preset is not None
     kind, options, hint = window._pending_analysis_preset
     assert kind == AnalysisKind.TIME_HISTORY
-    assert options == {"directions": [{"dof": 1, "record_id": "SYN06"}]}
+    assert options == {"directions": [{"dof": 1, "record_id": "RSN1633_MANJIL_ABBAR--L"}]}
     assert hint == entry.hint
     assert len(window.direct_model_workspace.geometry_page.canvas.nodes) == 0
 
@@ -277,7 +277,7 @@ def test_opening_the_time_history_template_lands_on_setup_with_ground_motion_app
     """End-to-end through the real import pipeline, proving the preset
     survives the async round trip and actually reaches the Ground Motion
     table row a user would see - not just the config store."""
-    entry = next(e for e in load_template_catalog() if e.id == "portal_frame_time_history")
+    entry = next(e for e in load_template_catalog() if e.id == "multistory_frame_time_history")
     data = json.loads(entry.path.read_text(encoding="utf-8"))
     window = _window_with_import_service()
 
@@ -291,17 +291,18 @@ def test_opening_the_time_history_template_lands_on_setup_with_ground_motion_app
     assert row.dof == 1
     assert row.is_enabled_row()
     assert row.has_valid_motion()
-    assert row.active_path().name == "SYN06.AT2"
+    assert row.active_path().name == "RSN1633_MANJIL_ABBAR--L.AT2"
     window.close()
 
 
 def test_the_time_history_template_runs_to_a_stable_finite_response() -> None:
     """The template's own geometry/mass must actually survive a real
-    transient run against its bundled synthetic ground motion - completes
-    without the solver's Adaptive Recovery ever having to kick in, and the
-    top-story drift stays small and finite (no divergence/instability),
-    checked here so a future edit to the template's section/height can't
-    silently turn it into an unstable or unrunnable example.
+    transient run against its bundled real ground motion - completes without
+    the solver's Adaptive Recovery ever having to kick in, and every
+    inter-story drift ratio stays small and finite (no divergence/
+    instability), checked here so a future edit to the template's
+    section/height can't silently turn it into an unstable or unrunnable
+    example.
 
     Exports the script directly (no MainWindow/UI trip needed) so this test
     is independent of the precision-template pipeline's own async plumbing,
@@ -317,7 +318,7 @@ def test_the_time_history_template_runs_to_a_stable_finite_response() -> None:
     from openframe.infrastructure.opensees.time_history_solver import run_time_history_analysis
     from openframe.infrastructure.ground_motions import BuiltInGroundMotionCatalog
 
-    entry = next(e for e in load_template_catalog() if e.id == "portal_frame_time_history")
+    entry = next(e for e in load_template_catalog() if e.id == "multistory_frame_time_history")
     data = json.loads(entry.path.read_text(encoding="utf-8"))
     record_id = entry.analysis_options["directions"][0]["record_id"]
     record = next(r for r in BuiltInGroundMotionCatalog().list_records() if r.record_id == record_id)
@@ -339,9 +340,18 @@ def test_the_time_history_template_runs_to_a_stable_finite_response() -> None:
     steps = result["time_history"]
     assert steps
     assert not any(step["recovered"] for step in steps)
-    top_left_ux = [step["node_results"][1]["displacement"][0] for step in steps]
-    assert all(math.isfinite(value) for value in top_left_ux)
-    # Story drift ratio (peak sway / 4m story height) stays well under 2% -
-    # a sane elastic response (measured ~0.68% for this record/template
-    # combination), not a numerically-exploded one.
-    assert max(abs(value) for value in top_left_ux) < 0.08
+
+    # Left column, base (tag 1) through roof (tag 56) - node declaration
+    # order in the template is row-major (5 nodes/row x 12 rows), so tag N
+    # is at list index N-1.
+    story_height = 4.0
+    left_column_tags = [1 + 5 * row for row in range(12)]
+    max_story_drift_ratio = 0.0
+    for step in steps:
+        ux = [step["node_results"][tag - 1]["displacement"][0] for tag in left_column_tags]
+        assert all(math.isfinite(value) for value in ux)
+        for lower, upper in zip(ux, ux[1:]):
+            max_story_drift_ratio = max(max_story_drift_ratio, abs(upper - lower) / story_height)
+    # Stays well under 2% - a sane elastic response (measured ~1.2% for this
+    # record/template combination), not a numerically-exploded one.
+    assert max_story_drift_ratio < 0.02
