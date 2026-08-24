@@ -453,3 +453,47 @@ def test_3d_lone_release_at_an_otherwise_untouched_node_adds_no_condition_equati
         boundaries=list(with_release.boundaries),
     )
     assert check_determinacy(with_release).degree == check_determinacy(without_release).degree
+
+
+def test_local_axis_angle_of_90_degrees_swaps_which_of_iy_iz_governs_tip_deflection() -> None:
+    """A horizontal cantilever's auto-picked orientation (``_reference_vector``
+    in the solver: global Z, since the member is not vertical) lines local y
+    up with global Y and local z up with global Z - so a load along global Z
+    bends the member about local y and its tip deflection is the textbook
+    cantilever closed form PL^3/(3*E*Iy). ``local_axis_angle=90`` rotates
+    that auto-picked orientation about the member's own axis by 90 degrees,
+    which swaps local y and z - the same load now bends about local z
+    instead, so the deflection becomes PL^3/(3*E*Iz). Iy and Iz are chosen
+    far apart (1.0 vs 1000.0) so the two closed forms are unmistakably
+    different, not just numerically close."""
+    E, A, G, J, Iy, Iz = 200_000.0, 1.0, 80_000.0, 1.0, 1.0, 1_000.0
+    length = 8.0
+    load = 16.0
+    real_material = {"E": E, "A": A, "G": G, "J": J, "Iy": Iy, "Iz": Iz}
+
+    def cantilever_tip_uz(local_axis_angle: float) -> float:
+        model = StructuralModel(
+            ndm=3,
+            nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, length, 0.0, 0.0)},
+            elements={
+                1: Element(
+                    1,
+                    1,
+                    2,
+                    "frame",
+                    properties=dict(real_material),
+                    local_axis_angle=local_axis_angle,
+                )
+            },
+            boundaries=[BoundaryCondition(1, (True,) * 6)],
+            nodal_loads=[NodalLoad(2, (0.0, 0.0, -load, 0.0, 0.0, 0.0))],
+        )
+        result = MaterialFreeStaticsSolver().solve(model)
+        assert result.status == AnalysisStatus.COMPLETED
+        return result.node_results[2].displacement[2]
+
+    uz_unrotated = cantilever_tip_uz(0.0)
+    uz_rotated = cantilever_tip_uz(90.0)
+
+    assert uz_unrotated == pytest.approx(-load * length**3 / (3 * E * Iy), rel=1.0e-6)
+    assert uz_rotated == pytest.approx(-load * length**3 / (3 * E * Iz), rel=1.0e-6)

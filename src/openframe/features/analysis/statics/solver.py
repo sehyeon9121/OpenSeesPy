@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 import openseespy.opensees as ops
 
+from openframe.core.domain.geometric_transform import auto_reference_vector, rotate_about_axis
 from openframe.core.domain.model import BoundaryCondition, Element, StructuralModel
 from openframe.core.domain.results import (
     AnalysisResult,
@@ -402,7 +403,9 @@ class MaterialFreeStaticsSolver:
             node_j = model.nodes[element.node_j]
             transf_tag = element.tag
             ops.geomTransf(
-                "Linear", transf_tag, *_reference_vector(node_i, node_j)
+                "Linear",
+                transf_tag,
+                *_reference_vector(node_i, node_j, element.local_axis_angle),
             )
             end_i_tag = element.node_i
             end_j_tag = element.node_j
@@ -798,31 +801,37 @@ def _hinge_condition_equations(model: StructuralModel) -> int:
     )
 
 
-def _reference_vector(node_i, node_j) -> tuple[float, float, float]:
+def _reference_vector(node_i, node_j, angle_deg: float = 0.0) -> tuple[float, float, float]:
     """A ``vecxz`` for ``geomTransf`` that is never parallel to the member axis.
 
-    For a determinate 3D member (placeholder Iy=Iz=1.0), reactions and member
-    forces never depend on which way "local y" versus "local z" actually
-    points, so all that is required is a vector not colinear with the member -
-    global Z works for every member except a vertical one, which falls back
-    to global X. Once an indeterminate 3D frame gives a member its own real,
-    possibly asymmetric Iy/Iz (see ``_resolve_material_3d``), this auto-picked
-    orientation is no longer guaranteed to match the section's actual
-    strong/weak axis as drawn - there is no beta-angle control yet to let a
-    student choose it deliberately, so a member whose real section is not
-    symmetric (Iy != Iz) gets a numerically valid but arbitrarily-oriented
-    solve rather than the intended one. The same caveat applies to a 3D
-    element load's wy/wz components (see ``_apply_loads``): they are local to
-    whatever y/z this function picked, not a direction the student chose.
+    The base vector is auto-picked (``auto_reference_vector`` - global Z works
+    for every member except a vertical one, which falls back to global X) so
+    a determinate 3D member (placeholder Iy=Iz=1.0) needs no further input:
+    reactions and member forces never depend on which way "local y" versus
+    "local z" actually points. Once an indeterminate 3D frame gives a member
+    its own real, possibly asymmetric Iy/Iz (see ``_resolve_material_3d``),
+    the auto-picked orientation is no longer guaranteed to match the
+    section's actual strong/weak axis as drawn - ``angle_deg``
+    (``Element.local_axis_angle``) is the escape hatch: it rotates the
+    auto-picked vector about the member's own axis (``rotate_about_axis`` -
+    Rodrigues' formula), letting a student dial in the orientation
+    deliberately. ``angle_deg=0`` reproduces the old auto-picked vector
+    exactly, so every caller that never sets it keeps behaving identically.
+    The same rotation is what a 3D element load's wy/wz components (see
+    ``_apply_loads``) end up local to - and what the 3D viewport's
+    local-axis gizmo (``Quick3DSceneBridge``) previews, via the same two
+    functions imported from ``core.domain.geometric_transform`` so the
+    preview can never drift from what this actually solves.
     """
     dx = node_j.x - node_i.x
     dy = node_j.y - node_i.y
     dz = node_j.z - node_i.z
     length = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
     axis = (dx / length, dy / length, dz / length)
-    global_z = (0.0, 0.0, 1.0)
-    is_vertical = abs(axis[0] * global_z[0] + axis[1] * global_z[1] + axis[2] * global_z[2]) > 0.999
-    return (1.0, 0.0, 0.0) if is_vertical else global_z
+    reference = auto_reference_vector(axis)
+    if angle_deg == 0.0:
+        return reference
+    return rotate_about_axis(reference, axis, math.radians(angle_deg))
 
 
 def _hinge_local_axes(

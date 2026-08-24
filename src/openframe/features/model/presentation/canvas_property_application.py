@@ -36,9 +36,13 @@ _SECTION_PROPERTY_KEYS = frozenset(
 
 #: Default Poisson's ratio used to derive a shear modulus (G = E / (2*(1+v)))
 #: when the caller does not supply one - close enough for steel (~0.3) to be a
-#: reasonable placeholder for any material until a real value (e.g. the
-#: Master DB's own ``MaterialRecord.poisson_ratio``) is threaded through.
-_DEFAULT_POISSON_RATIO = 0.3
+#: reasonable placeholder. Public (not module-private) because
+#: ``SectionMaterialPanel`` also needs it as the initial value of its own
+#: Poisson's-ratio field and as the fallback when reversing G back to v for a
+#: re-selected member that predates that field - both must agree with this
+#: module's own fallback, or a member never explicitly given a v would show a
+#: different value than what actually got solved.
+DEFAULT_POISSON_RATIO = 0.3
 
 
 class _PropertyApplicationMixin:
@@ -97,6 +101,24 @@ class _PropertyApplicationMixin:
             moment_release_i=released if end == "i" else element.moment_release_i,
             moment_release_j=released if end == "j" else element.moment_release_j,
         )
+        self._changed()
+
+    def apply_local_axis_angle_to_selection(self, angle: float) -> None:
+        """Rotate every selected 3D member's local y/z axes about its own
+        axis by ``angle`` degrees (``Element.local_axis_angle``) — the escape
+        hatch for a member whose auto-picked orientation
+        (``_reference_vector`` in the statics solver) does not match its
+        section's actual strong/weak axis as drawn. ``angle=0`` is a no-op
+        for 2D and truss members, which never read this field.
+        """
+        if not self.selected_elements:
+            return
+        self._record_history()
+        for element_tag in self.selected_elements:
+            element = self.elements.get(element_tag)
+            if element is None:
+                continue
+            self.elements[element_tag] = replace(element, local_axis_angle=angle)
         self._changed()
 
     def apply_section_to_selection(
@@ -168,10 +190,12 @@ class _PropertyApplicationMixin:
         ``"E"/"A"/"G"/"J"/"Iy"/"Iz"`` set a 3D indeterminate solve needs (see
         ``MaterialFreeStaticsSolver._element_material_3d``) and
         ``model_inspector_panel.py``'s readiness check already expects.
-        ``shear_modulus`` defaults to ``elastic / (2 * (1 + _DEFAULT_POISSON_
-        RATIO))`` when not given - a real per-material value (e.g. the Master
-        DB's own ``poisson_ratio``) can be threaded through by callers that
-        have one, without changing this default for callers that do not. A
+        ``shear_modulus`` defaults to ``elastic / (2 * (1 + DEFAULT_POISSON_
+        RATIO))`` when not given - a real per-material value (e.g.
+        ``SectionMaterialPanel``'s own Poisson's-ratio field, itself seeded
+        from the Master DB's ``poisson_ratio`` when a Database material is
+        selected) can be threaded through by callers that have one, without
+        changing this default for callers that do not. A
         Rectangle also gets ``width``/``height`` so the existing section
         preview widget keeps working unchanged; every other shape's
         dimensions are dropped (no solver reads them) rather than invented
@@ -188,7 +212,7 @@ class _PropertyApplicationMixin:
         shear = (
             shear_modulus
             if shear_modulus is not None
-            else elastic / (2.0 * (1.0 + _DEFAULT_POISSON_RATIO))
+            else elastic / (2.0 * (1.0 + DEFAULT_POISSON_RATIO))
         )
         new_properties: dict[str, float | str] = {
             "E": elastic,

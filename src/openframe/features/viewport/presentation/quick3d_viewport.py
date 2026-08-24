@@ -20,6 +20,12 @@ class Quick3DViewport(QFrame):
     #: converted out of the QML scene's y-up view coordinates, so callers never
     #: need to know about that mapping.
     plane_point_picked = Signal(float, float, float)
+    #: Hover equivalents of the two signals above (no button held), fired
+    #: continuously while set_plane_picking_mode(True) is in effect — drive
+    #: free-form 3D draw mode's node-snap and rubber-band preview.
+    node_hovered = Signal(int)
+    plane_point_hovered = Signal(float, float, float)
+    hover_cleared = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -29,6 +35,13 @@ class Quick3DViewport(QFrame):
         self.quick_widget = QQuickWidget(self)
         self.quick_widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         self.quick_widget.setClearColor(Qt.GlobalColor.transparent)
+        # Needed for the modeling page's Space-bar draw-tool shortcut (scoped
+        # to this viewport in 3D mode) to fire at all: a QShortcut with
+        # WidgetWithChildrenShortcut context only dispatches while its widget
+        # (or a child) actually holds keyboard focus, and QWidget's default
+        # focus policy is NoFocus. StrongFocus makes a click in the viewport
+        # (already the natural first step of drawing) grab focus for it.
+        self.quick_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.quick_widget.rootContext().setContextProperty("sceneBridge", self.bridge)
         layout.addWidget(self.quick_widget)
 
@@ -60,6 +73,9 @@ class Quick3DViewport(QFrame):
             root.cameraModeChanged.connect(self.camera_mode_changed.emit)
             root.nodePicked.connect(self._on_node_picked)
             root.planePicked.connect(self._on_plane_picked)
+            root.nodeHovered.connect(self.node_hovered.emit)
+            root.planeHovered.connect(self._on_plane_hovered)
+            root.hoverCleared.connect(self.hover_cleared.emit)
             if self._pending_camera_preset is not None:
                 root.setPreset(self._pending_camera_preset)
 
@@ -70,6 +86,18 @@ class Quick3DViewport(QFrame):
     def _on_plane_picked(self, view_x: float, view_y: float, view_z: float) -> None:
         # Inverse of Quick3DSceneBridge._view_coordinates: view = (x, z, -y).
         self.plane_point_picked.emit(view_x, -view_z, view_y)
+
+    def _on_plane_hovered(self, view_x: float, view_y: float, view_z: float) -> None:
+        self.plane_point_hovered.emit(view_x, -view_z, view_y)
+
+    def set_preview_segment(
+        self,
+        start: tuple[float, float, float] | None,
+        end: tuple[float, float, float] | None,
+    ) -> None:
+        """Rubber-band the free-form 3D draw preview from ``start`` to ``end``
+        (both structural x/y/z), or clear it if either is ``None``."""
+        self.bridge.set_preview_segment(start, end)
 
     def set_picking_mode(self, enabled: bool) -> None:
         if enabled:
@@ -130,6 +158,9 @@ class Quick3DViewport(QFrame):
 
     def set_supports_visible(self, visible: bool) -> None:
         self.bridge.set_supports_visible(visible)
+
+    def set_local_axes_visible(self, visible: bool) -> None:
+        self.bridge.set_local_axes_visible(visible)
 
     def set_load_filter(self, load_filter: str) -> None:
         self.bridge.set_load_filter(load_filter)

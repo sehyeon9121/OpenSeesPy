@@ -10,9 +10,13 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from openframe.core.domain import Element, UnitSystem
+from openframe.features.model.presentation.canvas_property_application import (
+    DEFAULT_POISSON_RATIO,
+)
 from openframe.features.model.presentation.section_material_panel import SectionMaterialPanel
 
 
@@ -96,6 +100,84 @@ def test_section_and_material_combine_into_one_application_payload() -> None:
     assert kwargs["material_category"] == "Structural Steel"
     assert kwargs["material_grade"] == "SM355"
     assert kwargs["elastic"] > 0.0
+
+
+def test_shear_modulus_display_tracks_e_and_poisson_ratio() -> None:
+    """G = E / (2*(1+v)), using canvas_property_application.DEFAULT_POISSON_
+    RATIO - the same fallback apply_full_section_to_selection uses when no
+    shear_modulus is given - so a member solved with this panel's untouched
+    default v matches one solved with no v supplied at all."""
+    panel = _panel()
+    # A freshly constructed panel already has some default Database material
+    # selected (same as material_e/material_unit_weight/material_fy), so its
+    # Poisson's ratio starts at whatever that material's own DB value is, not
+    # necessarily DEFAULT_POISSON_RATIO - set it explicitly to isolate what
+    # this test actually checks (the formula, not DB selection defaults).
+    panel.material_poisson_ratio.setValue(DEFAULT_POISSON_RATIO)
+    panel.material_e.setValue(200_000.0)
+    assert float(panel.material_shear_modulus_display.text()) == pytest.approx(
+        200_000.0 / (2.0 * (1.0 + DEFAULT_POISSON_RATIO))
+    )
+
+    panel.material_poisson_ratio.setValue(0.2)
+    assert float(panel.material_shear_modulus_display.text()) == pytest.approx(200_000.0 / 2.4)
+
+
+def test_selecting_a_database_material_fills_in_its_poisson_ratio() -> None:
+    panel = _panel()
+    category_index = panel.material_category_combo.findText("Structural Steel")
+    panel.material_category_combo.setCurrentIndex(category_index)
+    grade_index = panel.material_grade_combo.findText("SM355")
+    panel.material_grade_combo.setCurrentIndex(grade_index)
+
+    material = panel._database.get_material("STL-SM355")
+    assert material.poisson_ratio is not None
+    assert panel.material_poisson_ratio.value() == pytest.approx(material.poisson_ratio)
+
+
+def test_current_application_kwargs_shear_modulus_matches_the_displayed_value() -> None:
+    panel = _panel()
+    panel.material_e.setValue(200_000.0)
+    panel.material_poisson_ratio.setValue(0.2)
+
+    kwargs = panel.current_application_kwargs()
+
+    assert kwargs["shear_modulus"] == pytest.approx(200_000.0 / 2.4)
+
+
+def test_reselecting_a_member_restores_its_non_default_poisson_ratio() -> None:
+    """v = E/(2G) - 1 reversed from stored E/G must recover whatever v the
+    member was actually applied with - not silently fall back to 0.3 just
+    because a Database material's own default differs from it (SM355's own
+    v could be anything; this member was applied with 0.2 regardless)."""
+    panel = _panel()
+    panel.material_e.setValue(200_000.0)
+    panel.material_poisson_ratio.setValue(0.2)
+    kwargs = panel.current_application_kwargs()
+    assert kwargs["shear_modulus"] == pytest.approx(200_000.0 / 2.4)
+
+    element = Element(
+        tag=1,
+        node_i=1,
+        node_j=2,
+        element_type="elasticBeamColumn",
+        properties={
+            "E": kwargs["elastic"],
+            "G": kwargs["shear_modulus"],
+            "A": kwargs["area"],
+            "I": kwargs["iy"],
+            "Iz": kwargs["iz"],
+            "J": kwargs["j"],
+            "density": kwargs["density"],
+            "section_shape": kwargs["shape"],
+            "section_source": kwargs["source"],
+        },
+    )
+
+    fresh_panel = _panel()
+    fresh_panel.load_from_element(element)
+
+    assert fresh_panel.material_poisson_ratio.value() == pytest.approx(0.2)
 
 
 def test_reselecting_a_member_restores_the_panel_from_its_stored_properties() -> None:

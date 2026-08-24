@@ -62,6 +62,9 @@ from openframe.core.domain import (
     mm_to_length_unit,
     mpa_to_stress_unit,
 )
+from openframe.features.model.presentation.canvas_property_application import (
+    DEFAULT_POISSON_RATIO,
+)
 from openframe.features.model.presentation.safe_spinbox import SafeComboBox, SafeDoubleSpinBox
 
 #: Master DB ``Sections`` sheet dimension-column names, per shape, mapped to
@@ -692,8 +695,29 @@ class SectionMaterialPanel(QWidget):
         self.material_e.setDecimals(3)
         self.material_e.setMaximumWidth(_NUMBER_WIDTH)
         self.material_e.valueChanged.connect(self._notify_edited)
+        self.material_e.valueChanged.connect(self._refresh_derived_shear)
         self._material_e_label = QLabel("E")
         material_form.addRow(self._material_e_label, self.material_e)
+        self.material_poisson_ratio = SafeDoubleSpinBox()
+        self.material_poisson_ratio.setRange(-0.99999, 0.49999)
+        self.material_poisson_ratio.setDecimals(5)
+        self.material_poisson_ratio.setValue(DEFAULT_POISSON_RATIO)
+        self.material_poisson_ratio.setMaximumWidth(_NUMBER_WIDTH)
+        self.material_poisson_ratio.setToolTip(
+            "3D 부정정 해석의 전단강성(G) 계산에만 쓰입니다 - 2D 해석은 읽지 않습니다."
+        )
+        self.material_poisson_ratio.valueChanged.connect(self._notify_edited)
+        self.material_poisson_ratio.valueChanged.connect(self._refresh_derived_shear)
+        self._material_poisson_ratio_label = QLabel("Poisson's Ratio (ν)")
+        material_form.addRow(self._material_poisson_ratio_label, self.material_poisson_ratio)
+        self.material_shear_modulus_display = QLineEdit()
+        self.material_shear_modulus_display.setReadOnly(True)
+        self.material_shear_modulus_display.setMaximumWidth(_NUMBER_WIDTH)
+        self.material_shear_modulus_display.setToolTip("G = E / (2 * (1 + ν)), 참고용 표시입니다.")
+        self._material_shear_modulus_label = QLabel("G (계산됨)")
+        material_form.addRow(self._material_shear_modulus_label, self.material_shear_modulus_display)
+        self._material_form = material_form
+        self._refresh_derived_shear()
         self.material_unit_weight = SafeDoubleSpinBox()
         self.material_unit_weight.setRange(0.0, 1.0e9)
         self.material_unit_weight.setDecimals(6)
@@ -756,9 +780,9 @@ class SectionMaterialPanel(QWidget):
             self._root_layout.insertWidget(0, self.material_group)
             self._root_layout.insertWidget(1, self.section_group)
             self._root_layout.insertWidget(2, self.properties_group)
-            self.material_group.set_title("물성")
-            self.section_group.set_title("섹션")
-            self.properties_group.set_title("섹션 특성")
+            self.material_group.set_title("MATERIAL")
+            self.section_group.set_title("SECTION")
+            self.properties_group.set_title("SECTION PROPERTIES")
         else:
             for group in (self.section_group, self.properties_group, self.material_group):
                 self._root_layout.removeWidget(group)
@@ -778,6 +802,38 @@ class SectionMaterialPanel(QWidget):
         self.material_group.set_expanded(compact)
         self.section_group.set_expanded(not compact)
         self.properties_group.set_expanded(not compact)
+
+    def set_visible_groups(self, *, material: bool = True, section: bool = True) -> None:
+        """Hide whichever whole card(s) a narrower-purpose caller has no use
+        for, rather than showing all three of MATERIAL/SECTION/SECTION
+        PROPERTIES every time this panel is embedded somewhere.
+
+        The 3D workbench's Element tab only ever picks a section for members
+        about to be drawn (material is set afterwards, on the selection, via
+        the Properties tab) and Properties only ever edits an already-drawn
+        member's material (its section was already fixed at draw time) - so
+        each embeds this panel with the other concern hidden. The underlying
+        fields keep whatever value they were last given either way; only
+        their visibility changes, so a hidden group's value still travels
+        through ``current_application_kwargs()`` unchanged. Section and
+        Section Properties always show/hide together - one is derived from
+        the other, so there is no caller that wants just one of them.
+
+        Each group's own "save to library" row (name field + save button +
+        status label - normally only shown in compact mode, see
+        ``set_compact_mode``) follows the same flag, so "save a reusable
+        section" naturally ends up on whichever panel still shows SECTION,
+        never both and never neither.
+        """
+        self.material_group.setVisible(material)
+        self.material_name_row.setVisible(material)
+        self.material_save_button.setVisible(material)
+        self.material_save_status.setVisible(material)
+        self.section_group.setVisible(section)
+        self.properties_group.setVisible(section)
+        self.section_name_row.setVisible(section)
+        self.section_save_button.setVisible(section)
+        self.section_save_status.setVisible(section)
 
     def _save_material_clicked(self) -> None:
         name = self.material_name.text().strip() or self.material_grade_combo.currentText().strip()
@@ -1035,6 +1091,24 @@ class SectionMaterialPanel(QWidget):
         if not self._loading_element:
             self.edited.emit()
 
+    def _computed_shear_modulus(self) -> float:
+        """G = E / (2 * (1 + ν)) - the same formula
+        ``canvas_property_application.apply_full_section_to_selection`` falls
+        back to when no shear modulus is supplied, so a member left at the
+        default ν=0.3 solves identically whether or not this panel's value
+        ever reaches it explicitly."""
+        denominator = 2.0 * (1.0 + self.material_poisson_ratio.value())
+        return self.material_e.value() / denominator if denominator > 0.0 else 0.0
+
+    def _refresh_derived_shear(self) -> None:
+        self.material_shear_modulus_display.setText(f"{self._computed_shear_modulus():.6g}")
+
+    def set_shear_modulus_visible(self, visible: bool) -> None:
+        """3D 부정정 해석에만 쓰이는 필드라, 2D 부재를 편집할 때는 숨긴다
+        (``modeling_interface_page.py``가 ``self.canvas.ndm == 3``일 때만 켬)."""
+        self._material_form.setRowVisible(self.material_poisson_ratio, visible)
+        self._material_form.setRowVisible(self.material_shear_modulus_display, visible)
+
     def _refresh_preview(self) -> None:
         shape = self.shape_combo.currentText()
         self.section_preview.setVisible(shape != "User Defined")
@@ -1166,6 +1240,10 @@ class SectionMaterialPanel(QWidget):
         fy_resolution = self._database.resolve_property(material_id, "fy_MPa", context=context)
         if fy_resolution.value is not None:
             self.material_fy.setValue(mpa_to_stress_unit(fy_resolution.value, force, length))
+        # Dimensionless - no unit conversion needed, unlike E/unit weight/fy above.
+        poisson_resolution = self._database.resolve_property(material_id, "poisson_ratio")
+        if poisson_resolution.value is not None:
+            self.material_poisson_ratio.setValue(poisson_resolution.value)
 
     # -- element <-> panel -----------------------------------------------
     def load_from_element(self, element: Element) -> None:
@@ -1276,6 +1354,19 @@ class SectionMaterialPanel(QWidget):
         if elastic is not None:
             self.material_e.setValue(float(elastic))
         self.material_unit_weight.setValue(float(density) if density is not None else 0.0)
+        # Reverse G = E / (2*(1+v)) back to v = E/(2G) - 1 - takes priority over
+        # whatever a Database material selection just auto-filled above, the
+        # same way the stored E/density just did, so this reflects whatever v
+        # actually produced the G this member was solved with (which may
+        # differ from the DB default if it was overridden before applying). A
+        # member saved before this field existed has no "G" key at all, so it
+        # falls back to the same default apply_full_section_to_selection uses.
+        shear = element.properties.get("G")
+        if elastic is not None and shear is not None and float(shear) > 0.0:
+            self.material_poisson_ratio.setValue(float(elastic) / (2.0 * float(shear)) - 1.0)
+        else:
+            self.material_poisson_ratio.setValue(DEFAULT_POISSON_RATIO)
+        self._refresh_derived_shear()
         self._refresh_preview()
 
     def clear(self) -> None:
@@ -1313,6 +1404,7 @@ class SectionMaterialPanel(QWidget):
             "iz": mm4_to_length_unit(self._properties.Iz_mm4, length),
             "j": mm4_to_length_unit(self._properties.J_mm4, length),
             "elastic": self.material_e.value(),
+            "shear_modulus": self._computed_shear_modulus(),
             "density": self.material_unit_weight.value(),
             "section_id": self._db_section.section_id if is_database and self._db_section else None,
             "material_id": self._selected_material.material_id if self._selected_material else None,

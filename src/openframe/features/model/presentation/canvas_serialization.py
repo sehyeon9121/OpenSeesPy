@@ -52,6 +52,7 @@ class _SerializationMixin:
                     "properties": dict(element.properties),
                     "moment_release_i": element.moment_release_i,
                     "moment_release_j": element.moment_release_j,
+                    "local_axis_angle": element.local_axis_angle,
                 }
                 for tag, element in self.elements.items()
             ],
@@ -122,6 +123,7 @@ class _SerializationMixin:
                 dict(e.get("properties", {})),
                 bool(e.get("moment_release_i", False)),
                 bool(e.get("moment_release_j", False)),
+                local_axis_angle=float(e.get("local_axis_angle", 0.0)),
             )
             for e in data.get("elements", [])
         }

@@ -10,6 +10,9 @@ from openframe.core.domain import (
     LoadCaseKind,
     StructuralModel,
     SupportKind,
+    auto_reference_vector,
+    local_y_z_axes,
+    rotate_about_axis,
 )
 
 #: Blue -> yellow -> red stops, matching
@@ -23,6 +26,12 @@ _COLOR_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
 
 _DEFAULT_NODE_COLOR = "#2877b7"
 _DEFAULT_MEMBER_COLOR = "#647789"
+#: Free-form 3D draw mode's live rubber-band preview - a thin, translucent
+#: cube from the open chain's last node to wherever the cursor (or a node it
+#: has snapped onto) currently is, cleared the instant the segment commits.
+_PREVIEW_MEMBER_COLOR = "#2563eb"
+_PREVIEW_MEMBER_OPACITY = 0.55
+_PREVIEW_MEMBER_THICKNESS_SCALE = 0.4
 _GHOST_COLOR = "#c9cfd6"
 _GHOST_OPACITY = 0.35
 _NODAL_FORCE_COLOR = "#e5484d"
@@ -48,6 +57,15 @@ _SUPPORT_COLORS = {
     SupportKind.ROLLER_HORIZONTAL: "#6366f1",
     SupportKind.CUSTOM: "#f59e0b",
 }
+#: A 3D member's local y/z axis gizmo (a preview of ``Element.local_axis_angle``'s
+#: effect) - colours chosen to not collide with any load/support/result colour
+#: already in this palette.
+_LOCAL_Y_AXIS_COLOR = "#22c55e"
+_LOCAL_Z_AXIS_COLOR = "#ec4899"
+#: 3D beam-column element types only - a truss has no bending stiffness or
+#: local y/z orientation at all, so it never gets a gizmo (mirrors the
+#: solver's own ``system != "truss"`` gate on ``_reference_vector``).
+_TRUSS_ELEMENT_TYPES = frozenset({"truss", "corottruss"})
 
 
 def _color_for_ratio(ratio: float) -> str:
@@ -85,8 +103,13 @@ class Quick3DSceneBridge(QObject):
         self._ghost_members: list[dict[str, float | int | str]] = []
         self._load_arrows: list[dict[str, float | int | str]] = []
         self._support_parts: list[dict[str, float | int | str]] = []
+        self._local_axis_gizmos: list[dict[str, float | int | str]] = []
         self._loads_visible = True
         self._supports_visible = True
+        #: Off by default: this is an authoring aid for the free-form 3D
+        #: canvas, not something the imported-model or results viewers (which
+        #: share this same bridge class) should ever show unasked.
+        self._local_axes_visible = False
         self._load_filter = "all"
         self._load_case_filter = "all"
         self._center = (0.0, 0.0, 0.0)
@@ -95,6 +118,7 @@ class Quick3DSceneBridge(QObject):
         self._ground_width = 1.0
         self._ground_depth = 1.0
         self._points: dict[int, tuple[float, float, float]] = {}
+        self._preview_member: dict[str, float | int | str] | None = None
         self._default_thickness = 0.025
         self._node_radius = 0.018
         self._last_model: StructuralModel | None = None
@@ -258,6 +282,10 @@ class Quick3DSceneBridge(QObject):
         self._supports_visible = visible
         self.scene_changed.emit()
 
+    def set_local_axes_visible(self, visible: bool) -> None:
+        self._local_axes_visible = visible
+        self.scene_changed.emit()
+
     def set_load_filter(self, load_filter: str) -> None:
         if load_filter not in {"all", "nodal", "element"}:
             return
@@ -270,6 +298,47 @@ class Quick3DSceneBridge(QObject):
 
     def set_selected_node(self, tag: int | None) -> None:
         self._selected_node_tag = tag
+        self.scene_changed.emit()
+
+    def set_preview_segment(
+        self,
+        start: tuple[float, float, float] | None,
+        end: tuple[float, float, float] | None,
+    ) -> None:
+        """Rubber-band a thin preview member from ``start`` to ``end`` (both
+        structural x/y/z), or clear it if either is ``None``.
+
+        Used only by free-form 3D draw mode, to show where a member would
+        land before the user actually clicks - see ``modeling_interface_page.
+        _on_3d_draw_state_changed`` and its hover handlers for the caller side.
+        """
+        if start is None or end is None:
+            if self._preview_member is not None:
+                self._preview_member = None
+                self.scene_changed.emit()
+            return
+        view_start = self._view_coordinates(*start)
+        view_end = self._view_coordinates(*end)
+        orientation = self._member_orientation(view_start, view_end)
+        if orientation is None:
+            if self._preview_member is not None:
+                self._preview_member = None
+                self.scene_changed.emit()
+            return
+        length, scalar, qx, qy, qz = orientation
+        self._preview_member = {
+            "x": 0.5 * (view_start[0] + view_end[0]),
+            "y": 0.5 * (view_start[1] + view_end[1]),
+            "z": 0.5 * (view_start[2] + view_end[2]),
+            "length": length,
+            "thickness": self._default_thickness * _PREVIEW_MEMBER_THICKNESS_SCALE,
+            "qscalar": scalar,
+            "qx": qx,
+            "qy": qy,
+            "qz": qz,
+            "color": _PREVIEW_MEMBER_COLOR,
+            "opacity": _PREVIEW_MEMBER_OPACITY,
+        }
         self.scene_changed.emit()
 
     @Property("QVariantList", notify=scene_changed)
@@ -301,6 +370,10 @@ class Quick3DSceneBridge(QObject):
         return self._ghost_members
 
     @Property("QVariantList", notify=scene_changed)
+    def previewMembers(self) -> list[dict[str, float | int | str]]:
+        return [] if self._preview_member is None else [self._preview_member]
+
+    @Property("QVariantList", notify=scene_changed)
     def loadArrows(self) -> list[dict[str, float | int | str]]:
         if not self._loads_visible:
             return []
@@ -314,6 +387,10 @@ class Quick3DSceneBridge(QObject):
     @Property("QVariantList", notify=scene_changed)
     def supportSymbols(self) -> list[dict[str, float | int | str]]:
         return self._support_parts if self._supports_visible else []
+
+    @Property("QVariantList", notify=scene_changed)
+    def localAxisGizmos(self) -> list[dict[str, float | int | str]]:
+        return self._local_axis_gizmos if self._local_axes_visible else []
 
     @Property(float, notify=scene_changed)
     def center_x(self) -> float:
@@ -344,6 +421,7 @@ class Quick3DSceneBridge(QObject):
         return self._ground_depth
 
     def _rebuild_default_geometry(self, model: StructuralModel) -> None:
+        self._local_axis_gizmos = self._local_axis_gizmo_parts(model, self._points)
         self._nodes = [
             {
                 "tag": tag,
@@ -483,6 +561,75 @@ class Quick3DSceneBridge(QObject):
                     "scale_z": width * 0.72,
                 }
             )
+        return parts
+
+    def _local_axis_gizmo_parts(
+        self,
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+    ) -> list[dict[str, float | int | str]]:
+        """Two short coloured cylinders per 3D beam-column member - one along
+        its local y axis, one along its local z axis - a live preview of what
+        ``Element.local_axis_angle`` actually does before running an
+        analysis. Only meaningful for a 3D frame member (2D and truss
+        elements never get a ``geomTransf``/local axis at all), so both are
+        skipped.
+
+        The axis/reference/y-z vectors are computed in *model* space (real
+        node x/y/z), using ``auto_reference_vector``/``rotate_about_axis``/
+        ``local_y_z_axes`` from ``core.domain.geometric_transform`` - the
+        exact same functions ``MaterialFreeStaticsSolver._reference_vector``
+        uses to actually solve, so this preview can never drift from what the
+        analysis will do. Only the final y/z *directions* are run through
+        ``_view_coordinates`` (mirrors ``_build_load_arrows``'s
+        ``direction_model`` -> ``_view_coordinates`` order) - doing that
+        conversion any earlier would silently corrupt the vertical-member
+        check inside ``auto_reference_vector``, which is defined in terms of
+        the structural model's own up axis, not the Qt Quick 3D view's.
+        """
+        if model.ndm != 3:
+            return []
+        length = max(self._extent * 0.12, 0.05)
+        thickness = max(self._default_thickness * 0.45, 0.008)
+        parts: list[dict[str, float | int | str]] = []
+        for element in model.elements.values():
+            if element.element_type.lower() in _TRUSS_ELEMENT_TYPES:
+                continue
+            node_i = model.nodes.get(element.node_i)
+            node_j = model.nodes.get(element.node_j)
+            view_start = points.get(element.node_i)
+            view_end = points.get(element.node_j)
+            if node_i is None or node_j is None or view_start is None or view_end is None:
+                continue
+            dx = node_j.x - node_i.x
+            dy = node_j.y - node_i.y
+            dz = node_j.z - node_i.z
+            member_length = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if member_length <= 1.0e-9:
+                continue
+            axis = (dx / member_length, dy / member_length, dz / member_length)
+            reference = auto_reference_vector(axis)
+            if element.local_axis_angle:
+                reference = rotate_about_axis(reference, axis, math.radians(element.local_axis_angle))
+            y_axis, z_axis = local_y_z_axes(axis, reference)
+            mid = tuple(0.5 * (view_start[k] + view_end[k]) for k in range(3))
+            for direction, color in ((y_axis, _LOCAL_Y_AXIS_COLOR), (z_axis, _LOCAL_Z_AXIS_COLOR)):
+                scalar, qx, qy, qz = self._rotation_from_y_axis(self._view_coordinates(*direction))
+                parts.append(
+                    {
+                        "tag": element.tag,
+                        "x": mid[0],
+                        "y": mid[1],
+                        "z": mid[2],
+                        "length": length,
+                        "thickness": thickness,
+                        "qscalar": scalar,
+                        "qx": qx,
+                        "qy": qy,
+                        "qz": qz,
+                        "color": color,
+                    }
+                )
         return parts
 
     def _member_entry(
@@ -811,6 +958,7 @@ class Quick3DSceneBridge(QObject):
         self._ghost_members = []
         self._load_arrows = []
         self._support_parts = []
+        self._local_axis_gizmos = []
         self._center = (0.0, 0.0, 0.0)
         self._extent = 1.0
         self._ground_y = 0.0

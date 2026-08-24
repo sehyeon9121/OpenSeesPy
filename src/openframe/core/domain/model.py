@@ -44,6 +44,14 @@ class Element:
     properties: dict[str, float | str] = field(default_factory=dict)
     moment_release_i: bool = False
     moment_release_j: bool = False
+    #: Rotation (degrees) applied about the member's own axis to the
+    #: auto-picked ``vecxz`` reference vector a 3D beam-column element uses
+    #: for its ``geomTransf`` (see ``_reference_vector`` in
+    #: ``features.analysis.statics.solver``). ``0.0`` reproduces the old
+    #: auto-picked orientation exactly, so every 2D/truss/pre-existing model
+    #: keeps behaving identically - this only matters for a 3D beam-column
+    #: element whose section is not symmetric (Iy != Iz).
+    local_axis_angle: float = 0.0
     #: Tag of the ``geomTransf(...)`` this element references, when it is one
     #: of the transformation-bearing beam-column types (``elasticBeamColumn``,
     #: ``dispBeamColumn``, ``forceBeamColumn``) and the reference could be

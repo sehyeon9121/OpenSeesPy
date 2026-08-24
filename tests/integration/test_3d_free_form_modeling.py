@@ -3,13 +3,12 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from _solve_helpers import solve_and_wait
 from PySide6.QtWidgets import QApplication
 
 from openframe.features.model.drawing import PlaneKind, WorkPlane
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
-
-from _solve_helpers import solve_and_wait
 
 
 def _canvas() -> StaticsDrawingCanvas:
@@ -323,21 +322,39 @@ def test_the_draw_tool_enables_plane_picking_on_the_3d_view_not_node_picking() -
     assert root.property("pickingEnabled") is True
 
 
-def test_clicking_the_active_plane_in_3d_places_a_point_through_the_same_chain_logic() -> None:
-    """The 3D pick path and the 2D click path must produce identical model
-    data — this is what lets every existing 2D drawing test's guarantees (snap,
-    undo, member creation) carry over to 3D clicking for free."""
+def test_clicking_empty_plane_space_in_3d_does_nothing() -> None:
+    """An orbit drag in 3D routinely ends in a stray click on empty space -
+    clicking the active plane used to drop a new node there every time,
+    which meant every accidental release during a camera orbit created a
+    node nobody meant to place. Node creation is exact-coordinate-only now
+    (the Node tab's Create Node form); a plane click is a pure no-op."""
     page = _page(start_in_3d=True)
     page._activate_draw_tool()
 
     page._on_3d_plane_picked(0.0, 0.0, 0.0)
     page._on_3d_plane_picked(4.0, 0.0, 0.0)
 
+    assert page.canvas.nodes == {}
+    assert page.canvas.elements == {}
+
+
+def test_clicking_two_existing_nodes_in_3d_still_connects_them_while_drawing() -> None:
+    """Node creation moved to the Create Node form, but connecting two
+    already-placed nodes by clicking them (in order) while drawing still
+    works - that click can never be an accidental stray one since it has to
+    land on an existing node to do anything at all."""
+    page = _page(start_in_3d=True)
+    first = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    second = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    page._activate_draw_tool()
+
+    page._on_3d_node_picked(first, 0, 0)
+    page._on_3d_node_picked(second, 0, 0)
+
     assert len(page.canvas.nodes) == 2
     assert len(page.canvas.elements) == 1
     element = next(iter(page.canvas.elements.values()))
-    assert page.canvas.nodes[element.node_i].x == pytest.approx(0.0)
-    assert page.canvas.nodes[element.node_j].x == pytest.approx(4.0)
+    assert {element.node_i, element.node_j} == {first, second}
 
 
 def test_clicking_an_existing_node_in_3d_continues_the_chain_while_drawing() -> None:
@@ -387,11 +404,101 @@ def test_drawing_in_3d_does_not_reset_the_orbit_camera_on_every_click() -> None:
     page.preview_3d.set_camera_preset("xy")
     assert root.property("cameraPitch") == pytest.approx(-89.0)
 
+    first = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    second = page.canvas._add_node_at((3.0, 0.0, 0.0))
     page._activate_draw_tool()
-    page._on_3d_plane_picked(0.0, 0.0, 0.0)
-    page._on_3d_plane_picked(3.0, 0.0, 0.0)
+    page._on_3d_node_picked(first, 0, 0)
+    page._on_3d_node_picked(second, 0, 0)
 
     assert root.property("cameraPitch") == pytest.approx(-89.0)
+
+
+def test_hovering_while_drawing_previews_a_segment_from_the_chain_anchor() -> None:
+    page = _page(start_in_3d=True)
+    page._activate_draw_tool()
+    page.canvas.place_point(0.0, 0.0)  # opens a chain at (0, 0, 0)
+
+    page._on_3d_plane_hovered(4.0, 0.0, 0.0)
+
+    assert len(page.preview_3d.bridge.previewMembers) == 1
+    assert page.preview_3d.bridge.previewMembers[0]["length"] == pytest.approx(4.0)
+
+
+def test_hovering_an_existing_node_while_drawing_snaps_the_preview_onto_it() -> None:
+    page = _page(start_in_3d=True)
+    anchor = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    target = page.canvas._add_node_at((0.0, 0.0, 3.0))
+    page._activate_draw_tool()
+    page._on_3d_node_picked(anchor, 0, 0)  # opens a chain at the anchor node
+
+    # A hover point deliberately off the target node's exact coordinates -
+    # snapping means the preview uses the node's own (x, y, z), not wherever
+    # the ray happened to land near it.
+    page._on_3d_node_hovered(target)
+
+    assert len(page.preview_3d.bridge.previewMembers) == 1
+    assert page.preview_3d.bridge.previewMembers[0]["length"] == pytest.approx(3.0)
+
+
+def test_no_open_chain_produces_no_hover_preview() -> None:
+    page = _page(start_in_3d=True)
+    page._activate_draw_tool()
+
+    page._on_3d_plane_hovered(1.0, 2.0, 3.0)
+
+    assert page.preview_3d.bridge.previewMembers == []
+
+
+def test_hover_cleared_removes_the_preview() -> None:
+    page = _page(start_in_3d=True)
+    page._activate_draw_tool()
+    page.canvas.place_point(0.0, 0.0)
+    page._on_3d_plane_hovered(4.0, 0.0, 0.0)
+    assert page.preview_3d.bridge.previewMembers != []
+
+    page._on_3d_hover_cleared()
+
+    assert page.preview_3d.bridge.previewMembers == []
+
+
+def test_committing_a_point_drops_the_stale_preview() -> None:
+    """The rubber-band must not linger showing the segment that was just
+    placed - the chain moved on, so the preview has to wait for a fresh
+    hover before showing anything again."""
+    page = _page(start_in_3d=True)
+    page._activate_draw_tool()
+    page.canvas.place_point(0.0, 0.0)
+    page._on_3d_plane_hovered(4.0, 0.0, 0.0)
+    assert page.preview_3d.bridge.previewMembers != []
+
+    page.canvas.place_point(4.0, 0.0)
+
+    assert page.preview_3d.bridge.previewMembers == []
+
+
+def test_leaving_draw_mode_drops_the_preview() -> None:
+    page = _page(start_in_3d=True)
+    page._activate_draw_tool()
+    page.canvas.place_point(0.0, 0.0)
+    page._on_3d_plane_hovered(4.0, 0.0, 0.0)
+    assert page.preview_3d.bridge.previewMembers != []
+
+    page._activate_select_tool()
+
+    assert page.preview_3d.bridge.previewMembers == []
+
+
+def test_the_3d_viewport_accepts_keyboard_focus_so_space_can_reach_it() -> None:
+    """The Space-bar draw shortcut is scoped to preview_3d in 3D mode (see
+    __init__) - a QShortcut with WidgetWithChildrenShortcut context only ever
+    fires while that widget tree actually holds focus, so the quick widget
+    must be focusable at all for a click there to grab it."""
+    from PySide6.QtCore import Qt as QtCoreQt
+
+    page = _page(start_in_3d=True)
+
+    assert page.preview_3d.quick_widget.focusPolicy() != QtCoreQt.FocusPolicy.NoFocus
+    assert page.draw_space_shortcut_3d.parent() is page.preview_3d
 
 
 def test_snapping_only_reaches_nodes_on_the_active_plane() -> None:

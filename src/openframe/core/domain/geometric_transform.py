@@ -78,6 +78,71 @@ ORIENTATION_ERROR_MESSAGES: dict[str, str] = {
 }
 
 
+def auto_reference_vector(axis: tuple[float, float, float]) -> tuple[float, float, float]:
+    """A ``vecxz`` reference vector that is never parallel to ``axis`` (a 3D
+    beam-column member's own unit i->j direction): global Z, except for a
+    vertical member (where global Z would be parallel), which falls back to
+    global X. Shared by ``MaterialFreeStaticsSolver._reference_vector`` (the
+    actual solve) and the 3D viewport's local-axis gizmo (a preview of what
+    the solve will do) - both need the exact same auto-pick rule, not two
+    copies that could drift apart.
+    """
+    global_z = (0.0, 0.0, 1.0)
+    is_vertical = abs(axis[0] * global_z[0] + axis[1] * global_z[1] + axis[2] * global_z[2]) > 0.999
+    return (1.0, 0.0, 0.0) if is_vertical else global_z
+
+
+def rotate_about_axis(
+    vector: tuple[float, float, float],
+    axis: tuple[float, float, float],
+    angle_rad: float,
+) -> tuple[float, float, float]:
+    """Rodrigues' rotation formula: ``vector`` rotated by ``angle_rad`` around
+    the unit ``axis``. Any component of ``vector`` parallel to ``axis`` is
+    unaffected by the rotation (as it must be) - which is exactly why this is
+    safe to apply to a ``vecxz`` reference vector that need not itself be
+    perpendicular to the member: only its perpendicular component determines
+    the resulting local y/z axes, and that is the part this formula rotates.
+    """
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    dot = axis[0] * vector[0] + axis[1] * vector[1] + axis[2] * vector[2]
+    cross = (
+        axis[1] * vector[2] - axis[2] * vector[1],
+        axis[2] * vector[0] - axis[0] * vector[2],
+        axis[0] * vector[1] - axis[1] * vector[0],
+    )
+    return tuple(
+        vector[k] * cos_a + cross[k] * sin_a + axis[k] * dot * (1.0 - cos_a) for k in range(3)
+    )
+
+
+def local_y_z_axes(
+    axis: tuple[float, float, float],
+    reference_vector: tuple[float, float, float],
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """``(y_axis, z_axis)`` unit vectors completing a right-handed local frame
+    with ``axis`` (local x) from a ``vecxz``-style ``reference_vector`` -
+    Gram-Schmidt: ``z_axis`` is ``reference_vector``'s component perpendicular
+    to ``axis``, normalized; ``y_axis = z_axis x axis`` completes the triad.
+    Only used for visualization (the 3D viewport's local-axis gizmo) - the
+    actual solve never needs y/z as explicit vectors, only the sign
+    conventions ``ops.geomTransf`` derives internally from ``vecxz``, so this
+    does not need to reproduce OpenSees's exact internal convention bit for
+    bit, only to rotate consistently as ``local_axis_angle`` changes.
+    """
+    dot = axis[0] * reference_vector[0] + axis[1] * reference_vector[1] + axis[2] * reference_vector[2]
+    perpendicular = tuple(reference_vector[k] - dot * axis[k] for k in range(3))
+    perpendicular_length = math.sqrt(sum(component * component for component in perpendicular)) or 1.0
+    z_axis = tuple(component / perpendicular_length for component in perpendicular)
+    y_axis = (
+        z_axis[1] * axis[2] - z_axis[2] * axis[1],
+        z_axis[2] * axis[0] - z_axis[0] * axis[2],
+        z_axis[0] * axis[1] - z_axis[1] * axis[0],
+    )
+    return y_axis, z_axis
+
+
 def validate_orientation_vector(
     vector_xz: tuple[float, float, float] | None,
     axis_vector: tuple[float, float, float],

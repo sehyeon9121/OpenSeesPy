@@ -225,11 +225,11 @@ def test_drag_direction_and_filter_control_window_or_crossing_selection() -> Non
     assert canvas.selected_nodes == {left}
 
 
-def test_a_slight_leftward_jitter_during_a_mostly_vertical_drag_stays_in_window_mode() -> None:
+def test_a_slight_upward_jitter_during_a_mostly_horizontal_drag_stays_in_window_mode() -> None:
     """Regression test: the window/crossing decision used to compare raw
-    scene-space x coordinates with no tolerance, so a drag meant to go
-    straight down - which in practice almost never has an exactly-zero
-    horizontal delta - could flip into crossing mode from a single pixel of
+    scene-space y coordinates with no tolerance, so a drag meant to go
+    straight across - which in practice almost never has an exactly-zero
+    vertical delta - could flip into crossing mode from a single pixel of
     hand tremor and start sweeping in members the box only grazed, not just
     the nodes the user meant to box. Reported as "위에서 아래로 드래그하면
     노드만 선택돼야 하는데 부재까지 같이 선택됨"."""
@@ -239,26 +239,26 @@ def test_a_slight_leftward_jitter_during_a_mostly_vertical_drag_stays_in_window_
 
     assert application is QApplication.instance()
     start = QPointF(0.0, 0.0)
-    tiny_leftward_jitter = QPointF(-1.0, 200.0)
-    assert canvas._is_crossing_drag(start, tiny_leftward_jitter) is False
+    tiny_upward_jitter = QPointF(200.0, -1.0)
+    assert canvas._is_crossing_drag(start, tiny_upward_jitter) is False
 
-    deliberate_left_drag = QPointF(-20.0, 200.0)
-    assert canvas._is_crossing_drag(start, deliberate_left_drag) is True
+    deliberate_upward_drag = QPointF(200.0, -20.0)
+    assert canvas._is_crossing_drag(start, deliberate_upward_drag) is True
 
-    # End-to-end: a horizontal member straddling a thin, almost-vertical
+    # End-to-end: a vertical member straddling a thin, almost-horizontal
     # selection box (crossed, not enclosed) must stay unselected once the
     # jitter no longer flips the drag into crossing mode.
     scale = canvas._DRAW_SCALE
-    left = canvas.add_node(-5.0, 0.0)
-    right = canvas.add_node(5.0, 0.0)
-    member = canvas.add_member(left, right)
+    bottom = canvas.add_node(0.0, -5.0)
+    top = canvas.add_node(0.0, 5.0)
+    member = canvas.add_member(bottom, top)
     canvas.selection_filter = "elements"
-    box_start = QPointF(-2.0 * scale, -6.0 * scale)
-    box_end = QPointF(-1.0 * scale, 6.0 * scale)
-    thin_vertical_box = QRectF(box_start, box_end).normalized()
+    box_start = QPointF(-6.0 * scale, -2.0 * scale)
+    box_end = QPointF(6.0 * scale, -1.0 * scale)
+    thin_horizontal_box = QRectF(box_start, box_end).normalized()
 
     canvas._select_in_rect(
-        thin_vertical_box, crossing=canvas._is_crossing_drag(box_start, box_end)
+        thin_horizontal_box, crossing=canvas._is_crossing_drag(box_start, box_end)
     )
 
     assert member not in canvas.selected_elements

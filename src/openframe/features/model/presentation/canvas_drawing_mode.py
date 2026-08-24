@@ -42,6 +42,17 @@ class _DrawingModeMixin:
         return None if node is None else self._uv(node)
 
     @property
+    def chain_last_node(self) -> int | None:
+        """Tag of the node the next member would start from, if a chain is open.
+
+        Unlike ``chain_anchor`` (plane-local u/v, for the 2D-retrofit snap
+        math) this is the raw node tag, so a caller that needs the node's
+        real (x, y, z) - the 3D free-form draw preview, say - can look it up
+        directly instead of un-projecting a plane point.
+        """
+        return self._chain[-1] if self._chain else None
+
+    @property
     def snap_label(self) -> str:
         return self._snap.label if self._snap is not None else ""
 

@@ -18,22 +18,23 @@ _CROSSING_DRAG_DEAD_ZONE_PX = 4.0
 
 class _RenderingMixin:
     def _is_crossing_drag(self, start: QPointF, current: QPointF) -> bool:
-        """AutoCAD-style drag-select direction: left = crossing (also grabs
-        members the box merely touches), right/straight = window (only
-        members fully enclosed).
+        """Drag-select direction: downward = window (only members fully
+        enclosed), upward = crossing (also grabs members the box merely
+        touches).
 
         Comparing scene coordinates directly made this flip on jitter alone:
-        a drag meant to go straight down almost never has an exactly-zero
-        horizontal delta, so a pixel or two of hand tremor left was enough to
+        a drag meant to go straight across almost never has an exactly-zero
+        vertical delta, so a pixel or two of hand tremor upward was enough to
         flip into crossing mode and sweep in touching members the user never
         boxed - reported as "위에서 아래로 드래그하면 노드만 선택돼야 하는데
         부재까지 같이 선택됨". Comparing in view-pixel space (not scene
         space, which shrinks per pixel as you zoom in) with a small dead zone
-        fixes it without weakening an intentional left-drag crossing gesture.
+        fixes it without weakening an intentional upward-drag crossing
+        gesture.
         """
         start_px = self.mapFromScene(start)
         current_px = self.mapFromScene(current)
-        return current_px.x() < start_px.x() - _CROSSING_DRAG_DEAD_ZONE_PX
+        return current_px.y() < start_px.y() - _CROSSING_DRAG_DEAD_ZONE_PX
 
     def _changed(self) -> None:
         self._redraw()

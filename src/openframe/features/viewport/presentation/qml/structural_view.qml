@@ -23,6 +23,41 @@ Item {
     signal cameraModeChanged(string mode)
     signal nodePicked(int tag, real screenX, real screenY)
     signal planePicked(real viewX, real viewY, real viewZ)
+    // Hover equivalents of the two signals above, fired continuously (no
+    // button held) while planePickingEnabled - drive the free-form 3D draw
+    // mode's live rubber-band preview and node-snap. hoverCleared covers the
+    // pointer landing on neither a node nor the active plane, or leaving the
+    // viewport outright.
+    signal nodeHovered(int tag)
+    signal planeHovered(real viewX, real viewY, real viewZ)
+    signal hoverCleared()
+
+    // view3d.pick() only ever hits the exact rendered pixel, so a node whose
+    // on-screen radius shrinks to a couple of pixels at any real zoom level
+    // was effectively unpickable without landing dead-center - no magnet
+    // effect at all, unlike the 2D canvas's generous pixel-radius snap
+    // (StaticsDrawingCanvas._SNAP_PIXELS). Probing a small ring of nearby
+    // points and taking the first node hit reproduces that same forgiving
+    // snap here.
+    function pickNearestNode(mx, my) {
+        let exact = view3d.pick(mx, my)
+        if (exact.objectHit && exact.objectHit.nodeTag !== undefined)
+            return exact
+        const radii = [4, 8, 14]
+        const steps = 8
+        for (let r = 0; r < radii.length; ++r) {
+            for (let i = 0; i < steps; ++i) {
+                const angle = (Math.PI * 2 * i) / steps
+                const hit = view3d.pick(
+                    mx + radii[r] * Math.cos(angle),
+                    my + radii[r] * Math.sin(angle)
+                )
+                if (hit.objectHit && hit.objectHit.nodeTag !== undefined)
+                    return hit
+            }
+        }
+        return exact
+    }
 
     function setPreset(preset) {
         if (preset === "xy") {
@@ -231,6 +266,39 @@ Item {
         }
 
         Repeater3D {
+            // Free-form 3D draw mode's rubber-band preview - see
+            // Quick3DSceneBridge.set_preview_segment. Never pickable, so it
+            // can never itself become a snap target while it follows the
+            // cursor.
+            model: sceneBridge.previewMembers
+            delegate: Model {
+                source: "#Cube"
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                rotation: Qt.quaternion(
+                    modelData.qscalar,
+                    modelData.qx,
+                    modelData.qy,
+                    modelData.qz
+                )
+                scale: Qt.vector3d(
+                    modelData.thickness / 100,
+                    modelData.length / 100,
+                    modelData.thickness / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.55
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+            }
+        }
+
+        Repeater3D {
             model: sceneBridge.nodes
             delegate: Model {
                 source: "#Sphere"
@@ -314,6 +382,36 @@ Item {
             model: sceneBridge.loadArrows
             delegate: Model {
                 source: modelData.shape
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                rotation: Qt.quaternion(
+                    modelData.qscalar,
+                    modelData.qx,
+                    modelData.qy,
+                    modelData.qz
+                )
+                scale: Qt.vector3d(
+                    modelData.thickness / 100,
+                    modelData.length / 100,
+                    modelData.thickness / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        metalness: 0.0
+                        roughness: 0.4
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+            }
+        }
+
+        Repeater3D {
+            // Local-axis gizmo: two flat entries per 3D member (local y, local
+            // z), off by default - see Quick3DSceneBridge.localAxisGizmos.
+            model: sceneBridge.localAxisGizmos
+            delegate: Model {
+                source: "#Cylinder"
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 rotation: Qt.quaternion(
                     modelData.qscalar,
@@ -434,11 +532,16 @@ Item {
     MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.MiddleButton | Qt.LeftButton
+        hoverEnabled: true
+        onExited: {
+            if (root.planePickingEnabled)
+                root.hoverCleared()
+        }
         onClicked: function(mouse) {
             if (mouse.button !== Qt.LeftButton)
                 return
             if (root.planePickingEnabled) {
-                let result = view3d.pick(mouse.x, mouse.y)
+                let result = root.pickNearestNode(mouse.x, mouse.y)
                 if (result.objectHit && result.objectHit.nodeTag !== undefined) {
                     // Clicked an existing node — continue the chain to it
                     // rather than dropping a new point on top of it.
@@ -450,7 +553,7 @@ Item {
             }
             if (!root.pickingEnabled)
                 return
-            let result = view3d.pick(mouse.x, mouse.y)
+            let result = root.pickNearestNode(mouse.x, mouse.y)
             if (result.objectHit && result.objectHit.nodeTag !== undefined)
                 root.nodePicked(result.objectHit.nodeTag, mouse.x, mouse.y)
         }
@@ -460,6 +563,21 @@ Item {
             root.panning = Boolean(mouse.modifiers & Qt.ShiftModifier)
         }
         onPositionChanged: function(mouse) {
+            if (root.planePickingEnabled && !(mouse.buttons & Qt.MiddleButton)) {
+                // Pure hover (no button held) while the draw tool is active -
+                // resolve what the cursor is over so the caller can snap the
+                // rubber-band preview onto an existing node, or follow the
+                // active plane otherwise. Mirrors onClicked's own pick logic
+                // exactly, so hover and click always agree on what counts as
+                // a hit.
+                let hover = root.pickNearestNode(mouse.x, mouse.y)
+                if (hover.objectHit && hover.objectHit.nodeTag !== undefined)
+                    root.nodeHovered(hover.objectHit.nodeTag)
+                else if (hover.objectHit === activePlaneModel)
+                    root.planeHovered(hover.scenePosition.x, hover.scenePosition.y, hover.scenePosition.z)
+                else
+                    root.hoverCleared()
+            }
             if (!(mouse.buttons & Qt.MiddleButton))
                 return
             let dx = mouse.x - root.lastMouseX

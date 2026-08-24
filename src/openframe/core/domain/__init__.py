@@ -14,6 +14,9 @@ from openframe.core.domain.geometric_transform import (
     ORIENTATION_VECTOR_ZERO,
     OVERRIDABLE_TRANSFORM_TYPES,
     GeometricTransform,
+    auto_reference_vector,
+    local_y_z_axes,
+    rotate_about_axis,
     validate_orientation_vector,
 )
 from openframe.core.domain.ground_motion import GroundMotion, GroundMotionRecord, GroundMotionSource
@@ -157,14 +160,17 @@ __all__ = [
     "UnitSystem",
     "UnsupportedConditionTypeError",
     "acceleration_to_model_unit_factor",
+    "auto_reference_vector",
     "compute_section_properties",
     "density_kg_m3_to_unit_weight_kN_m3",
     "dimension_fields",
     "kN_m3_to_volumetric_force_unit",
     "length_unit_to_mm",
+    "local_y_z_axes",
     "mm2_to_length_unit",
     "mm4_to_length_unit",
     "mm_to_length_unit",
     "mpa_to_stress_unit",
+    "rotate_about_axis",
     "validate_orientation_vector",
 ]

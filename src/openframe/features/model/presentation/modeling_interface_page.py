@@ -135,6 +135,10 @@ class ModelingInterfacePage(QFrame):
         self._gravity_acceleration = 9.81
         self._user_materials: list[dict[str, object]] = []
         self._user_sections: list[dict[str, object]] = []
+        # The Element tab's "what the next drawn member gets" pick (3D only)
+        # - None until the user Applies one, in which case a freshly drawn
+        # member gets it automatically (see ``_on_3d_node_picked``).
+        self._active_element_kwargs: dict[str, object] | None = None
         self._solver = MaterialFreeStaticsSolver()
         self._solve_thread: MaterialFreeSolveThread | None = None
         self.analysis_progress = AnalysisProgressBanner(self)
@@ -180,6 +184,17 @@ class ModelingInterfacePage(QFrame):
         self.canvas.escape_requested.connect(self._activate_select_tool)
         self.preview_3d.plane_point_picked.connect(self._on_3d_plane_picked)
         self.preview_3d.node_picked.connect(self._on_3d_node_picked)
+        if self._start_in_3d:
+            # The chain-drawing preview line tracks self.canvas's own state
+            # (chain_last_node), so any change to it - a point committed, the
+            # chain broken, the tool switched away - has to drop the stale
+            # rubber-band rather than leave it pointing at a segment that no
+            # longer exists. The very next hover redraws it if a chain is
+            # still open.
+            self.canvas.draw_state_changed.connect(self._on_3d_draw_state_changed)
+            self.preview_3d.node_hovered.connect(self._on_3d_node_hovered)
+            self.preview_3d.plane_point_hovered.connect(self._on_3d_plane_hovered)
+            self.preview_3d.hover_cleared.connect(self._on_3d_hover_cleared)
         for standard, slot in (
             (QKeySequence.StandardKey.Delete, self.canvas.delete_selected),
             (QKeySequence.StandardKey.Undo, self.canvas.undo),
@@ -197,6 +212,18 @@ class ModelingInterfacePage(QFrame):
         self.draw_space_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self.canvas)
         self.draw_space_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.draw_space_shortcut.activated.connect(self._activate_draw_tool)
+        if self._start_in_3d:
+            # self.canvas stays hidden in 3D mode, so it can never hold
+            # keyboard focus and the shortcut above never fires while the
+            # user is actually looking at (and clicking in) preview_3d - a
+            # second copy scoped to the 3D viewport itself covers that.
+            self.draw_space_shortcut_3d = QShortcut(
+                QKeySequence(Qt.Key.Key_Space), self.preview_3d
+            )
+            self.draw_space_shortcut_3d.setContext(
+                Qt.ShortcutContext.WidgetWithChildrenShortcut
+            )
+            self.draw_space_shortcut_3d.activated.connect(self._activate_draw_tool)
         self.fit_shortcut = QShortcut(QKeySequence("F"), self.canvas)
         self.fit_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.fit_shortcut.activated.connect(self.canvas.fit_model)
@@ -336,6 +363,7 @@ class ModelingInterfacePage(QFrame):
         ("model", "Model"),
         ("node", "Node"),
         ("properties", "Properties"),
+        ("element", "Element"),
         ("boundary", "Supports"),
         ("loads", "Loads"),
         ("analysis", "Analysis"),
@@ -346,6 +374,7 @@ class ModelingInterfacePage(QFrame):
         "model": (),
         "node": ("add", "move", "arch", "kind"),
         "properties": ("member",),
+        "element": (),
         "boundary": ("support",),
         "loads": ("load",),
         "analysis": (),
@@ -797,6 +826,13 @@ class ModelingInterfacePage(QFrame):
             self._activate_support_tool()
         elif key == "loads":
             self._activate_load_tool()
+        elif key == "element":
+            # Picking what the *next* member will be drawn with is a select-
+            # mode action (nothing is being placed by clicking the canvas
+            # here) - the actual "draw" tool only turns on from the Node tab
+            # or the Space/L shortcut.
+            self._activate_select_tool()
+            self._show_category("element_picker", sync_workbench=False)
         else:
             self._activate_select_tool()
             categories = self._WORKBENCH_CATEGORIES[key]
@@ -1186,6 +1222,7 @@ class ModelingInterfacePage(QFrame):
                 "kind": "Node Type",
                 "member": "Properties",
                 "load": "Loads",
+                "element_picker": "Element",
             }
             self.editor_title.setText(title_by_category.get(key, "Tool Settings"))
         # The category bar (this method) is the one place every category
@@ -1276,6 +1313,66 @@ class ModelingInterfacePage(QFrame):
             self._activate_select_tool()
         self._show_category(key, sync_workbench=False)
 
+    def _build_element_category(self) -> QWidget:
+        """"Which material/section gets used for the *next* member drawn" -
+        distinct from the 부재/Properties tab's own ``SectionMaterialPanel``
+        instance, which edits an already-*selected* member. This is a second,
+        independent instance (the widget is self-contained - its own DB/
+        Custom browsing, no shared state) whose Apply just records the
+        picked kwargs; drawing a new member (``_on_3d_node_picked``) applies
+        them automatically the moment the member is created, the same way a
+        CAD tool's "current layer" sets what gets drawn next rather than
+        editing what is already there.
+        """
+        section, root = self._section("Element", show_title=False)
+        hint = QLabel(
+            "여기서 단면을 고르고 Apply를 누르면, 지금부터 그리는 부재마다 "
+            "자동으로 적용됩니다 — 재료를 바꾸거나 이미 그려진 부재를 바꾸려면 "
+            "Properties 탭을 쓰세요."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+
+        self.element_section_material_panel = SectionMaterialPanel()
+        self.element_section_material_panel.set_visible_groups(material=False, section=True)
+        self.element_section_material_panel.section_saved.connect(self._save_user_section)
+        self.element_section_material_panel.apply_button.setText("Apply")
+        self.element_section_material_panel.apply_requested.connect(
+            self._apply_active_element_section
+        )
+        root.addWidget(self.element_section_material_panel)
+
+        self.active_element_status = QLabel("현재 설정된 재료·단면이 없습니다.")
+        self.active_element_status.setWordWrap(True)
+        self.active_element_status.setObjectName("setupSectionHint")
+        root.addWidget(self.active_element_status)
+        return section
+
+    def _apply_active_element_section(self) -> None:
+        self._active_element_kwargs = (
+            self.element_section_material_panel.current_application_kwargs()
+        )
+        section_id = self._active_element_kwargs.get("section_id")
+        shape = self._active_element_kwargs.get("shape")
+        self.active_element_status.setText(
+            f"현재 설정: {section_id or shape} — 지금부터 그리는 부재에 자동 적용됩니다."
+        )
+
+    def _apply_active_element_to_new_members(self, new_element_tags: set[int]) -> None:
+        """Give a just-drawn member the Element tab's currently Applied
+        material/section, the same way a CAD tool's "current layer" governs
+        what gets drawn next rather than anything already on the canvas.
+        A no-op both when nothing was Applied yet and when this particular
+        click only continued the chain without creating a new member (e.g.
+        clicking the same node the chain already ends on)."""
+        if not new_element_tags or self._active_element_kwargs is None:
+            return
+        previous_selection = set(self.canvas.selected_elements)
+        self.canvas.selected_elements = set(new_element_tags)
+        self.canvas.apply_full_section_to_selection(**self._active_element_kwargs)
+        self.canvas.selected_elements = previous_selection | new_element_tags
+
     def _build_2d_editor_panel(self) -> QScrollArea:
         """The category editor's own left-hand column, independent of the
         read-only Selection Status column on the right (``_build_selection_
@@ -1348,6 +1445,10 @@ class ModelingInterfacePage(QFrame):
         }
         for key, _label in self._CATEGORY_OPTIONS:
             self.category_pages[key] = self.category_stack.addWidget(builders[key]())
+        if self._start_in_3d:
+            self.category_pages["element_picker"] = self.category_stack.addWidget(
+                self._build_element_category()
+            )
         self.category_stack.setCurrentIndex(self.category_pages["empty"])
         root.addWidget(self.category_stack)
         root.addStretch(1)
@@ -1847,8 +1948,12 @@ class ModelingInterfacePage(QFrame):
         self.section_material_panel = SectionMaterialPanel()
         if self._start_in_3d:
             self.section_material_panel.set_compact_mode()
+            # Section/Section Properties are the Element tab's concern now
+            # (it picks what future members are drawn with) - Properties only
+            # ever edits an already-drawn member's material, so it shows just
+            # that one group. See SectionMaterialPanel.set_visible_groups.
+            self.section_material_panel.set_visible_groups(material=True, section=False)
             self.section_material_panel.material_saved.connect(self._save_user_material)
-            self.section_material_panel.section_saved.connect(self._save_user_section)
         self.section_material_panel.apply_requested.connect(self._apply_member_section)
         self.section_material_panel.edited.connect(self._selection_status_edited)
         root.addWidget(self.section_material_panel)
@@ -1872,6 +1977,46 @@ class ModelingInterfacePage(QFrame):
             lambda checked: self._apply_member_end_release("j", checked)
         )
         root.addWidget(self.member_end_j)
+
+        # 3D에서만 의미가 있음 - vecxz 자동선택이 비대칭 단면(Iy != Iz)의 실제
+        # 강축/약축과 다를 수 있어서 회전으로 보정하는 용도. 2D/트러스 부재는
+        # 이 필드를 애초에 안 읽으므로(_reference_vector가 3D 프레임에서만
+        # 쓰임) 행 자체를 숨긴다 - 가시성은 _refresh_member_section에서 매
+        # 선택마다 갱신.
+        self.member_local_axis_row = QWidget()
+        axis_layout = QVBoxLayout(self.member_local_axis_row)
+        axis_layout.setContentsMargins(0, 0, 0, 0)
+        axis_layout.setSpacing(6)
+        angle_row = QHBoxLayout()
+        angle_row.addWidget(QLabel("로컬축 회전각(°)"))
+        self.member_local_axis_angle = self._number(0.0)
+        self.member_local_axis_angle.setRange(-360.0, 360.0)
+        self.member_local_axis_angle.setToolTip(
+            "부재 자신의 축을 기준으로 로컬 y/z축을 회전시키는 각도. 0이면 자동선택된 "
+            "방향을 그대로 씁니다 - 비대칭 단면(Iy≠Iz)의 강축/약축이 의도와 다르게 "
+            "풀릴 때만 조정하면 됩니다."
+        )
+        self.member_local_axis_angle.editingFinished.connect(self._apply_member_local_axis_angle)
+        angle_row.addWidget(self.member_local_axis_angle, 1)
+        axis_layout.addLayout(angle_row)
+        rotate_row = QHBoxLayout()
+        axis_cw_button = QPushButton("↻ 시계 30°")
+        axis_cw_button.setToolTip("로컬축 회전각을 시계 방향으로 30°씩 돌리고 바로 적용합니다.")
+        axis_cw_button.clicked.connect(lambda: self._rotate_member_local_axis_angle(-30.0))
+        rotate_row.addWidget(axis_cw_button)
+        axis_ccw_button = QPushButton("↺ 반시계 30°")
+        axis_ccw_button.setToolTip("로컬축 회전각을 반시계 방향으로 30°씩 돌리고 바로 적용합니다.")
+        axis_ccw_button.clicked.connect(lambda: self._rotate_member_local_axis_angle(30.0))
+        rotate_row.addWidget(axis_ccw_button)
+        axis_layout.addLayout(rotate_row)
+        self.member_local_axis_gizmo_toggle = QCheckBox("3D 뷰에 로컬축 표시")
+        self.member_local_axis_gizmo_toggle.setToolTip(
+            "선택 여부와 관계없이 모든 3D 부재의 로컬 y축(초록)·z축(분홍)을 3D 뷰에 "
+            "짧은 선으로 표시합니다."
+        )
+        self.member_local_axis_gizmo_toggle.toggled.connect(self._toggle_local_axis_gizmo)
+        axis_layout.addWidget(self.member_local_axis_gizmo_toggle)
+        root.addWidget(self.member_local_axis_row)
         return content
 
     def _build_load_bar_content(self) -> QWidget:
@@ -2505,21 +2650,61 @@ class ModelingInterfacePage(QFrame):
             self.canvas.extrude_selection_to_plane(target)
 
     def _on_3d_plane_picked(self, x: float, y: float, z: float) -> None:
-        """A click on the active plane in the 3D view — the free-form-3D
-        counterpart of a 2D canvas click, feeding the very same chain logic."""
-        u, v = self.canvas.work_plane.to_2d((x, y, z))
-        self.canvas.place_point(u, v)
+        """A click on empty space on the active plane in the 3D view.
+
+        Deliberately a no-op: this used to drop a new node wherever the
+        plane was clicked, but an orbit drag in 3D routinely ends in a
+        stray click on empty space - every accidental release created a
+        node nobody meant to place. Node creation is exact-coordinate-only
+        now (the Node tab's Create Node form / ``_add_nodes_from_
+        coordinates``); a click here does nothing. Clicking an *existing*
+        node still works (``_on_3d_node_picked``) since that can never be
+        a stray click on nothing.
+        """
+        return
 
     def _on_3d_node_picked(self, tag: int, _screen_x: int, _screen_y: int) -> None:
         """A click on an existing node in the 3D view: continue the chain to it
         while drawing, or just select it otherwise — matching what clicking a
         node on the 2D plan does in each of those tools."""
         if self.canvas.mode == "draw":
+            before = set(self.canvas.elements)
             self.canvas.continue_chain_to_node(tag)
+            self._apply_active_element_to_new_members(set(self.canvas.elements) - before)
         else:
             self.canvas.selected_nodes = {tag}
             self.canvas.selected_elements.clear()
             self.canvas.selection_changed.emit()
+
+    def _on_3d_node_hovered(self, tag: int) -> None:
+        """Cursor is over an existing node while drawing — snap the rubber-band
+        preview's free end onto its exact coordinates."""
+        node = self.canvas.nodes.get(tag)
+        self._update_3d_draw_preview(None if node is None else (node.x, node.y, node.z))
+
+    def _on_3d_plane_hovered(self, x: float, y: float, z: float) -> None:
+        """Cursor is over the active plane (not snapped to a node) while
+        drawing — follow it with the rubber-band preview's free end."""
+        self._update_3d_draw_preview((x, y, z))
+
+    def _on_3d_hover_cleared(self) -> None:
+        self.preview_3d.set_preview_segment(None, None)
+
+    def _update_3d_draw_preview(self, end: tuple[float, float, float] | None) -> None:
+        tag = self.canvas.chain_last_node
+        start_node = self.canvas.nodes.get(tag) if tag is not None else None
+        if self.canvas.mode != "draw" or start_node is None or end is None:
+            self.preview_3d.set_preview_segment(None, None)
+            return
+        self.preview_3d.set_preview_segment((start_node.x, start_node.y, start_node.z), end)
+
+    def _on_3d_draw_state_changed(self) -> None:
+        """Drop the rubber-band preview whenever the chain itself changes -
+        a point committed, the chain broken, the tool switched - so it never
+        lingers pointing at a segment that no longer applies. The next hover
+        redraws it fresh if a chain is still open."""
+        if self.canvas.ndm == 3:
+            self.preview_3d.set_preview_segment(None, None)
 
     def _refresh_3d_preview(self) -> None:
         if self.canvas.ndm == 3:
@@ -2540,8 +2725,13 @@ class ModelingInterfacePage(QFrame):
         if self.canvas.ndm != 3:
             return
         drawing = self.canvas.mode == "draw"
-        self.preview_3d.set_plane_picking_mode(drawing)
+        # Both setters plant a cursor on the same QQuickWidget, so whichever
+        # runs last wins - call the one that should *not* end up owning the
+        # cursor first, or entering draw mode silently leaves the arrow
+        # cursor in place (set_picking_mode(False) unsetting it right after
+        # set_plane_picking_mode(True) had just set the crosshair).
         self.preview_3d.set_picking_mode(not drawing)
+        self.preview_3d.set_plane_picking_mode(drawing)
 
     def _activate_select_tool(self) -> None:
         self.select_tool.setChecked(True)
@@ -2706,6 +2896,11 @@ class ModelingInterfacePage(QFrame):
         self.member_end_j.blockSignals(True)
         self.member_end_j.setChecked(element.moment_release_j)
         self.member_end_j.blockSignals(False)
+        self.member_local_axis_row.setVisible(self.canvas.ndm == 3)
+        self.section_material_panel.set_shear_modulus_visible(self.canvas.ndm == 3)
+        self.member_local_axis_angle.blockSignals(True)
+        self.member_local_axis_angle.setValue(element.local_axis_angle)
+        self.member_local_axis_angle.blockSignals(False)
         self.section_material_panel.load_from_element(element)
 
     def _apply_member_section(self) -> None:
@@ -2732,6 +2927,31 @@ class ModelingInterfacePage(QFrame):
         member_tag = self._selected_member_tag()
         if member_tag is not None:
             self.canvas.set_member_end_release(member_tag, end, released)
+
+    def _rotate_member_local_axis_angle(self, delta: float) -> None:
+        """Nudge 로컬축 회전각 by ``delta`` degrees (wrapping into [0, 360))
+        and apply immediately - mirrors ``_rotate_support_angle``, since a
+        button click never fires ``editingFinished`` on its own."""
+        self.member_local_axis_angle.setValue(
+            (self.member_local_axis_angle.value() + delta) % 360.0
+        )
+        self._apply_member_local_axis_angle()
+
+    def _apply_member_local_axis_angle(self) -> None:
+        if not self.canvas.selected_elements:
+            return
+        self.canvas.apply_local_axis_angle_to_selection(self.member_local_axis_angle.value())
+        self._sync_selection_status()
+
+    def _toggle_local_axis_gizmo(self, visible: bool) -> None:
+        # Looked up lazily (not connected to ``self.preview_3d`` directly) -
+        # ``_build_member_bar_content`` runs before ``self.preview_3d`` is
+        # constructed (``_build_canvas_panel`` builds the category bar before
+        # the 3D preview panel), so an eager reference at connect-time would
+        # raise AttributeError before the page ever finishes building.
+        preview_3d = getattr(self, "preview_3d", None)
+        if preview_3d is not None:
+            preview_3d.set_local_axes_visible(visible)
 
     def _insert_member_station_node(self) -> None:
         member_tag = self._selected_member_tag()
