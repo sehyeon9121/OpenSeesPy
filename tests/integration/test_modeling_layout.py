@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from _solve_helpers import solve_and_wait
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QFrame
+from PySide6.QtWidgets import QApplication, QFrame, QPushButton
 
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
@@ -23,7 +23,13 @@ def test_direct_2d_workspace_uses_the_compact_modeling_and_result_shell() -> Non
     page = _page()
 
     assert page.findChild(QFrame, "direct2DPageHeader") is not None
-    assert page.findChild(QFrame, "direct2DToolRail").width() == 72
+    # 선택/그리기 and the UNDO/REDO/DELETE/FIT commands used to live in a
+    # dedicated 72px rail; that column is gone now that they sit on the
+    # category bar above the canvas instead (see test_2d_editor_panel_and_
+    # selection_panel_are_independent_fixed_width_columns for the panels
+    # that replaced it).
+    assert page.findChild(QFrame, "direct2DToolRail") is None
+    assert page.select_tool is not None
     assert page.model_type_selector.count() == 2
     # 2D direct modeling shares the exact same RESULT TYPES sidebar as 3D direct
     # modeling and "OpenSeesPy 파일 불러오기" now - the compact-only variant was
@@ -61,6 +67,251 @@ def test_direct_2d_workspace_uses_the_compact_modeling_and_result_shell() -> Non
     assert page.header_controls_stack.currentIndex() == 0
 
 
+def test_2d_category_bar_absorbed_the_old_tool_rails_buttons() -> None:
+    """선택/그리기 and the UNDO/REDO/DELETE/FIT commands moved from their own
+    72px rail onto this same bar's leading and trailing edges, and the
+    rail's duplicate 지점/속성/하중 shortcuts were dropped entirely - the
+    bar's own 지점/부재/하중 category buttons already do the same thing."""
+    page = _page()
+    bar = page.findChild(QFrame, "direct2DCanvasToolbar")
+
+    assert bar is not None
+    assert page.select_tool.parent() is bar
+    assert page.draw_tool.parent() is bar
+    command_labels = {
+        button.text()
+        for button in bar.findChildren(QPushButton, "railCommandButton")
+    }
+    assert command_labels == {"UNDO", "REDO", "DELETE", "FIT"}
+
+
+def test_3d_workspace_hides_the_context_dock_until_a_tool_needs_it() -> None:
+    page = _page(start_in_3d=True)
+
+    assert page.findChild(QFrame, "modelingWorkbenchBar") is not None
+    # Tab order mirrors the actual modeling workflow: geometry, then
+    # material/section, then supports, then loads, then analysis/results.
+    assert list(page.workbench_buttons) == [
+        "model",
+        "node",
+        "properties",
+        "boundary",
+        "loads",
+        "analysis",
+        "results",
+    ]
+    assert page.workbench_buttons["model"].isChecked()
+    assert page.findChild(QFrame, "direct2DToolRail") is None
+    assert page.findChild(QFrame, "direct2DCanvasToolbar") is None
+    assert not hasattr(page, "model_explorer_tree")
+    assert not hasattr(page, "model_settings_summary_button")
+    assert page.selection_status_panel is not None
+    # 모델 탭에는 중복 탐색기를 두지 않는다. 왼쪽 설정창은 컨텍스트 도구를
+    # 선택할 때만 열리고, 선택 전용 인스펙터는 항상 오른쪽에 남는다.
+    assert page.left_panel_stack.isHidden()
+    assert page.findChild(QFrame, "direct2DPageHeader").isHidden()
+    assert page.model_settings_dialog.isVisible() is False
+
+
+def test_3d_work_tabs_switch_the_left_editor_and_canvas_tool_together() -> None:
+    """Each tab both shows its own form in the left dock and puts the canvas
+    in whichever tool that step needs - there is no separate 선택/Member
+    row to click first any more."""
+    page = _page(start_in_3d=True)
+    viewport = page.canvas_stack.currentWidget()
+
+    page.workbench_buttons["node"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["add"]
+    assert page.canvas.mode == "draw"
+    assert page.canvas_stack.currentWidget() is viewport
+
+    page.workbench_buttons["properties"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["member"]
+    assert page.left_panel_stack.currentIndex() == page.left_editor_index
+    assert page.left_panel_stack.width() == 320
+    assert page.canvas.mode == "select"
+    assert page.canvas_stack.currentWidget() is viewport
+
+    page.workbench_buttons["boundary"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["support"]
+    assert page.canvas.mode == "select"
+    assert page.selection_filter.currentData() == "nodes"
+    assert page.canvas_stack.currentWidget() is viewport
+
+    page.workbench_buttons["loads"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["load"]
+    assert page.canvas.mode == "select"
+    assert page.canvas_stack.currentWidget() is viewport
+
+    page.workbench_buttons["model"].click()
+    assert page.left_panel_stack.isHidden()
+    assert page.model_settings_dialog.isVisible()
+    assert page.canvas_stack.currentWidget() is viewport
+    page.model_settings_dialog.reject()
+
+
+def test_node_tab_shows_a_dropdown_picker_for_its_own_four_actions() -> None:
+    """Node is the one 3D tab whose work still splits into several distinct
+    actions - a plain combo box (same "click to expand, pick one, it closes
+    itself" behaviour as the reference Tree Menu's own action dropdown)
+    instead of a custom toggle+list, so the current action always shows in
+    its closed state and there is nothing separate to collapse."""
+    page = _page(start_in_3d=True)
+
+    page.workbench_buttons["properties"].click()
+    assert page.node_subcategory_row.isVisible() is False
+
+    page.workbench_buttons["node"].click()
+    assert page.node_subcategory_row.isVisible() is True
+    assert page.node_subcategory_combo.currentData() == "add"
+    assert page.canvas.mode == "draw"
+
+    page.node_subcategory_combo.setCurrentIndex(
+        page.node_subcategory_combo.findData("move")
+    )
+    assert page.category_stack.currentIndex() == page.category_pages["move"]
+    assert page.canvas.mode == "select"
+
+    page.node_subcategory_combo.setCurrentIndex(
+        page.node_subcategory_combo.findData("arch")
+    )
+    assert page.category_stack.currentIndex() == page.category_pages["arch"]
+    assert page.canvas.mode == "select"
+
+    page.node_subcategory_combo.setCurrentIndex(
+        page.node_subcategory_combo.findData("kind")
+    )
+    assert page.category_stack.currentIndex() == page.category_pages["kind"]
+    assert page.canvas.mode == "select"
+
+    page.node_subcategory_combo.setCurrentIndex(
+        page.node_subcategory_combo.findData("add")
+    )
+    assert page.category_stack.currentIndex() == page.category_pages["add"]
+    assert page.canvas.mode == "draw"
+
+
+def test_switching_back_to_model_tab_opens_the_centered_model_settings_dialog() -> None:
+    """Model settings are global and open as a focused dialog; assignment
+    tools continue to use the left dock and never cover the selection pane."""
+    page = _page(start_in_3d=True)
+
+    page.workbench_buttons["properties"].click()
+    page.workbench_buttons["model"].click()
+
+    assert page.left_panel_stack.isHidden()
+    assert page.model_settings_dialog.isVisible()
+    assert 480 <= page.model_settings_dialog.width() <= 520
+    page.model_settings_dialog.reject()
+
+
+def test_3d_model_settings_apply_inside_the_workspace_and_round_trip() -> None:
+    page = _page(start_in_3d=True)
+    page.model_name_field.setText("Office Frame")
+    page.force_unit_field.setCurrentText("N")
+    page.length_unit_field.setCurrentText("mm")
+    page.gravity_direction_field.setCurrentText("+Z")
+    page.gravity_acceleration_field.setValue(9.8067)
+
+    page._apply_model_settings_inline()
+
+    assert page._model_name == "Office Frame"
+    assert page._unit_system.force == "N"
+    assert page._unit_system.length == "mm"
+    assert page._gravity_direction == "+Z"
+    assert page._gravity_acceleration == pytest.approx(-9.8067)
+    assert "ops.model" in page.opensees_tcl_preview.text()
+    data = page.to_project_dict()
+    assert data["model_name"] == "Office Frame"
+    assert data["gravity_direction"] == "+Z"
+    assert data["gravity_acceleration"] == pytest.approx(-9.8067)
+
+    restored = _page(start_in_3d=True)
+    restored.load_project_dict(data)
+    assert restored._model_name == "Office Frame"
+    assert restored._unit_system.force == "N"
+    assert restored._unit_system.length == "mm"
+    assert restored._gravity_direction == "+Z"
+
+
+def test_3d_property_editor_orders_material_before_section_and_properties() -> None:
+    page = _page(start_in_3d=True)
+    panel = page.section_material_panel
+
+    assert panel._root_layout.indexOf(panel.material_group) == 0
+    assert panel._root_layout.indexOf(panel.section_group) == 1
+    assert panel._root_layout.indexOf(panel.properties_group) == 2
+    assert panel.material_group.title_label.text() == "물성"
+    assert panel.section_group.title_label.text() == "섹션"
+    assert panel.properties_group.title_label.text() == "섹션 특성"
+    assert panel.material_group.body.isHidden() is False
+    assert panel.section_group.body.isHidden() is True
+    assert panel.apply_button.isHidden() is True
+    assert panel.section_save_button.isHidden() is False
+
+
+def test_saved_user_material_and_section_appear_in_the_work_tree_and_round_trip() -> None:
+    page = _page(start_in_3d=True)
+    panel = page.section_material_panel
+    panel.material_name.setText("사용자 강재 SM355")
+    panel.material_e.setValue(210_000_000.0)
+
+    panel.material_save_button.click()
+
+    assert page.work_tree_title.text() == "워크트리"
+    assert page.work_tree_materials.childCount() == 1
+    assert page.work_tree_materials.child(0).text(0) == "사용자 강재 SM355"
+    assert page.work_tree_materials.child(0).text(1) == "MAT-001"
+
+    panel.section_name.setText("C1-기둥")
+    panel.section_save_button.click()
+    assert page.work_tree_sections.childCount() == 1
+    assert page.work_tree_sections.child(0).text(0) == "C1-기둥"
+    assert page.work_tree_sections.child(0).text(1) == "SEC-001"
+
+    restored = _page(start_in_3d=True)
+    restored.load_project_dict(page.to_project_dict())
+    assert restored.work_tree_materials.childCount() == 1
+    assert restored.work_tree_materials.child(0).text(0) == "사용자 강재 SM355"
+    assert restored.work_tree_sections.childCount() == 1
+    assert restored.work_tree_sections.child(0).text(0) == "C1-기둥"
+
+
+def test_member_group_counts_are_derived_from_true_3d_geometry() -> None:
+    page = _page(start_in_3d=True)
+
+    base = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    top = page.canvas._add_node_at((0.0, 0.0, 3.0))
+    page.canvas.add_member(base, top)
+    far = page.canvas._add_node_at((4.0, 0.0, 3.0))
+    page.canvas.add_member(top, far)
+
+    counts = page._member_group_counts()
+    assert counts == {"Columns": 1, "Beams": 1}
+
+
+def test_member_info_card_shows_start_end_length_and_group_for_one_selected_member() -> None:
+    page = _page(start_in_3d=True)
+    base = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    top = page.canvas._add_node_at((0.0, 0.0, 3.0))
+    column = page.canvas.add_member(base, top)
+
+    assert page.member_info_card.isVisible() is False
+
+    page.canvas.selected_elements = {column}
+    page.canvas.selection_changed.emit()
+
+    assert page.member_info_card.isVisible() is True
+    assert page.member_start_node_label.text() == f"N{base}"
+    assert page.member_end_node_label.text() == f"N{top}"
+    assert page.member_length_label.text() == "3.000 m"
+    assert page.member_group_label.text() == "Columns"
+
+    page.canvas.selected_elements.clear()
+    page.canvas.selection_changed.emit()
+    assert page.member_info_card.isVisible() is False
+
+
 def test_the_right_panel_starts_empty_until_a_category_is_picked() -> None:
     """Nothing is pinned any more: 노드 추가/이동·복사·배열/노드 분할 used to
     always occupy the 우측 패널, and 지점/노드 유형/부재/하중 lived in a
@@ -69,7 +320,7 @@ def test_the_right_panel_starts_empty_until_a_category_is_picked() -> None:
     page = _page()
 
     assert page.category_stack.currentIndex() == page.category_pages["empty"]
-    assert page.node_x.isVisible() is False
+    assert page.node_xy.isVisible() is False
     assert "선택된 대상이 없습니다" in page.selection_summary.text()
     assert {key for key, _label in page._CATEGORY_OPTIONS} == set(page.category_buttons)
 
@@ -79,7 +330,7 @@ def test_clicking_a_category_button_shows_only_that_pages_content() -> None:
 
     page.category_buttons["add"].click()
     assert page.category_stack.currentIndex() == page.category_pages["add"]
-    assert page.node_x.isVisible() is True
+    assert page.node_xy.isVisible() is True
 
     page.category_buttons["move"].click()
     assert page.category_stack.currentIndex() == page.category_pages["move"]
@@ -99,7 +350,7 @@ def test_category_stays_open_until_a_different_one_is_clicked() -> None:
     page.category_buttons["add"].click()
 
     assert page.category_stack.currentIndex() == page.category_pages["add"]
-    assert page.node_x.isVisible() is True
+    assert page.node_xy.isVisible() is True
 
 
 def test_arch_category_button_generates_an_arch_from_typed_span_and_rise() -> None:
@@ -262,7 +513,7 @@ def test_create_section_stays_visible_across_selection_changes() -> None:
 
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
-    assert page.node_x.isVisible() is True
+    assert page.node_xy.isVisible() is True
 
 
 def test_selecting_a_node_does_not_switch_the_active_category() -> None:
@@ -387,6 +638,20 @@ def test_showing_the_support_category_again_does_not_disturb_its_own_filter() ->
     page._show_category("support")
 
     assert page.selection_filter.currentData() == "nodes"
+
+
+def test_clicking_the_category_bars_own_support_button_narrows_the_filter_too() -> None:
+    """The rail's dedicated 지점 shortcut (``_activate_support_tool``) is gone
+    - the category bar's own 지점 button is now the only way in, so it must
+    still narrow the filter to 노드만 and switch back to the select tool,
+    not just flip the category page the plain ``_show_category`` way."""
+    page = _page()
+
+    page.category_buttons["support"].click()
+
+    assert page.selection_filter.currentData() == "nodes"
+    assert page.select_tool.isChecked() is True
+    assert page.category_stack.currentIndex() == page.category_pages["support"]
 
 
 def test_the_two_rail_tools_are_mutually_exclusive() -> None:
@@ -1031,8 +1296,7 @@ def test_adding_a_node_by_relative_coordinates_offsets_from_the_selected_node() 
     page.canvas.selection_changed.emit()
 
     page.node_relative.setChecked(True)
-    page.node_x.setValue(2.0)
-    page.node_y.setValue(-1.0)
+    page.node_xy.setText("2, -1")
     page.node_repeat.setValue(1)
     page._add_nodes_from_coordinates()
 
@@ -1044,14 +1308,60 @@ def test_adding_a_node_by_relative_coordinates_offsets_from_the_selected_node() 
 def test_relative_node_entry_falls_back_to_the_origin_without_a_single_selection() -> None:
     page = _page()
     page.node_relative.setChecked(True)
-    page.node_x.setValue(2.0)
-    page.node_y.setValue(-1.0)
+    page.node_xy.setText("2, -1")
     page.node_repeat.setValue(1)
     page._add_nodes_from_coordinates()
 
     model = page.canvas.build_model()
     (node,) = model.nodes.values()
     assert (node.x, node.y) == pytest.approx((2.0, -1.0))
+
+
+@pytest.mark.parametrize("text", ["1, 2", "1,2", "1 2", "(1, 2)", "(1,2)", "  1 , 2  "])
+def test_coordinate_field_accepts_midas_style_formats(text: str) -> None:
+    page = _page()
+    page.node_xy.setText(text)
+    page.node_repeat.setValue(1)
+    page._add_nodes_from_coordinates()
+
+    (node,) = page.canvas.build_model().nodes.values()
+    assert (node.x, node.y) == pytest.approx((1.0, 2.0))
+
+
+def test_coordinate_field_rejects_malformed_input_without_adding_a_node() -> None:
+    page = _page()
+    page.category_buttons["add"].click()
+    page.node_xy.setText("1, 2, 3")
+
+    page._add_nodes_from_coordinates()
+
+    assert not page.canvas.build_model().nodes
+    assert "형식" in page.create_section_hint.text()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["0 0 10", "0, 0, 10", "0,0,10", "(0, 0, 10)", "[0 0 10]"],
+)
+def test_3d_coordinate_field_accepts_combined_xyz_formats(text: str) -> None:
+    page = _page(start_in_3d=True)
+    page.node_xyz.setText(text)
+    page.node_repeat.setValue(1)
+
+    page._add_nodes_from_coordinates()
+
+    (node,) = page.canvas.build_model().nodes.values()
+    assert (node.x, node.y, node.z) == pytest.approx((0.0, 0.0, 10.0))
+
+
+def test_3d_coordinate_field_rejects_a_separate_xy_only_value() -> None:
+    page = _page(start_in_3d=True)
+    page.node_xyz.setText("0, 10")
+
+    page._add_nodes_from_coordinates()
+
+    assert not page.canvas.build_model().nodes
+    assert "X, Y, Z" in page.create_section_hint.text()
 
 
 def test_vertical_roller_restrains_horizontal_movement_not_vertical() -> None:

@@ -8,7 +8,7 @@ import pytest
 from _solve_helpers import solve_and_wait
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QSplitter
+from PySide6.QtWidgets import QApplication, QLabel, QScrollArea
 
 from openframe.features.analysis.statics import check_determinacy
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
@@ -109,8 +109,7 @@ def test_coordinate_node_creation_supports_midas_style_repetition() -> None:
     page = ModelingInterfacePage()
 
     assert application is QApplication.instance()
-    page.node_x.setValue(0.0)
-    page.node_y.setValue(1.0)
+    page.node_xy.setText("0, 1")
     page.node_dx.setValue(2.0)
     page.node_dy.setValue(0.5)
     page.node_repeat.setValue(3)
@@ -121,6 +120,41 @@ def test_coordinate_node_creation_supports_midas_style_repetition() -> None:
         (2.0, 1.5),
         (4.0, 2.0),
     ]
+
+
+def test_3d_coordinate_node_creation_supports_a_typed_z_and_bypasses_the_work_plane() -> None:
+    """A typed Z is unambiguous (unlike a canvas click, which is why 3D
+    drawing otherwise stays plane-based) - Create Node should place a node
+    at the exact X/Y/Z typed, regardless of which work plane is active."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage(start_in_3d=True)
+    assert application is QApplication.instance()
+
+    page.node_xyz.setText("2, 3, 5")
+    page.node_dx.setValue(0.0)
+    page.node_dz.setValue(1.0)
+    page.node_repeat.setValue(2)
+    page._add_nodes_from_coordinates()
+
+    assert [(node.x, node.y, node.z) for node in page.canvas.nodes.values()] == [
+        (2.0, 3.0, 5.0),
+        (2.0, 3.0, 6.0),
+    ]
+
+
+def test_3d_relative_node_creation_offsets_from_the_selected_nodes_true_z() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage(start_in_3d=True)
+    assert application is QApplication.instance()
+
+    base = page.canvas._add_node_at((1.0, 1.0, 4.0))
+    page.canvas.selected_nodes = {base}
+    page.node_relative.setChecked(True)
+    page.node_xyz.setText("0, 0, 2")
+    page._add_nodes_from_coordinates()
+
+    added = next(n for tag, n in page.canvas.nodes.items() if tag != base)
+    assert (added.x, added.y, added.z) == pytest.approx((1.0, 1.0, 6.0))
 
 
 def test_selected_entities_receive_support_hinge_and_load_properties() -> None:
@@ -493,6 +527,74 @@ def test_self_weight_requires_both_density_and_area_or_is_silently_skipped() -> 
     assert model.element_loads == []
 
 
+def test_3d_self_weight_on_a_horizontal_cantilever_matches_the_hand_calculated_base_reaction() -> None:
+    """The 3D counterpart of the horizontal-beam self-weight test above, as a
+    cantilever (fixed base, free tip) rather than simply-supported - avoids
+    needing a torsion-stable roller boundary condition just to prove the
+    self-weight projection itself lands in the right local axis. L=4, A=2,
+    density=1 -> weight/length=2, base shear = w*L = 8, base moment =
+    w*L^2/2 = 16 - the same closed form Phase 2's uniform-load cantilever
+    test already validated, this time reached through
+    ``include_self_weight`` end to end rather than a hand-built
+    ``UniformElementLoad``."""
+    from openframe.features.analysis.statics import MaterialFreeStaticsSolver
+
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage(start_in_3d=True)
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    base = canvas._add_node_at((0.0, 0.0, 0.0))
+    tip = canvas._add_node_at((4.0, 0.0, 0.0))
+    member = canvas.add_member(base, tip)
+    canvas.set_support(base, (True,) * 6)
+    canvas.elements[member].properties["A"] = 2.0
+    canvas.elements[member].properties["density"] = 1.0
+    canvas.include_self_weight = True
+
+    result = MaterialFreeStaticsSolver().solve(canvas.build_model())
+    assert result.status.value == "completed"
+    reaction = result.node_results[base].reaction
+    assert reaction[2] == pytest.approx(8.0, abs=1e-9)
+    assert abs(reaction[4]) == pytest.approx(16.0, abs=1e-9)
+    assert reaction[0] == pytest.approx(0.0, abs=1e-9)
+    assert reaction[1] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_3d_self_weight_on_a_vertical_column_is_pure_axial_with_no_bending() -> None:
+    """The 3D counterpart of the vertical-column self-weight test above: a
+    plumb column's own weight acts along its own centroidal (local x) axis
+    regardless of which way _reference_vector's automatic orientation picked
+    local y/z, so the base reaction should be pure vertical force
+    (density*A*L = 1*2*3 = 6) with zero moment - the same physical result
+    the 2D version already proves, now via the vecxz-dependent 3D
+    projection in ``_self_weight_local``."""
+    from openframe.features.analysis.statics import MaterialFreeStaticsSolver
+
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage(start_in_3d=True)
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    base = canvas._add_node_at((0.0, 0.0, 0.0))
+    top = canvas._add_node_at((0.0, 0.0, 3.0))
+    member = canvas.add_member(base, top)
+    canvas.set_support(base, (True,) * 6)
+    canvas.elements[member].properties["A"] = 2.0
+    canvas.elements[member].properties["density"] = 1.0
+    canvas.include_self_weight = True
+
+    result = MaterialFreeStaticsSolver().solve(canvas.build_model())
+    assert result.status.value == "completed"
+    reaction = result.node_results[base].reaction
+    assert reaction[2] == pytest.approx(6.0, abs=1e-9)
+    assert reaction[0] == pytest.approx(0.0, abs=1e-9)
+    assert reaction[1] == pytest.approx(0.0, abs=1e-9)
+    assert reaction[3] == pytest.approx(0.0, abs=1e-9)
+    assert reaction[4] == pytest.approx(0.0, abs=1e-9)
+    assert reaction[5] == pytest.approx(0.0, abs=1e-9)
+
+
 def test_rotate_copy_places_new_nodes_at_the_correct_angle_and_reproduces_members() -> None:
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
@@ -532,6 +634,77 @@ def test_collinear_node_is_auto_attached_without_splitting_the_visible_member() 
     assert (element.node_i, element.node_j) == (left, right)
     assert canvas.embedded_nodes[middle] == (element.tag, 0.5)
     assert len(canvas.build_model().elements) == 2
+
+
+def test_crossing_members_split_at_their_intersection_in_2d() -> None:
+    """Two members drawn to cross without sharing an endpoint (X-bracing)
+    must get a real shared joint there, not silently pass through each
+    other."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    assert application is QApplication.instance()
+
+    bottom_left = canvas.add_node(0.0, 0.0)
+    bottom_right = canvas.add_node(4.0, 0.0)
+    top_left = canvas.add_node(0.0, 4.0)
+    top_right = canvas.add_node(4.0, 4.0)
+    canvas.add_member(bottom_left, top_right)
+    canvas.add_member(top_left, bottom_right)
+
+    assert len(canvas.nodes) == 5
+    assert len(canvas.elements) == 4
+    crossing = next(tag for tag in canvas.nodes if tag not in {
+        bottom_left, bottom_right, top_left, top_right
+    })
+    assert (canvas.nodes[crossing].x, canvas.nodes[crossing].y) == pytest.approx((2.0, 2.0))
+    for element in canvas.elements.values():
+        assert crossing in (element.node_i, element.node_j)
+
+
+def test_crossing_split_does_not_change_static_determinacy() -> None:
+    """Splitting two crossing members into four at a shared joint adds two
+    members and one joint - Δm - 2Δj = 2 - 2 = 0, so the determinacy
+    count is unchanged either way; the split exists for real force
+    transfer at the joint, not to fix a redundancy count."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    assert application is QApplication.instance()
+    canvas.element_family = "truss"
+
+    bottom_left = canvas.add_node(0.0, 0.0)
+    bottom_right = canvas.add_node(4.0, 0.0)
+    top_left = canvas.add_node(0.0, 4.0)
+    top_right = canvas.add_node(4.0, 4.0)
+    canvas.add_member(bottom_left, bottom_right)
+    canvas.add_member(bottom_left, top_left)
+    canvas.add_member(top_left, top_right)
+    canvas.add_member(bottom_right, top_right)
+    canvas.add_member(bottom_left, top_right)
+    canvas.add_member(top_left, bottom_right)
+
+    assert len(canvas.elements) == 8
+    assert len(canvas.nodes) == 5
+
+
+def test_member_touching_existing_node_is_not_treated_as_a_crossing() -> None:
+    """A member drawn through an already-existing node keeps the existing
+    node-embed behaviour (collinear attach) instead of the crossing
+    splitter creating a duplicate joint on top of it."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+    assert application is QApplication.instance()
+
+    left = canvas.add_node(0.0, 0.0)
+    middle = canvas.add_node(2.0, 0.0)
+    right = canvas.add_node(4.0, 0.0)
+    canvas.add_member(left, right)
+
+    assert len(canvas.nodes) == 3
+    assert len(canvas.elements) == 1
+    assert canvas.embedded_nodes[middle] == (next(iter(canvas.elements)), 0.5)
 
 
 def test_midpoint_tool_snaps_near_member_center_and_is_undoable() -> None:
@@ -870,37 +1043,40 @@ def test_reselecting_a_member_restores_its_stored_value_not_an_unapplied_edit() 
     assert application is QApplication.instance()
 
 
-# -- Splitter layout ----------------------------------------------------------
+# -- Editor / selection layout -------------------------------------------------
 
 
-def test_splitter_pane_heights_can_be_dragged_by_the_user() -> None:
-    """14. Splitter 높이 조절."""
+def test_2d_editor_and_selection_panels_are_independent_fixed_width_columns() -> None:
+    """The category editor and the read-only Selection Status inspector used
+    to share one vertical splitter on the right, which read as a single
+    cluttered panel for something as simple as 노드 이동·복사/아치. They are
+    now two separate columns - editor on the left of the canvas, Selection
+    Status on the right - each its own independent scroll area, mirroring
+    the 3D workbench's tools-left/status-right split."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     page.resize(1600, 900)
     page.show()
     QApplication.processEvents()
 
-    splitter = page.findChild(QSplitter, "modelingRightSplitter")
-    assert splitter is not None
-    assert splitter.orientation() == Qt.Orientation.Vertical
-    original_sizes = list(splitter.sizes())
+    editor = page._editor_scroll
+    status = page.findChild(QScrollArea, "modelingSelectionInspector")
 
-    splitter.setSizes([150, 600])
-    QApplication.processEvents()
-    new_sizes = splitter.sizes()
-
-    assert new_sizes != original_sizes
-    assert new_sizes[1] > new_sizes[0]
+    assert isinstance(editor, QScrollArea)
+    assert isinstance(status, QScrollArea)
+    assert editor is not status
+    assert editor.width() == 300
+    assert status.width() == 320
+    assert editor.verticalScrollBar() is not status.verticalScrollBar()
+    assert status.widget() is page.selection_status_panel
     assert application is QApplication.instance()
 
 
-def test_a_short_category_shrinks_the_editor_pane_instead_of_leaving_it_blank() -> None:
-    """지점 (a handful of icons + one angle field) needs far less height than
-    이동·복사 (dropdown + dX/dY/repeat + apply + mirror row + mirror button) -
-    the editor pane should size itself to whichever is actually showing
-    rather than keeping one fixed split that leaves a short category's page
-    sitting in mostly blank space."""
+def test_switching_categories_updates_only_the_editor_panel() -> None:
+    """지점 (a handful of icons) and 이동·복사 (dropdown + several fields) are
+    very different heights - switching between them must only change what
+    the editor column shows, without needing to coordinate with the
+    independent Selection Status column next to it any more."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
     page.resize(1600, 900)
@@ -909,30 +1085,11 @@ def test_a_short_category_shrinks_the_editor_pane_instead_of_leaving_it_blank() 
 
     page._show_category("move")
     QApplication.processEvents()
-    tall_editor_height = page._right_splitter.sizes()[0]
+    assert page.category_stack.currentIndex() == page.category_pages["move"]
 
     page._show_category("support")
     QApplication.processEvents()
-    short_editor_height = page._right_splitter.sizes()[0]
-
-    assert short_editor_height < tall_editor_height
-    # Still tall enough for its own title + content, never squeezed away.
-    assert short_editor_height >= page._editor_scroll.minimumHeight()
-    assert application is QApplication.instance()
-
-
-def test_editor_and_status_panes_are_independent_scroll_areas() -> None:
-    """15. 상단과 하단의 독립 스크롤."""
-    application = QApplication.instance() or QApplication([])
-    page = ModelingInterfacePage()
-    splitter = page.findChild(QSplitter, "modelingRightSplitter")
-    top, bottom = splitter.widget(0), splitter.widget(1)
-
-    assert isinstance(top, QScrollArea)
-    assert isinstance(bottom, QScrollArea)
-    assert top is not bottom
-    assert top.verticalScrollBar() is not bottom.verticalScrollBar()
-    assert bottom.widget() is page.selection_status_panel
+    assert page.category_stack.currentIndex() == page.category_pages["support"]
     assert application is QApplication.instance()
 
 

@@ -149,8 +149,75 @@ class _GeometryMixin:
         for candidate_tag in self.nodes:
             if candidate_tag not in {node_i, node_j}:
                 self._attach_node_to_member(candidate_tag, preferred_member=tag)
+        if self.ndm == 2:
+            self._split_crossings_for(tag)
         self._changed()
         return tag
+
+    def _split_crossings_for(self, new_tag: int) -> None:
+        """Split ``new_tag`` and any existing 2D member it crosses in free
+        space (no shared endpoint) at their true geometric intersection —
+        two members drawn to cross, like X-bracing, are meant to transfer
+        force at that point, not silently pass through each other.
+
+        Only a proper *interior* crossing counts (strictly between both
+        segments' endpoints); a member merely touching an existing node is
+        already handled by the ``_attach_node_to_member`` sweep above, and
+        collinear/parallel members have no single crossing point to speak
+        of. 2D-only (gated by the caller) because in 3D two members that
+        look like they cross in one work plane are almost always skew
+        lines at different depths, not a real joint.
+        """
+        current = new_tag
+        while True:
+            element = self.elements[current]
+            a = self.nodes[element.node_i]
+            b = self.nodes[element.node_j]
+            best: tuple[float, int, float, tuple[float, float, float]] | None = None
+            for other_tag in sorted(self.elements):
+                if other_tag == current:
+                    continue
+                other = self.elements[other_tag]
+                if {other.node_i, other.node_j} & {element.node_i, element.node_j}:
+                    continue
+                hit = self._segment_crossing(
+                    a, b, self.nodes[other.node_i], self.nodes[other.node_j]
+                )
+                if hit is None:
+                    continue
+                t_new, t_other, point = hit
+                if best is None or t_new < best[0]:
+                    best = (t_new, other_tag, t_other, point)
+            if best is None:
+                return
+            t_new, other_tag, t_other, point = best
+            joint = self._nearest_node_3d(point)
+            if joint is None:
+                joint = max(self.nodes, default=0) + 1
+                self.nodes[joint] = Node(joint, *point)
+            _, current = self._split_element_at(current, t_new, joint)
+            self._split_element_at(other_tag, t_other, joint)
+
+    @staticmethod
+    def _segment_crossing(
+        a: Node, b: Node, c: Node, d: Node
+    ) -> tuple[float, float, tuple[float, float, float]] | None:
+        """Parametric intersection of segments ``a``-``b`` and ``c``-``d`` in
+        the x/y plane, or ``None`` if they are parallel/collinear or cross
+        outside both segments' open interior (0 < t < 1 strictly).
+        """
+        rx, ry = b.x - a.x, b.y - a.y
+        sx, sy = d.x - c.x, d.y - c.y
+        denom = rx * sy - ry * sx
+        if abs(denom) < 1.0e-12:
+            return None
+        qx, qy = c.x - a.x, c.y - a.y
+        t = (qx * sy - qy * sx) / denom
+        u = (qx * ry - qy * rx) / denom
+        eps = 1.0e-6
+        if not (eps < t < 1.0 - eps and eps < u < 1.0 - eps):
+            return None
+        return t, u, (a.x + t * rx, a.y + t * ry, 0.0)
 
     def add_arch(
         self, start_x: float, start_y: float, span: float, rise: float, segments: int

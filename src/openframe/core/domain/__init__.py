@@ -17,6 +17,7 @@ from openframe.core.domain.geometric_transform import (
     validate_orientation_vector,
 )
 from openframe.core.domain.ground_motion import GroundMotion, GroundMotionRecord, GroundMotionSource
+from openframe.core.domain.load_combination import LoadCombination
 from openframe.core.domain.material_section_db import (
     DataStatus,
     DuplicateRecordError,
@@ -121,6 +122,7 @@ __all__ = [
     "GroundMotionRecord",
     "GroundMotionSource",
     "LoadCaseKind",
+    "LoadCombination",
     "LoadDisplacementPoint",
     "MaterialDatabase",
     "MaterialDefinition",

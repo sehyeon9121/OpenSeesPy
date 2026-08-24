@@ -131,67 +131,26 @@ Item {
         }
 
         PrincipledMaterial {
-            id: groundMaterial
-            baseColor: "#d8dee4"
-            metalness: 0.0
-            roughness: 0.95
-        }
-
-        // Coordinate-system axes through the structural origin (0,0,0), so a
-        // student can always tell which way X/Y/Z point without hunting for a
-        // node label. Structural (x, y, z) maps to view (x, z, -y) — see
-        // Quick3DSceneBridge._view_coordinates — so only the vertical (Z) axis
-        // lines up with the view's own Y without rotation.
-        property real axisLength: Math.max(sceneBridge.extent * 1.2, 2.0)
-        property real axisThickness: Math.max(sceneBridge.extent * 0.006, 0.008)
-
-        Repeater3D {
-            // Rendered through the same Repeater3D + PrincipledMaterial-per-delegate
-            // pattern as members/supports/load arrows below, all of which are known
-            // to render correctly. A hand-written static Model (previously used here,
-            // with either eulerRotation or an equivalent quaternion) was found to
-            // corrupt the whole View3D's rendered output into a solid rainbow blob on
-            // at least one GPU/driver stack - only this data-driven form is confirmed
-            // safe, so the axis indicators use it too even though they don't need per-
-            // instance Python data.
-            model: [
-                { color: "#dc2626", qscalar: 0.70710678, qx: 0, qy: 0, qz: -0.70710678 },
-                { color: "#16a34a", qscalar: 0.70710678, qx: -0.70710678, qy: 0, qz: 0 },
-                { color: "#2563eb", qscalar: 1, qx: 0, qy: 0, qz: 0 },
-            ]
-            delegate: Model {
-                source: "#Cylinder"
-                position: Qt.vector3d(0, 0, 0)
-                rotation: Qt.quaternion(modelData.qscalar, modelData.qx, modelData.qy, modelData.qz)
-                scale: Qt.vector3d(
-                    view3d.axisThickness / 100,
-                    view3d.axisLength / 100,
-                    view3d.axisThickness / 100
-                )
-                materials: [
-                    PrincipledMaterial {
-                        baseColor: modelData.color
-                        metalness: 0.0
-                        roughness: 0.6
-                    }
-                ]
-                castsShadows: false
-                receivesShadows: false
-            }
-        }
-
-        PrincipledMaterial {
             id: activePlaneMaterial
             baseColor: "#3b82f6"
-            opacity: 0.1
+            // Fully transparent - the plane still needs to stay "visible" (see
+            // the Model below) for Quick3D's own pick() ray test to hit it,
+            // but opacity 0 means nothing actually renders, so drawing no
+            // longer paints a blue slab over the viewport. Picking is a
+            // geometry/bounding-volume test, not a rendered-pixel test, so it
+            // is unaffected by the material being invisible.
+            opacity: 0.0
             metalness: 0.0
             roughness: 1.0
             cullMode: Material.NoCulling
         }
         Model {
-            // The surface free-form 3D drawing clicks land on — visible and
-            // pickable only while the draw tool is active (planePickingEnabled),
-            // so it never gets in the way of orbiting or picking existing nodes.
+            // The surface free-form 3D drawing clicks land on — pickable
+            // only while the draw tool is active (planePickingEnabled), so
+            // it never gets in the way of orbiting or picking existing
+            // nodes. Kept "visible" (not just pickable) even though the
+            // material above is fully transparent, since visible is what
+            // Quick3D's pick() actually requires to consider it a candidate.
             id: activePlaneModel
             source: "#Cube"
             visible: root.planePickingEnabled
@@ -203,22 +162,13 @@ Item {
             receivesShadows: false
         }
 
-        Model {
-            source: "#Cube"
-            position: Qt.vector3d(
-                sceneBridge.center_x,
-                sceneBridge.ground_y,
-                sceneBridge.center_z
-            )
-            scale: Qt.vector3d(
-                sceneBridge.ground_width / 100,
-                Math.max(sceneBridge.extent * 0.012, 0.01) / 100,
-                sceneBridge.ground_depth / 100
-            )
-            materials: [groundMaterial]
-            castsShadows: false
-            receivesShadows: false
-        }
+        // The ground plate used to render here as a flat Cube sized from
+        // sceneBridge.ground_width/ground_depth, growing with the model's
+        // extent every time a node was added far enough out - visually
+        // distracting rather than helpful, so it is gone. The Python-side
+        // ground_y/ground_width/ground_depth properties stay (see
+        // quick3d_scene_bridge.py) since support glyphs still position
+        // themselves relative to ground_y.
 
         Repeater3D {
             // MIDAS-style support glyphs: block=fixed, cone=pin, cone+rollers=roller.
@@ -387,6 +337,98 @@ Item {
                 receivesShadows: false
             }
         }
+    }
+
+    Canvas {
+        // CAD-style orientation triad.  It lives in screen space, so zooming,
+        // fitting or working far away from the structural origin never makes
+        // it dominate the model.  Structural axes are mapped to the Quick3D
+        // view as X=(1,0,0), Y=(0,0,-1), Z=(0,1,0), then projected through the
+        // inverse of the orbit camera's yaw/pitch rotations.
+        id: orientationGizmo
+        objectName: "orientationGizmo"
+        z: 10
+        width: 104
+        height: 104
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.topMargin: 12
+        anchors.rightMargin: 12
+        property real yaw: root.cameraYaw
+        property real pitch: root.cameraPitch
+
+        function projectedAxis(x, y, z) {
+            let yawRadians = yaw * Math.PI / 180
+            let pitchRadians = pitch * Math.PI / 180
+            let cosYaw = Math.cos(yawRadians)
+            let sinYaw = Math.sin(yawRadians)
+            let cosPitch = Math.cos(pitchRadians)
+            let sinPitch = Math.sin(pitchRadians)
+            let cameraX = cosYaw * x - sinYaw * z
+            let yawedZ = sinYaw * x + cosYaw * z
+            let cameraY = cosPitch * y + sinPitch * yawedZ
+            return { x: cameraX, y: -cameraY, depth: yawedZ }
+        }
+
+        function drawArrow(context, originX, originY, axis, color, label) {
+            let length = 31
+            let magnitude = Math.max(Math.sqrt(axis.x * axis.x + axis.y * axis.y), 0.28)
+            let dx = axis.x / magnitude * length
+            let dy = axis.y / magnitude * length
+            let endX = originX + dx
+            let endY = originY + dy
+            let angle = Math.atan2(dy, dx)
+
+            context.strokeStyle = color
+            context.fillStyle = color
+            context.lineWidth = 2.4
+            context.lineCap = "round"
+            context.beginPath()
+            context.moveTo(originX, originY)
+            context.lineTo(endX, endY)
+            context.stroke()
+
+            context.beginPath()
+            context.moveTo(endX, endY)
+            context.lineTo(endX - 7 * Math.cos(angle - 0.48), endY - 7 * Math.sin(angle - 0.48))
+            context.lineTo(endX - 7 * Math.cos(angle + 0.48), endY - 7 * Math.sin(angle + 0.48))
+            context.closePath()
+            context.fill()
+
+            context.font = "700 11px Segoe UI"
+            context.textAlign = "center"
+            context.textBaseline = "middle"
+            context.fillText(label, endX + 9 * Math.cos(angle), endY + 9 * Math.sin(angle))
+        }
+
+        onPaint: {
+            let context = getContext("2d")
+            context.clearRect(0, 0, width, height)
+            context.fillStyle = "rgba(255, 255, 255, 0.88)"
+            context.strokeStyle = "rgba(196, 197, 213, 0.95)"
+            context.lineWidth = 1
+            context.beginPath()
+            context.arc(52, 52, 46, 0, Math.PI * 2)
+            context.fill()
+            context.stroke()
+
+            let axes = [
+                { vector: projectedAxis(1, 0, 0), color: "#dc2626", label: "X" },
+                { vector: projectedAxis(0, 0, -1), color: "#16a34a", label: "Y" },
+                { vector: projectedAxis(0, 1, 0), color: "#2563eb", label: "Z" }
+            ]
+            axes.sort(function(a, b) { return b.vector.depth - a.vector.depth })
+            for (let index = 0; index < axes.length; ++index)
+                drawArrow(context, 52, 58, axes[index].vector, axes[index].color, axes[index].label)
+
+            context.fillStyle = "#455568"
+            context.beginPath()
+            context.arc(52, 58, 3.2, 0, Math.PI * 2)
+            context.fill()
+        }
+        onYawChanged: requestPaint()
+        onPitchChanged: requestPaint()
+        Component.onCompleted: requestPaint()
     }
 
     MouseArea {

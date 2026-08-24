@@ -90,10 +90,13 @@ def test_new_2d_model_skips_the_wizard_straight_to_its_own_canvas() -> None:
     window.close()
 
 
-def test_new_3d_model_opens_the_wizard_and_ends_on_the_3d_canvas() -> None:
-    """3D models generally do need real materials/sections to mean anything,
-    the reverse of 2D — New 3D Model must open at basic setup, pre-set to
-    3D, and land on the 3D canvas (not the 2D one) once continued through."""
+def test_new_3d_model_opens_directly_on_the_3d_authoring_workspace() -> None:
+    """The old prerequisite wizard no longer blocks access to the viewport.
+
+    Global model settings remain available from inside the 3D workspace and
+    materials/sections are left-panel tools, so a new model starts directly
+    on its own 3D canvas with the safe 3D-frame defaults visible.
+    """
     _application = QApplication.instance() or QApplication([])
     window = MainWindow()
 
@@ -101,23 +104,14 @@ def test_new_3d_model_opens_the_wizard_and_ends_on_the_3d_canvas() -> None:
 
     direct = window.direct_model_workspace
     assert window.workspace_stack.currentWidget() is direct
-    assert direct.workflow.current_step() == "setup"
-    assert direct.stage_stack.currentWidget() is direct.setup_page
-    assert direct.setup_page.dimension.currentIndex() == 1
-    assert "'-ndm', 3" in direct.setup_page.command_preview.text()
-    assert "'-ndf', 6" in direct.setup_page.command_preview.text()
+    assert direct.stage_stack.currentWidget() is direct.geometry_page_3d
+    assert direct.geometry_page_3d.canvas.ndm == 3
+    assert direct.geometry_page_3d.canvas.nodes == {}
+    assert direct.workflow.isHidden()
+    assert direct.command_bar.isHidden()
+    assert direct.geometry_page_3d.workbench_buttons["model"].isChecked()
     assert window.navigation.isHidden()
     assert not window.header.isHidden()
     assert not window.header.direct_open_button.isHidden()
-
-    direct.setup_page.continue_button.click()
-    assert direct.stage_stack.currentWidget() is direct.geometry_page_3d
-    assert direct.geometry_page.canvas.nodes == {}
-
-    direct.set_current_step("setup")
-    direct.setup_page.analysis_kind.setCurrentIndex(1)
-    direct.setup_page.continue_button.click()
-    assert direct.workflow.current_step() == "materials"
-    assert direct.stage_stack.currentWidget() is direct.materials_page
 
     window.close()

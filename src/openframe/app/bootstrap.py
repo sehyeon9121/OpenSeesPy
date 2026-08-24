@@ -11,9 +11,39 @@ def run_desktop_app() -> int:
     # instead of the actual model - this must be set before any Qt module is imported.
     os.environ.setdefault("QSG_RHI_BACKEND", "opengl")
 
+    # Windows treats an unmarked process as DPI-unaware by default, so on any
+    # scaled display (125%/150%/...) it bitmap-stretches the whole window to
+    # match the monitor's real DPI instead of letting Qt render at native
+    # resolution - the exact "blurry, low-resolution-looking text" symptom
+    # reported against a small (non-maximized) window. Must run before
+    # QApplication exists; SetProcessDpiAwareness(2) is PROCESS_PER_MONITOR_
+    # DPI_AWARE, falling back to the coarser SetProcessDPIAware() on older
+    # Windows builds that lack shcore, and silently doing nothing on any
+    # other OS (or if both calls are unavailable) rather than failing to launch.
+    if sys.platform == "win32":
+        import ctypes
+
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except (AttributeError, OSError):
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except (AttributeError, OSError):
+                pass
+
     # Qt imports stay at the application boundary so domain modules remain GUI-independent.
+    from PySide6.QtCore import Qt
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
+
+    # Rounds a fractional scale factor (Windows' 125%/150%/175% presets) to
+    # the nearest whole number only when actually drawing, rather than
+    # snapping the *reported* factor first and rendering everything at that
+    # coarser size - the other half of the same blurry-text fix as the DPI
+    # awareness call above. Must also be set before QApplication exists.
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
 
     from openframe.app.shell.app_header import APP_ICON_PATH
     from openframe.app.shell.main_window import MainWindow
@@ -59,5 +89,11 @@ def run_desktop_app() -> int:
         open_model_service=open_model_service,
         run_analysis_service=run_analysis_service,
     )
-    window.show()
+    # Nothing persists window geometry between launches (see
+    # imported_model_units.py for the app's only QSettings use, unrelated to
+    # this), so every launch starts at whatever small default size Qt itself
+    # picks - too small for the 3D workbench's own toolbars, which overlap
+    # rather than wrap or scroll at that width. Starting maximized is what a
+    # first-time user already has to do by hand to make that go away.
+    window.showMaximized()
     return application.exec()

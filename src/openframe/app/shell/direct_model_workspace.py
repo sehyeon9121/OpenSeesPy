@@ -119,13 +119,17 @@ class DirectModelWorkspace(QFrame):
         self.set_current_step("geometry")
 
     def start_3d_model(self) -> None:
-        """3D models generally do need real materials and sections to mean
-        anything — start the setup wizard, arriving at the 3D canvas only
-        once it (or its material-free shortcut) is complete."""
+        """Open the dedicated 3D canvas immediately with safe defaults.
+
+        Global settings remain available from the canvas's Model tab, while
+        materials, sections and loads are authored in its left task panel.
+        This keeps new-model setup editable without making it a gate in front
+        of the viewport.
+        """
         self.geometry_page_3d.load_project_dict({"ndm": 3})
         self._wizard_geometry_target = "geometry_3d"
         self.setup_page.dimension.setCurrentIndex(1)
-        self.set_current_step("setup")
+        self.set_current_step("geometry")
 
     def set_current_step(self, step: str) -> None:
         if step == "geometry":

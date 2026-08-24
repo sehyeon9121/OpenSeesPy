@@ -468,12 +468,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("New 2D Model · 2D 캔버스에서 바로 시작합니다")
 
     def _start_new_3d_model_workspace(self) -> None:
-        """3D models generally do need real materials and sections to mean
-        anything, unlike the 2D case — open the authoring shell at its first
-        prerequisite step (setup, then materials/sections) instead of jumping
-        straight to the canvas. This still lands on its own 3D canvas
-        (``geometry_3d``), a distinct page from the 2D one, so a 2D session's
-        geometry never appears here and vice versa."""
+        """Open a new model directly in its dedicated 3D authoring canvas."""
         self._current_model_source = None
         self.navigation.hide()
         self.header.show()
@@ -482,7 +477,7 @@ class MainWindow(QMainWindow):
         self._begin_direct_session(3)
         self.workspace_stack.setCurrentWidget(self.direct_model_workspace)
         self.statusBar().showMessage(
-            "New 3D Model · 기본 설정부터 새 모델을 작성합니다"
+            "New 3D Model · 3D 캔버스에서 바로 시작합니다"
         )
 
     def _open_project_from_start(self) -> None:

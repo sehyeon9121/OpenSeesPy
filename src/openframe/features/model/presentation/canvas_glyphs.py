@@ -155,6 +155,81 @@ def _paint_load_glyph(painter: QPainter, key: str, color: str) -> None:
         painter.drawPath(head)
 
 
+def _paint_ribbon_glyph(painter: QPainter, key: str, color: str) -> None:
+    """The 3D 워크벤치 리본's 선택/Node/Member/Arch/복사/삭제/층·그리드/3D뷰 icons —
+    plain line-art on the same 32x32 canvas as every other glyph here, so the
+    ribbon needed no bundled icon font (Material Symbols et al.) for eight
+    buttons."""
+    if key == "select":
+        pointer = QPainterPath()
+        pointer.moveTo(8, 4)
+        pointer.lineTo(8, 26)
+        pointer.lineTo(13, 21)
+        pointer.lineTo(17, 28)
+        pointer.lineTo(20, 26)
+        pointer.lineTo(16, 19)
+        pointer.lineTo(23, 19)
+        pointer.closeSubpath()
+        painter.setBrush(QColor(color))
+        painter.drawPath(pointer)
+        return
+    if key == "node":
+        painter.drawEllipse(QRectF(6.0, 9.0, 14.0, 14.0))
+        painter.setBrush(QColor(color))
+        painter.drawEllipse(QRectF(10.5, 13.5, 5.0, 5.0))
+        painter.drawLine(24, 4, 24, 12)
+        painter.drawLine(20, 8, 28, 8)
+        return
+    if key == "member":
+        painter.drawLine(7, 25, 25, 7)
+        painter.setBrush(QColor(color))
+        painter.drawEllipse(QRectF(4.0, 22.0, 6.0, 6.0))
+        painter.drawEllipse(QRectF(22.0, 4.0, 6.0, 6.0))
+        return
+    if key == "arch":
+        painter.drawLine(5, 26, 27, 26)
+        curve = QPainterPath()
+        curve.moveTo(6, 24)
+        curve.cubicTo(6, 6, 26, 6, 26, 24)
+        painter.drawPath(curve)
+        return
+    if key == "copy":
+        painter.drawRect(QRectF(12.0, 4.0, 14.0, 16.0))
+        painter.drawRect(QRectF(6.0, 12.0, 14.0, 16.0))
+        return
+    if key == "delete":
+        painter.drawLine(12, 5, 20, 5)
+        painter.drawLine(12, 5, 12, 9)
+        painter.drawLine(20, 5, 20, 9)
+        painter.drawLine(7, 9, 25, 9)
+        basket = QPainterPath()
+        basket.moveTo(9, 9)
+        basket.lineTo(11, 27)
+        basket.lineTo(21, 27)
+        basket.lineTo(23, 9)
+        painter.drawPath(basket)
+        painter.drawLine(14, 13, 14, 23)
+        painter.drawLine(18, 13, 18, 23)
+        return
+    if key == "levels":
+        painter.drawLine(5, 7, 27, 7)
+        painter.drawLine(5, 16, 27, 16)
+        painter.drawLine(5, 25, 27, 25)
+        return
+    # view3d: an isometric cube outline, 3 spokes from centre to alternating
+    # vertices giving it the usual "visible 3 faces" cube reading.
+    hexagon = QPainterPath()
+    vertices = ((16, 4), (28, 10), (28, 22), (16, 28), (4, 22), (4, 10))
+    hexagon.moveTo(*vertices[0])
+    for x, y in vertices[1:]:
+        hexagon.lineTo(x, y)
+    hexagon.closeSubpath()
+    painter.drawPath(hexagon)
+    painter.drawLine(16, 16, 16, 4)
+    painter.drawLine(16, 16, 28, 22)
+    painter.drawLine(16, 16, 4, 22)
+
+
 def _render_glyph_icon(paint: Callable[[QPainter, str], None], size: int = 32) -> QIcon:
     """Build a QIcon with matched Off/On pixmaps (dark-slate / white) so a
     checkable QToolButton's icon reads correctly both unchecked (light

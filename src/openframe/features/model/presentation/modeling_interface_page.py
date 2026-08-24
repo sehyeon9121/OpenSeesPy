@@ -2,15 +2,19 @@
 
 The layout keeps the canvas dominant: a narrow tool rail on the left (only
 선택/그리기 — the two modes a click on the canvas can mean), a coordinate
-entry strip under the canvas, and a 우측 워크트리 panel on the right. A
-single-row category bar above the canvas (``_build_category_bar`` — 노드
-추가/이동·복사·배열/노드 분할/지점/노드 유형/부재/하중) picks which
-category's settings the 워크트리 panel shows; nothing is pinned there any
-more, so the panel is empty until a category is picked and shows exactly
-one at a time (``_build_property_panel``). Only selecting and drawing are
-tools; everything else — supports, hinges, loads — is a property page one
-click away, so adding a new kind of object never adds another mode to
-learn, just another category button.
+entry strip under the canvas, a category editor column further left
+(``_build_2d_editor_panel``), and a read-only Selection Status column on
+the right (``_build_selection_panel``). A single-row category bar above
+the canvas (``_build_category_bar`` — 노드 추가/이동·복사·배열/노드
+분할/지점/노드 유형/부재/하중) picks which category's settings the
+editor column shows; nothing is pinned there any more, so it is empty
+until a category is picked and shows exactly one at a time. The editor
+and Selection Status used to share one vertical splitter on the right,
+which read as a single cluttered panel — separating them onto their own
+columns mirrors the 3D workbench's tools-left/status-right split. Only
+selecting and drawing are tools; everything else — supports, hinges,
+loads — is a property page one click away, so adding a new kind of object
+never adds another mode to learn, just another category button.
 """
 
 import json
@@ -24,20 +28,23 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSplitter,
     QStackedWidget,
     QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -57,6 +64,7 @@ from openframe.features.model.presentation.canvas_glyphs import (
     _SUPPORT_OPTIONS,
     _paint_load_glyph,
     _paint_node_kind_glyph,
+    _paint_ribbon_glyph,
     _paint_support_glyph,
     _render_glyph_icon,
 )
@@ -72,7 +80,7 @@ class _CurrentPageOnlyStack(QStackedWidget):
     """A ``QStackedWidget`` whose size hint comes only from the page actually
     showing, not the widest of all seven — the plain version reports
     ``max(sizeHint() for every page)`` even though six of them are hidden,
-    so the 300px-wide 우측 워크트리 scroll area (``_build_property_panel``)
+    so the 300px-wide category editor column (``_build_2d_editor_panel``)
     had to make room for whichever category page happened to be widest
     (부재's 단면 미리보기 + form, in practice) no matter which one was
     actually open, forcing a horizontal scrollbar even on the narrow 노드
@@ -121,6 +129,12 @@ class ModelingInterfacePage(QFrame):
         self.setObjectName("modelingInterfacePage")
         self._start_in_3d = start_in_3d
         self._unit_system = DEFAULT_UNIT_SYSTEM
+        self._model_name = "New 3D Model" if start_in_3d else "New 2D Model"
+        self._vertical_axis = "Z" if start_in_3d else "Y"
+        self._gravity_direction = "-Z" if start_in_3d else "-Y"
+        self._gravity_acceleration = 9.81
+        self._user_materials: list[dict[str, object]] = []
+        self._user_sections: list[dict[str, object]] = []
         self._solver = MaterialFreeStaticsSolver()
         self._solve_thread: MaterialFreeSolveThread | None = None
         self.analysis_progress = AnalysisProgressBanner(self)
@@ -134,12 +148,22 @@ class ModelingInterfacePage(QFrame):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self._build_header())
+        if self._start_in_3d:
+            root.addWidget(self._build_3d_workbench_bar())
+        self.page_header = self._build_header()
+        # The 3D workbench already has the document tabs and its own model
+        # settings entry.  Keeping the 2D-style title/action header beneath
+        # that ribbon created a third, unrelated toolbar row and pushed the
+        # viewport noticeably below the Stitch reference.
+        self.page_header.setVisible(not self._start_in_3d)
+        root.addWidget(self.page_header)
 
         self.workspace_stack = QStackedWidget()
         self.workspace_stack.addWidget(self._build_modeling_workspace())
         self.workspace_stack.addWidget(self._build_result_workspace())
         root.addWidget(self.workspace_stack, 1)
+        if self._start_in_3d:
+            self.model_settings_dialog = self._build_model_settings_dialog()
         self.footer_stack = QStackedWidget()
         self.footer_stack.setObjectName("direct2DFooterStack")
         self.footer_stack.addWidget(self._build_status_bar())
@@ -149,6 +173,8 @@ class ModelingInterfacePage(QFrame):
         self.workspace_stack.currentChanged.connect(self._workspace_page_changed)
 
         self.canvas.model_changed.connect(self._refresh_status)
+        if self._start_in_3d:
+            self.canvas.model_changed.connect(self._refresh_work_tree)
         self.canvas.draw_state_changed.connect(self._refresh_draw_readout)
         self.canvas.selection_changed.connect(self._selection_changed)
         self.canvas.escape_requested.connect(self._activate_select_tool)
@@ -177,6 +203,7 @@ class ModelingInterfacePage(QFrame):
 
         if self._start_in_3d:
             self._enable_3d_mode()
+            self._activate_workbench_tab("model", show_settings=False)
         self._activate_select_tool()
         self._refresh_status()
 
@@ -301,58 +328,536 @@ class ModelingInterfacePage(QFrame):
         layout.addWidget(rerun)
         return controls
 
+    #: Tab order mirrors the actual modeling workflow (place geometry → give
+    #: it material/section → support it → load it → analyze → read results)
+    #: instead of an arbitrary grouping, so the top bar itself reads as the
+    #: sequence of steps rather than a menu.
+    _WORKBENCH_TABS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("model", "Model"),
+        ("node", "Node"),
+        ("properties", "Properties"),
+        ("boundary", "Supports"),
+        ("loads", "Loads"),
+        ("analysis", "Analysis"),
+        ("results", "Results"),
+    )
+
+    _WORKBENCH_CATEGORIES: ClassVar[dict[str, tuple[str, ...]]] = {
+        "model": (),
+        "node": ("add", "move", "arch", "kind"),
+        "properties": ("member",),
+        "boundary": ("support",),
+        "loads": ("load",),
+        "analysis": (),
+        "results": (),
+    }
+
+    def _build_3d_workbench_bar(self) -> QFrame:
+        """The single row of document-work tabs directly under the
+        application header — Model/Node/Properties/Supports/Loads/Analysis/
+        Results, in the actual order a model gets built: place geometry, give it material/
+        section, support it, load it, analyze, read results. A tab click
+        both picks which form the left dock shows (``_activate_workbench_
+        tab``) and switches the canvas to whichever tool that step needs
+        (draw for Node, select for everything else) — earlier this bar also
+        carried a second row of icon tools (Node/Arch/복사/삭제/층·그리드/3D
+        뷰) duplicating what the tabs and existing shortcuts already covered,
+        so it was dropped.
+        """
+        bar = QFrame()
+        bar.setObjectName("modelingWorkbenchBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(8, 0, 12, 0)
+        layout.setSpacing(8)
+
+        self.workbench_group = QButtonGroup(self)
+        self.workbench_group.setExclusive(True)
+        self.workbench_buttons: dict[str, QToolButton] = {}
+        for index, (key, label) in enumerate(self._WORKBENCH_TABS):
+            button = QToolButton()
+            button.setObjectName("workbenchTab")
+            button.setText(label)
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda _checked=False, tab=key: self._activate_workbench_tab(tab)
+            )
+            self.workbench_group.addButton(button, index)
+            self.workbench_buttons[key] = button
+            layout.addWidget(button)
+        layout.addStretch(1)
+
+        # 선택/Member (Node 탭이 그리기 모드로 자동 전환하는 것과 별개로) stay
+        # as real objects — every tool activator in this class still flips
+        # their checked state (``_activate_select_tool``/``_activate_draw_
+        # tool``) and V/L/Space keep working as shortcuts — they are just no
+        # longer shown as their own ribbon row.
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(True)
+        self.select_tool = self._ribbon_mode_button(
+            "선택", "V", "select", self._activate_select_tool
+        )
+        self.draw_tool = self._ribbon_mode_button(
+            "Member",
+            "L / Space · 연속 클릭으로 부재를 그립니다",
+            "member",
+            self._activate_draw_tool,
+        )
+        return bar
+
+    def _ribbon_icon_button(self, label: str, tooltip: str, glyph_key: str) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("ribbonToolButton")
+        button.setText(label)
+        button.setToolTip(tooltip)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        # "node_kind" reuses the 노드 유형 category's own rigid-joint glyph
+        # (see 지점/노드 유형 icon rows) instead of ``_paint_ribbon_glyph`` -
+        # a button that opens that exact category should look like it.
+        if glyph_key == "node_kind":
+            paint = lambda p, c: _paint_node_kind_glyph(p, False, c)
+        else:
+            paint = lambda p, c, k=glyph_key: _paint_ribbon_glyph(p, k, c)
+        button.setIcon(_render_glyph_icon(paint))
+        button.setIconSize(QSize(22, 22))
+        return button
+
+    def _ribbon_mode_button(
+        self, label: str, tooltip: str, glyph_key: str, slot
+    ) -> QToolButton:
+        button = self._ribbon_icon_button(label, tooltip, glyph_key)
+        button.setCheckable(True)
+        button.clicked.connect(slot)
+        self.tool_group.addButton(button)
+        return button
+
+    def _build_3d_left_panel(self) -> QStackedWidget:
+        """Contextual authoring dock, hidden until a tool needs settings.
+
+        Global model settings already have their focused dialog and the
+        workbench tabs expose material/section/support/load entry points.
+        Keeping a second model-navigation tree permanently visible only
+        duplicated those controls and reduced the 3D viewport.
+        """
+        stack = QStackedWidget()
+        stack.setObjectName("modelingLeftDock")
+        stack.setFixedWidth(320)
+        self.category_group = QButtonGroup(self)
+        self.category_group.setExclusive(True)
+        self.category_buttons: dict[str, QToolButton] = {}
+        self._editor_scroll = self._build_editor_scroll()
+        self.left_editor_index = stack.addWidget(self._editor_scroll)
+        stack.setCurrentIndex(self.left_editor_index)
+        stack.hide()
+        self.left_panel_stack = stack
+        return stack
+
+    def _member_group_counts(self) -> dict[str, int]:
+        """Columns vs. Beams, derived on the fly from geometry (a member
+        whose two ends share the same x/y is vertical) rather than a stored
+        field — the domain model has no "group" concept to persist yet, and
+        this is the same classification the reference design's own mock
+        implementation used."""
+        counts = {"Columns": 0, "Beams": 0}
+        for element in self.canvas.elements.values():
+            start = self.canvas.nodes.get(element.node_i)
+            end = self.canvas.nodes.get(element.node_j)
+            if start is None or end is None:
+                continue
+            is_column = abs(start.x - end.x) < 1.0e-6 and abs(start.y - end.y) < 1.0e-6
+            counts["Columns" if is_column else "Beams"] += 1
+        return counts
+
+    def _build_3d_selection_panel(self) -> QScrollArea:
+        """MIDAS-style work tree plus selection status on the right."""
+        panel = QFrame()
+        panel.setObjectName("modelingInspectorPanel")
+        root = QVBoxLayout(panel)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+        self.work_tree_title = QLabel("워크트리")
+        self.work_tree_title.setObjectName("direct2DInspectorTitle")
+        root.addWidget(self.work_tree_title)
+
+        self.work_tree = QTreeWidget()
+        self.work_tree.setObjectName("modelingWorkTree")
+        self.work_tree.setHeaderHidden(True)
+        self.work_tree.setColumnCount(2)
+        self.work_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.work_tree.header().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.work_tree.setIndentation(15)
+        self.work_tree.setRootIsDecorated(True)
+        self.work_tree_materials = QTreeWidgetItem(["물성", "0"])
+        self.work_tree_sections = QTreeWidgetItem(["섹션", "0"])
+        self.work_tree.addTopLevelItem(self.work_tree_materials)
+        self.work_tree.addTopLevelItem(self.work_tree_sections)
+        root.addWidget(self.work_tree)
+        self.member_info_card = self._build_member_info_card()
+        self.member_info_card.setVisible(False)
+        root.addWidget(self.member_info_card)
+        self.selection_status_panel = SelectionStatusPanel()
+        root.addWidget(self.selection_status_panel)
+        root.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("modelingSelectionInspector")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setFixedWidth(330)
+        scroll.setWidget(panel)
+        self._refresh_work_tree()
+        return scroll
+
+    def _save_user_material(self, definition: dict[str, object]) -> None:
+        material = dict(definition)
+        name = str(material.get("name", "")).strip()
+        if not name:
+            return
+        existing = next(
+            (entry for entry in self._user_materials if entry.get("name") == name), None
+        )
+        if existing is None:
+            material["id"] = f"MAT-{len(self._user_materials) + 1:03d}"
+            self._user_materials.append(material)
+        else:
+            material["id"] = existing["id"]
+            existing.clear()
+            existing.update(material)
+        self._refresh_work_tree()
+        self.determinacy_status.setText(f"물성 '{name}'을 워크트리에 저장했습니다.")
+
+    def _save_user_section(self, definition: dict[str, object]) -> None:
+        section = dict(definition)
+        name = str(section.get("name", "")).strip()
+        if not name:
+            return
+        existing = next(
+            (entry for entry in self._user_sections if entry.get("name") == name), None
+        )
+        if existing is None:
+            section["id"] = f"SEC-{len(self._user_sections) + 1:03d}"
+            self._user_sections.append(section)
+        else:
+            section["id"] = existing["id"]
+            existing.clear()
+            existing.update(section)
+        self._refresh_work_tree()
+        self.determinacy_status.setText(f"섹션 '{name}'을 워크트리에 저장했습니다.")
+
+    def _refresh_work_tree(self) -> None:
+        if not hasattr(self, "work_tree_materials"):
+            return
+        self.work_tree_materials.takeChildren()
+        for material in self._user_materials:
+            try:
+                elastic = float(material.get("elastic", 0.0))
+            except (TypeError, ValueError):
+                elastic = 0.0
+            item = QTreeWidgetItem(
+                [str(material.get("name", "사용자 물성")), str(material.get("id", ""))]
+            )
+            item.setToolTip(
+                0,
+                f"E = {elastic:g} {self._unit_system.stress}",
+            )
+            self.work_tree_materials.addChild(item)
+        self.work_tree_materials.setText(1, str(len(self._user_materials)))
+
+        self.work_tree_sections.takeChildren()
+        for section in self._user_sections:
+            item = QTreeWidgetItem(
+                [str(section.get("name", "사용자 섹션")), str(section.get("id", ""))]
+            )
+            item.setToolTip(0, str(section.get("shape", "")))
+            self.work_tree_sections.addChild(item)
+        self.work_tree_sections.setText(1, str(len(self._user_sections)))
+        self.work_tree_materials.setExpanded(True)
+        self.work_tree_sections.setExpanded(True)
+
+    def _inspector_card(self, title: str) -> tuple[QFrame, QFormLayout]:
+        card = QFrame()
+        card.setObjectName("inspectorCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(0, 0, 0, 0)
+        card_layout.setSpacing(0)
+        header = QLabel(title)
+        header.setObjectName("inspectorCardHeader")
+        card_layout.addWidget(header)
+        body = QWidget()
+        body.setObjectName("inspectorCardBody")
+        form = QFormLayout(body)
+        form.setContentsMargins(12, 10, 12, 10)
+        form.setSpacing(8)
+        card_layout.addWidget(body)
+        return card, form
+
+    def _build_member_info_card(self) -> QWidget:
+        """일반/그룹 info for whichever single member is selected — Start/End
+        Node and Length are read-only (this app has no "reconnect a member's
+        endpoints" operation to back an editable field with, unlike the
+        reference mock's own text inputs), and 그룹 is the same live-derived
+        Columns/Beams split the 모델 탐색기 tree counts, just for this one
+        member. Actual editing (단면/재료/힌지) stays exactly where it already
+        was, inside ``category_stack``'s 부재 page — this card sits above it.
+        """
+        container = QWidget()
+        root = QVBoxLayout(container)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
+
+        general, general_form = self._inspector_card("일반 (Member)")
+        self.member_start_node_label = QLabel()
+        general_form.addRow("Start Node", self.member_start_node_label)
+        self.member_end_node_label = QLabel()
+        general_form.addRow("End Node", self.member_end_node_label)
+        self.member_length_label = QLabel()
+        general_form.addRow("Length", self.member_length_label)
+        root.addWidget(general)
+
+        group, group_form = self._inspector_card("그룹")
+        self.member_group_label = QLabel()
+        group_form.addRow("Group", self.member_group_label)
+        root.addWidget(group)
+        return container
+
+    def _update_member_info_card(self, member_tag: int | None) -> None:
+        card = getattr(self, "member_info_card", None)
+        if card is None:
+            return
+        if member_tag is None:
+            card.setVisible(False)
+            return
+        element = self.canvas.elements[member_tag]
+        start = self.canvas.nodes[element.node_i]
+        end = self.canvas.nodes[element.node_j]
+        length = math.dist((start.x, start.y, start.z), (end.x, end.y, end.z))
+        is_column = abs(start.x - end.x) < 1.0e-6 and abs(start.y - end.y) < 1.0e-6
+        self.member_start_node_label.setText(f"N{element.node_i}")
+        self.member_end_node_label.setText(f"N{element.node_j}")
+        self.member_length_label.setText(f"{length:.3f} {self._unit_system.length}")
+        self.member_group_label.setText("Columns" if is_column else "Beams")
+        card.setVisible(True)
+
+    def _build_model_settings_card(self) -> QWidget:
+        """모델 설정 as an always-in-place inspector page instead of the
+        modal dialog this replaces — General/Environment mirror
+        ``ModelSettingsDialog``'s old fields exactly (see git history), and
+        OpenSees Tcl is new: a live one-line preview of the ``ops.model(...)``
+        call these settings will produce, refreshed on every apply.
+        """
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
+
+        general, general_form = self._inspector_card("GENERAL")
+        self.model_name_field = QLineEdit(self._model_name)
+        general_form.addRow("Model Name", self.model_name_field)
+        self.model_type_field = QComboBox()
+        self.model_type_field.addItem("3D 프레임", "frame")
+        general_form.addRow("Model Type", self.model_type_field)
+        root.addWidget(general)
+
+        environment, env_form = self._inspector_card("ENVIRONMENT")
+        dof_column = QVBoxLayout()
+        dof_column.setSpacing(2)
+        self.dof_field = QComboBox()
+        self.dof_field.addItem("6", 6)
+        self.dof_field.setEnabled(False)
+        dof_column.addWidget(self.dof_field)
+        dof_caption = QLabel("UX, UY, UZ, RX, RY, RZ")
+        dof_caption.setObjectName("inspectorFieldCaption")
+        dof_column.addWidget(dof_caption)
+        env_form.addRow("Degrees of\nFreedom", dof_column)
+
+        units_row = QHBoxLayout()
+        self.force_unit_field = QComboBox()
+        self.force_unit_field.addItems(FORCE_UNITS)
+        units_row.addWidget(self.force_unit_field)
+        self.length_unit_field = QComboBox()
+        self.length_unit_field.addItems(LENGTH_UNITS)
+        units_row.addWidget(self.length_unit_field)
+        env_form.addRow("Units", units_row)
+
+        self.vertical_axis_field = QComboBox()
+        self.vertical_axis_field.addItems(("Z", "Y"))
+        env_form.addRow("Vertical Axis", self.vertical_axis_field)
+
+        gravity_row = QHBoxLayout()
+        self.gravity_acceleration_field = QDoubleSpinBox()
+        self.gravity_acceleration_field.setRange(-100.0, 100.0)
+        self.gravity_acceleration_field.setDecimals(4)
+        self.gravity_acceleration_field.setValue(-self._gravity_acceleration)
+        gravity_row.addWidget(self.gravity_acceleration_field)
+        self.gravity_direction_field = QComboBox()
+        self.gravity_direction_field.addItems(("-Z", "+Z", "-Y", "+Y"))
+        self.gravity_direction_field.setCurrentText(self._gravity_direction)
+        gravity_row.addWidget(self.gravity_direction_field)
+        env_form.addRow("Gravity", gravity_row)
+        root.addWidget(environment)
+
+        tcl_card = QFrame()
+        tcl_card.setObjectName("inspectorCard")
+        tcl_layout = QVBoxLayout(tcl_card)
+        tcl_layout.setContentsMargins(0, 0, 0, 0)
+        tcl_layout.setSpacing(0)
+        tcl_header = QLabel("OPENSEES TCL")
+        tcl_header.setObjectName("inspectorCardHeader")
+        tcl_layout.addWidget(tcl_header)
+        self.opensees_tcl_preview = QLabel()
+        self.opensees_tcl_preview.setObjectName("modelSettingsCommandPreview")
+        self.opensees_tcl_preview.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.opensees_tcl_preview.setWordWrap(True)
+        tcl_layout.addWidget(self.opensees_tcl_preview)
+        root.addWidget(tcl_card)
+
+        apply_button = QPushButton("설정 적용")
+        apply_button.setObjectName("setupContinueButton")
+        apply_button.clicked.connect(self._apply_model_settings_and_close)
+        root.addWidget(apply_button)
+        root.addStretch(1)
+
+        self.model_type_field.setEnabled(not self.canvas.elements)
+        self._refresh_opensees_tcl_preview()
+        return page
+
+    def _build_model_settings_dialog(self) -> QDialog:
+        dialog = QDialog(self)
+        dialog.setObjectName("modelSettingsDialog")
+        dialog.setWindowTitle("모델 설정")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(480)
+        dialog.setMaximumWidth(520)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        title = QLabel("모델 설정")
+        title.setObjectName("modelSettingsDialogTitle")
+        layout.addWidget(title)
+        hint = QLabel("3D 모델 공간, 단위계와 중력 방향을 설정합니다.")
+        hint.setObjectName("setupSectionHint")
+        layout.addWidget(hint)
+        layout.addWidget(self._build_model_settings_card())
+        dialog.adjustSize()
+        return dialog
+
+    def _show_model_settings_dialog(self) -> None:
+        dialog = self.model_settings_dialog
+        dialog.adjustSize()
+        dialog.open()
+
+    def _apply_model_settings_and_close(self) -> None:
+        self._apply_model_settings_inline()
+        self.model_settings_dialog.accept()
+
+    def _refresh_opensees_tcl_preview(self) -> None:
+        label = getattr(self, "opensees_tcl_preview", None)
+        if label is not None:
+            label.setText("ops.model('basic', '-ndm', 3, '-ndf', 6)")
+
+    def _apply_model_settings_inline(self) -> None:
+        self._model_name = self.model_name_field.text().strip() or "New 3D Model"
+        self._vertical_axis = self.vertical_axis_field.currentText()
+        self._gravity_direction = self.gravity_direction_field.currentText()
+        self._gravity_acceleration = -self.gravity_acceleration_field.value()
+        self.set_unit_system(
+            UnitSystem(
+                force=self.force_unit_field.currentText(),
+                length=self.length_unit_field.currentText(),
+            )
+        )
+        self._refresh_model_settings_summary()
+        self._refresh_opensees_tcl_preview()
+        self.determinacy_status.setText("모델 설정을 적용했습니다.")
+
+    def _activate_workbench_tab(self, key: str, *, show_settings: bool = True) -> None:
+        if not self._start_in_3d or key not in self.workbench_buttons:
+            return
+        self.workbench_buttons[key].setChecked(True)
+        self.node_subcategory_row.setVisible(key == "node")
+
+        if key == "model":
+            self.left_panel_stack.hide()
+            if show_settings:
+                self._show_model_settings_dialog()
+            return
+
+        # Each step of the workflow puts the canvas in whatever tool it
+        # actually needs, so the tab click alone is enough - there is no
+        # separate 선택/Member row to click first any more. 지점/하중 reuse
+        # their own richer activators (narrower selection filter, tailored
+        # hint text) instead of the plain select tool; both already call
+        # ``_show_category`` themselves.
+        if key == "node":
+            self._node_subcategory_clicked("add")
+        elif key == "boundary":
+            self._activate_support_tool()
+        elif key == "loads":
+            self._activate_load_tool()
+        else:
+            self._activate_select_tool()
+            categories = self._WORKBENCH_CATEGORIES[key]
+            if categories:
+                self._show_category(categories[0], sync_workbench=False)
+            else:
+                self.category_stack.setCurrentIndex(self.category_pages["empty"])
+                self.left_panel_stack.hide()
+
+        if key == "results" and self.view_results_button.isEnabled():
+            self.workspace_stack.setCurrentIndex(1)
+        elif key != "results" and self.workspace_stack.currentIndex() != 0:
+            self.workspace_stack.setCurrentIndex(0)
+
+    def _refresh_model_settings_summary(self) -> None:
+        button = getattr(self, "model_settings_summary_button", None)
+        if button is not None:
+            button.setText(
+                f"3D Frame · 6DOF · {self._unit_system.force}, {self._unit_system.length}"
+                "   ·   모델 설정"
+            )
+
+    def _build_selection_panel(self) -> QScrollArea:
+        """The 2D right dock: selection context only, authoring tools live
+        left (``_build_2d_editor_panel``). 3D uses its own inspector
+        (``_build_3d_inspector_panel``), which folds this same
+        ``SelectionStatusPanel`` in alongside the category forms and 모델
+        설정 cards instead of giving it a whole column to itself.
+        """
+        self.selection_status_panel = SelectionStatusPanel()
+        scroll = QScrollArea()
+        scroll.setObjectName("modelingSelectionInspector")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setFixedWidth(320)
+        scroll.setWidget(self.selection_status_panel)
+        return scroll
+
     def _build_modeling_workspace(self) -> QWidget:
         page = QWidget()
         page.setObjectName("direct2DModelingWorkspace")
         layout = QHBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self._build_tool_rail())
-        layout.addWidget(self._build_canvas_panel(), 1)
-        layout.addWidget(self._build_property_panel())
+        if self._start_in_3d:
+            layout.addWidget(self._build_3d_left_panel())
+            layout.addWidget(self._build_canvas_panel(), 1)
+            layout.addWidget(self._build_3d_selection_panel())
+        else:
+            layout.addWidget(self._build_2d_editor_panel())
+            layout.addWidget(self._build_canvas_panel(), 1)
+            layout.addWidget(self._build_selection_panel())
         return page
 
-    def _build_tool_rail(self) -> QFrame:
-        rail = QFrame()
-        rail.setObjectName("direct2DToolRail")
-        rail.setFixedWidth(72)
-        layout = QVBoxLayout(rail)
-        layout.setContentsMargins(6, 8, 6, 8)
-        layout.setSpacing(4)
-        self.tool_group = QButtonGroup(self)
-        self.tool_group.setExclusive(True)
-        self.select_tool = self._rail_tool("선택", "V", self._activate_select_tool)
-        self.draw_tool = self._rail_tool("그리기", "L / Space", self._activate_draw_tool)
-        layout.addWidget(self.select_tool)
-        layout.addWidget(self.draw_tool)
-        layout.addSpacing(6)
-        for text, tooltip, slot in (
-            ("지점", "선택한 노드에 지점 조건을 지정합니다.", self._activate_support_tool),
-            ("속성", "선택한 부재의 재료와 단면을 설정합니다.", lambda: self._show_category("member")),
-            ("하중", "절점 또는 부재에 하중을 지정합니다.", self._activate_load_tool),
-        ):
-            button = QPushButton(text)
-            button.setObjectName("railFeatureButton")
-            button.setToolTip(tooltip)
-            button.clicked.connect(slot)
-            layout.addWidget(button)
-        layout.addStretch(1)
-        for text, tooltip, slot in (
-            ("UNDO", "Ctrl+Z", self.canvas.undo),
-            ("REDO", "Ctrl+Y", self.canvas.redo),
-            ("DELETE", "Delete", self.canvas.delete_selected),
-            ("FIT", "F · 모델 전체가 보이도록 맞춥니다", self.canvas.fit_model),
-        ):
-            button = QPushButton(text)
-            button.setObjectName("railCommandButton")
-            button.setToolTip(tooltip)
-            button.clicked.connect(slot)
-            layout.addWidget(button)
-        return rail
-
     def _rail_tool(self, text: str, shortcut: str, slot) -> QPushButton:
-        """A tool (select/draw) — visually distinct from the command buttons below
-        it, since only these two govern what a click on the canvas does."""
+        """A select/draw canvas-mode toggle, shared by the 2D category bar
+        (``_build_category_bar``) and the 3D task panel's own tool row
+        (``_build_3d_task_panel``) — only these two govern what a click on
+        the canvas does, so both keep them in their own exclusive
+        ``tool_group`` rather than mixed in with category/workbench
+        buttons."""
         button = QPushButton(text)
         button.setObjectName("railToolButton")
         button.setCheckable(True)
@@ -367,7 +872,8 @@ class ModelingInterfacePage(QFrame):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self._build_category_bar())
+        if not self._start_in_3d:
+            layout.addWidget(self._build_category_bar())
         self.mode_label = QLabel()
         self.mode_label.setContentsMargins(10, 6, 10, 6)
         self.mode_label.setObjectName("setupSummaryHint")
@@ -562,7 +1068,7 @@ class ModelingInterfacePage(QFrame):
         return bar
 
     #: (category key, button label) for the single-row category bar above the
-    #: canvas — order here is both the button order and the 우측 워크트리
+    #: canvas — order here is both the button order and the left-hand editor
     #: page order. Nothing is pinned any more: every one of these, including
     #: 노드 추가/이동·복사·배열 (previously always-on in the right panel), is
     #: now an equal category that opens on click. The previous design's
@@ -584,20 +1090,37 @@ class ModelingInterfacePage(QFrame):
     )
 
     def _build_category_bar(self) -> QFrame:
-        """The single-row bar above the canvas that picks what the 우측
-        워크트리 panel shows — see ``_CATEGORY_OPTIONS``. An exclusive
+        """The single-row bar above the canvas that picks what the left-hand
+        editor panel shows — see ``_CATEGORY_OPTIONS``. An exclusive
         ``QButtonGroup`` already gives exactly the interaction wanted: click
         a category to show it, click a different one to switch, and
         clicking the already-active one is a no-op (Qt never lets an
         exclusive group end up with nothing checked once something has been
         checked) — so the panel stays open on whatever was last picked
         instead of needing an explicit close button.
+
+        선택/그리기 and the UNDO/REDO/DELETE/FIT commands used to live in
+        their own 72px-wide vertical rail to the left of the canvas, along
+        with 지점/속성/하중 shortcuts that only ever did what this same bar's
+        own 지점/부재/하중 buttons already do - a whole extra column just to
+        duplicate three buttons. That rail is gone; 선택/그리기 open this bar
+        instead (a separate ``tool_group``, since a canvas *mode* is not a
+        *category*), and the commands sit at the bar's own trailing edge.
         """
         bar = QFrame()
         bar.setObjectName("direct2DCanvasToolbar")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(6)
+
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(True)
+        self.select_tool = self._rail_tool("선택", "V", self._activate_select_tool)
+        self.draw_tool = self._rail_tool("그리기", "L / Space", self._activate_draw_tool)
+        layout.addWidget(self.select_tool)
+        layout.addWidget(self.draw_tool)
+        layout.addSpacing(10)
+
         self.category_group = QButtonGroup(self)
         self.category_group.setExclusive(True)
         self.category_buttons: dict[str, QToolButton] = {}
@@ -611,16 +1134,60 @@ class ModelingInterfacePage(QFrame):
             layout.addWidget(button)
         self.category_group.idClicked.connect(self._show_category_by_index)
         layout.addStretch(1)
+
+        for text, tooltip, slot in (
+            ("UNDO", "Ctrl+Z", self.canvas.undo),
+            ("REDO", "Ctrl+Y", self.canvas.redo),
+            ("DELETE", "Delete", self.canvas.delete_selected),
+            ("FIT", "F · 모델 전체가 보이도록 맞춥니다", self.canvas.fit_model),
+        ):
+            button = QPushButton(text)
+            button.setObjectName("railCommandButton")
+            button.setToolTip(tooltip)
+            button.clicked.connect(slot)
+            layout.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
         return bar
 
     def _show_category_by_index(self, index: int) -> None:
-        self._show_category(self._CATEGORY_OPTIONS[index][0])
+        # 지점/하중 keep their richer 2D activators (select tool + a
+        # convenience selection-filter narrow, see ``_activate_support_tool``
+        # / ``_activate_load_tool``) instead of the plain category switch
+        # every other button here uses - they used to be reachable only from
+        # the now-removed tool rail's duplicate 지점/하중 shortcuts, and that
+        # behaviour is worth keeping now that this bar is their only entry
+        # point.
+        key = self._CATEGORY_OPTIONS[index][0]
+        if key == "support":
+            self._activate_support_tool()
+        elif key == "load":
+            self._activate_load_tool()
+        else:
+            self._show_category(key)
 
-    def _show_category(self, key: str) -> None:
+    def _show_category(self, key: str, *, sync_workbench: bool = True) -> None:
+        if self._start_in_3d and sync_workbench:
+            for tab_key, categories in self._WORKBENCH_CATEGORIES.items():
+                if key in categories:
+                    self.workbench_buttons[tab_key].setChecked(True)
+                    break
         button = self.category_buttons.get(key)
         if button is not None:
             button.setChecked(True)
         self.category_stack.setCurrentIndex(self.category_pages[key])
+        if self._start_in_3d:
+            self.left_panel_stack.setFixedWidth(320)
+            self.left_panel_stack.setCurrentIndex(self.left_editor_index)
+            self.left_panel_stack.show()
+            title_by_category = {
+                "add": "Node",
+                "move": "Move / Copy",
+                "arch": "Arch",
+                "support": "Supports",
+                "kind": "Node Type",
+                "member": "Properties",
+                "load": "Loads",
+            }
+            self.editor_title.setText(title_by_category.get(key, "Tool Settings"))
         # The category bar (this method) is the one place every category
         # switch passes through, from either entry point: the rail's 지점
         # button (_activate_support_tool, which narrows the filter to
@@ -635,73 +1202,97 @@ class ModelingInterfacePage(QFrame):
         # own narrowed filter intact only while its own page is up.
         if key != "support":
             self.selection_filter.setCurrentIndex(self.selection_filter.findData("all"))
-        self._resize_editor_pane_to_content()
 
-    def _resize_editor_pane_to_content(self) -> None:
-        """Give the top (editor) pane roughly what its current category
-        actually needs instead of always keeping whatever split ratio was
-        last set - a fixed ratio means a short category (지점: a handful of
-        icons and an angle field, 하중: a few number fields) sits inside a
-        pane sized for the tallest one (노드 추가, 이동·복사), leaving a big
-        empty gap below its content every time. ``self.category_stack``'s
-        sizeHint is already the *current page's own* natural height (see
-        ``_CurrentPageOnlyStack``), so the editor panel's sizeHint - title +
-        selection summary + this one page, nothing else - is exactly how
-        tall the pane needs to be. The SELECTION STATUS pane gets whatever
-        that frees up, respecting both panes' minimum heights."""
-        splitter = getattr(self, "_right_splitter", None)
-        editor_scroll = getattr(self, "_editor_scroll", None)
-        if splitter is None or editor_scroll is None:
-            return
-        total = sum(splitter.sizes())
-        if total <= 0:
-            return
-        content_height = editor_scroll.widget().sizeHint().height() + 2 * splitter.handleWidth()
-        editor_height = max(editor_scroll.minimumHeight(), min(content_height, total - 140))
-        splitter.setSizes([editor_height, total - editor_height])
+    #: (category key, button label) for the Node tab's own sub-menu — the
+    #: only 3D tab whose work still splits into several distinct actions
+    #: (create geometry vs. move an existing node vs. generate an arch vs.
+    #: flip a joint's hinge/rigid type), so it is the only one that needs a
+    #: picker instead of just auto-showing a single category.
+    _NODE_SUBCATEGORIES: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("add", "Create Node"),
+        ("move", "Translate Node"),
+        ("arch", "Arch"),
+        ("kind", "Node Type"),
+    )
 
-    def _build_property_panel(self) -> QSplitter:
-        """우측 워크트리, 세로로 분할된 두 창 — 위쪽은 기존 편집 패널
-        (``_build_editor_scroll``, 카테고리별 설정 + 적용 버튼), 아래쪽은
-        선택한 대상에 실제 저장된 값만 보여주는 읽기 전용 Selection Status
-        Inspector(``SelectionStatusPanel``, 편집 기능 없음). ``QSplitter``라
-        사용자가 경계선을 드래그해 비율을 조절할 수 있고, 두 창 모두 독립된
-        스크롤 영역을 갖는다 — 패널 전체 폭(320px)은 이 splitter 하나에만
-        고정하고 자식 스크롤 영역들은 그 폭을 그대로 채우도록 둔다(예전처럼
-        각자 ``setFixedWidth``를 걸면 splitter 리사이즈와 어긋날 수 있음).
+    #: Only "add" (클릭으로 새 노드/부재를 그림) needs draw mode - the other
+    #: three all act on a node/member that already exists, so clicking into
+    #: them switches back to select or a click would place a new node
+    #: instead of picking the one meant to be moved/re-typed.
+    _NODE_SUBCATEGORY_DRAW: ClassVar[frozenset[str]] = frozenset({"add"})
+
+    def _build_node_subcategory_row(self) -> QWidget:
+        """The Node tab's own action picker — a plain dropdown (native
+        "click to expand the list, pick one, it closes itself" behaviour)
+        instead of a custom toggle+list, matching the reference "Tree Menu"
+        combo (Create/Delete/Translate/... Nodes) the user pointed to:
+        the combo itself is the compact, always-visible control, and
+        whichever action is current shows directly in its closed state.
         """
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setObjectName("modelingRightSplitter")
-        splitter.setFixedWidth(320)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(6)
+        row = QWidget()
+        row.setObjectName("nodeSubcategoryRow")
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
+        self._active_node_subcategory = self._NODE_SUBCATEGORIES[0][0]
+        self.node_subcategory_combo = QComboBox()
+        self.node_subcategory_combo.setObjectName("nodeSubcategoryCombo")
+        for key, label in self._NODE_SUBCATEGORIES:
+            self.node_subcategory_combo.addItem(label, key)
+        self.node_subcategory_combo.currentIndexChanged.connect(
+            self._node_subcategory_combo_changed
+        )
+        # QSS ``padding`` on the popup's QAbstractItemView does not reserve
+        # trailing space after the last row (a long-standing Qt quirk) - the
+        # last item's text ends up sitting right on the popup's bottom
+        # border with no breathing room, reading as "cut off". Content
+        # margins on the view itself are a real widget property, not a
+        # box-model hint, so they reliably add the gap QSS padding here does
+        # not.
+        self.node_subcategory_combo.view().setContentsMargins(0, 4, 0, 8)
+        layout.addWidget(self.node_subcategory_combo)
+
+        self.node_subcategory_row = row
+        return row
+
+    def _node_subcategory_combo_changed(self, index: int) -> None:
+        key = self.node_subcategory_combo.itemData(index)
+        if key is not None:
+            self._node_subcategory_clicked(key)
+
+    def _node_subcategory_clicked(self, key: str) -> None:
+        self._active_node_subcategory = key
+        combo = getattr(self, "node_subcategory_combo", None)
+        if combo is not None:
+            index = combo.findData(key)
+            if index != -1 and combo.currentIndex() != index:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(index)
+                combo.blockSignals(False)
+        if key in self._NODE_SUBCATEGORY_DRAW:
+            self._activate_draw_tool()
+        else:
+            self._activate_select_tool()
+        self._show_category(key, sync_workbench=False)
+
+    def _build_2d_editor_panel(self) -> QScrollArea:
+        """The category editor's own left-hand column, independent of the
+        read-only Selection Status column on the right (``_build_selection_
+        panel``) — the two used to share one vertical splitter, which read
+        as a single cluttered panel for something as simple as 노드
+        이동·복사/아치. Splitting them mirrors the 3D workbench's
+        tools-left/status-right layout: this scroll area is the same fixed
+        300px width as the 3D task panel, and needs no manual resizing
+        between categories since it is no longer sharing height with
+        anything else — a short category (지점) just leaves blank space
+        below it instead of stealing height from a sibling pane.
+        """
         editor_scroll = self._build_editor_scroll()
+        editor_scroll.setFixedWidth(300)
         editor_scroll.setMinimumHeight(160)
-        splitter.addWidget(editor_scroll)
-
-        self.selection_status_panel = SelectionStatusPanel()
-        status_scroll = QScrollArea()
-        status_scroll.setObjectName("selectionStatusScroll")
-        status_scroll.setWidgetResizable(True)
-        status_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        status_scroll.setMinimumHeight(140)
-        status_scroll.setWidget(self.selection_status_panel)
-        splitter.addWidget(status_scroll)
-
-        # ~65:35 initial split - QSplitter renormalizes setSizes() to its
-        # actual available height, so these only need to hold that ratio,
-        # not match the panel's real pixel height. ``_resize_editor_pane_to_
-        # content`` (called from ``_show_category``) overrides this the
-        # first time a category with real content is chosen - see there for
-        # why a fixed ratio otherwise leaves a short category (지점, 하중, ...)
-        # sitting in a pane sized for the tallest one (노드 추가, 이동·복사).
-        splitter.setStretchFactor(0, 65)
-        splitter.setStretchFactor(1, 35)
-        splitter.setSizes([650, 350])
-        self._right_splitter = splitter
         self._editor_scroll = editor_scroll
-        return splitter
+        return editor_scroll
 
     def _build_editor_scroll(self) -> QScrollArea:
         """The splitter's top pane: 아무 카테고리도 고르지 않았으면
@@ -719,13 +1310,16 @@ class ModelingInterfacePage(QFrame):
         root = QVBoxLayout(panel)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
-        inspector_title = QLabel("PROPERTY EDITOR")
-        inspector_title.setObjectName("direct2DInspectorTitle")
-        root.addWidget(inspector_title)
+        self.editor_title = QLabel("PROPERTY EDITOR")
+        self.editor_title.setObjectName("direct2DInspectorTitle")
+        root.addWidget(self.editor_title)
         self.selection_summary = QLabel()
         self.selection_summary.setObjectName("setupSectionTitle")
         self.selection_summary.setWordWrap(True)
         root.addWidget(self.selection_summary)
+
+        if self._start_in_3d:
+            root.addWidget(self._build_node_subcategory_row())
 
         self.category_stack = _CurrentPageOnlyStack()
         # QStackedWidget's own vertical size policy still allows it to grow
@@ -902,16 +1496,25 @@ class ModelingInterfacePage(QFrame):
         self.node_relative.toggled.connect(self._refresh_create_section_hint)
         root.addWidget(self.node_relative)
         form = QFormLayout()
-        self.node_x = self._number(0.0)
-        self.node_y = self._number(0.0)
+        default_coordinate = "0, 0, 0" if self._start_in_3d else "0, 0"
+        self.node_xy = QLineEdit(default_coordinate)
+        # Public 3D-facing alias; node_xy remains for the existing 2D API and
+        # project tests that already use the combined X/Y field.
+        self.node_xyz = self.node_xy
+        self.node_xy.setPlaceholderText(default_coordinate)
+        self.node_xy.setToolTip(
+            "좌표를 한 번에 입력합니다 — 쉼표, 공백, 괄호 형식을 모두 사용할 수 있습니다."
+        )
         self.node_dx = self._number(1.0)
         self.node_dy = self._number(0.0)
         self.node_repeat = SafeSpinBox()
         self.node_repeat.setRange(1, 1000)
-        form.addRow("X", self.node_x)
-        form.addRow("Y", self.node_y)
+        form.addRow("좌표 (X, Y, Z)" if self._start_in_3d else "좌표 (X, Y)", self.node_xy)
         form.addRow("증분 dX", self.node_dx)
         form.addRow("증분 dY", self.node_dy)
+        if self._start_in_3d:
+            self.node_dz = self._number(0.0)
+            form.addRow("증분 dZ", self.node_dz)
         form.addRow("생성 개수", self.node_repeat)
         root.addLayout(form)
         add = QPushButton("노드 추가")
@@ -934,8 +1537,10 @@ class ModelingInterfacePage(QFrame):
         if selected == 1:
             self.create_section_hint.setText("선택한 노드를 기준으로 오프셋을 추가합니다.")
         elif selected == 0:
+            origin = "0, 0, 0" if self._start_in_3d else "0, 0"
             self.create_section_hint.setText(
-                "원점(0, 0) 기준으로 추가합니다. 노드를 하나 선택하면 그 노드가 기준점이 됩니다."
+                f"원점({origin}) 기준으로 추가합니다. 노드를 하나 선택하면 그 노드가 "
+                "기준점이 됩니다."
             )
         else:
             self.create_section_hint.setText(
@@ -1105,7 +1710,7 @@ class ModelingInterfacePage(QFrame):
     def _build_transform_section(self) -> QWidget:
         """Move, copy, array-copy and mirror — every operation that turns a hand-
         drawn fragment into a repeated or symmetric shape without redrawing it.
-        Its own 이동·복사·배열 category page in the 우측 워크트리 panel.
+        Its own 이동·복사·배열 category page in the left-hand editor panel.
         """
         section, root = self._section("노드 이동 · 복사 · 배열", show_title=False)
         transform_hint = QLabel(
@@ -1240,12 +1845,18 @@ class ModelingInterfacePage(QFrame):
         root.setSpacing(8)
 
         self.section_material_panel = SectionMaterialPanel()
+        if self._start_in_3d:
+            self.section_material_panel.set_compact_mode()
+            self.section_material_panel.material_saved.connect(self._save_user_material)
+            self.section_material_panel.section_saved.connect(self._save_user_section)
         self.section_material_panel.apply_requested.connect(self._apply_member_section)
         self.section_material_panel.edited.connect(self._selection_status_edited)
         root.addWidget(self.section_material_panel)
         section_hint = QLabel(
-            "정정구조는 없어도 풀리지만, 부정정 구조를 풀거나 실제 처짐 값을 보려면 "
-            "선택한 부재마다 입력해야 합니다."
+            "저장한 물성과 섹션은 오른쪽 워크트리에서 관리합니다."
+            if self._start_in_3d
+            else "정정구조는 없어도 풀리지만, 부정정 구조를 풀거나 실제 처짐 값을 "
+            "보려면 선택한 부재마다 입력해야 합니다."
         )
         section_hint.setWordWrap(True)
         section_hint.setObjectName("setupSectionHint")
@@ -1274,9 +1885,9 @@ class ModelingInterfacePage(QFrame):
 
         Laid out as a vertical form (label above/beside its own field, one
         row per component via ``QFormLayout``) now that this lives in the
-        우측 워크트리 panel rather than a fixed-height horizontal bar above
-        the canvas - a form just grows another row as fields are added
-        instead of running out of horizontal room and clipping text.
+        left-hand editor panel rather than a fixed-height horizontal bar
+        above the canvas - a form just grows another row as fields are
+        added instead of running out of horizontal room and clipping text.
         """
         content = QWidget()
         root = QVBoxLayout(content)
@@ -1609,6 +2220,11 @@ class ModelingInterfacePage(QFrame):
             else "Create geometry, assign structural properties, boundary conditions and loads."
         )
         self.header_controls_stack.setCurrentIndex(1 if showing_results else 0)
+        if self._start_in_3d and hasattr(self, "workbench_buttons"):
+            if showing_results:
+                self.workbench_buttons["results"].setChecked(True)
+            elif self.workbench_buttons["results"].isChecked():
+                self._activate_workbench_tab("model")
 
     def _model_type_changed(self) -> None:
         is_truss = self.model_type_selector.currentData() == "truss"
@@ -1633,6 +2249,7 @@ class ModelingInterfacePage(QFrame):
         self._load_target_changed()
         self.section_material_panel.set_unit_system(unit_system)
         self._sync_selection_status()
+        self._refresh_model_settings_summary()
 
     def to_project_dict(self) -> dict[str, object]:
         """The canvas's own raw state plus the bits of UI chrome that a
@@ -1645,10 +2262,38 @@ class ModelingInterfacePage(QFrame):
         data = self.canvas.to_dict()
         data["unit_force"] = self._unit_system.force
         data["unit_length"] = self._unit_system.length
+        if self._start_in_3d:
+            data["model_name"] = self._model_name
+            data["vertical_axis"] = self._vertical_axis
+            data["gravity_direction"] = self._gravity_direction
+            data["gravity_acceleration"] = self._gravity_acceleration
+            data["user_materials"] = [dict(material) for material in self._user_materials]
+            data["user_sections"] = [dict(section) for section in self._user_sections]
         return data
 
     def load_project_dict(self, data: dict[str, object]) -> None:
         self.canvas.load_dict(data)
+        if self._start_in_3d:
+            self._model_name = str(data.get("model_name", self._model_name))
+            self._vertical_axis = str(data.get("vertical_axis", self._vertical_axis))
+            self._gravity_direction = str(
+                data.get("gravity_direction", self._gravity_direction)
+            )
+            self._gravity_acceleration = float(
+                data.get("gravity_acceleration", self._gravity_acceleration)
+            )
+            stored_materials = data.get("user_materials", [])
+            self._user_materials = (
+                [dict(material) for material in stored_materials if isinstance(material, dict)]
+                if isinstance(stored_materials, list)
+                else []
+            )
+            stored_sections = data.get("user_sections", [])
+            self._user_sections = (
+                [dict(section) for section in stored_sections if isinstance(section, dict)]
+                if isinstance(stored_sections, list)
+                else []
+            )
         self.set_unit_system(
             UnitSystem(
                 force=str(data.get("unit_force", self._unit_system.force)),
@@ -1670,9 +2315,14 @@ class ModelingInterfacePage(QFrame):
         self.self_weight_toggle.setChecked(self.canvas.include_self_weight)
         self.self_weight_toggle.blockSignals(False)
         self.view_results_button.setEnabled(False)
+        if hasattr(self, "task_results_button"):
+            self.task_results_button.setEnabled(False)
         self.workspace_stack.setCurrentIndex(0)
         self._sync_property_panel()
         self._refresh_status()
+        self._refresh_model_settings_summary()
+        if self._start_in_3d:
+            self._refresh_work_tree()
 
     def save_to_file(self, path: Path) -> None:
         path.write_text(json.dumps(self.to_project_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1728,6 +2378,8 @@ class ModelingInterfacePage(QFrame):
         self.results.show_result(result)
         self.results.set_result_type("reaction")
         self.view_results_button.setEnabled(True)
+        if hasattr(self, "task_results_button"):
+            self.task_results_button.setEnabled(True)
         self.workspace_stack.setCurrentIndex(1)
 
     def _solve_thread_finished(self) -> None:
@@ -2002,6 +2654,7 @@ class ModelingInterfacePage(QFrame):
         elements = len(self.canvas.selected_elements)
         member_tag = self._selected_member_tag()
         self._refresh_create_section_hint()
+        self._update_member_info_card(member_tag)
         if member_tag is not None:
             self._refresh_member_section(member_tag)
         if nodes:
@@ -2140,9 +2793,9 @@ class ModelingInterfacePage(QFrame):
         same direction sit side by side instead of split apart by an
         intervening end-i/end-j boundary. Each is its own ``QFormLayout`` row
         (short "qx"/"Fx" label beside its field, full text kept in the
-        tooltip) since this now lives in the 우측 워크트리 panel — a form
-        just grows taller as fields are added instead of running out of
-        horizontal room.
+        tooltip) since this now lives in the left-hand editor panel — a
+        form just grows taller as fields are added instead of running out
+        of horizontal room.
 
         Deliberately does NOT narrow ``selection_filter`` to match the target
         (nodes-only for 집중하중, elements-only for 등분포/사다리꼴) — that used
@@ -2296,22 +2949,76 @@ class ModelingInterfacePage(QFrame):
         # selection summary, so success doesn't still look like an error.
         self._sync_property_panel()
 
+    @staticmethod
+    def _parse_xy_text(text: str) -> tuple[float, float] | None:
+        """Accepts midas-style combined coordinate entry — "0, 0", "0 0",
+        or "(0, 0)" — instead of forcing X and Y into separate fields."""
+        cleaned = text.strip().strip("()[]").strip()
+        parts = [part for part in cleaned.replace(",", " ").split() if part]
+        if len(parts) != 2:
+            return None
+        try:
+            return float(parts[0]), float(parts[1])
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _parse_xyz_text(text: str) -> tuple[float, float, float] | None:
+        """Accept ``0 0 10``, ``0, 0, 10`` and bracketed equivalents."""
+        cleaned = text.strip().strip("()[]").strip()
+        parts = [part for part in cleaned.replace(",", " ").split() if part]
+        if len(parts) != 3:
+            return None
+        try:
+            return float(parts[0]), float(parts[1]), float(parts[2])
+        except ValueError:
+            return None
+
     def _add_nodes_from_coordinates(self) -> None:
-        base_x, base_y = 0.0, 0.0
+        parsed = (
+            self._parse_xyz_text(self.node_xy.text())
+            if self._start_in_3d
+            else self._parse_xy_text(self.node_xy.text())
+        )
+        if parsed is None:
+            self.create_section_hint.setText(
+                '좌표 형식을 읽을 수 없습니다 — "0, 0, 10"처럼 X, Y, Z를 입력하세요.'
+                if self._start_in_3d
+                else '좌표 형식을 읽을 수 없습니다 — "0, 0"처럼 X와 Y를 입력하세요.'
+            )
+            return
+        base_x, base_y, base_z = 0.0, 0.0, 0.0
         if self.node_relative.isChecked() and len(self.canvas.selected_nodes) == 1:
             reference = self.canvas.nodes[next(iter(self.canvas.selected_nodes))]
             base_x, base_y = reference.x, reference.y
-        x = base_x + self.node_x.value()
-        y = base_y + self.node_y.value()
+            if self._start_in_3d:
+                base_z = reference.z
+        x = base_x + parsed[0]
+        y = base_y + parsed[1]
+        z = base_z + parsed[2] if self._start_in_3d else 0.0
+        dz = self.node_dz.value() if self._start_in_3d else 0.0
         self.canvas.begin_history_group()
         try:
             for index in range(self.node_repeat.value()):
-                self.canvas.add_node(
-                    x + self.node_dx.value() * index,
-                    y + self.node_dy.value() * index,
-                )
+                if self._start_in_3d:
+                    # True X/Y/Z, bypassing the active work plane entirely -
+                    # a typed coordinate is unambiguous, unlike a canvas
+                    # click, so it does not need a plane to resolve it.
+                    self.canvas._add_node_at(
+                        (
+                            x + self.node_dx.value() * index,
+                            y + self.node_dy.value() * index,
+                            z + dz * index,
+                        )
+                    )
+                else:
+                    self.canvas.add_node(
+                        x + self.node_dx.value() * index,
+                        y + self.node_dy.value() * index,
+                    )
         finally:
             self.canvas.end_history_group()
+        self._refresh_create_section_hint()
 
     def _sync_transform_form(self) -> None:
         """dX/dY relabel to 중심 X/중심 Y for 회전 복사 — same two fields, since

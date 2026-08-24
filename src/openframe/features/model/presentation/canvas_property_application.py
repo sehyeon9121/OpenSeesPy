@@ -18,8 +18,10 @@ _SECTION_PROPERTY_KEYS = frozenset(
         "E",
         "A",
         "I",
+        "Iy",
         "Iz",
         "J",
+        "G",
         "width",
         "height",
         "density",
@@ -31,6 +33,12 @@ _SECTION_PROPERTY_KEYS = frozenset(
         "material_grade",
     }
 )
+
+#: Default Poisson's ratio used to derive a shear modulus (G = E / (2*(1+v)))
+#: when the caller does not supply one - close enough for steel (~0.3) to be a
+#: reasonable placeholder for any material until a real value (e.g. the
+#: Master DB's own ``MaterialRecord.poisson_ratio``) is threaded through.
+_DEFAULT_POISSON_RATIO = 0.3
 
 
 class _PropertyApplicationMixin:
@@ -139,6 +147,7 @@ class _PropertyApplicationMixin:
         j: float,
         elastic: float,
         density: float = 0.0,
+        shear_modulus: float | None = None,
         section_id: str | None = None,
         material_id: str | None = None,
         material_category: str | None = None,
@@ -152,9 +161,17 @@ class _PropertyApplicationMixin:
         converted to this model's own unit system by the caller - this mixin
         never converts units itself, matching ``apply_section_to_selection``).
 
-        ``element.properties`` keeps ``A``/``I`` as the exact keys every 2D
-        solver already reads (``I`` is Iy in this app's established
-        convention - see ``section_properties.py``'s module docstring). A
+        ``element.properties`` keeps ``A``/``I`` as the exact keys the 2D
+        solver reads (``I`` is Iy in this app's established convention - see
+        ``section_properties.py``'s module docstring), and also writes ``Iy``
+        under its own name plus ``G`` (shear modulus) - the
+        ``"E"/"A"/"G"/"J"/"Iy"/"Iz"`` set a 3D indeterminate solve needs (see
+        ``MaterialFreeStaticsSolver._element_material_3d``) and
+        ``model_inspector_panel.py``'s readiness check already expects.
+        ``shear_modulus`` defaults to ``elastic / (2 * (1 + _DEFAULT_POISSON_
+        RATIO))`` when not given - a real per-material value (e.g. the Master
+        DB's own ``poisson_ratio``) can be threaded through by callers that
+        have one, without changing this default for callers that do not. A
         Rectangle also gets ``width``/``height`` so the existing section
         preview widget keeps working unchanged; every other shape's
         dimensions are dropped (no solver reads them) rather than invented
@@ -168,12 +185,19 @@ class _PropertyApplicationMixin:
         if not self.selected_elements:
             return
         self._record_history()
+        shear = (
+            shear_modulus
+            if shear_modulus is not None
+            else elastic / (2.0 * (1.0 + _DEFAULT_POISSON_RATIO))
+        )
         new_properties: dict[str, float | str] = {
             "E": elastic,
             "A": area,
             "I": iy,
+            "Iy": iy,
             "Iz": iz,
             "J": j,
+            "G": shear,
             "density": density,
             "section_shape": shape,
             "section_source": source,

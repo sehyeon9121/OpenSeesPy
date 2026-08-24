@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QLineEdit,
     QPushButton,
     QRadioButton,
     QVBoxLayout,
@@ -133,10 +134,10 @@ class _CollapsibleSection(QFrame):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         self._arrow = QLabel("▾")
-        title_label = QLabel(title)
-        title_label.setObjectName("setupSectionTitle")
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("setupSectionTitle")
         header_layout.addWidget(self._arrow)
-        header_layout.addWidget(title_label)
+        header_layout.addWidget(self.title_label)
         header_layout.addStretch(1)
         header.mousePressEvent = self._header_clicked  # type: ignore[method-assign]
         outer.addWidget(header)
@@ -158,6 +159,9 @@ class _CollapsibleSection(QFrame):
         self._expanded = expanded
         self._arrow.setText("▾" if expanded else "▸")
         self.body.setVisible(expanded)
+
+    def set_title(self, title: str) -> None:
+        self.title_label.setText(title)
 
     def add_widget(self, widget: QWidget) -> None:
         self.body_layout.addWidget(widget)
@@ -518,6 +522,8 @@ def _load_database_safely() -> MaterialDatabase | None:
 
 class SectionMaterialPanel(QWidget):
     apply_requested = Signal()
+    material_saved = Signal(dict)
+    section_saved = Signal(dict)
     #: Fires whenever any field that feeds ``current_application_kwargs()``
     #: changes *by the user's own typing* - never while ``load_from_element``
     #: is repopulating the panel from a freshly (re)selected member. The
@@ -543,11 +549,22 @@ class SectionMaterialPanel(QWidget):
         self._loading_element = False  # True only while load_from_element() runs
 
         root = QVBoxLayout(self)
+        self._root_layout = root
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
 
         # -- SECTION ----------------------------------------------------------
         section_group = _CollapsibleSection("SECTION")
+        self.section_group = section_group
+
+        self.section_name_row = QWidget()
+        section_name_layout = QHBoxLayout(self.section_name_row)
+        section_name_layout.setContentsMargins(0, 0, 0, 0)
+        section_name_layout.addWidget(QLabel("Name"))
+        self.section_name = QLineEdit()
+        self.section_name.setPlaceholderText("예: C1-기둥")
+        section_name_layout.addWidget(self.section_name, 1)
+        section_group.add_widget(self.section_name_row)
 
         type_row = QFormLayout()
         type_row.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -608,10 +625,20 @@ class SectionMaterialPanel(QWidget):
         self.validation_label.setWordWrap(True)
         section_group.add_widget(self.validation_label)
 
+        self.section_save_button = QPushButton("섹션 저장")
+        self.section_save_button.setObjectName("sectionLibrarySaveButton")
+        self.section_save_button.clicked.connect(self._save_section_clicked)
+        section_group.add_widget(self.section_save_button)
+        self.section_save_status = QLabel()
+        self.section_save_status.setObjectName("setupSectionHint")
+        self.section_save_status.setWordWrap(True)
+        section_group.add_widget(self.section_save_status)
+
         root.addWidget(section_group)
 
         # -- SECTION PROPERTIES -------------------------------------------
         properties_group = _CollapsibleSection("SECTION PROPERTIES")
+        self.properties_group = properties_group
         self.property_form = QFormLayout()
         self.property_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self._property_spinboxes: dict[str, SafeDoubleSpinBox] = {}
@@ -641,6 +668,15 @@ class SectionMaterialPanel(QWidget):
 
         # -- MATERIAL -----------------------------------------------------
         material_group = _CollapsibleSection("MATERIAL")
+        self.material_group = material_group
+        self.material_name_row = QWidget()
+        material_name_layout = QHBoxLayout(self.material_name_row)
+        material_name_layout.setContentsMargins(0, 0, 0, 0)
+        material_name_layout.addWidget(QLabel("Name"))
+        self.material_name = QLineEdit()
+        self.material_name.setPlaceholderText("예: 사용자 강재")
+        material_name_layout.addWidget(self.material_name, 1)
+        material_group.add_widget(self.material_name_row)
         material_form = QFormLayout()
         material_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.material_category_combo = SafeComboBox()
@@ -679,6 +715,15 @@ class SectionMaterialPanel(QWidget):
         self._material_fy_label = QLabel("fy")
         material_form.addRow(self._material_fy_label, self.material_fy)
         material_group.add_layout(material_form)
+
+        self.material_save_button = QPushButton("물성 저장")
+        self.material_save_button.setObjectName("materialLibrarySaveButton")
+        self.material_save_button.clicked.connect(self._save_material_clicked)
+        material_group.add_widget(self.material_save_button)
+        self.material_save_status = QLabel()
+        self.material_save_status.setObjectName("setupSectionHint")
+        self.material_save_status.setWordWrap(True)
+        material_group.add_widget(self.material_save_status)
         root.addWidget(material_group)
 
         self.apply_button = QPushButton("선택 부재에 적용")
@@ -688,6 +733,92 @@ class SectionMaterialPanel(QWidget):
         self._populate_material_categories()
         self._shape_changed(self.shape_combo.currentText())
         self._refresh_unit_suffixes()
+        self.material_name_row.hide()
+        self.material_save_button.hide()
+        self.material_save_status.hide()
+        self.section_name_row.hide()
+        self.section_save_button.hide()
+        self.section_save_status.hide()
+
+    def set_compact_mode(self, compact: bool = True) -> None:
+        """Use a quieter initial state in narrow docked editors.
+
+        The full 2D editor keeps its existing all-expanded layout.  The 3D
+        workbench exposes the same controls from a left dock, where showing
+        calculated properties and material details simultaneously creates a
+        long wall of fields.  They remain one click away in their existing
+        collapsible cards.
+        """
+        self.section_preview.setFixedSize((148 if compact else 184), (126 if compact else 164))
+        if compact:
+            for group in (self.section_group, self.properties_group, self.material_group):
+                self._root_layout.removeWidget(group)
+            self._root_layout.insertWidget(0, self.material_group)
+            self._root_layout.insertWidget(1, self.section_group)
+            self._root_layout.insertWidget(2, self.properties_group)
+            self.material_group.set_title("물성")
+            self.section_group.set_title("섹션")
+            self.properties_group.set_title("섹션 특성")
+        else:
+            for group in (self.section_group, self.properties_group, self.material_group):
+                self._root_layout.removeWidget(group)
+            self._root_layout.insertWidget(0, self.section_group)
+            self._root_layout.insertWidget(1, self.properties_group)
+            self._root_layout.insertWidget(2, self.material_group)
+            self.material_group.set_title("MATERIAL")
+            self.section_group.set_title("SECTION")
+            self.properties_group.set_title("SECTION PROPERTIES")
+        self.material_name_row.setVisible(compact)
+        self.material_save_button.setVisible(compact)
+        self.material_save_status.setVisible(compact)
+        self.section_name_row.setVisible(compact)
+        self.section_save_button.setVisible(compact)
+        self.section_save_status.setVisible(compact)
+        self.apply_button.setVisible(not compact)
+        self.material_group.set_expanded(compact)
+        self.section_group.set_expanded(not compact)
+        self.properties_group.set_expanded(not compact)
+
+    def _save_material_clicked(self) -> None:
+        name = self.material_name.text().strip() or self.material_grade_combo.currentText().strip()
+        if not name:
+            self.material_save_status.setText("물성 이름을 입력하세요.")
+            return
+        if self.material_e.value() <= 0.0:
+            self.material_save_status.setText("탄성계수 E는 0보다 커야 합니다.")
+            return
+        definition = {
+            "name": name,
+            "category": self.material_category_combo.currentText() or "사용자 정의",
+            "grade": self.material_grade_combo.currentText() or None,
+            "elastic": self.material_e.value(),
+            "density": self.material_unit_weight.value(),
+            "fy": self.material_fy.value(),
+        }
+        self.material_saved.emit(definition)
+        self.material_save_status.setText(f"{name} 물성을 워크트리에 저장했습니다.")
+
+    def _save_section_clicked(self) -> None:
+        if self._properties is None:
+            self.section_save_status.setText("유효한 섹션 치수를 입력하세요.")
+            return
+        name = self.section_name.text().strip() or self.designation_combo.currentText().strip()
+        if not name:
+            name = self.shape_combo.currentText().strip()
+        definition = self.current_application_kwargs()
+        section = {
+            "name": name,
+            "shape": definition["shape"],
+            "source": definition["source"],
+            "dimensions": definition["dimensions"],
+            "area": definition["area"],
+            "iy": definition["iy"],
+            "iz": definition["iz"],
+            "j": definition["j"],
+            "database_id": definition["section_id"],
+        }
+        self.section_saved.emit(section)
+        self.section_save_status.setText(f"{name} 섹션을 워크트리에 저장했습니다.")
 
     # -- unit system ------------------------------------------------------
     def set_unit_system(self, unit_system: UnitSystem) -> None:

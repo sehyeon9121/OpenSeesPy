@@ -7,6 +7,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QApplication
 
 from openframe.core.domain import Element, Node, StructuralModel
@@ -73,3 +74,19 @@ def test_set_model_resets_the_camera_by_default_but_can_be_told_not_to() -> None
 
     viewport.set_model(model)
     assert root.property("cameraPitch") == pytest.approx(-25.0), "default still reframes to iso"
+
+
+def test_orientation_is_a_fixed_top_right_gizmo_not_scene_origin_axes() -> None:
+    viewport = _viewport()
+    root = viewport.quick_widget.rootObject()
+    assert root is not None
+
+    gizmo = root.findChild(QObject, "orientationGizmo")
+    assert gizmo is not None
+    assert gizmo.property("visible") is True
+    assert gizmo.property("width") == pytest.approx(104.0)
+    assert gizmo.property("height") == pytest.approx(104.0)
+
+    qml = viewport._qml_path.read_text(encoding="utf-8")
+    assert "property real axisLength" not in qml
+    assert 'objectName: "orientationGizmo"' in qml

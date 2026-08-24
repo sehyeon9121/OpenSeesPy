@@ -9,34 +9,46 @@ from itertools import pairwise
 
 from openframe.core.domain import Element, LoadCaseKind, StructuralModel, UniformElementLoad
 
+# The exact same vecxz-picking rule solver.py's _build uses to orient every 3D
+# element's geomTransf - self-weight's local y/z projection below MUST use
+# this same rule, or the load would be resolved against axes the solver
+# itself never actually built the element with, landing self-weight in the
+# wrong physical direction. Imported rather than duplicated so the two can
+# never drift apart.
+from openframe.features.analysis.statics.solver import _reference_vector
+
 
 def _lerp(start: float, end: float, fraction: float) -> float:
     return start + (end - start) * fraction
 
 
 class _ModelBuildMixin:
-    def _self_weight_local(self, element: Element) -> tuple[float, float] | None:
-        """Self-weight of one member as a (wx, wy) uniform load in the
+    def _self_weight_local(self, element: Element) -> tuple[float, float, float] | None:
+        """Self-weight of one member as a (wx, wy, wz) uniform load in the
         member's own local axes - ``None`` if self-weight is off or the
         member is missing the (density, A) it needs.
 
-        Weight always acts in the global -Y direction regardless of how the
-        member is drawn, so the constant force-per-length magnitude
-        ``density * A`` (density here is a unit *weight*, force/volume - the
-        same force-based convention the rest of this app already uses for E,
-        not a mass needing a separate g factor) has to be projected onto the
-        member's own local x (axial) and y (transverse) axes: a horizontal
-        member gets it entirely as wy (bending under its own weight, exactly
-        like a plain vertical UDL), a vertical column gets it entirely as wx
-        (pure self-weight compression, no bending), and anything in between
-        is the same projection ``load_arrow_segments``/``eleLoad`` already
-        use for any other local-axis load on a sloped member.
+        Weight always acts straight down in the model's own vertical global
+        axis - global -Y in 2D, global -Z in 3D (this mixin has no access to
+        a page-level "gravity direction" setting to do otherwise, the same
+        simplification 2D self-weight already made) - so the constant
+        force-per-length magnitude ``density * A`` (density here is a unit
+        *weight*, force/volume - the same force-based convention the rest of
+        this app already uses for E, not a mass needing a separate g factor)
+        has to be projected onto the member's own local axes: a horizontal
+        member gets it entirely as transverse bending (exactly like a plain
+        vertical UDL), a plumb column gets it entirely as axial compression,
+        and anything in between is the same projection ``load_arrow_
+        segments``/``eleLoad`` already use for any other local-axis load on a
+        sloped member.
+
+        In 3D, ``local_y``/``local_z`` come from the same right-hand
+        ``reference x local_x`` / ``local_x x local_y`` construction OpenSees'
+        own ``geomTransf`` uses internally (see ``_reference_vector``'s own
+        docstring for the vecxz-picking rule and its known limitation for a
+        member with a real, asymmetric section).
         """
-        # 3D distributed loads aren't solved at all yet (see solver.py) - the
-        # projection below is also a 2D in-plane one (along/normal, no z
-        # component), so self-weight quietly does nothing in 3D rather than
-        # feeding the solver a load it would reject anyway.
-        if not self.include_self_weight or self.ndm != 2:
+        if not self.include_self_weight:
             return None
         try:
             density = float(element.properties["density"])
@@ -47,17 +59,42 @@ class _ModelBuildMixin:
             return None
         start = self.nodes[element.node_i]
         end = self.nodes[element.node_j]
+        weight_per_length = density * area
+        if self.ndm != 2:
+            dx, dy, dz = end.x - start.x, end.y - start.y, end.z - start.z
+            length = (dx * dx + dy * dy + dz * dz) ** 0.5
+            if length <= 0.0:
+                return None
+            local_x = (dx / length, dy / length, dz / length)
+            reference = _reference_vector(start, end)
+            raw_y = (
+                reference[1] * local_x[2] - reference[2] * local_x[1],
+                reference[2] * local_x[0] - reference[0] * local_x[2],
+                reference[0] * local_x[1] - reference[1] * local_x[0],
+            )
+            y_length = (raw_y[0] ** 2 + raw_y[1] ** 2 + raw_y[2] ** 2) ** 0.5 or 1.0
+            local_y = tuple(component / y_length for component in raw_y)
+            local_z = (
+                local_x[1] * local_y[2] - local_x[2] * local_y[1],
+                local_x[2] * local_y[0] - local_x[0] * local_y[2],
+                local_x[0] * local_y[1] - local_x[1] * local_y[0],
+            )
+            # Global weight vector (0, 0, -w) dotted with each local axis -
+            # only the axis's own Z-component survives that dot product.
+            wx = -weight_per_length * local_x[2]
+            wy = -weight_per_length * local_y[2]
+            wz = -weight_per_length * local_z[2]
+            return wx, wy, wz
         dx, dy = end.x - start.x, end.y - start.y
         length = (dx * dx + dy * dy) ** 0.5
         if length <= 0.0:
             return None
-        weight_per_length = density * area
         # Global weight vector (0, -w) dotted with the local x axis (dx, dy)/L
         # and the local y axis (-dy, dx)/L - the same along/normal pair
         # load_arrow_segments and _draw_distributed_load_box already use.
         wx = -weight_per_length * dy / length
         wy = -weight_per_length * dx / length
-        return wx, wy
+        return wx, wy, 0.0
 
     def build_model(self) -> StructuralModel:
         analysis_elements: dict[int, Element] = {}
@@ -84,9 +121,10 @@ class _ModelBuildMixin:
             segment_tags.extend(range(next_tag, next_tag + max(0, len(chain) - 2)))
             next_tag += max(0, len(chain) - 2)
             last_index = len(segment_tags) - 1
-            # Self-weight is the same (wx, wy) at every point of the *original*
-            # drawn member (density/A don't vary along it), computed once here
-            # from the member's own endpoints rather than per segment.
+            # Self-weight is the same (wx, wy, wz) at every point of the
+            # *original* drawn member (density/A don't vary along it),
+            # computed once here from the member's own endpoints rather than
+            # per segment.
             self_weight = self._self_weight_local(element)
             for index, (segment_tag, (node_i, node_j)) in enumerate(
                 zip(segment_tags, pairwise(chain), strict=True)
@@ -119,6 +157,8 @@ class _ModelBuildMixin:
                     wx1 += self_weight[0]
                     wy0 += self_weight[1]
                     wy1 += self_weight[1]
+                    wz0 += self_weight[2]
+                    wz1 += self_weight[2]
                 if load is not None or self_weight is not None:
                     analysis_loads.append(
                         UniformElementLoad(

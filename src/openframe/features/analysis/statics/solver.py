@@ -1,9 +1,14 @@
-"""Solve statically determinate 2D textbook problems without material data.
+"""Solve statically determinate textbook problems without material data, plus
+indeterminate 2D and 3D frames once real section/material properties are given.
 
 For a stable determinate structure, reactions and member forces follow from
 equilibrium and do not depend on EA or EI.  OpenSees is therefore given normalized
-positive stiffness solely as a numerical mechanism.  Indeterminate structures are
-rejected because their force distribution genuinely depends on member stiffness.
+positive stiffness solely as a numerical mechanism.  An indeterminate structure's
+force distribution genuinely depends on member stiffness, so it is rejected unless
+every element carries real properties - (E, A, I) for a 2D frame, (E, A, G, J, Iy,
+Iz) for a 3D one, the same key convention model_inspector_panel.py's readiness
+check already expects.  Indeterminate trusses (2D or 3D) are still always rejected:
+this solver only ever builds a stiffness-based truss with unit placeholder EA.
 """
 
 import math
@@ -135,7 +140,7 @@ def check_determinacy(model: StructuralModel) -> DeterminacyCheck:
 
 
 class MaterialFreeStaticsSolver:
-    """Calculate reactions and N/V/M forces for determinate planar structures.
+    """Calculate reactions and N/V/M forces for determinate structures (2D or 3D).
 
     Given real (E, A, I) - per element via ``Element.properties["E"/"A"/"I"]``,
     or a uniform fallback via ``solve(model, material=...)`` - it can also
@@ -145,6 +150,15 @@ class MaterialFreeStaticsSolver:
     meaningful answer for one. Every existing caller that never sets either
     keeps the exact original unit-stiffness, determinate-only behaviour
     unchanged.
+
+    Indeterminate 3D frames are solved the same way, per element via
+    ``Element.properties["E"/"A"/"G"/"J"/"Iy"/"Iz"]`` - there is deliberately
+    no solve-wide fallback for the 3D case the way ``material`` is one for 2D
+    (every 3D member must carry its own full property set), and geometric
+    nonlinearity (P-Delta) stays 2D-only for now - a 3D member's ``geomTransf``
+    is always built ``"Linear"`` regardless of what is requested, so
+    ``solve()`` rejects a 3D request for anything else up front rather than
+    silently ignoring it.
     """
 
     def solve(
@@ -174,25 +188,39 @@ class MaterialFreeStaticsSolver:
                 status=AnalysisStatus.FAILED,
                 messages=[f"지원하지 않는 기하비선형 설정입니다: {geometric_nonlinearity}"],
             )
+        if geometric_nonlinearity != "Linear" and model.ndm != 2:
+            return AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=["3D 모델의 P-Delta(기하비선형) 해석은 아직 지원하지 않습니다."],
+            )
         check = check_determinacy(model)
         needs_material = not check.can_solve_without_materials or geometric_nonlinearity != "Linear"
         if needs_material:
-            if material is None and not self._has_material_everywhere(model, check.system):
+            if check.system != "frame":
+                return AnalysisResult(
+                    status=AnalysisStatus.FAILED,
+                    messages=[
+                        check.message,
+                        "부정정 트러스 모델의 강성 해석은 아직 지원하지 않습니다.",
+                    ],
+                )
+            # ``material`` is a 2D-shaped (E, A, I) fallback - meaningless for a
+            # 3D member's (E, A, G, J, Iy, Iz), so it can never stand in for a
+            # missing per-element 3D property set the way it can in 2D.
+            has_fallback = material is not None and model.ndm != 3
+            if not has_fallback and not self._has_material_everywhere(model, check.system, model.ndm):
                 messages = [] if check.can_solve_without_materials else [check.message]
                 if geometric_nonlinearity != "Linear":
                     messages.append(
                         "P-Delta(기하비선형) 해석에는 모든 부재의 실제 재료·단면(E/A/I)이 "
                         "필요합니다 - 정정구조라도 2차효과는 강성에 좌우됩니다."
                     )
+                elif model.ndm == 3:
+                    messages.append(
+                        "부정정 3D 모델은 모든 부재에 실제 재료·단면(E/A/G/J/Iy/Iz)이 "
+                        "필요합니다."
+                    )
                 return AnalysisResult(status=AnalysisStatus.FAILED, messages=messages)
-            if check.system != "frame" or model.ndm != 2:
-                return AnalysisResult(
-                    status=AnalysisStatus.FAILED,
-                    messages=[
-                        check.message,
-                        "부정정 트러스·3D 모델의 강성 해석은 아직 지원하지 않습니다.",
-                    ],
-                )
 
         ops.wipe()
         try:
@@ -236,13 +264,54 @@ class MaterialFreeStaticsSolver:
         )
 
     @staticmethod
-    def _has_material_everywhere(model: StructuralModel, system: str) -> bool:
+    def _element_material_3d(
+        element: Element,
+    ) -> tuple[float, float, float, float, float, float] | None:
+        """(E, A, G, J, Iy, Iz) from ``element.properties`` - the same key
+        convention ``model_inspector_panel.py``'s readiness check already
+        expects for a 3D ``elasticBeamColumn`` - or ``None`` if any of the
+        six is missing or not a real number."""
+        try:
+            return (
+                float(element.properties["E"]),
+                float(element.properties["A"]),
+                float(element.properties["G"]),
+                float(element.properties["J"]),
+                float(element.properties["Iy"]),
+                float(element.properties["Iz"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _resolve_material_3d(
+        element: Element,
+    ) -> tuple[float, float, float, float, float, float]:
+        """(E, A, G, J, Iy, Iz) for one 3D element: its own properties, or the
+        unit placeholder every determinate 3D call already relied on. Unlike
+        2D's ``_resolve_material``, there is no solve-wide fallback tuple to
+        fall through to first - see ``solve()``'s ``has_fallback`` guard,
+        which already requires every element to carry its own full property
+        set before an indeterminate 3D model reaches this far."""
+        return MaterialFreeStaticsSolver._element_material_3d(element) or (
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        )
+
+    @staticmethod
+    def _has_material_everywhere(model: StructuralModel, system: str, ndm: int = 2) -> bool:
         if system != "frame":
             return False
-        return all(
-            MaterialFreeStaticsSolver._element_material(element) is not None
-            for element in model.elements.values()
+        reader = (
+            MaterialFreeStaticsSolver._element_material_3d
+            if ndm == 3
+            else MaterialFreeStaticsSolver._element_material
         )
+        return all(reader(element) is not None for element in model.elements.values())
 
     @staticmethod
     def _build(
@@ -345,17 +414,20 @@ class MaterialFreeStaticsSolver:
                 end_j_tag = MaterialFreeStaticsSolver._build_hinge(
                     element.tag, "j", node_i, node_j
                 )
+            elastic, area, shear, torsion, inertia_y, inertia_z = (
+                MaterialFreeStaticsSolver._resolve_material_3d(element)
+            )
             ops.element(
                 "elasticBeamColumn",
                 element.tag,
                 end_i_tag,
                 end_j_tag,
-                1.0,
-                1.0,
-                1.0,
-                1.0,
-                1.0,
-                1.0,
+                area,
+                elastic,
+                shear,
+                torsion,
+                inertia_y,
+                inertia_z,
                 transf_tag,
             )
 
@@ -520,19 +592,34 @@ class MaterialFreeStaticsSolver:
             ops.load(load.node_tag, *values)
         if system == "truss" and model.element_loads:
             raise ValueError("트러스 부재의 등분포하중은 절점하중으로 변환해 입력하세요.")
-        if ndm == 3 and model.element_loads:
-            # A transverse load's direction depends on which way the member's local
-            # y/z axes ended up facing, which this solver only chooses automatically
-            # (see _reference_vector) — not something a student picked, so a wx/wy
-            # UI value could silently land in the wrong physical direction. Until
-            # there is a UI that lets the direction be chosen deliberately, nodal
-            # loads are the honest way to load a 3D member.
+        if ndm == 3 and any(not load.is_uniform for load in model.element_loads):
+            # A linearly-varying (trapezoidal) load needs _build's discretized-
+            # member sub-elements (see _build_discretized_member), which only
+            # ever builds 2D (x, y) sub-nodes - there is nothing to eleLoad a
+            # 3D trapezoidal load's sub-tags onto. A plain uniform 3D load
+            # needs no such discretization (OpenSees' own -beamUniform already
+            # handles it directly on the one real element), so only the
+            # trapezoidal case is still rejected here.
             raise ValueError(
-                "3D 모델의 부재 분포하중은 아직 지원하지 않습니다. 절점하중으로 입력하세요."
+                "3D 모델의 선형 변화(사다리꼴) 분포하중은 아직 지원하지 않습니다. "
+                "등분포하중으로 입력하거나 절점하중으로 변환하세요."
             )
         for load in model.element_loads:
             if load.is_uniform:
-                ops.eleLoad("-ele", load.element_tag, "-type", "-beamUniform", load.wy, load.wx)
+                if ndm == 3:
+                    # wy/wz are the member's own local transverse axes (the
+                    # same ones _reference_vector already fixed when the
+                    # element was built - see its own docstring for how they
+                    # are chosen), wx is local axial - OpenSeesPy's own 3D
+                    # -beamUniform argument order.
+                    ops.eleLoad(
+                        "-ele", load.element_tag, "-type", "-beamUniform",
+                        load.wy, load.wz, load.wx,
+                    )
+                else:
+                    ops.eleLoad(
+                        "-ele", load.element_tag, "-type", "-beamUniform", load.wy, load.wx
+                    )
                 continue
             # No native linearly-varying eleLoad exists (see _TRAPEZOID_SEGMENTS) -
             # _build already split this member into that many sub-elements, so
@@ -540,7 +627,7 @@ class MaterialFreeStaticsSolver:
             # the true w(x) value at its own midpoint. A midpoint sample equals
             # the segment's exact average for a linear w(x), so this reproduces
             # the exact resultant force per segment; only the within-segment
-            # shape is approximated.
+            # shape is approximated. 2D only - see the ndm == 3 rejection above.
             sub_tags = MaterialFreeStaticsSolver._trapezoid_sub_element_tags(load.element_tag)
             for segment, sub_tag in enumerate(sub_tags):
                 midpoint = (segment + 0.5) / _TRAPEZOID_SEGMENTS
@@ -714,12 +801,19 @@ def _hinge_condition_equations(model: StructuralModel) -> int:
 def _reference_vector(node_i, node_j) -> tuple[float, float, float]:
     """A ``vecxz`` for ``geomTransf`` that is never parallel to the member axis.
 
-    The reactions and member forces this solver reports never depend on which
-    way "local y" versus "local z" actually points, because every 3D member here
-    carries the same placeholder Iy=Iz=1.0 — a symmetric section is indifferent
-    to which axis is which. All that is required is a vector not colinear with
-    the member, so global Z works for every member except a vertical one, which
-    falls back to global X.
+    For a determinate 3D member (placeholder Iy=Iz=1.0), reactions and member
+    forces never depend on which way "local y" versus "local z" actually
+    points, so all that is required is a vector not colinear with the member -
+    global Z works for every member except a vertical one, which falls back
+    to global X. Once an indeterminate 3D frame gives a member its own real,
+    possibly asymmetric Iy/Iz (see ``_resolve_material_3d``), this auto-picked
+    orientation is no longer guaranteed to match the section's actual
+    strong/weak axis as drawn - there is no beta-angle control yet to let a
+    student choose it deliberately, so a member whose real section is not
+    symmetric (Iy != Iz) gets a numerically valid but arbitrarily-oriented
+    solve rather than the intended one. The same caveat applies to a 3D
+    element load's wy/wz components (see ``_apply_loads``): they are local to
+    whatever y/z this function picked, not a direction the student chose.
     """
     dx = node_j.x - node_i.x
     dy = node_j.y - node_i.y
