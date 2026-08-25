@@ -12,6 +12,13 @@ class SupportKind(StrEnum):
     PINNED = "pinned"
     ROLLER_VERTICAL = "roller_vertical"
     ROLLER_HORIZONTAL = "roller_horizontal"
+    #: 3D-only presets — a pin (all translation restrained, all rotation
+    #: free) that additionally frees one translation axis to slide along.
+    #: Never produced for a 2D (3-length restraints) boundary; see
+    #: ``BoundaryCondition.support_kind``'s ``len(restraints) >= 6`` branch.
+    ROLLER_X = "roller_x"
+    ROLLER_Y = "roller_y"
+    ROLLER_Z = "roller_z"
     CUSTOM = "custom"
 
 
@@ -71,6 +78,14 @@ class Element:
     #: Tag of the ``beamIntegration(...)``/section this element references
     #: (``dispBeamColumn``/``forceBeamColumn`` only). ``None`` otherwise.
     integration_tag: int | None = None
+    #: Rigid end-zone (panel zone) offset at each end, in GLOBAL (x, y, z) -
+    #: the vector from the drawn node to where the member's actual flexible
+    #: length begins, exactly OpenSees's ``geomTransf(...) '-jntOffset'``
+    #: convention. ``(0, 0, 0)`` at both ends (the default) reproduces every
+    #: existing member exactly - a 3D beam-column only, per solver.py's own
+    #: ``-jntOffset`` support; a 2D or truss element ignores this.
+    offset_i: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    offset_j: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     @property
     def release_count(self) -> int:
@@ -92,6 +107,14 @@ class BoundaryCondition:
     node_tag: int
     restraints: tuple[bool, ...]
     angle: float = 0.0
+    #: Finite stiffness per global DOF (translation then rotation, same order
+    #: as ``restraints``) - ``None``/``0.0`` at an index means that DOF has no
+    #: spring. A DOF is either rigidly fixed (``restraints[i]`` True) or
+    #: elastically sprung (a value here), never both - the solver skips a
+    #: spring wherever ``restraints`` already fixes that DOF. Empty tuple
+    #: (the default) means "no springs at all", reproducing every existing
+    #: support exactly.
+    spring_stiffnesses: tuple[float | None, ...] = ()
 
     @property
     def is_inclined(self) -> bool:
@@ -107,6 +130,12 @@ class BoundaryCondition:
                 return SupportKind.FIXED
             if normalized_3d == (True, True, True, False, False, False):
                 return SupportKind.PINNED
+            if normalized_3d == (False, True, True, False, False, False):
+                return SupportKind.ROLLER_X
+            if normalized_3d == (True, False, True, False, False, False):
+                return SupportKind.ROLLER_Y
+            if normalized_3d == (True, True, False, False, False, False):
+                return SupportKind.ROLLER_Z
             return SupportKind.CUSTOM
         normalized = tuple(self.restraints[:3])
         if normalized == (True, True, True):
@@ -123,6 +152,24 @@ class BoundaryCondition:
         if normalized == (False, True, False):
             return SupportKind.ROLLER_HORIZONTAL
         return SupportKind.CUSTOM
+
+
+@dataclass(frozen=True, slots=True)
+class RigidDiaphragm:
+    """One floor tied together by OpenSees' ``rigidDiaphragm`` - every
+    ``slave_tags`` node moves as a rigid body with ``master_tag`` in the
+    plane perpendicular to ``perp_dirn`` (global axis index, 1=X/2=Y/3=Z).
+
+    ``master_tag`` is one of the story's own nodes (the lowest tag), not a
+    synthetic centroid node - a deliberate simplification: it keeps this
+    entirely free of new-node bookkeeping (tag allocation, viewport/results
+    filtering, serialization) while still being the standard, valid way to
+    define a rigid diaphragm's 3 in-plane rigid-body DOFs.
+    """
+
+    perp_dirn: int
+    master_tag: int
+    slave_tags: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +230,10 @@ class StructuralModel:
     #: tag - absent (``{}``) for models imported before this field existed
     #: (old payloads), which is why every reader treats it as optional.
     geometric_transforms: dict[int, GeometricTransform] = field(default_factory=dict)
+    #: Rigid floor diaphragms (Story Manager) - empty for every model built
+    #: before this feature existed, or any 2D model (diaphragms are a 3D-only
+    #: concept).
+    rigid_diaphragms: tuple[RigidDiaphragm, ...] = ()
 
     def validate(self) -> list[str]:
         """Return validation errors without depending on a GUI dialog."""

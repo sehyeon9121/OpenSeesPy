@@ -559,6 +559,40 @@ Item {
         }
 
         Repeater3D {
+            // Loads tab's own case-based store (Load Case/Load Entry/Load
+            // Combination) - entirely separate from loadArrows above, which
+            // only ever reflects nodal_loads/element_loads. Same flat-parts
+            // scheme (shaft/head/moment "bowtie" cone pair/distribution
+            // line, each self-positioned) - see
+            // Quick3DSceneBridge.loadEntryGlyphs.
+            model: sceneBridge.loadEntryGlyphs
+            delegate: Model {
+                source: modelData.shape
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                rotation: Qt.quaternion(
+                    modelData.qscalar,
+                    modelData.qx,
+                    modelData.qy,
+                    modelData.qz
+                )
+                scale: Qt.vector3d(
+                    modelData.thickness / 100,
+                    modelData.length / 100,
+                    modelData.thickness / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        metalness: 0.0
+                        roughness: 0.4
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+            }
+        }
+
+        Repeater3D {
             // Local-axis gizmo: two flat entries per 3D member (local y, local
             // z), off by default - see Quick3DSceneBridge.localAxisGizmos.
             model: sceneBridge.localAxisGizmos

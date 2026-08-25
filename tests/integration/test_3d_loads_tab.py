@@ -229,14 +229,14 @@ def test_loads_uses_one_command_picker_and_shows_only_the_selected_command_form(
 
     assert page.load_command_combo.currentData() == "nodal"
     assert page.load_command_stack.currentIndex() == page.load_command_pages["quick"]
-    assert page.load_command_form_title.text() == "절점하중 설정"
+    assert page.load_command_form_title.text() == "Nodal Load"
     assert page.load_task_bar.isVisible()
 
     page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("floor"))
 
     assert page.load_command_stack.currentIndex() == page.load_command_pages["entry"]
     assert page.load3d_form_stack.currentIndex() == page.load3d_form_pages["floor"]
-    assert page.load3d_command_title.text() == "바닥하중 할당"
+    assert page.load3d_command_title.text() == "Floor Load"
 
 
 def test_load_manager_uses_width_safe_comboboxes_instead_of_clipped_button_rows() -> None:
@@ -268,14 +268,14 @@ def test_properties_style_selector_keeps_load_command_hierarchy_in_each_label() 
     labels = [page.load_command_combo.itemText(i) for i in range(page.load_command_combo.count())]
 
     assert [label for label in labels if label.startswith("[정적] ")] == [
-        "[정적] 자중",
-        "[정적] 절점하중",
-        "[정적] 부재 집중하중",
-        "[정적] 부재 균등분포",
-        "[정적] 부재 선형분포",
-        "[정적] 부재 부분분포",
-        "[정적] 부재 집중모멘트",
-        "[정적] 바닥하중 할당",
+        "[정적] Self Weight",
+        "[정적] Nodal Load",
+        "[정적] Mem Point",
+        "[정적] Mem Uniform",
+        "[정적] Mem Linear",
+        "[정적] Mem Partial",
+        "[정적] Mem Moment",
+        "[정적] Floor Load",
     ]
 
 
@@ -300,6 +300,40 @@ def test_make_load_case_by_combination_command_materializes_scaled_loads() -> No
     assert generated[0].payload.fz == -12.0
     assert page.canvas.nodal_loads[node].values[2] == -12.0
     assert "하중 1개" in page.make_load_status.text()
+
+
+def test_applying_a_floor_load_type_creates_one_entry_per_case_at_once() -> None:
+    """MIDAS' "Floor Load Type" flow: pick a bundled type instead of typing
+    one magnitude, Apply once, get one FloorLoadEntry per case in the type."""
+    from openframe.core.domain import FloorLoadTypeRow
+
+    page = _page()
+    n1 = page.canvas.add_node(0.0, 0.0)
+    n2 = page.canvas.add_node(4.0, 0.0)
+    n3 = page.canvas.add_node(4.0, 4.0)
+    page.canvas.add_load_case("DL_CONCRETE", kind=LoadCaseKind.DEAD)
+    page.canvas.add_load_case("LL_OFFICE", kind=LoadCaseKind.LIVE)
+    page.canvas.add_floor_load_type(
+        "사무실 바닥",
+        rows=(
+            FloorLoadTypeRow("DL_CONCRETE", 2.0),
+            FloorLoadTypeRow("LL_OFFICE", 2.5),
+        ),
+    )
+    page.canvas.selected_nodes = {n1, n2, n3}
+    page.canvas.selection_changed.emit()
+    page._activate_load_tool()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("floor"))
+
+    type_index = page.load3d_floor_type_combo.findData("사무실 바닥")
+    assert type_index >= 0
+    page.load3d_floor_type_combo.setCurrentIndex(type_index)
+    page.load3d_floor_type_apply_button.click()
+
+    entries = list(page.canvas.load_entries.values())
+    assert len(entries) == 2
+    assert {entry.case_id for entry in entries} == {"DL_CONCRETE", "LL_OFFICE"}
+    assert "2개" in page.load3d_status_label.text()
 
 
 def test_saving_a_combination_in_the_dialog_populates_the_combo_and_work_tree() -> None:

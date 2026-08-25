@@ -19,6 +19,7 @@ from openframe.core.domain.geometric_transform import (
     rotate_about_axis,
     validate_orientation_vector,
 )
+from openframe.core.domain.floor_load_type import FloorLoadType, FloorLoadTypeRow
 from openframe.core.domain.ground_motion import GroundMotion, GroundMotionRecord, GroundMotionSource
 from openframe.core.domain.load_case import LoadCase
 from openframe.core.domain.load_combination import LoadCombination
@@ -60,6 +61,7 @@ from openframe.core.domain.model import (
     LoadCaseKind,
     NodalLoad,
     Node,
+    RigidDiaphragm,
     StructuralModel,
     SupportKind,
     UniformElementLoad,
@@ -84,6 +86,7 @@ from openframe.core.domain.section_properties import (
     compute_section_properties,
     dimension_fields,
 )
+from openframe.core.domain.story import Story
 from openframe.core.domain.units import (
     ACCELERATION_UNITS,
     DEFAULT_UNIT_SYSTEM,
@@ -130,6 +133,8 @@ __all__ = [
     "ElementResult",
     "FieldState",
     "FloorLoadEntry",
+    "FloorLoadType",
+    "FloorLoadTypeRow",
     "GeometricTransform",
     "GroundMotion",
     "GroundMotionRecord",
@@ -160,6 +165,7 @@ __all__ = [
     "PropertyType",
     "RCSectionRecord",
     "RecordNotFoundError",
+    "RigidDiaphragm",
     "SectionDimensionError",
     "SectionProperties",
     "SectionRecord",
@@ -167,6 +173,7 @@ __all__ = [
     "ShearDeformationSettings",
     "ShearModulusMode",
     "Source",
+    "Story",
     "StructuralModel",
     "SupportKind",
     "TimeHistoryDirectionSummary",

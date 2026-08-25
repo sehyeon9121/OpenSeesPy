@@ -47,15 +47,21 @@ DEFAULT_POISSON_RATIO = 0.3
 
 class _PropertyApplicationMixin:
     def apply_support_to_selection(
-        self, restraints: tuple[bool, ...], angle: float = 0.0
+        self,
+        restraints: tuple[bool, ...],
+        angle: float = 0.0,
+        spring_stiffnesses: tuple[float | None, ...] = (),
     ) -> None:
-        """Assign a support, or remove it entirely when nothing is restrained."""
+        """Assign a support, or remove it entirely when nothing is restrained
+        and no DOF is sprung either."""
         if not self.selected_nodes:
             return
         self._record_history()
         for node_tag in self.selected_nodes:
-            if any(restraints):
-                self.boundaries[node_tag] = BoundaryCondition(node_tag, restraints, angle)
+            if any(restraints) or any(spring_stiffnesses):
+                self.boundaries[node_tag] = BoundaryCondition(
+                    node_tag, restraints, angle, spring_stiffnesses
+                )
             else:
                 self.boundaries.pop(node_tag, None)
         self._changed()
@@ -119,6 +125,39 @@ class _PropertyApplicationMixin:
             if element is None:
                 continue
             self.elements[element_tag] = replace(element, local_axis_angle=angle)
+        self._changed()
+
+    def apply_rigid_offset_lengths_to_selection(self, length_i: float, length_j: float) -> None:
+        """Rigid end-zone (panel zone) length at each end of every selected
+        member, along that member's own axis - see ``Element.offset_i``/
+        ``offset_j`` and solver.py's ``-jntOffset`` wiring.
+
+        Takes a plain length per end rather than a raw (x, y, z) vector so
+        one call works correctly across a multi-member selection of members
+        pointing in different directions - each member's own direction is
+        computed here, not asked of the caller. ``length_i``/``length_j`` of
+        ``0`` (the default) is a no-op, same as every member drawn before
+        this feature existed.
+        """
+        if not self.selected_elements:
+            return
+        self._record_history()
+        for element_tag in self.selected_elements:
+            element = self.elements.get(element_tag)
+            if element is None:
+                continue
+            start = self.nodes.get(element.node_i)
+            end = self.nodes.get(element.node_j)
+            if start is None or end is None:
+                continue
+            dx, dy, dz = end.x - start.x, end.y - start.y, end.z - start.z
+            length = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if length <= 0.0:
+                continue
+            direction = (dx / length, dy / length, dz / length)
+            offset_i = tuple(component * length_i for component in direction)
+            offset_j = tuple(-component * length_j for component in direction)
+            self.elements[element_tag] = replace(element, offset_i=offset_i, offset_j=offset_j)
         self._changed()
 
     def apply_section_to_selection(

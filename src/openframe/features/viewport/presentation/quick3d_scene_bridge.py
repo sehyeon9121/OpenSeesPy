@@ -7,7 +7,15 @@ from PySide6.QtCore import Property, QObject, Signal
 from openframe.core.domain import (
     AnalysisResult,
     Element,
+    FloorLoadEntry,
+    LoadCase,
     LoadCaseKind,
+    LoadCombination,
+    LoadEntry,
+    MemberDistributedLoadEntry,
+    MemberPointLoadEntry,
+    NodalLoadEntry,
+    SelfWeightEntry,
     StructuralModel,
     SupportKind,
     auto_reference_vector,
@@ -59,6 +67,14 @@ _SUPPORT_COLORS = {
     SupportKind.PINNED: "#00a6a6",
     SupportKind.ROLLER_VERTICAL: "#6366f1",
     SupportKind.ROLLER_HORIZONTAL: "#6366f1",
+    # No dedicated glyph shape yet - _support_symbol_parts falls through to
+    # the generic "custom_block" cube for these (same as CUSTOM), so this
+    # entry only needs to exist so the color lookup below doesn't KeyError.
+    # Reusing the roller indigo keeps them visually grouped with the other
+    # rollers rather than reading as an arbitrary/unrecognized restraint.
+    SupportKind.ROLLER_X: "#6366f1",
+    SupportKind.ROLLER_Y: "#6366f1",
+    SupportKind.ROLLER_Z: "#6366f1",
     SupportKind.CUSTOM: "#f59e0b",
 }
 #: A 3D member's local y/z axis gizmo (a preview of ``Element.local_axis_angle``'s
@@ -128,6 +144,22 @@ class Quick3DSceneBridge(QObject):
         self._last_model: StructuralModel | None = None
         self._selected_node_tags: set[int] = set()
         self._selected_member_tags: set[int] = set()
+        #: Loads tab (case-based Load Case/Load Entry/Load Combination store) -
+        #: entirely separate from the nodal_loads/element_loads-driven
+        #: loadArrows above (see canvas_load_entries.py's own module
+        #: docstring for why). Cached raw inputs, not just the built part
+        #: list, so set_model()/clear_result() can rebuild these glyphs at
+        #: the model's new node positions the same way they already rebuild
+        #: _load_arrows - without the caller having to remember to call
+        #: set_load_entries() again after every geometry change.
+        self._load_entries: dict[int, LoadEntry] = {}
+        self._load_cases: dict[str, LoadCase] = {}
+        self._load_combinations: dict[str, LoadCombination] = {}
+        self._load_entry_mode = "case"
+        self._load_entry_active_case_id: str | None = None
+        self._load_entry_active_combination_id: str | None = None
+        self._load_entry_scale = 1.0
+        self._load_entry_parts: list[dict[str, float | int | str]] = []
 
     def set_model(self, model: StructuralModel) -> None:
         self._last_model = model
@@ -179,6 +211,7 @@ class Quick3DSceneBridge(QObject):
         self._ghost_members = []
         self._load_arrows = self._build_all_load_arrows(model, points)
         self._support_parts = self._build_support_parts(model, points)
+        self._rebuild_load_entry_parts()
         self.scene_changed.emit()
 
     def set_result(
@@ -278,6 +311,7 @@ class Quick3DSceneBridge(QObject):
         if self._last_model is not None and self._points:
             self._rebuild_default_geometry(self._last_model)
             self._load_arrows = self._build_all_load_arrows(self._last_model, self._points)
+            self._rebuild_load_entry_parts()
         self.scene_changed.emit()
 
     def set_loads_visible(self, visible: bool) -> None:
@@ -300,6 +334,35 @@ class Quick3DSceneBridge(QObject):
 
     def set_load_case_filter(self, case_filter: str) -> None:
         self._load_case_filter = case_filter
+        self.scene_changed.emit()
+
+    def set_load_entries(
+        self,
+        load_entries: dict[int, LoadEntry],
+        load_cases: dict[str, LoadCase],
+        load_combinations: dict[str, LoadCombination],
+        *,
+        mode: str = "case",
+        active_case_id: str | None = None,
+        active_combination_id: str | None = None,
+        scale: float = 1.0,
+    ) -> None:
+        """Push the Loads tab's own case-based store (see
+        ``canvas_load_entries.py``) for rendering - entirely separate from
+        ``set_model()``'s ``nodal_loads``/``element_loads`` arrows. ``mode``
+        mirrors the Display combo ("case"/"combination"/"all"/"hidden");
+        "combination" previews each entry scaled by its case's
+        ``LoadCombination.factor_for(case.kind)`` without writing anything
+        back, matching ``create_load_case_from_combination``'s own scaling.
+        """
+        self._load_entries = dict(load_entries)
+        self._load_cases = dict(load_cases)
+        self._load_combinations = dict(load_combinations)
+        self._load_entry_mode = mode
+        self._load_entry_active_case_id = active_case_id
+        self._load_entry_active_combination_id = active_combination_id
+        self._load_entry_scale = scale
+        self._rebuild_load_entry_parts()
         self.scene_changed.emit()
 
     def set_selected_node(self, tag: int | None) -> None:
@@ -416,6 +479,14 @@ class Quick3DSceneBridge(QObject):
             if (self._load_filter == "all" or part["kind"] == self._load_filter)
             and (self._load_case_filter == "all" or part["case_type"] == self._load_case_filter)
         ]
+
+    @Property("QVariantList", notify=scene_changed)
+    def loadEntryGlyphs(self) -> list[dict[str, float | int | str]]:
+        """Glyphs for the Loads tab's case-based store - gated by the same
+        master ``_loads_visible`` toggle as ``loadArrows`` (the Display
+        combo's "Hide Loads" mode already empties ``_load_entry_parts``
+        itself, in ``_build_load_entry_parts``)."""
+        return self._load_entry_parts if self._loads_visible else []
 
     @Property("QVariantList", notify=scene_changed)
     def supportSymbols(self) -> list[dict[str, float | int | str]]:
@@ -1254,6 +1325,503 @@ class Quick3DSceneBridge(QObject):
             return 0.45
         return 0.45 + 0.55 * math.sqrt(min(magnitude / maximum_magnitude, 1.0))
 
+    def _rebuild_load_entry_parts(self) -> None:
+        model = self._last_model
+        if model is None or not self._points:
+            self._load_entry_parts = []
+            return
+        self._load_entry_parts = self._build_load_entry_parts(model, self._points)
+
+    def _build_load_entry_parts(
+        self,
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+    ) -> list[dict[str, float | int | str]]:
+        """Case-based Loads tab glyphs - filtered by the Display combo's mode
+        exactly like ``create_load_case_from_combination`` filters/scales for
+        its own "materialize a combination" step, so this preview can never
+        show something that step would not also produce.
+        """
+        mode = self._load_entry_mode
+        if mode == "hidden":
+            return []
+
+        visible: list[tuple[LoadEntry, float]] = []
+        if mode == "combination":
+            combination = self._load_combinations.get(self._load_entry_active_combination_id or "")
+            if combination is None:
+                return []
+            for entry in self._load_entries.values():
+                if entry.hidden:
+                    continue
+                case = self._load_cases.get(entry.case_id)
+                if case is None:
+                    continue
+                factor = combination.factor_for(case.kind)
+                if factor == 0.0:
+                    continue
+                visible.append((entry, factor))
+        else:
+            active_case_id = self._load_entry_active_case_id
+            for entry in self._load_entries.values():
+                if entry.hidden:
+                    continue
+                if mode == "case" and entry.case_id != active_case_id:
+                    continue
+                visible.append((entry, 1.0))
+        if not visible:
+            return []
+
+        # Self-weight's factor_x/y/z are direction cosines (typically
+        # magnitude ~1), not a force in the same units as everything else -
+        # mixing it into the shared auto-scale would make real force arrows
+        # collapse toward the small end whenever a self-weight entry exists.
+        # It gets its own fixed length in _self_weight_entry_parts instead.
+        magnitudes = [
+            self._load_entry_magnitude(entry) * abs(factor)
+            for entry, factor in visible
+            if entry.kind != "self_weight"
+        ]
+        maximum_magnitude = max(magnitudes, default=0.0)
+        scale = max(self._load_entry_scale, 0.01)
+
+        parts: list[dict[str, float | int | str]] = []
+        for entry, factor in visible:
+            case = self._load_cases.get(entry.case_id)
+            color = _LOAD_CASE_COLORS[case.kind if case is not None else LoadCaseKind.UNCLASSIFIED]
+            common = {
+                "tag": entry.id,
+                "case_id": entry.case_id,
+                "entry_kind": entry.kind,
+                "color": color,
+            }
+            parts.extend(
+                self._load_entry_glyph_parts(entry, factor, common, model, points, maximum_magnitude, scale)
+            )
+        return parts
+
+    @staticmethod
+    def _load_entry_magnitude(entry: LoadEntry) -> float:
+        payload = entry.payload
+        if isinstance(payload, NodalLoadEntry):
+            return math.sqrt(payload.fx**2 + payload.fy**2 + payload.fz**2)
+        if isinstance(payload, MemberPointLoadEntry):
+            return abs(payload.value)
+        if isinstance(payload, MemberDistributedLoadEntry):
+            return max(abs(payload.start_value), abs(payload.end_value))
+        if isinstance(payload, FloorLoadEntry):
+            return abs(payload.magnitude)
+        return 0.0  # SelfWeightEntry - excluded from auto-scale, see caller
+
+    def _load_entry_glyph_parts(
+        self,
+        entry: LoadEntry,
+        factor: float,
+        common: dict[str, float | int | str],
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+        maximum_magnitude: float,
+        scale: float,
+    ) -> list[dict[str, float | int | str]]:
+        payload = entry.payload
+        if entry.kind == "nodal" and isinstance(payload, NodalLoadEntry):
+            return self._nodal_entry_parts(entry, payload, factor, common, points, maximum_magnitude, scale)
+        if entry.kind in ("member_point", "member_moment") and isinstance(payload, MemberPointLoadEntry):
+            return self._member_point_entry_parts(
+                entry, payload, factor, common, model, points, maximum_magnitude, scale
+            )
+        if entry.kind in ("member_uniform", "member_linear", "member_partial") and isinstance(
+            payload, MemberDistributedLoadEntry
+        ):
+            return self._member_distributed_entry_parts(
+                entry, payload, factor, common, model, points, maximum_magnitude, scale
+            )
+        if entry.kind == "floor" and isinstance(payload, FloorLoadEntry):
+            return self._floor_entry_parts(entry, payload, factor, common, points, maximum_magnitude, scale)
+        if entry.kind == "self_weight" and isinstance(payload, SelfWeightEntry):
+            return self._self_weight_entry_parts(entry, payload, common, model, points, scale)
+        return []
+
+    def _nodal_entry_parts(
+        self,
+        entry: LoadEntry,
+        payload: NodalLoadEntry,
+        factor: float,
+        common: dict[str, float | int | str],
+        points: dict[int, tuple[float, float, float]],
+        maximum_magnitude: float,
+        scale: float,
+    ) -> list[dict[str, float | int | str]]:
+        """Only fx/fy/fz become an arrow - mx/my/mz stay unvisualized here,
+        matching set_model()'s own nodal_loads arrows (_build_load_arrows),
+        which never draw the moment components of a NodalLoad either."""
+        fx, fy, fz = payload.fx * factor, payload.fy * factor, payload.fz * factor
+        magnitude = math.sqrt(fx * fx + fy * fy + fz * fz)
+        if magnitude <= 1.0e-12:
+            return []
+        direction = self._view_coordinates(fx / magnitude, fy / magnitude, fz / magnitude)
+        arrow_length = (
+            max(self._extent * 0.17, 0.06) * self._load_scale(magnitude, maximum_magnitude) * scale
+        )
+        shaft_thickness = max(self._default_thickness * 0.55, 0.009)
+        parts: list[dict[str, float | int | str]] = []
+        for node_tag in entry.target:
+            anchor = points.get(node_tag)
+            if anchor is None:
+                continue
+            tip = tuple(anchor[index] - direction[index] * self._node_radius for index in range(3))
+            parts.extend(self._arrow_pair(tip, direction, arrow_length, shaft_thickness, common, magnitude))
+        return parts
+
+    def _member_local_axes(
+        self,
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+        element_tag: int,
+    ) -> tuple[
+        Element,
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ] | None:
+        """(element, view-space start, view-space end, structural-space
+        local x/y/z) - the same construction ``_build_element_load_arrows``
+        uses, factored out so every member-load entry kind shares it."""
+        element = model.elements.get(element_tag)
+        if element is None:
+            return None
+        node_i = model.nodes.get(element.node_i)
+        node_j = model.nodes.get(element.node_j)
+        start = points.get(element.node_i)
+        end = points.get(element.node_j)
+        if node_i is None or node_j is None or start is None or end is None:
+            return None
+        local_x = self._normalized((node_j.x - node_i.x, node_j.y - node_i.y, node_j.z - node_i.z))
+        if local_x is None:
+            return None
+        reference = (0.0, 0.0, 1.0) if abs(local_x[2]) < 0.99 else (1.0, 0.0, 0.0)
+        local_y = self._normalized(self._cross(reference, local_x))
+        if local_y is None:
+            return None
+        local_z = self._cross(local_x, local_y)
+        return element, start, end, local_x, local_y, local_z
+
+    def _member_tip_offset(self, element: Element) -> float:
+        """Pull an arrow's tip off the member's rendered surface, mirroring
+        ``_build_element_load_arrows``'s own clearance math."""
+        area = self._number_property(element.properties, "A")
+        section_size = math.sqrt(area) if area is not None and area > 0.0 else 0.0
+        member_half_thickness = min(max(section_size, self._default_thickness), self._extent * 0.055) / 2
+        visual_clearance = max(self._default_thickness * 0.1, self._extent * 0.0015)
+        return member_half_thickness + visual_clearance
+
+    @staticmethod
+    def _position_fraction(position: float, position_unit: str, member_length: float) -> float:
+        fraction = position / member_length if position_unit == "length" and member_length > 1.0e-9 else position
+        return min(max(fraction, 0.0), 1.0)
+
+    def _member_point_entry_parts(
+        self,
+        entry: LoadEntry,
+        payload: MemberPointLoadEntry,
+        factor: float,
+        common: dict[str, float | int | str],
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+        maximum_magnitude: float,
+        scale: float,
+    ) -> list[dict[str, float | int | str]]:
+        axis_index = {"x": 0, "y": 1, "z": 2}.get(payload.direction.lower())
+        value = payload.value * factor
+        if axis_index is None or abs(value) <= 1.0e-12:
+            return []
+        parts: list[dict[str, float | int | str]] = []
+        for element_tag in entry.target:
+            axes = self._member_local_axes(model, points, element_tag)
+            if axes is None:
+                continue
+            element, start, end, local_x, local_y, local_z = axes
+            node_i, node_j = model.nodes[element.node_i], model.nodes[element.node_j]
+            member_length = math.sqrt(
+                (node_j.x - node_i.x) ** 2 + (node_j.y - node_i.y) ** 2 + (node_j.z - node_i.z) ** 2
+            )
+            fraction = self._position_fraction(payload.position, payload.position_unit, member_length)
+            member_point = tuple(start[index] + (end[index] - start[index]) * fraction for index in range(3))
+            axis_vector = (local_x, local_y, local_z)[axis_index]
+            sign = 1.0 if value >= 0.0 else -1.0
+            direction = self._view_coordinates(*(component * sign for component in axis_vector))
+            magnitude = abs(value)
+            if entry.kind == "member_moment":
+                parts.extend(
+                    self._moment_glyph_parts(member_point, direction, magnitude, maximum_magnitude, scale, common)
+                )
+            else:
+                arrow_length = (
+                    max(self._extent * 0.11, 0.05) * self._load_scale(magnitude, maximum_magnitude) * scale
+                )
+                shaft_thickness = max(self._default_thickness * 0.45, 0.008)
+                tip_offset = self._member_tip_offset(element)
+                tip = tuple(member_point[index] - direction[index] * tip_offset for index in range(3))
+                parts.extend(self._arrow_pair(tip, direction, arrow_length, shaft_thickness, common, magnitude))
+        return parts
+
+    def _moment_glyph_parts(
+        self,
+        center: tuple[float, float, float],
+        axis_direction: tuple[float, float, float],
+        magnitude: float,
+        maximum_magnitude: float,
+        scale: float,
+        common: dict[str, float | int | str],
+    ) -> list[dict[str, float | int | str]]:
+        """A moment has no natural "arrow" shape without a torus primitive -
+        two cones based at the same point and pointing away from each other
+        along the moment axis (a "bowtie") reads as clearly distinct from a
+        translational-force arrow while reusing only shapes this scene
+        already renders."""
+        half_length = max(self._extent * 0.05, 0.022) * self._load_scale(magnitude, maximum_magnitude) * scale
+        thickness = max(self._default_thickness * 1.1, 0.018)
+        parts = []
+        for direction in (axis_direction, tuple(-component for component in axis_direction)):
+            scalar, qx, qy, qz = self._rotation_from_y_axis(direction)
+            parts.append(
+                {
+                    **common,
+                    "role": "moment_head",
+                    "shape": "#Cone",
+                    "magnitude": magnitude,
+                    "x": center[0],
+                    "y": center[1],
+                    "z": center[2],
+                    "length": half_length,
+                    "thickness": thickness,
+                    "qscalar": scalar,
+                    "qx": qx,
+                    "qy": qy,
+                    "qz": qz,
+                }
+            )
+        return parts
+
+    def _member_distributed_entry_parts(
+        self,
+        entry: LoadEntry,
+        payload: MemberDistributedLoadEntry,
+        factor: float,
+        common: dict[str, float | int | str],
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+        maximum_magnitude: float,
+        scale: float,
+    ) -> list[dict[str, float | int | str]]:
+        """Several arrows across the loaded span (not just one representative
+        arrow) with a connecting line through their tails - for a linearly-
+        varying load the tails trace the classic sloped/trapezoidal outline
+        because each arrow's own length already reflects its own magnitude.
+        """
+        axis_index = {"x": 0, "y": 1, "z": 2}.get(payload.direction.lower())
+        start_value, end_value = payload.start_value * factor, payload.end_value * factor
+        if axis_index is None or (abs(start_value) <= 1.0e-12 and abs(end_value) <= 1.0e-12):
+            return []
+        parts: list[dict[str, float | int | str]] = []
+        for element_tag in entry.target:
+            axes = self._member_local_axes(model, points, element_tag)
+            if axes is None:
+                continue
+            element, start, end, local_x, local_y, local_z = axes
+            node_i, node_j = model.nodes[element.node_i], model.nodes[element.node_j]
+            member_length = math.sqrt(
+                (node_j.x - node_i.x) ** 2 + (node_j.y - node_i.y) ** 2 + (node_j.z - node_i.z) ** 2
+            )
+            start_fraction = self._position_fraction(payload.start_position, payload.position_unit, member_length)
+            end_fraction = self._position_fraction(payload.end_position, payload.position_unit, member_length)
+            if end_fraction < start_fraction:
+                start_fraction, end_fraction = end_fraction, start_fraction
+            span = end_fraction - start_fraction
+            axis_vector = (local_x, local_y, local_z)[axis_index]
+            tip_offset = self._member_tip_offset(element)
+            shaft_thickness = max(self._default_thickness * 0.32, 0.006)
+            sample_count = 5 if span > 1.0e-6 else 1
+
+            tails: list[tuple[float, float, float]] = []
+            for index in range(sample_count):
+                step = 0.0 if sample_count == 1 else index / (sample_count - 1)
+                fraction = start_fraction + span * step
+                local_value = start_value + (end_value - start_value) * step
+                magnitude = abs(local_value)
+                if magnitude <= 1.0e-12:
+                    continue
+                sign = 1.0 if local_value >= 0.0 else -1.0
+                direction = self._view_coordinates(*(component * sign for component in axis_vector))
+                member_point = tuple(
+                    start[coord] + (end[coord] - start[coord]) * fraction for coord in range(3)
+                )
+                arrow_length = (
+                    max(self._extent * 0.07, 0.035) * self._load_scale(magnitude, maximum_magnitude) * scale
+                )
+                tip = tuple(member_point[coord] - direction[coord] * tip_offset for coord in range(3))
+                parts.extend(self._arrow_pair(tip, direction, arrow_length, shaft_thickness, common, magnitude))
+                tails.append(tuple(tip[coord] - direction[coord] * arrow_length for coord in range(3)))
+            parts.extend(self._connector_segments(tails, shaft_thickness * 0.42, common))
+        return parts
+
+    def _connector_segments(
+        self,
+        points_sequence: list[tuple[float, float, float]],
+        thickness: float,
+        common: dict[str, float | int | str],
+    ) -> list[dict[str, float | int | str]]:
+        parts: list[dict[str, float | int | str]] = []
+        for start, end in zip(points_sequence, points_sequence[1:]):
+            orientation = self._member_orientation(start, end)
+            if orientation is None:
+                continue
+            length, scalar, qx, qy, qz = orientation
+            mid = tuple(0.5 * (start[index] + end[index]) for index in range(3))
+            parts.append(
+                {
+                    **common,
+                    "role": "distribution_line",
+                    "shape": "#Cylinder",
+                    "magnitude": 0.0,
+                    "x": mid[0],
+                    "y": mid[1],
+                    "z": mid[2],
+                    "length": length,
+                    "thickness": thickness,
+                    "qscalar": scalar,
+                    "qx": qx,
+                    "qy": qy,
+                    "qz": qz,
+                }
+            )
+        return parts
+
+    def _floor_entry_parts(
+        self,
+        entry: LoadEntry,
+        payload: FloorLoadEntry,
+        factor: float,
+        common: dict[str, float | int | str],
+        points: dict[int, tuple[float, float, float]],
+        maximum_magnitude: float,
+        scale: float,
+    ) -> list[dict[str, float | int | str]]:
+        """No beam-load distribution is computed yet (``FloorLoadEntry``'s
+        own docstring) - the boundary loop plus one centroid arrow is a
+        preview of *where* the floor panel is and *which way* it loads,
+        not the (still unimplemented) tributary distribution itself."""
+        boundary = [points[tag] for tag in entry.target if tag in points]
+        if len(boundary) < 3:
+            return []
+        thickness = max(self._default_thickness * 0.3, 0.006)
+        parts = self._connector_segments([*boundary, boundary[0]], thickness, common)
+        magnitude = abs(payload.magnitude * factor)
+        if magnitude <= 1.0e-12:
+            return parts
+        direction = self._view_coordinates(*self._floor_direction_vector(payload.direction))
+        centroid = tuple(sum(point[index] for point in boundary) / len(boundary) for index in range(3))
+        arrow_length = max(self._extent * 0.13, 0.06) * self._load_scale(magnitude, maximum_magnitude) * scale
+        shaft_thickness = max(self._default_thickness * 0.4, 0.008)
+        parts.extend(self._arrow_pair(centroid, direction, arrow_length, shaft_thickness, common, magnitude))
+        return parts
+
+    @staticmethod
+    def _floor_direction_vector(direction: str) -> tuple[float, float, float]:
+        return {
+            "-z": (0.0, 0.0, -1.0),
+            "+z": (0.0, 0.0, 1.0),
+            "-x": (-1.0, 0.0, 0.0),
+            "+x": (1.0, 0.0, 0.0),
+            "-y": (0.0, -1.0, 0.0),
+            "+y": (0.0, 1.0, 0.0),
+        }.get(direction, (0.0, 0.0, -1.0))
+
+    def _self_weight_entry_parts(
+        self,
+        entry: LoadEntry,
+        payload: SelfWeightEntry,
+        common: dict[str, float | int | str],
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+        scale: float,
+    ) -> list[dict[str, float | int | str]]:
+        """A fixed-length marker, not scaled against other loads' magnitudes
+        - factor_x/y/z are direction cosines (typically ~1), not a force in
+        the same units as everything else (see _build_load_entry_parts)."""
+        direction_model = self._normalized((payload.factor_x, payload.factor_y, payload.factor_z))
+        if direction_model is None:
+            return []
+        direction = self._view_coordinates(*direction_model)
+        length = max(self._extent * 0.12, 0.05) * scale
+        thickness = max(self._default_thickness * 0.4, 0.008)
+        if payload.apply_to_all or not entry.target:
+            # One marker above the whole model rather than one per member -
+            # "every member, always" is exactly the case where per-member
+            # arrows would swamp the scene without adding information.
+            top = max((point[1] for point in points.values()), default=0.0)
+            anchor = (self._center[0], top + self._extent * 0.08, self._center[2])
+            return self._arrow_pair(anchor, direction, length, thickness, common, 1.0)
+        parts: list[dict[str, float | int | str]] = []
+        for element_tag in entry.target:
+            axes = self._member_local_axes(model, points, element_tag)
+            if axes is None:
+                continue
+            _element, start, end, *_rest = axes
+            mid = tuple(0.5 * (start[index] + end[index]) for index in range(3))
+            parts.extend(self._arrow_pair(mid, direction, length, thickness, common, 1.0))
+        return parts
+
+    def _arrow_pair(
+        self,
+        tip: tuple[float, float, float],
+        direction: tuple[float, float, float],
+        arrow_length: float,
+        shaft_thickness: float,
+        common: dict[str, float | int | str],
+        magnitude: float,
+    ) -> list[dict[str, float | int | str]]:
+        """One shaft + one head part, sharing every load-entry kind's arrow
+        construction (see _build_load_arrows for why shaft/head are always
+        two independent, self-positioned parts rather than a parent/child
+        pair)."""
+        shaft_length = arrow_length * 0.68
+        head_length = arrow_length - shaft_length
+        head_thickness = shaft_thickness * 2.25
+        tail = tuple(tip[index] - direction[index] * arrow_length for index in range(3))
+        shaft_mid = tuple(tail[index] + direction[index] * shaft_length / 2 for index in range(3))
+        head_base = tuple(tail[index] + direction[index] * shaft_length for index in range(3))
+        scalar, qx, qy, qz = self._rotation_from_y_axis(direction)
+        rotation = {"qscalar": scalar, "qx": qx, "qy": qy, "qz": qz}
+        return [
+            {
+                **common,
+                "role": "shaft",
+                "shape": "#Cylinder",
+                "magnitude": magnitude,
+                "x": shaft_mid[0],
+                "y": shaft_mid[1],
+                "z": shaft_mid[2],
+                "length": shaft_length,
+                "thickness": shaft_thickness,
+                **rotation,
+            },
+            {
+                **common,
+                "role": "head",
+                "shape": "#Cone",
+                "magnitude": magnitude,
+                "x": head_base[0],
+                "y": head_base[1],
+                "z": head_base[2],
+                "length": head_length,
+                "thickness": head_thickness,
+                **rotation,
+            },
+        ]
+
     def _clear(self) -> None:
         self._nodes = []
         self._members = []
@@ -1262,6 +1830,7 @@ class Quick3DSceneBridge(QObject):
         self._load_arrows = []
         self._support_parts = []
         self._local_axis_gizmos = []
+        self._load_entry_parts = []
         self._center = (0.0, 0.0, 0.0)
         self._extent = 1.0
         self._ground_y = 0.0

@@ -10,6 +10,8 @@ from openframe.core.domain import (
     BoundaryCondition,
     Element,
     FloorLoadEntry,
+    FloorLoadType,
+    FloorLoadTypeRow,
     LoadCase,
     LoadCaseKind,
     LoadCombination,
@@ -20,6 +22,7 @@ from openframe.core.domain import (
     NodalLoadEntry,
     Node,
     SelfWeightEntry,
+    Story,
     UniformElementLoad,
 )
 from openframe.features.model.drawing import PlaneKind, WorkPlane
@@ -76,11 +79,18 @@ class _SerializationMixin:
                     "moment_release_i": element.moment_release_i,
                     "moment_release_j": element.moment_release_j,
                     "local_axis_angle": element.local_axis_angle,
+                    "offset_i": list(element.offset_i),
+                    "offset_j": list(element.offset_j),
                 }
                 for tag, element in self.elements.items()
             ],
             "boundaries": [
-                {"node_tag": tag, "restraints": list(boundary.restraints), "angle": boundary.angle}
+                {
+                    "node_tag": tag,
+                    "restraints": list(boundary.restraints),
+                    "angle": boundary.angle,
+                    "spring_stiffnesses": list(boundary.spring_stiffnesses),
+                }
                 for tag, boundary in self.boundaries.items()
             ],
             "nodal_loads": [
@@ -132,6 +142,26 @@ class _SerializationMixin:
                 for combination in self.load_combinations.values()
             ],
             "active_combination_id": self.active_combination_id,
+            "floor_load_types": [
+                {
+                    "id": floor_type.id,
+                    "name": floor_type.name,
+                    "description": floor_type.description,
+                    "rows": [
+                        {"case_id": row.case_id, "magnitude": row.magnitude} for row in floor_type.rows
+                    ],
+                }
+                for floor_type in self.floor_load_types.values()
+            ],
+            "stories": [
+                {
+                    "id": story.id,
+                    "name": story.name,
+                    "elevation": story.elevation,
+                    "rigid_diaphragm": story.rigid_diaphragm,
+                }
+                for story in self.stories.values()
+            ],
         }
 
     def load_dict(self, data: dict[str, object]) -> None:
@@ -168,12 +198,17 @@ class _SerializationMixin:
                 bool(e.get("moment_release_i", False)),
                 bool(e.get("moment_release_j", False)),
                 local_axis_angle=float(e.get("local_axis_angle", 0.0)),
+                offset_i=tuple(e.get("offset_i", (0.0, 0.0, 0.0))),
+                offset_j=tuple(e.get("offset_j", (0.0, 0.0, 0.0))),
             )
             for e in data.get("elements", [])
         }
         boundaries = {
             int(b["node_tag"]): BoundaryCondition(
-                int(b["node_tag"]), tuple(b["restraints"]), float(b.get("angle", 0.0))
+                int(b["node_tag"]),
+                tuple(b["restraints"]),
+                float(b.get("angle", 0.0)),
+                tuple(b.get("spring_stiffnesses", ())),
             )
             for b in data.get("boundaries", [])
         }
@@ -236,6 +271,30 @@ class _SerializationMixin:
             )
             for combination in data.get("load_combinations", [])
         }
+        floor_load_types = {
+            str(floor_type["id"]): FloorLoadType(
+                id=str(floor_type["id"]),
+                name=str(floor_type["name"]),
+                description=str(floor_type.get("description", "")),
+                rows=tuple(
+                    FloorLoadTypeRow(
+                        case_id=row.get("case_id"),
+                        magnitude=float(row.get("magnitude", 0.0)),
+                    )
+                    for row in floor_type.get("rows", [])
+                ),
+            )
+            for floor_type in data.get("floor_load_types", [])
+        }
+        stories = {
+            str(story["id"]): Story(
+                id=str(story["id"]),
+                name=str(story["name"]),
+                elevation=float(story["elevation"]),
+                rigid_diaphragm=bool(story.get("rigid_diaphragm", False)),
+            )
+            for story in data.get("stories", [])
+        }
 
         self._restore(
             {
@@ -251,6 +310,8 @@ class _SerializationMixin:
                 "load_entries": load_entries,
                 "load_combinations": load_combinations,
                 "active_combination_id": data.get("active_combination_id"),
+                "floor_load_types": floor_load_types,
+                "stories": stories,
             }
         )
         self._next_load_entry_id = max(load_entries.keys(), default=0) + 1

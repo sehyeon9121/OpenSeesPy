@@ -72,13 +72,19 @@ from openframe.features.analysis.statics import (
 from openframe.features.model.drawing import PlaneKind
 from openframe.features.model.drawing.coordinates import direction_degrees
 from openframe.features.model.presentation.canvas_glyphs import (
+    DOF_LEGEND,
     _LOAD_TARGET_OPTIONS,
     _SUPPORT_OPTIONS,
+    _SUPPORT_OPTIONS_3D,
     _paint_load_glyph,
     _paint_node_kind_glyph,
     _paint_ribbon_glyph,
     _paint_support_glyph,
+    _render_dof_icon,
     _render_glyph_icon,
+)
+from openframe.features.model.presentation.floor_load_type_manager_dialog import (
+    FloorLoadTypeManagerDialog,
 )
 from openframe.features.model.presentation.load_case_manager_dialog import LoadCaseManagerDialog
 from openframe.features.model.presentation.load_combination_manager_dialog import (
@@ -88,6 +94,7 @@ from openframe.features.model.presentation.model_sidebar import LOAD_CASE_PRESEN
 from openframe.features.model.presentation.safe_spinbox import SafeDoubleSpinBox, SafeSpinBox
 from openframe.features.model.presentation.section_material_panel import SectionMaterialPanel
 from openframe.features.model.presentation.selection_status_panel import SelectionStatusPanel
+from openframe.features.model.presentation.story_manager_dialog import StoryManagerDialog
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
@@ -195,6 +202,12 @@ class ModelingInterfacePage(QFrame):
         self.canvas.model_changed.connect(self._refresh_status)
         if self._start_in_3d:
             self.canvas.model_changed.connect(self._refresh_work_tree)
+            # Every Load Case/Load Entry/Load Combination mutation emits this
+            # signal (canvas_load_entries.py) - not just the add/update path
+            # _commit_load3d_entry already refreshes directly, but also
+            # delete/duplicate/hide/move/rename/delete-case, none of which
+            # otherwise touch the viewport.
+            self.canvas.load_state_changed.connect(self._refresh_load3d_viewport)
         self.canvas.draw_state_changed.connect(self._refresh_draw_readout)
         self.canvas.selection_changed.connect(self._selection_changed)
         self.canvas.escape_requested.connect(self._activate_select_tool)
@@ -1851,16 +1864,81 @@ class ModelingInterfacePage(QFrame):
         custom_layout = QGridLayout(self.support_custom_row)
         custom_layout.setContentsMargins(0, 0, 0, 0)
         custom_layout.setSpacing(6)
+        # Rows 0/2 hold the checkboxes (translation, then rotation); rows 1/3
+        # hold this legend, directly under its matching checkbox row - *2 on
+        # the checkbox row leaves that gap for the legend rather than the
+        # legend colliding with the row 1 that i // 3 would otherwise put
+        # rotation's own checkboxes in.
         self.support_dof_checks: dict[str, QCheckBox] = {}
         for i, dof in enumerate(("Ux", "Uy", "Uz", "Rx", "Ry", "Rz")):
             box = QCheckBox(dof)
             box.toggled.connect(self._apply_support)
             self.support_dof_checks[dof] = box
-            custom_layout.addWidget(box, i // 3, i % 3)
+            custom_layout.addWidget(box, (i // 3) * 2, i % 3)
+        self.support_dof_legend_cells: dict[str, QWidget] = {}
+        for i, (name, kind, color) in enumerate(DOF_LEGEND):
+            cell = QWidget()
+            cell_layout = QHBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(3)
+            icon = QLabel()
+            icon.setPixmap(_render_dof_icon(kind, color))
+            icon.setFixedSize(20, 20)
+            cell_layout.addWidget(icon)
+            text = QLabel(name)
+            text.setStyleSheet(f"color: {color}; font-weight: 700;")
+            cell_layout.addWidget(text)
+            cell_layout.addStretch(1)
+            custom_layout.addWidget(cell, (i // 3) * 2 + 1, i % 3)
+            self.support_dof_legend_cells[name] = cell
+        legend_hint = QLabel(
+            "체크 = 그 방향으로 이동(Ux/Uy/Uz)하거나 그 축 둘레로 회전(Rx/Ry/Rz)하지 "
+            "못하도록 구속 · 해제 = 자유"
+        )
+        legend_hint.setWordWrap(True)
+        legend_hint.setObjectName("setupSectionHint")
+        custom_layout.addWidget(legend_hint, 4, 0, 1, 3)
+        if self._start_in_3d:
+            # Elastic (finite-stiffness) support - a separate small grid
+            # below the DOF checkboxes/legend rather than interleaved with
+            # them, so this never has to touch that grid's existing
+            # row/column scheme. Only ever read when the CUSTOM preset is
+            # active (see _apply_support) - a rigidly-restrained DOF ignores
+            # its own spring value regardless (BoundaryCondition.
+            # spring_stiffnesses' own docstring).
+            spring_header = QLabel("탄성 스프링 강성 (구속 해제한 방향에만 적용, 0 = 스프링 없음)")
+            spring_header.setObjectName("setupSectionHint")
+            spring_header.setWordWrap(True)
+            custom_layout.addWidget(spring_header, 5, 0, 1, 3)
+            self.support_spring_fields: dict[str, SafeDoubleSpinBox] = {}
+            for i, dof in enumerate(("Ux", "Uy", "Uz", "Rx", "Ry", "Rz")):
+                field_row = QWidget()
+                field_layout = QHBoxLayout(field_row)
+                field_layout.setContentsMargins(0, 0, 0, 0)
+                field_layout.setSpacing(4)
+                field_layout.addWidget(QLabel(dof))
+                field = self._number(0.0)
+                field.setToolTip(f"{dof} 방향 스프링 강성")
+                field.editingFinished.connect(self._apply_support)
+                field_layout.addWidget(field, 1)
+                self.support_spring_fields[dof] = field
+                custom_layout.addWidget(field_row, 6 + i // 3, i % 3)
         self.support_custom_row.setVisible(False)
         root.addWidget(self.support_custom_row)
+
+        if self._start_in_3d:
+            story_button = QPushButton("Story Manager (층 관리)...")
+            story_button.setToolTip("건물의 층을 정의하고, 층별로 강체 다이아프램을 지정합니다.")
+            story_button.clicked.connect(self._open_story_manager)
+            root.addWidget(story_button)
+
         root.addStretch(1)
         return section
+
+    def _open_story_manager(self) -> None:
+        dialog = StoryManagerDialog(self.canvas, self)
+        dialog.exec()
+        self._refresh_3d_preview()
 
     def _build_node_kind_category(self) -> QWidget:
         section, root = self._section("노드 유형", show_title=False)
@@ -1935,6 +2013,7 @@ class ModelingInterfacePage(QFrame):
         self.load_scale_slider.setValue(100)
         self.load_scale_slider.setFixedWidth(120)
         self.load_scale_slider.setToolTip("뷰포트에 그려지는 하중 글리프의 크기 배율(%)")
+        self.load_scale_slider.valueChanged.connect(lambda _value: self._refresh_load3d_viewport())
         layout.addWidget(self.load_scale_slider)
         scale_plus = QPushButton("+")
         scale_plus.setFixedWidth(24)
@@ -2028,11 +2107,51 @@ class ModelingInterfacePage(QFrame):
         dialog = LoadCombinationManagerDialog(self.canvas, self)
         dialog.exec()
 
+    def _open_floor_load_type_manager(self) -> None:
+        dialog = FloorLoadTypeManagerDialog(self.canvas, self)
+        dialog.exec()
+
+    def _refresh_floor_load_type_combo(self) -> None:
+        if not hasattr(self, "load3d_floor_type_combo"):
+            return
+        combo = self.load3d_floor_type_combo
+        previous = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("(직접 입력)", None)
+        for floor_type in self.canvas.floor_load_types.values():
+            combo.addItem(floor_type.name, floor_type.id)
+        index = combo.findData(previous)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _apply_floor_load_type(self) -> None:
+        type_id = self.load3d_floor_type_combo.currentData()
+        if type_id is None:
+            self.load3d_status_label.setText("⚠ 먼저 Floor Load Type을 선택하세요.")
+            return
+        targets = tuple(sorted(self.canvas.selected_nodes))
+        if len(targets) < 3:
+            self.load3d_status_label.setText("⚠ 폐합영역을 이룰 절점을 3개 이상 선택하세요.")
+            return
+        count = self.canvas.apply_floor_load_type(
+            type_id,
+            targets,
+            direction=self.load3d_floor_direction.currentData(),
+            distribution=self.load3d_floor_distribution.currentData(),
+            span_direction=self.load3d_floor_span_direction.currentData(),
+        )
+        if not count:
+            self.load3d_status_label.setText("⚠ 이 타입에는 적용할 하중이 없습니다 (모든 행이 NONE이거나 0).")
+            return
+        self.load3d_status_label.setText(f"✓ {count}개 케이스의 하중을 한번에 적용했습니다.")
+        self._refresh_load3d_viewport()
+
     def _refresh_load3d_viewport(self) -> None:
-        """Placeholder hook for the viewport glyph refresh (wired once
-        Quick3DSceneBridge.set_load_entries exists) - kept as its own method
-        now so every state change that should eventually repaint the
-        viewport already calls it exactly once."""
+        """Repaint the Loads tab's case-based glyphs (Quick3DSceneBridge.
+        loadEntryGlyphs) - kept as its own method so every state change that
+        should repaint the viewport (load CRUD, Display mode, Load Scale,
+        set_model()'s own geometry rebuild) calls it exactly once."""
         preview = getattr(self, "preview_3d", None)
         if preview is not None and hasattr(preview, "set_load_entries"):
             preview.set_load_entries(
@@ -2070,21 +2189,21 @@ class ModelingInterfacePage(QFrame):
         command_bar_layout.addWidget(command_bar_label)
         self.load_command_combo = QComboBox()
         for label, key in (
-            ("[관리] 하중케이스", "load_cases"),
-            ("[관리] 하중조합", "load_combinations"),
-            ("[관리] 조합 케이스 생성", "make_combination"),
+            ("[관리] Load Cases", "load_cases"),
+            ("[관리] Load Combos", "load_combinations"),
+            ("[관리] New Case", "make_combination"),
         ):
             self.load_command_combo.addItem(label, key)
         self.load_command_combo.insertSeparator(self.load_command_combo.count())
         for label, key in (
-            ("[정적] 자중", "self_weight"),
-            ("[정적] 절점하중", "nodal"),
-            ("[정적] 부재 집중하중", "member_point"),
-            ("[정적] 부재 균등분포", "member_uniform"),
-            ("[정적] 부재 선형분포", "member_linear"),
-            ("[정적] 부재 부분분포", "member_partial"),
-            ("[정적] 부재 집중모멘트", "member_moment"),
-            ("[정적] 바닥하중 할당", "floor"),
+            ("[정적] Self Weight", "self_weight"),
+            ("[정적] Nodal Load", "nodal"),
+            ("[정적] Mem Point", "member_point"),
+            ("[정적] Mem Uniform", "member_uniform"),
+            ("[정적] Mem Linear", "member_linear"),
+            ("[정적] Mem Partial", "member_partial"),
+            ("[정적] Mem Moment", "member_moment"),
+            ("[정적] Floor Load", "floor"),
         ):
             self.load_command_combo.addItem(label, key)
         command_bar_layout.addWidget(self.load_command_combo, 1)
@@ -2123,7 +2242,7 @@ class ModelingInterfacePage(QFrame):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 0)
-        title = QLabel("하중케이스")
+        title = QLabel("Load Cases")
         title.setObjectName("loadCommandTitle")
         layout.addWidget(title)
         hint = QLabel("고정하중, 활하중, 풍하중처럼 하중을 구분할 케이스를 정의합니다.")
@@ -2141,7 +2260,7 @@ class ModelingInterfacePage(QFrame):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 0)
-        title = QLabel("하중조합")
+        title = QLabel("Load Combinations")
         title.setObjectName("loadCommandTitle")
         layout.addWidget(title)
         hint = QLabel("하중케이스별 계수를 정의해 조합을 만들고 3D 화면에서 확인합니다.")
@@ -2167,7 +2286,7 @@ class ModelingInterfacePage(QFrame):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 0)
-        title = QLabel("하중조합으로 하중케이스 생성")
+        title = QLabel("Create Load Case from Combination")
         title.setObjectName("loadCommandTitle")
         layout.addWidget(title)
         hint = QLabel(
@@ -2183,10 +2302,10 @@ class ModelingInterfacePage(QFrame):
         self.make_load_case_name.setPlaceholderText("예: ULS_APPLIED")
         form.addRow("새 하중케이스", self.make_load_case_name)
         layout.addLayout(form)
-        self.make_load_nodal = QCheckBox("절점하중")
-        self.make_load_member = QCheckBox("부재하중")
-        self.make_load_floor = QCheckBox("바닥하중")
-        self.make_load_self_weight = QCheckBox("자중")
+        self.make_load_nodal = QCheckBox("Nodal Load")
+        self.make_load_member = QCheckBox("Member Load")
+        self.make_load_floor = QCheckBox("Floor Load")
+        self.make_load_self_weight = QCheckBox("Self Weight")
         for checkbox in (
             self.make_load_nodal,
             self.make_load_member,
@@ -2227,9 +2346,9 @@ class ModelingInterfacePage(QFrame):
             self._load_target_changed()
             self.load_command_form_title.setText(
                 {
-                    "nodal": "절점하중 설정",
-                    "member_uniform": "부재 균등분포하중 설정",
-                    "member_linear": "부재 선형변화하중 설정",
+                    "nodal": "Nodal Load",
+                    "member_uniform": "Mem Uniform",
+                    "member_linear": "Mem Linear",
                 }[key]
             )
             return
@@ -2243,12 +2362,12 @@ class ModelingInterfacePage(QFrame):
             self.load3d_member_subtype_combo.setCurrentIndex(subtype_index)
         self.load3d_command_title.setText(
             {
-                "self_weight": "자중 설정",
-                "member_point": "부재 집중하중 설정",
-                "member_partial": "부재 부분분포하중 설정",
-                "member_moment": "부재 집중모멘트 설정",
-                "floor": "바닥하중 할당",
-            }.get(key, "하중 설정")
+                "self_weight": "Self Weight",
+                "member_point": "Mem Point",
+                "member_partial": "Mem Partial",
+                "member_moment": "Mem Moment",
+                "floor": "Floor Load",
+            }.get(key, "Load Settings")
         )
 
     def _make_load_case_from_combination(self) -> None:
@@ -2295,7 +2414,7 @@ class ModelingInterfacePage(QFrame):
         root.setSpacing(8)
         self._editing_load_entry_id: int | None = None
 
-        self.load3d_command_title = QLabel("하중 설정")
+        self.load3d_command_title = QLabel("Load Settings")
         self.load3d_command_title.setObjectName("loadCommandTitle")
         root.addWidget(self.load3d_command_title)
         manager_notice = QLabel(
@@ -2312,10 +2431,10 @@ class ModelingInterfacePage(QFrame):
         # transitions without exposing a second load-type chooser.
         self.load3d_type_combo = QComboBox()
         for key, label in (
-            ("nodal", "절점하중"),
-            ("member", "부재하중"),
-            ("floor", "바닥하중"),
-            ("self_weight", "자중"),
+            ("nodal", "Nodal Load"),
+            ("member", "Member Load"),
+            ("floor", "Floor Load"),
+            ("self_weight", "Self Weight"),
         ):
             self.load3d_type_combo.addItem(label, key)
         self.load3d_type_combo.currentIndexChanged.connect(self._on_load3d_type_changed)
@@ -2325,11 +2444,11 @@ class ModelingInterfacePage(QFrame):
         subtype_layout.setContentsMargins(0, 0, 0, 0)
         self.load3d_member_subtype_combo = QComboBox()
         for key, label in (
-            ("member_point", "집중하중"),
-            ("member_uniform", "균등분포하중"),
-            ("member_linear", "선형변화하중"),
-            ("member_partial", "부분 분포하중"),
-            ("member_moment", "집중모멘트"),
+            ("member_point", "Point Load"),
+            ("member_uniform", "Uniform Distributed"),
+            ("member_linear", "Linear Varying"),
+            ("member_partial", "Partial Distributed"),
+            ("member_moment", "Point Moment"),
         ):
             self.load3d_member_subtype_combo.addItem(label, key)
         subtype_layout.addRow("부재하중 형식", self.load3d_member_subtype_combo)
@@ -2412,8 +2531,27 @@ class ModelingInterfacePage(QFrame):
     def _build_load3d_floor_form(self) -> QWidget:
         widget = QWidget()
         form = QFormLayout(widget)
+
+        type_row = QHBoxLayout()
+        self.load3d_floor_type_combo = QComboBox()
+        self.load3d_floor_type_combo.addItem("(직접 입력)", None)
+        type_row.addWidget(self.load3d_floor_type_combo, 1)
+        type_manage_button = QPushButton("타입 관리...")
+        type_manage_button.clicked.connect(self._open_floor_load_type_manager)
+        type_row.addWidget(type_manage_button)
+        form.addRow("Floor Load Type", type_row)
+        self.load3d_floor_type_apply_button = QPushButton("선택한 타입 적용 (케이스별로 한번에)")
+        self.load3d_floor_type_apply_button.setToolTip(
+            "타입에 등록된 케이스(콘크리트 자중, 바닥재 자중, 활하중처럼)마다 "
+            "하중을 하나씩 만들어 선택한 경계 절점에 동시에 적용합니다."
+        )
+        self.load3d_floor_type_apply_button.clicked.connect(self._apply_floor_load_type)
+        form.addRow(self.load3d_floor_type_apply_button)
+        self.canvas.load_state_changed.connect(self._refresh_floor_load_type_combo)
+        self._refresh_floor_load_type_combo()
+
         self.load3d_floor_magnitude = self._number(0.0)
-        form.addRow("크기", self.load3d_floor_magnitude)
+        form.addRow("크기 (직접 입력)", self.load3d_floor_magnitude)
         self.load3d_floor_direction = QComboBox()
         for value, label in (("-z", "-Z"), ("+z", "+Z"), ("-x", "-X"), ("+x", "+X"), ("-y", "-Y"), ("+y", "+Y")):
             self.load3d_floor_direction.addItem(label, value)
@@ -2929,18 +3067,29 @@ class ModelingInterfacePage(QFrame):
             )
 
     def _build_support_icon_row(self) -> QWidget:
-        """Icon buttons for 지점 조건, one per ``_SUPPORT_OPTIONS`` entry, applied
-        the moment you click one — no separate 적용 button, matching the instant-
-        apply feel of the 부재 단부 핀 해제 checkboxes below. Each icon mirrors the
-        symbol ``SupportItem`` draws on the canvas so the button you clicked and the
-        glyph that appears on the model read as the same shape.
+        """Icon buttons for 지점 조건, one per ``self._support_options`` entry,
+        applied the moment you click one — no separate 적용 button, matching
+        the instant-apply feel of the 부재 단부 핀 해제 checkboxes below. Each
+        icon mirrors the symbol ``SupportItem`` draws on the canvas so the
+        button you clicked and the glyph that appears on the model read as
+        the same shape.
 
-        A 3-column grid, not one long row - six icons abreast never fit the
-        우측 패널's fixed 300px width, and this is exactly the kind of "more
-        icons added over time, no more horizontal room" clipping the
+        3D gets its own preset set (``_SUPPORT_OPTIONS_3D``, 6-DOF-complete)
+        instead of reusing 2D's 3-tuple ``_SUPPORT_OPTIONS`` - those used to
+        get silently zero-padded to 6 DOF at solve time, which meant "고정"
+        left every rotation free and "핀" left Uz free, both wrong. Picked
+        once here off ``self._start_in_3d`` (stable for the page's whole
+        lifetime, unlike ``self.canvas.ndm`` which ``enter_3d_mode()`` only
+        flips to 3 partway through construction) and reused by every other
+        method below instead of the module-level constants directly.
+
+        A 3-column grid, not one long row - six-plus icons abreast never fit
+        the 우측 패널's fixed 300px width, and this is exactly the kind of
+        "more icons added over time, no more horizontal room" clipping the
         category bar itself used to hit. A grid just adds another row
         instead of squeezing.
         """
+        self._support_options = _SUPPORT_OPTIONS_3D if self._start_in_3d else _SUPPORT_OPTIONS
         row = QWidget()
         layout = QGridLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2949,7 +3098,7 @@ class ModelingInterfacePage(QFrame):
         self.support_group.setExclusive(True)
         self.support_buttons: dict[int, QToolButton] = {}
         columns = 3
-        for index, (label, tooltip, glyph_key, _restraints) in enumerate(_SUPPORT_OPTIONS):
+        for index, (label, tooltip, glyph_key, _restraints) in enumerate(self._support_options):
             button = QToolButton()
             button.setObjectName("supportKindButton")
             button.setCheckable(True)
@@ -3012,11 +3161,13 @@ class ModelingInterfacePage(QFrame):
 
     def _refresh_support_custom_row(self) -> None:
         checked = self.support_group.checkedButton()
-        is_custom = checked is not None and _SUPPORT_OPTIONS[self.support_group.id(checked)][3] is None
+        is_custom = checked is not None and self._support_options[self.support_group.id(checked)][3] is None
         self.support_custom_row.setVisible(is_custom)
         three_d = self.canvas.ndm == 3
         for dof, box in self.support_dof_checks.items():
-            box.setVisible(three_d or dof in {"Ux", "Uy", "Rz"})
+            visible = three_d or dof in {"Ux", "Uy", "Rz"}
+            box.setVisible(visible)
+            self.support_dof_legend_cells[dof].setVisible(visible)
 
     def _refresh_node_type_controls(self) -> None:
         """Make the 노드 유형 / 지점 조건 버튼들이 reflect the *new* selection's
@@ -3052,7 +3203,7 @@ class ModelingInterfacePage(QFrame):
         preset_index = next(
             (
                 index
-                for index, (_, _, _, template) in enumerate(_SUPPORT_OPTIONS)
+                for index, (_, _, _, template) in enumerate(self._support_options)
                 if template is not None and len(template) == dof and tuple(template) == restraints
             ),
             None,
@@ -3060,7 +3211,7 @@ class ModelingInterfacePage(QFrame):
         if preset_index is not None:
             self.support_buttons[preset_index].setChecked(True)
         else:
-            self.support_buttons[len(_SUPPORT_OPTIONS) - 1].setChecked(True)  # 커스텀
+            self.support_buttons[len(self._support_options) - 1].setChecked(True)  # 커스텀
             order = ("Ux", "Uy", "Uz", "Rx", "Ry", "Rz")[:dof]
             for dof_name, value in zip(order, restraints, strict=True):
                 self.support_dof_checks[dof_name].setChecked(value)
@@ -3078,13 +3229,21 @@ class ModelingInterfacePage(QFrame):
         checked = self.support_group.checkedButton()
         if checked is None:
             return
-        template = _SUPPORT_OPTIONS[self.support_group.id(checked)][3]
+        template = self._support_options[self.support_group.id(checked)][3]
         if template is None:
             order = ("Ux", "Uy", "Uz", "Rx", "Ry", "Rz") if self.canvas.ndm == 3 else ("Ux", "Uy", "Rz")
             restraints = tuple(self.support_dof_checks[dof].isChecked() for dof in order)
         else:
             restraints = template
-        self.canvas.apply_support_to_selection(restraints, self.support_angle.value())
+        spring_stiffnesses: tuple[float | None, ...] = ()
+        if template is None and hasattr(self, "support_spring_fields"):
+            spring_stiffnesses = tuple(
+                self.support_spring_fields[dof].value() or None
+                for dof in ("Ux", "Uy", "Uz", "Rx", "Ry", "Rz")
+            )
+        self.canvas.apply_support_to_selection(
+            restraints, self.support_angle.value(), spring_stiffnesses
+        )
         self._sync_selection_status()
 
     def _build_transform_section(self) -> QWidget:
@@ -3674,7 +3833,35 @@ class ModelingInterfacePage(QFrame):
         self.member_local_axis_gizmo_toggle.toggled.connect(self._toggle_local_axis_gizmo)
         axis_layout.addWidget(self.member_local_axis_gizmo_toggle)
         root.addWidget(self.member_local_axis_row)
+
+        # 3D beam-column 전용 (2D/트러스는 solver.py가 offset_i/j를 아예 안 읽음) -
+        # 로컬축 행과 동일한 숨김/표시 패턴, _refresh_member_section에서 갱신.
+        self.member_offset_row = QWidget()
+        offset_layout = QFormLayout(self.member_offset_row)
+        offset_layout.setContentsMargins(0, 0, 0, 0)
+        self.member_offset_i = self._number(0.0)
+        self.member_offset_i.setToolTip(
+            "i단(첫 번째 절점)에서 부재 축을 따라 강체로 처리할 길이. 0이면 강체 단부 없음."
+        )
+        self.member_offset_i.editingFinished.connect(self._apply_member_rigid_offsets)
+        offset_layout.addRow("i단 강체길이", self.member_offset_i)
+        self.member_offset_j = self._number(0.0)
+        self.member_offset_j.setToolTip(
+            "j단(두 번째 절점)에서 부재 축을 따라 강체로 처리할 길이. 0이면 강체 단부 없음."
+        )
+        self.member_offset_j.editingFinished.connect(self._apply_member_rigid_offsets)
+        offset_layout.addRow("j단 강체길이", self.member_offset_j)
+        offset_hint = QLabel("기둥-보 접합부의 패널존처럼, 부재 끝 일부를 휘지 않는 강체로 처리합니다.")
+        offset_hint.setObjectName("setupSectionHint")
+        offset_hint.setWordWrap(True)
+        offset_layout.addRow(offset_hint)
+        root.addWidget(self.member_offset_row)
         return content
+
+    def _apply_member_rigid_offsets(self) -> None:
+        self.canvas.apply_rigid_offset_lengths_to_selection(
+            self.member_offset_i.value(), self.member_offset_j.value()
+        )
 
     def _build_load_bar_content(self, *, command_driven: bool = False) -> QWidget:
         """Every applicable load component as its own field, applied together.
@@ -4661,6 +4848,16 @@ class ModelingInterfacePage(QFrame):
         self.member_local_axis_angle.blockSignals(True)
         self.member_local_axis_angle.setValue(element.local_axis_angle)
         self.member_local_axis_angle.blockSignals(False)
+        if hasattr(self, "member_offset_row"):
+            self.member_offset_row.setVisible(self.canvas.ndm == 3)
+            offset_i_length = math.sqrt(sum(component**2 for component in element.offset_i))
+            offset_j_length = math.sqrt(sum(component**2 for component in element.offset_j))
+            self.member_offset_i.blockSignals(True)
+            self.member_offset_i.setValue(offset_i_length)
+            self.member_offset_i.blockSignals(False)
+            self.member_offset_j.blockSignals(True)
+            self.member_offset_j.setValue(offset_j_length)
+            self.member_offset_j.blockSignals(False)
         self.section_material_panel.load_from_element(element)
 
     def _properties_selector_changed(self, _index: int = 0) -> None:

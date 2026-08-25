@@ -7,7 +7,13 @@ standalone class.
 from dataclasses import replace
 from itertools import pairwise
 
-from openframe.core.domain import Element, LoadCaseKind, StructuralModel, UniformElementLoad
+from openframe.core.domain import (
+    Element,
+    LoadCaseKind,
+    RigidDiaphragm,
+    StructuralModel,
+    UniformElementLoad,
+)
 
 # The exact same vecxz-picking rule solver.py's _build uses to orient every 3D
 # element's geomTransf - self-weight's local y/z projection below MUST use
@@ -181,6 +187,7 @@ class _ModelBuildMixin:
             boundaries=list(self.boundaries.values()),
             nodal_loads=list(self.nodal_loads.values()),
             element_loads=analysis_loads,
+            rigid_diaphragms=tuple(self._build_rigid_diaphragms()),
         )
         model.metadata["hinge_nodes"] = ",".join(str(tag) for tag in sorted(self.hinge_nodes))
         model.metadata["logical_member_count"] = str(len(self.elements))
@@ -189,6 +196,27 @@ class _ModelBuildMixin:
             for node_tag, (host_tag, position) in sorted(self.embedded_nodes.items())
         )
         return model
+
+    def _build_rigid_diaphragms(self) -> list[RigidDiaphragm]:
+        """One ``RigidDiaphragm`` per Story with its checkbox on - see
+        ``core.domain.model.RigidDiaphragm`` for why the master is one of
+        the story's own nodes (the lowest tag) rather than a synthetic
+        centroid node. A story with fewer than 2 nodes at its elevation has
+        nothing to tie together and is silently skipped, same as a Story
+        Manager entry created before any node was drawn at that level."""
+        if self.ndm != 3:
+            return []
+        diaphragms: list[RigidDiaphragm] = []
+        for story in self.stories.values():
+            if not story.rigid_diaphragm:
+                continue
+            node_tags = self.nodes_at_story(story.id)
+            if len(node_tags) < 2:
+                continue
+            master = min(node_tags)
+            slaves = tuple(tag for tag in node_tags if tag != master)
+            diaphragms.append(RigidDiaphragm(perp_dirn=3, master_tag=master, slave_tags=slaves))
+        return diaphragms
 
     def _apply_hinge_releases(self, elements: dict[int, Element]) -> dict[int, Element]:
         """Turn node-level hinges into member end releases for the analysis model.

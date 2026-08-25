@@ -12,15 +12,35 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 #: (button label, tooltip, glyph key, restraint preset). Restraint presets are always
-#: the 2D (Ux, Uy, Rz) triple, matching the combo box they replaced — a 3D selection
-#: never matches one of these by length and always falls through to "커스텀", exactly
-#: as before.
+#: the 2D (Ux, Uy, Rz) triple, matching the combo box they replaced. Only used when
+#: ``ModelingInterfacePage._start_in_3d`` is False — 3D uses ``_SUPPORT_OPTIONS_3D``
+#: instead (see that tuple for why 2D's presets can't just be reused as-is for 3D).
 _SUPPORT_OPTIONS: tuple[tuple[str, str, str, tuple[bool, bool, bool] | None], ...] = (
     ("자유", "자유 (지점 없음)", "free", (False, False, False)),
     ("핀", "핀 지점 (회전 자유)", "pin", (True, True, False)),
     ("수직롤러", "수직 롤러 — 수평(X) 반력만, 수직으로 구름", "roller_v", (True, False, False)),
     ("수평롤러", "수평 롤러 — 수직(Y) 반력만, 수평으로 구름", "roller_h", (False, True, False)),
     ("고정", "고정 지점", "fixed", (True, True, True)),
+    ("커스텀", "커스텀 (자유도 직접 지정)", "custom", None),
+)
+
+#: 3D's own preset set (6-DOF Ux,Uy,Uz,Rx,Ry,Rz tuples) — kept as MIDAS's raw
+#: per-DOF suppression grid (checking Rx/Ry/Rz individually) confuses a first
+#: run, so instead of translating 2D's 3-tuples (which used to silently get
+#: zero-padded into an unintended partial restraint - see
+#: ``BoundaryCondition.support_kind``), every preset here is fully spelled out
+#: for 6 DOF up front. 핀/고정 keep 2D's meaning extended the obvious way (핀 =
+#: every translation restrained, every rotation free - a ball joint; 고정 = all
+#: six restrained). A roller is named for the axis it *slides along* (frees),
+#: matching 2D's own "수직/수평롤러" naming-by-rolling-direction convention -
+#: everything else about it is exactly a 핀.
+_SUPPORT_OPTIONS_3D: tuple[tuple[str, str, str, tuple[bool, ...] | None], ...] = (
+    ("자유", "자유 (지점 없음)", "free", (False,) * 6),
+    ("핀", "핀 지점 — 이동 3방향 구속, 회전은 어느 방향이든 자유", "pin", (True, True, True, False, False, False)),
+    ("고정", "고정 지점 — 이동·회전 6자유도 전부 구속", "fixed", (True,) * 6),
+    ("X 롤러", "핀인데 X방향으로만 미끄러짐 (Ux 자유, 나머지 핀과 동일)", "roller_x", (False, True, True, False, False, False)),
+    ("Y 롤러", "핀인데 Y방향으로만 미끄러짐 (Uy 자유, 나머지 핀과 동일)", "roller_y", (True, False, True, False, False, False)),
+    ("Z 롤러", "핀인데 Z방향으로만 미끄러짐 (Uz 자유, 나머지 핀과 동일)", "roller_z", (True, True, False, False, False, False)),
     ("커스텀", "커스텀 (자유도 직접 지정)", "custom", None),
 )
 
@@ -79,6 +99,28 @@ def _paint_support_glyph(painter: QPainter, key: str, color: str) -> None:
         painter.drawEllipse(QRectF(21.0, 8.0, 6.0, 6.0))
         painter.drawEllipse(QRectF(21.0, 18.0, 6.0, 6.0))
         painter.drawLine(29, 5, 29, 27)
+        return
+    if key in ("roller_x", "roller_y", "roller_z"):
+        # Same wheeled-triangle silhouette as roller_h ("this rolls"), plus a
+        # bold axis letter where roller_h leaves the triangle blank - the
+        # letter is what a single shared "roller" glyph can't otherwise say,
+        # and it renders correctly in both the icon pipeline's Off/On colors
+        # since it uses the same single `color` pen as everything else here.
+        triangle = QPainterPath()
+        triangle.moveTo(16, 4)
+        triangle.lineTo(7, 16)
+        triangle.lineTo(25, 16)
+        triangle.closeSubpath()
+        painter.drawPath(triangle)
+        painter.drawEllipse(QRectF(8.0, 17.0, 6.0, 6.0))
+        painter.drawEllipse(QRectF(18.0, 17.0, 6.0, 6.0))
+        painter.drawLine(5, 25, 27, 25)
+        font = painter.font()
+        font.setBold(True)
+        font.setPixelSize(9)
+        painter.setFont(font)
+        letter = {"roller_x": "X", "roller_y": "Y", "roller_z": "Z"}[key]
+        painter.drawText(QRectF(9.0, 6.0, 14.0, 9.0), Qt.AlignmentFlag.AlignCenter, letter)
         return
     # custom
     painter.drawLine(16, 4, 16, 10)
@@ -228,6 +270,56 @@ def _paint_ribbon_glyph(painter: QPainter, key: str, color: str) -> None:
     painter.drawLine(16, 16, 16, 4)
     painter.drawLine(16, 16, 28, 22)
     painter.drawLine(16, 16, 4, 22)
+
+
+#: (DOF name, "translation"/"rotation", axis color) for the custom 지점
+#: checkbox grid's legend row - reuses the same X/Y/Z color triad as the
+#: canvas's own axis lines (drawBackground: X red, Y green) and the 3D local-
+#: axis gizmo (z pink), so "which color means which axis" is one language
+#: across the whole app instead of a new mapping to learn here.
+DOF_LEGEND: tuple[tuple[str, str, str], ...] = (
+    ("Ux", "translation", "#dc2626"),
+    ("Uy", "translation", "#16a34a"),
+    ("Uz", "translation", "#ec4899"),
+    ("Rx", "rotation", "#dc2626"),
+    ("Ry", "rotation", "#16a34a"),
+    ("Rz", "rotation", "#ec4899"),
+)
+
+
+def _paint_dof_icon(painter: QPainter, kind: str, color: str) -> None:
+    """20x20 icon: a double-headed arrow for a translation DOF (moves back
+    and forth along a line), a looping arrow for a rotation DOF (spins about
+    an axis) - the same distinction checking that box actually makes."""
+    pen = QPen(QColor(color), 2.0)
+    pen.setCosmetic(True)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    if kind == "translation":
+        painter.drawLine(2, 10, 18, 10)
+        painter.drawLine(2, 10, 6, 6)
+        painter.drawLine(2, 10, 6, 14)
+        painter.drawLine(18, 10, 14, 6)
+        painter.drawLine(18, 10, 14, 14)
+        return
+    painter.drawArc(QRectF(2.0, 2.0, 16.0, 16.0), 20 * 16, 300 * 16)
+    painter.drawLine(16, 4, 19, 7)
+    painter.drawLine(16, 4, 13, 6)
+
+
+def _render_dof_icon(kind: str, color: str, size: int = 20) -> QPixmap:
+    """A standalone (not Off/On-paired) pixmap for ``_paint_dof_icon`` -
+    the DOF legend needs a distinct color per axis, which the checkable-
+    button icon pipeline below (``_render_glyph_icon``, exactly two fixed
+    colors) was never built to carry."""
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.setDevicePixelRatio(2.0)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    _paint_dof_icon(painter, kind, color)
+    painter.end()
+    return pixmap
 
 
 def _render_glyph_icon(paint: Callable[[QPainter, str], None], size: int = 32) -> QIcon:

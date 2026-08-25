@@ -1277,7 +1277,7 @@ def test_custom_support_reaches_all_six_dof_in_3d() -> None:
     page.canvas.selected_nodes = {node}
     page.canvas.selection_changed.emit()
 
-    page.support_buttons[5].click()  # 커스텀
+    page.support_buttons[6].click()  # 커스텀 (3D: 자유/핀/고정/X·Y·Z롤러/커스텀)
     for dof in ("Ux", "Uz", "Ry"):
         page.support_dof_checks[dof].setChecked(True)
 

@@ -25,6 +25,9 @@ SUPPORT_LABELS = {
     SupportKind.PINNED: "Pinned",
     SupportKind.ROLLER_VERTICAL: "Vertical Roller",
     SupportKind.ROLLER_HORIZONTAL: "Horizontal Roller",
+    SupportKind.ROLLER_X: "X Roller",
+    SupportKind.ROLLER_Y: "Y Roller",
+    SupportKind.ROLLER_Z: "Z Roller",
     SupportKind.CUSTOM: "Custom Restraint",
 }
 

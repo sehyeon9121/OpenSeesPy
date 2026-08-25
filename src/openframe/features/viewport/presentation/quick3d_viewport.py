@@ -190,6 +190,27 @@ class Quick3DViewport(QFrame):
     def set_load_case_filter(self, case_filter: str) -> None:
         self.bridge.set_load_case_filter(case_filter)
 
+    def set_load_entries(
+        self,
+        load_entries,
+        load_cases,
+        load_combinations,
+        *,
+        mode: str = "case",
+        active_case_id: str | None = None,
+        active_combination_id: str | None = None,
+        scale: float = 1.0,
+    ) -> None:
+        self.bridge.set_load_entries(
+            load_entries,
+            load_cases,
+            load_combinations,
+            mode=mode,
+            active_case_id=active_case_id,
+            active_combination_id=active_combination_id,
+            scale=scale,
+        )
+
     def set_selected_node(self, tag: int | None) -> None:
         self.bridge.set_selected_node(tag)
 

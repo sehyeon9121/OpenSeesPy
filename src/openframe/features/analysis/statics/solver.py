@@ -70,6 +70,14 @@ _HINGE_MATERIAL_TAG = 8_000_001
 #: stiffness used everywhere else in this solver.
 _HINGE_STIFFNESS = 1.0e8
 
+# An elastic spring support (Story Manager's neighbour feature) needs the same
+# ground-node + zeroLength trick as an inclined support, but with a real,
+# user-chosen stiffness per DOF instead of one shared rigid constant - so each
+# sprung DOF gets its own uniaxialMaterial tag, minted sequentially from this
+# offset instead of one shared tag. Kept clear of every other dummy-tag range
+# above.
+_SPRING_TAG_OFFSET = 9_500_000
+
 
 @dataclass(frozen=True, slots=True)
 class DeterminacyCheck:
@@ -227,7 +235,7 @@ class MaterialFreeStaticsSolver:
         try:
             self._build(model, check.system, material, geometric_nonlinearity)
             self._apply_loads(model, check.system)
-            self._analyze(geometric_nonlinearity)
+            self._analyze(geometric_nonlinearity, has_multipoint_constraints=bool(model.rigid_diaphragms))
             return self._collect(model, check.system, check.message, material)
         except (RuntimeError, ValueError, ops.OpenSeesError) as error:
             return AnalysisResult(
@@ -342,6 +350,10 @@ class MaterialFreeStaticsSolver:
             ops.uniaxialMaterial("Elastic", _INCLINED_SUPPORT_MATERIAL_TAG, _INCLINED_SUPPORT_STIFFNESS)
             for condition in inclined:
                 MaterialFreeStaticsSolver._fix_inclined(condition, ndf, model)
+        MaterialFreeStaticsSolver._apply_springs(model, ndm, ndf)
+        if ndm == 3:
+            for diaphragm in model.rigid_diaphragms:
+                ops.rigidDiaphragm(diaphragm.perp_dirn, diaphragm.master_tag, *diaphragm.slave_tags)
 
         if system == "truss":
             ops.uniaxialMaterial("Elastic", _TRUSS_MATERIAL_TAG, 1.0)
@@ -402,11 +414,12 @@ class MaterialFreeStaticsSolver:
             node_i = model.nodes[element.node_i]
             node_j = model.nodes[element.node_j]
             transf_tag = element.tag
-            ops.geomTransf(
-                "Linear",
-                transf_tag,
-                *_reference_vector(node_i, node_j, element.local_axis_angle),
+            transf_args: list[object] = list(
+                _reference_vector(node_i, node_j, element.local_axis_angle)
             )
+            if any(element.offset_i) or any(element.offset_j):
+                transf_args += ["-jntOffset", *element.offset_i, *element.offset_j]
+            ops.geomTransf("Linear", transf_tag, *transf_args)
             end_i_tag = element.node_i
             end_j_tag = element.node_j
             if element.moment_release_i:
@@ -585,6 +598,41 @@ class MaterialFreeStaticsSolver:
         )
 
     @staticmethod
+    def _apply_springs(model: StructuralModel, ndm: int, ndf: int) -> None:
+        """Elastic (finite-stiffness) supports: the same fully-fixed ground
+        node + zeroLength trick ``_fix_inclined`` uses, but axis-aligned (no
+        ``-orient`` needed - a spring is always defined along the global
+        axes) and with a real stiffness per DOF instead of one shared rigid
+        constant, so every sprung DOF mints its own ``uniaxialMaterial``.
+        """
+        material_tag = _SPRING_TAG_OFFSET
+        for condition in model.boundaries:
+            active = [
+                (dof_index, stiffness)
+                for dof_index, stiffness in enumerate(condition.spring_stiffnesses[:ndf])
+                if stiffness
+                and not (dof_index < len(condition.restraints) and condition.restraints[dof_index])
+            ]
+            if not active:
+                continue
+            node = model.nodes[condition.node_tag]
+            ground_tag = _SPRING_TAG_OFFSET + condition.node_tag
+            coordinates = (node.x, node.y) if ndm == 2 else (node.x, node.y, node.z)
+            ops.node(ground_tag, *coordinates)
+            ops.fix(ground_tag, *((1,) * ndf))
+            materials: list[int] = []
+            directions: list[int] = []
+            for dof_index, stiffness in active:
+                material_tag += 1
+                ops.uniaxialMaterial("Elastic", material_tag, stiffness)
+                materials.append(material_tag)
+                directions.append(dof_index + 1)
+            ops.element(
+                "zeroLength", ground_tag, ground_tag, condition.node_tag,
+                "-mat", *materials, "-dir", *directions,
+            )
+
+    @staticmethod
     def _apply_loads(model: StructuralModel, system: str) -> None:
         ndm = model.ndm
         ndf = (2 if system == "truss" else 3) if ndm == 2 else (3 if system == "truss" else 6)
@@ -639,10 +687,20 @@ class MaterialFreeStaticsSolver:
                 ops.eleLoad("-ele", sub_tag, "-type", "-beamUniform", wy_mid, wx_mid)
 
     @staticmethod
-    def _analyze(geometric_nonlinearity: str = "Linear") -> None:
+    def _analyze(
+        geometric_nonlinearity: str = "Linear", has_multipoint_constraints: bool = False
+    ) -> None:
         ops.system("BandGeneral")
         ops.numberer("Plain")
-        ops.constraints("Plain")
+        # "Plain" cannot express a multi-point constraint (rigidDiaphragm's
+        # constraint equations tying several nodes together) at all - it
+        # silently drops it and warns, which reproduces the exact numbers a
+        # model with no diaphragm would have given (confirmed the hard way:
+        # see tests/unit/test_material_free_statics_diaphragm.py). Every
+        # other model here only ever has single-point ``fix`` constraints,
+        # which "Transformation" handles identically, so switching is only
+        # ever exercised - never risked - by a model with no diaphragm.
+        ops.constraints("Transformation" if has_multipoint_constraints else "Plain")
         ops.integrator("LoadControl", 1.0)
         if geometric_nonlinearity == "Linear":
             ops.algorithm("Linear")

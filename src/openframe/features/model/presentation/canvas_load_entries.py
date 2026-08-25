@@ -18,6 +18,7 @@ from dataclasses import replace
 
 from openframe.core.domain import (
     FloorLoadEntry,
+    FloorLoadType,
     LoadCase,
     LoadCaseKind,
     LoadCombination,
@@ -368,3 +369,109 @@ class _LoadEntryMixin:
             )
             for element_tag, values in member_totals.items()
         }
+
+    # -- floor load types ---------------------------------------------------
+    def add_floor_load_type(
+        self, name: str, description: str = "", rows: tuple = ()
+    ) -> str | None:
+        """Returns the new type's id, or ``None`` if ``name`` is already
+        taken - mirrors ``add_load_case``'s own no-silent-overwrite rule."""
+        if not name or name in self.floor_load_types:
+            return None
+        self._record_history()
+        self.floor_load_types[name] = FloorLoadType(
+            id=name, name=name, description=description, rows=tuple(rows)
+        )
+        self.load_state_changed.emit()
+        return name
+
+    def update_floor_load_type(
+        self,
+        type_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        rows: tuple | None = None,
+    ) -> bool:
+        """Renaming changes the type's id too, same as ``rename_load_case`` -
+        there is nothing else that references a FloorLoadType by id (unlike
+        a LoadCase, applying one only ever reads its rows, never stores the
+        type's id anywhere), so no cascade is needed."""
+        floor_type = self.floor_load_types.get(type_id)
+        if floor_type is None:
+            return False
+        new_id = name if name is not None else type_id
+        if new_id != type_id and new_id in self.floor_load_types:
+            return False
+        self._record_history()
+        del self.floor_load_types[type_id]
+        self.floor_load_types[new_id] = FloorLoadType(
+            id=new_id,
+            name=new_id,
+            description=floor_type.description if description is None else description,
+            rows=floor_type.rows if rows is None else tuple(rows),
+        )
+        self.load_state_changed.emit()
+        return True
+
+    def duplicate_floor_load_type(self, type_id: str, new_name: str) -> str | None:
+        floor_type = self.floor_load_types.get(type_id)
+        if floor_type is None or not new_name or new_name in self.floor_load_types:
+            return None
+        self._record_history()
+        self.floor_load_types[new_name] = replace(floor_type, id=new_name, name=new_name)
+        self.load_state_changed.emit()
+        return new_name
+
+    def delete_floor_load_type(self, type_id: str) -> None:
+        if type_id not in self.floor_load_types:
+            return
+        self._record_history()
+        del self.floor_load_types[type_id]
+        self.load_state_changed.emit()
+
+    def apply_floor_load_type(
+        self,
+        type_id: str,
+        target_nodes: tuple[int, ...],
+        *,
+        direction: str = "-z",
+        distribution: str = "one_way",
+        span_direction: str = "x",
+    ) -> int | None:
+        """Materialize every non-empty row of ``type_id`` as its own
+        ``FloorLoadEntry``, all sharing ``target_nodes``/``direction``/
+        ``distribution``/``span_direction`` - the MIDAS "Assign Floor Loads"
+        step: pick a Floor Load Type, pick the boundary, Apply once instead
+        of repeating the single-value Floor Load form per case. ``None``
+        means the type does not exist; otherwise returns how many entries
+        were created (a row with ``case_id=None`` or ``magnitude=0`` is
+        skipped, so this can be 0 for an empty type).
+        """
+        floor_type = self.floor_load_types.get(type_id)
+        if floor_type is None:
+            return None
+        rows = [
+            row for row in floor_type.rows if row.case_id is not None and row.magnitude != 0.0
+        ]
+        if not rows:
+            return 0
+        self._record_history()
+        for row in rows:
+            entry_id = self._next_load_entry_id
+            self._next_load_entry_id += 1
+            self.load_entries[entry_id] = LoadEntry(
+                id=entry_id,
+                case_id=row.case_id,
+                kind="floor",
+                target=tuple(target_nodes),
+                payload=FloorLoadEntry(
+                    magnitude=row.magnitude,
+                    direction=direction,
+                    distribution=distribution,
+                    span_direction=span_direction,
+                    target_nodes=tuple(target_nodes),
+                ),
+            )
+        self.load_state_changed.emit()
+        return len(rows)

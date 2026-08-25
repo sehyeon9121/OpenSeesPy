@@ -33,6 +33,9 @@ SUPPORT_NAMES = {
     SupportKind.PINNED: "회전지점(힌지)",
     SupportKind.ROLLER_VERTICAL: "이동지점(수평 반력)",
     SupportKind.ROLLER_HORIZONTAL: "이동지점(수직 반력)",
+    SupportKind.ROLLER_X: "이동지점(X 방향)",
+    SupportKind.ROLLER_Y: "이동지점(Y 방향)",
+    SupportKind.ROLLER_Z: "이동지점(Z 방향)",
     SupportKind.CUSTOM: "사용자 구속",
 }
 

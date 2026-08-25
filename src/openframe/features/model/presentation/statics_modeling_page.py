@@ -15,11 +15,13 @@ from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QWidget
 from openframe.core.domain import (
     BoundaryCondition,
     Element,
+    FloorLoadType,
     LoadCase,
     LoadCombination,
     LoadEntry,
     NodalLoad,
     Node,
+    Story,
     UniformElementLoad,
 )
 from openframe.features.model.drawing import SnapOptions, WorkPlane
@@ -35,6 +37,7 @@ from openframe.features.model.presentation.canvas_property_application import (
 from openframe.features.model.presentation.canvas_rendering import _RenderingMixin
 from openframe.features.model.presentation.canvas_selection import _SelectionMixin
 from openframe.features.model.presentation.canvas_serialization import _SerializationMixin
+from openframe.features.model.presentation.canvas_stories import _StoryMixin
 from openframe.features.model.presentation.canvas_transforms import _TransformMixin
 from openframe.features.model.presentation.canvas_work_planes import _WorkPlaneMixin
 
@@ -57,6 +60,7 @@ class StaticsDrawingCanvas(
     _InputEventsMixin,
     _RenderingMixin,
     _LoadEntryMixin,
+    _StoryMixin,
     QGraphicsView,
 ):
     model_changed = Signal()
@@ -69,6 +73,10 @@ class StaticsDrawingCanvas(
     #: whatever the much more common geometry-changed listeners do, and
     #: vice versa.
     load_state_changed = Signal()
+    #: Fired by every ``_StoryMixin`` CRUD method - Story Manager's own
+    #: refresh, kept separate from ``load_state_changed`` for the same
+    #: reason that one is separate from ``model_changed``.
+    story_state_changed = Signal()
     _DRAW_SCALE = 40.0
     _SNAP_PIXELS = 14.0
 
@@ -97,6 +105,13 @@ class StaticsDrawingCanvas(
         self._next_load_entry_id = 1
         self.load_combinations: dict[str, LoadCombination] = {}
         self.active_combination_id: str | None = None
+        #: Named (case, magnitude) row bundles applied to a floor boundary
+        #: all at once - see FloorLoadType's own docstring.
+        self.floor_load_types: dict[str, FloorLoadType] = {}
+        #: Story Manager (see canvas_stories.py) - building floor levels,
+        #: each optionally tied together as a rigid diaphragm at analysis
+        #: time (canvas_model_build.py).
+        self.stories: dict[str, Story] = {}
         #: "case" | "combination" | "all" | "hidden" - what the Loads tab's
         #: Display dropdown currently shows in the 3D viewport/Work Tree.
         self.load_display_mode = "case"
