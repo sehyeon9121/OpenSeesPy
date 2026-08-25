@@ -1899,23 +1899,6 @@ QFrame#modelingPropertyPanel QFrame#propertySectionCard {
     border: 1px solid #c4c5d5;
     border-radius: 2px;
 }
-QComboBox#nodeSubcategoryCombo {
-    min-height: 34px; padding: 2px 12px;
-    color: #174ea6; background: #eef3fa;
-    border: 1px solid #9ebbe3; border-radius: 4px;
-    font-size: 10.5pt; font-weight: 700;
-}
-QComboBox#nodeSubcategoryCombo:hover { background: #e3edfb; }
-QComboBox#nodeSubcategoryCombo::drop-down { width: 26px; border: 0; }
-QComboBox#nodeSubcategoryCombo QAbstractItemView {
-    background: #ffffff; color: #35485f;
-    border: 1px solid #9ebbe3;
-    selection-color: #174ea6; selection-background-color: #e3edfb;
-    font-size: 10.5pt; font-weight: 600;
-    outline: 0;
-    padding: 2px 0 6px 0;
-}
-QComboBox#nodeSubcategoryCombo QAbstractItemView::item { min-height: 34px; padding: 0 10px; }
 QWidget#selectionStatusPanel { background: #f8f9fa; }
 QLabel#selectionStatusBadge {
     border-radius: 9px;
