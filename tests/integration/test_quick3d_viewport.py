@@ -7,7 +7,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QPoint
 from PySide6.QtWidgets import QApplication
 
 from openframe.core.domain import Element, Node, StructuralModel
@@ -74,6 +74,84 @@ def test_set_model_resets_the_camera_by_default_but_can_be_told_not_to() -> None
 
     viewport.set_model(model)
     assert root.property("cameraPitch") == pytest.approx(-25.0), "default still reframes to iso"
+
+
+def test_members_expose_endpoints_for_projected_box_selection() -> None:
+    viewport = _viewport()
+    model = StructuralModel(
+        nodes={1: Node(1, 1.0, 2.0, 3.0), 2: Node(2, 5.0, 7.0, 11.0)},
+        elements={8: Element(8, 1, 2, "frame")},
+        ndm=3,
+    )
+
+    viewport.set_model(model)
+
+    member = viewport.bridge.members[0]
+    assert (member["start_x"], member["start_y"], member["start_z"]) == pytest.approx(
+        (1.0, 3.0, -2.0)
+    )
+    assert (member["end_x"], member["end_y"], member["end_z"]) == pytest.approx(
+        (5.0, 11.0, -7.0)
+    )
+
+
+def test_qml_box_selection_payload_is_converted_to_tag_sets() -> None:
+    viewport = _viewport()
+    selections: list[tuple[set[int], set[int], bool]] = []
+    viewport.selection_box_finished.connect(
+        lambda nodes, members, additive: selections.append((nodes, members, additive))
+    )
+
+    viewport._on_selection_box_finished("1,4", "7,9", True)
+
+    assert selections == [({1, 4}, {7, 9}, True)]
+
+
+def test_member_pick_is_forwarded_with_global_screen_coordinates() -> None:
+    viewport = _viewport()
+    picks: list[tuple[int, int, int]] = []
+    viewport.member_picked.connect(lambda tag, x, y: picks.append((tag, x, y)))
+
+    viewport._on_member_picked(8, 12.0, 18.0)
+
+    expected = viewport.quick_widget.mapToGlobal(QPoint(12, 18))
+    assert picks == [(8, expected.x(), expected.y())]
+
+
+def test_qml_box_selection_always_includes_fully_enclosed_members() -> None:
+    """A member whose both endpoints are inside the drag box must be
+    selected regardless of drag direction - same as the 2D canvas's
+    _select_in_rect. Only a member the box merely *touches* (one or neither
+    endpoint inside) depends on direction: included when dragging upward
+    ("crossing"), excluded when dragging downward ("window")."""
+    viewport = _viewport()
+    viewport.resize(640, 480)
+    viewport.set_model(
+        StructuralModel(
+            nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 4.0, 0.0, 0.0)},
+            elements={3: Element(3, 1, 2, "frame")},
+            ndm=3,
+        )
+    )
+    QApplication.processEvents()
+    root = viewport.quick_widget.rootObject()
+    selections: list[tuple[set[int], set[int], bool]] = []
+    viewport.selection_box_finished.connect(
+        lambda nodes, members, additive: selections.append((nodes, members, additive))
+    )
+
+    root.setProperty("selectionStartX", 0.0)
+    root.setProperty("selectionCurrentX", float(root.property("width")))
+    root.setProperty("selectionStartY", 0.0)
+    root.setProperty("selectionCurrentY", float(root.property("height")))
+    root.finishSelectionBox(False)
+
+    root.setProperty("selectionStartY", float(root.property("height")))
+    root.setProperty("selectionCurrentY", 0.0)
+    root.finishSelectionBox(False)
+
+    assert selections[0] == ({1, 2}, {3}, False)
+    assert selections[1] == ({1, 2}, {3}, False)
 
 
 def test_orientation_is_a_fixed_top_right_gizmo_not_scene_origin_axes() -> None:

@@ -22,8 +22,8 @@ import math
 from pathlib import Path
 from typing import ClassVar
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -38,9 +38,11 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QStackedWidget,
     QToolButton,
     QTreeWidget,
@@ -50,7 +52,17 @@ from PySide6.QtWidgets import (
 )
 
 from openframe.app.shell.analysis_progress_banner import AnalysisProgressBanner
-from openframe.core.domain import DEFAULT_UNIT_SYSTEM, FORCE_UNITS, LENGTH_UNITS, UnitSystem
+from openframe.core.domain import (
+    DEFAULT_UNIT_SYSTEM,
+    FORCE_UNITS,
+    LENGTH_UNITS,
+    FloorLoadEntry,
+    MemberDistributedLoadEntry,
+    MemberPointLoadEntry,
+    NodalLoadEntry,
+    SelfWeightEntry,
+    UnitSystem,
+)
 from openframe.features.analysis.statics import (
     MaterialFreeSolveThread,
     MaterialFreeStaticsSolver,
@@ -68,6 +80,11 @@ from openframe.features.model.presentation.canvas_glyphs import (
     _paint_support_glyph,
     _render_glyph_icon,
 )
+from openframe.features.model.presentation.load_case_manager_dialog import LoadCaseManagerDialog
+from openframe.features.model.presentation.load_combination_manager_dialog import (
+    LoadCombinationManagerDialog,
+)
+from openframe.features.model.presentation.model_sidebar import LOAD_CASE_PRESENTATION
 from openframe.features.model.presentation.safe_spinbox import SafeDoubleSpinBox, SafeSpinBox
 from openframe.features.model.presentation.section_material_panel import SectionMaterialPanel
 from openframe.features.model.presentation.selection_status_panel import SelectionStatusPanel
@@ -135,9 +152,8 @@ class ModelingInterfacePage(QFrame):
         self._gravity_acceleration = 9.81
         self._user_materials: list[dict[str, object]] = []
         self._user_sections: list[dict[str, object]] = []
-        # The Element tab's "what the next drawn member gets" pick (3D only)
-        # - None until the user Applies one, in which case a freshly drawn
-        # member gets it automatically (see ``_on_3d_node_picked``).
+        # The Element tab's "what the next drawn member gets" pick (3D only).
+        # It stays None until both a saved material and section are selected.
         self._active_element_kwargs: dict[str, object] | None = None
         self._solver = MaterialFreeStaticsSolver()
         self._solve_thread: MaterialFreeSolveThread | None = None
@@ -184,6 +200,7 @@ class ModelingInterfacePage(QFrame):
         self.canvas.escape_requested.connect(self._activate_select_tool)
         self.preview_3d.plane_point_picked.connect(self._on_3d_plane_picked)
         self.preview_3d.node_picked.connect(self._on_3d_node_picked)
+        self.preview_3d.member_picked.connect(self._on_3d_member_picked)
         if self._start_in_3d:
             # The chain-drawing preview line tracks self.canvas's own state
             # (chain_last_node), so any change to it - a point committed, the
@@ -195,6 +212,8 @@ class ModelingInterfacePage(QFrame):
             self.preview_3d.node_hovered.connect(self._on_3d_node_hovered)
             self.preview_3d.plane_point_hovered.connect(self._on_3d_plane_hovered)
             self.preview_3d.hover_cleared.connect(self._on_3d_hover_cleared)
+            self.preview_3d.selection_box_finished.connect(self._on_3d_box_selected)
+            self.preview_3d.empty_space_clicked.connect(self.canvas.clear_selection)
         for standard, slot in (
             (QKeySequence.StandardKey.Delete, self.canvas.delete_selected),
             (QKeySequence.StandardKey.Undo, self.canvas.undo),
@@ -224,6 +243,34 @@ class ModelingInterfacePage(QFrame):
                 Qt.ShortcutContext.WidgetWithChildrenShortcut
             )
             self.draw_space_shortcut_3d.activated.connect(self._activate_draw_tool)
+            # Same reason as draw_space_shortcut_3d above: Delete/Ctrl+Z/Ctrl+Y
+            # scoped only to self.canvas never fire once the user is actually
+            # clicking around in preview_3d, since the hidden canvas can't
+            # hold focus - so a node or member selected via the 3D viewport's
+            # own drag-box could be selected but never deleted/undone.
+            for standard, slot in (
+                (QKeySequence.StandardKey.Delete, self.canvas.delete_selected),
+                (QKeySequence.StandardKey.Undo, self.canvas.undo),
+                (QKeySequence.StandardKey.Redo, self.canvas.redo),
+            ):
+                shortcut_3d = QShortcut(standard, self.preview_3d)
+                shortcut_3d.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+                shortcut_3d.activated.connect(slot)
+            # Entering draw mode moves keyboard focus to the length/angle
+            # entry, so Escape must be scoped to the whole 3D modeling page,
+            # not only to preview_3d (which no longer owns focus at that point).
+            self.escape_shortcut_3d = QShortcut(
+                QKeySequence(Qt.Key.Key_Escape), self
+            )
+            self.escape_shortcut_3d.setContext(
+                Qt.ShortcutContext.WidgetWithChildrenShortcut
+            )
+            self.escape_shortcut_3d.activated.connect(self._handle_escape_shortcut_3d)
+            # QLineEdit consumes Escape before a QShortcut in some Qt
+            # platform plugins.  These are the two widgets that can own focus
+            # during 3D drawing, so filter them as a deterministic fallback.
+            self.preview_3d.quick_widget.installEventFilter(self)
+            self.draw_entry.installEventFilter(self)
         self.fit_shortcut = QShortcut(QKeySequence("F"), self.canvas)
         self.fit_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.fit_shortcut.activated.connect(self.canvas.fit_model)
@@ -233,6 +280,19 @@ class ModelingInterfacePage(QFrame):
             self._activate_workbench_tab("model", show_settings=False)
         self._activate_select_tool()
         self._refresh_status()
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            self._start_in_3d
+            and self.canvas.mode == "draw"
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and watched in {self.preview_3d.quick_widget, self.draw_entry}
+        ):
+            self._activate_select_tool()
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
 
     # --- layout ------------------------------------------------------------
 
@@ -372,12 +432,21 @@ class ModelingInterfacePage(QFrame):
 
     _WORKBENCH_CATEGORIES: ClassVar[dict[str, tuple[str, ...]]] = {
         "model": (),
-        "node": ("add", "move", "arch", "kind"),
+        "node": (
+            "add",
+            "translate_node",
+            "duplicate_node",
+            "array_node",
+            "rotate_node",
+            "mirror_node",
+            "arch",
+            "kind",
+        ),
         "properties": ("member",),
-        "element": (),
+        "element": ("element_picker", "move", "duplicate", "array", "rotate", "mirror"),
         "boundary": ("support",),
         "loads": ("load",),
-        "analysis": (),
+        "analysis": ("analysis",),
         "results": (),
     }
 
@@ -469,6 +538,14 @@ class ModelingInterfacePage(QFrame):
         """
         stack = QStackedWidget()
         stack.setObjectName("modelingLeftDock")
+        # QStackedWidget is a plain QWidget, which Qt never paints
+        # stylesheet border/background for unless this attribute is set
+        # (only QFrame and its subclasses do that automatically) - without
+        # it, theme.py's "QStackedWidget#modelingLeftDock { border-right:
+        # 1px solid #c4c5d5; }" is defined but silently never rendered,
+        # which is why the boundary with the canvas looked unstyled while
+        # the matching one on the Work Tree side (a QFrame) did not.
+        stack.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         stack.setFixedWidth(320)
         self.category_group = QButtonGroup(self)
         self.category_group.setExclusive(True)
@@ -519,13 +596,27 @@ class ModelingInterfacePage(QFrame):
         self.work_tree.setRootIsDecorated(True)
         self.work_tree_materials = QTreeWidgetItem(["물성", "0"])
         self.work_tree_sections = QTreeWidgetItem(["섹션", "0"])
+        self.work_tree_load_combinations = QTreeWidgetItem(["하중조합", "0"])
         self.work_tree.addTopLevelItem(self.work_tree_materials)
         self.work_tree.addTopLevelItem(self.work_tree_sections)
+        self.work_tree.addTopLevelItem(self.work_tree_load_combinations)
+        # Load Case top-level items (one per canvas.load_cases entry) live in
+        # this same tree, added/removed by _refresh_load_tree - see
+        # canvas_load_entries.py.
+        self._work_tree_case_items: dict[str, QTreeWidgetItem] = {}
+        self._selected_load_id: int | None = None
+        self.work_tree.itemClicked.connect(self._on_work_tree_item_clicked)
+        self.work_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.work_tree.customContextMenuRequested.connect(self._show_work_tree_context_menu)
+        self.canvas.load_state_changed.connect(self._refresh_load_tree)
         root.addWidget(self.work_tree)
         self.member_info_card = self._build_member_info_card()
         self.member_info_card.setVisible(False)
         root.addWidget(self.member_info_card)
         self.selection_status_panel = SelectionStatusPanel()
+        self.selection_status_panel.load_edit_requested.connect(self._edit_load_entry)
+        self.selection_status_panel.load_reselect_requested.connect(self._reselect_load_entry_target)
+        self.selection_status_panel.load_delete_requested.connect(self._delete_load_entry_from_status)
         root.addWidget(self.selection_status_panel)
         root.addStretch(1)
 
@@ -536,6 +627,7 @@ class ModelingInterfacePage(QFrame):
         scroll.setFixedWidth(330)
         scroll.setWidget(panel)
         self._refresh_work_tree()
+        self._refresh_load_tree()
         return scroll
 
     def _save_user_material(self, definition: dict[str, object]) -> None:
@@ -603,6 +695,39 @@ class ModelingInterfacePage(QFrame):
         self.work_tree_sections.setText(1, str(len(self._user_sections)))
         self.work_tree_materials.setExpanded(True)
         self.work_tree_sections.setExpanded(True)
+        self._refresh_element_property_selectors()
+
+    def _refresh_element_property_selectors(self) -> None:
+        if not hasattr(self, "element_material_selector"):
+            return
+        previous_material = self.element_material_selector.currentData()
+        previous_section = self.element_section_selector.currentData()
+        for combo, placeholder, definitions, previous in (
+            (
+                self.element_material_selector,
+                "Material 선택…",
+                self._user_materials,
+                previous_material,
+            ),
+            (
+                self.element_section_selector,
+                "Section 선택…",
+                self._user_sections,
+                previous_section,
+            ),
+        ):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(placeholder, None)
+            for definition in definitions:
+                combo.addItem(
+                    f"{definition.get('id', '')} : {definition.get('name', '')}",
+                    definition.get("id"),
+                )
+            index = combo.findData(previous)
+            combo.setCurrentIndex(max(index, 0))
+            combo.blockSignals(False)
+        self._element_property_selection_changed()
 
     def _inspector_card(self, title: str) -> tuple[QFrame, QFormLayout]:
         card = QFrame()
@@ -807,6 +932,9 @@ class ModelingInterfacePage(QFrame):
             return
         self.workbench_buttons[key].setChecked(True)
         self.node_subcategory_row.setVisible(key == "node")
+        self.element_subcategory_row.setVisible(key == "element")
+        if hasattr(self, "load_task_bar"):
+            self.load_task_bar.setVisible(key == "loads")
 
         if key == "model":
             self.left_panel_stack.hide()
@@ -827,12 +955,7 @@ class ModelingInterfacePage(QFrame):
         elif key == "loads":
             self._activate_load_tool()
         elif key == "element":
-            # Picking what the *next* member will be drawn with is a select-
-            # mode action (nothing is being placed by clicking the canvas
-            # here) - the actual "draw" tool only turns on from the Node tab
-            # or the Space/L shortcut.
-            self._activate_select_tool()
-            self._show_category("element_picker", sync_workbench=False)
+            self._element_subcategory_clicked(self._active_element_subcategory)
         else:
             self._activate_select_tool()
             categories = self._WORKBENCH_CATEGORIES[key]
@@ -879,10 +1002,37 @@ class ModelingInterfacePage(QFrame):
         layout.setSpacing(0)
         if self._start_in_3d:
             layout.addWidget(self._build_3d_left_panel())
+            # An explicit divider widget rather than relying on
+            # QStackedWidget#modelingLeftDock's own border-right (theme.py) -
+            # that rule alone was not actually visible: a QStackedWidget's
+            # current page is resized to fill its full contents rect, and in
+            # practice nothing forced that page to leave the border's 1px
+            # column unpainted, so the child's own background silently
+            # covered it. A dedicated thin QFrame between the panels paints
+            # on top of both neighbours instead of depending on either one's
+            # box model, matching the boundary already visible on the
+            # opposite side (QScrollArea#modelingInspectorScroll's
+            # border-left, which works because nothing sits to its right).
+            self.left_dock_divider = QFrame()
+            self.left_dock_divider.setObjectName("modelingLeftDockDivider")
+            self.left_dock_divider.setFixedWidth(1)
+            layout.addWidget(self.left_dock_divider)
             layout.addWidget(self._build_canvas_panel(), 1)
             layout.addWidget(self._build_3d_selection_panel())
         else:
             layout.addWidget(self._build_2d_editor_panel())
+            # Same divider as the 3D branch above, for the same reason: the
+            # editor panel and the selection panel are both QScrollAreas
+            # whose own border-left (theme.py's #modelingInspectorScroll,
+            # #modelingSelectionInspector) only ever paints a boundary
+            # against whatever sits to *their* left, so the editor panel
+            # on this side had no boundary against the canvas at all - a
+            # dedicated 1px QFrame between them paints on top of both
+            # neighbours instead of depending on either one's box model.
+            self.left_dock_divider = QFrame()
+            self.left_dock_divider.setObjectName("modelingLeftDockDivider")
+            self.left_dock_divider.setFixedWidth(1)
+            layout.addWidget(self.left_dock_divider)
             layout.addWidget(self._build_canvas_panel(), 1)
             layout.addWidget(self._build_selection_panel())
         return page
@@ -915,6 +1065,8 @@ class ModelingInterfacePage(QFrame):
         self.mode_label.setObjectName("setupSummaryHint")
         layout.addWidget(self.mode_label)
         layout.addWidget(self._build_level_bar())
+        if self._start_in_3d:
+            layout.addWidget(self._build_load_task_bar())
 
         # 3D mode swaps the 2D plan out entirely for the 3D view, rather than
         # splitting the two — a small preview strip beside a dominant 2D canvas
@@ -1216,13 +1368,23 @@ class ModelingInterfacePage(QFrame):
             self.left_panel_stack.show()
             title_by_category = {
                 "add": "Node",
-                "move": "Move / Copy",
+                "move": "Translate",
+                "duplicate": "Duplicate",
+                "array": "Array Copy",
+                "rotate": "Rotate Copy",
+                "mirror": "Mirror Copy",
+                "translate_node": "Translate",
+                "duplicate_node": "Duplicate",
+                "array_node": "Array Copy",
+                "rotate_node": "Rotate Copy",
+                "mirror_node": "Mirror Copy",
                 "arch": "Arch",
                 "support": "Supports",
                 "kind": "Node Type",
                 "member": "Properties",
                 "load": "Loads",
                 "element_picker": "Element",
+                "analysis": "Analysis",
             }
             self.editor_title.setText(title_by_category.get(key, "Tool Settings"))
         # The category bar (this method) is the one place every category
@@ -1240,16 +1402,31 @@ class ModelingInterfacePage(QFrame):
         if key != "support":
             self.selection_filter.setCurrentIndex(self.selection_filter.findData("all"))
 
-    #: (category key, button label) for the Node tab's own sub-menu — the
-    #: only 3D tab whose work still splits into several distinct actions
-    #: (create geometry vs. move an existing node vs. generate an arch vs.
-    #: flip a joint's hinge/rigid type), so it is the only one that needs a
-    #: picker instead of just auto-showing a single category.
+    #: Node gets its own move/copy/array/rotate/mirror set, mirroring
+    #: Element's - MIDAS keeps these two separate (Node mode never drags a
+    #: member's far endpoint along; Element mode always does), which the
+    #: ``selection_filter`` narrow to "nodes" (vs. Element's "elements") in
+    #: ``_node_subcategory_clicked``/``_element_subcategory_clicked`` below
+    #: enforces at the selection layer - the canvas-side operations
+    #: themselves (``transform_selected_nodes`` etc.) are shared as-is.
     _NODE_SUBCATEGORIES: ClassVar[tuple[tuple[str, str], ...]] = (
         ("add", "Create Node"),
-        ("move", "Translate Node"),
+        ("translate_node", "Translate Node"),
+        ("duplicate_node", "Duplicate Node"),
+        ("array_node", "Array Copy Node"),
+        ("rotate_node", "Rotate Copy Node"),
+        ("mirror_node", "Mirror Copy Node"),
         ("arch", "Arch"),
         ("kind", "Node Type"),
+    )
+
+    _ELEMENT_SUBCATEGORIES: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("element_picker", "Create Element"),
+        ("move", "Translate Element"),
+        ("duplicate", "Duplicate Element"),
+        ("array", "Array Copy Element"),
+        ("rotate", "Rotate Copy Element"),
+        ("mirror", "Mirror Copy Element"),
     )
 
     #: Only "add" (클릭으로 새 노드/부재를 그림) needs draw mode - the other
@@ -1293,6 +1470,49 @@ class ModelingInterfacePage(QFrame):
         self.node_subcategory_row = row
         return row
 
+    def _build_element_subcategory_row(self) -> QWidget:
+        row = QWidget()
+        row.setObjectName("elementSubcategoryRow")
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._active_element_subcategory = self._ELEMENT_SUBCATEGORIES[0][0]
+        self.element_subcategory_combo = QComboBox()
+        self.element_subcategory_combo.setObjectName("elementSubcategoryCombo")
+        for key, label in self._ELEMENT_SUBCATEGORIES:
+            self.element_subcategory_combo.addItem(label, key)
+        self.element_subcategory_combo.currentIndexChanged.connect(
+            self._element_subcategory_combo_changed
+        )
+        self.element_subcategory_combo.view().setContentsMargins(0, 4, 0, 8)
+        layout.addWidget(self.element_subcategory_combo)
+
+        self.element_subcategory_row = row
+        return row
+
+    def _element_subcategory_combo_changed(self, index: int) -> None:
+        key = self.element_subcategory_combo.itemData(index)
+        if key is not None:
+            self._element_subcategory_clicked(key)
+
+    def _element_subcategory_clicked(self, key: str) -> None:
+        self._active_element_subcategory = key
+        index = self.element_subcategory_combo.findData(key)
+        if index != -1 and self.element_subcategory_combo.currentIndex() != index:
+            self.element_subcategory_combo.blockSignals(True)
+            self.element_subcategory_combo.setCurrentIndex(index)
+            self.element_subcategory_combo.blockSignals(False)
+        if key == "element_picker" and self._active_element_kwargs is not None:
+            self._activate_draw_tool()
+        else:
+            self._activate_select_tool()
+        self._show_category(key, sync_workbench=False)
+        if key in {"move", "duplicate", "array", "rotate", "mirror"}:
+            self.selection_filter.setCurrentIndex(
+                self.selection_filter.findData("elements")
+            )
+
     def _node_subcategory_combo_changed(self, index: int) -> None:
         key = self.node_subcategory_combo.itemData(index)
         if key is not None:
@@ -1307,63 +1527,167 @@ class ModelingInterfacePage(QFrame):
                 combo.blockSignals(True)
                 combo.setCurrentIndex(index)
                 combo.blockSignals(False)
-        if key in self._NODE_SUBCATEGORY_DRAW:
+        if key in self._NODE_SUBCATEGORY_DRAW and not self._start_in_3d:
             self._activate_draw_tool()
         else:
             self._activate_select_tool()
         self._show_category(key, sync_workbench=False)
+        if key in {
+            "translate_node",
+            "duplicate_node",
+            "array_node",
+            "rotate_node",
+            "mirror_node",
+        }:
+            self.selection_filter.setCurrentIndex(
+                self.selection_filter.findData("nodes")
+            )
 
     def _build_element_category(self) -> QWidget:
-        """"Which material/section gets used for the *next* member drawn" -
-        distinct from the 부재/Properties tab's own ``SectionMaterialPanel``
-        instance, which edits an already-*selected* member. This is a second,
-        independent instance (the widget is self-contained - its own DB/
-        Custom browsing, no shared state) whose Apply just records the
-        picked kwargs; drawing a new member (``_on_3d_node_picked``) applies
-        them automatically the moment the member is created, the same way a
-        CAD tool's "current layer" sets what gets drawn next rather than
-        editing what is already there.
-        """
+        """Create/translate actions only; property authoring lives in Properties."""
         section, root = self._section("Element", show_title=False)
         hint = QLabel(
-            "여기서 단면을 고르고 Apply를 누르면, 지금부터 그리는 부재마다 "
-            "자동으로 적용됩니다 — 재료를 바꾸거나 이미 그려진 부재를 바꾸려면 "
-            "Properties 탭을 쓰세요."
+            "Properties에서 저장한 Material과 Section을 선택하세요. 선택한 값은 "
+            "새로 생성하는 부재에 적용됩니다."
         )
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
         root.addWidget(hint)
 
-        self.element_section_material_panel = SectionMaterialPanel()
-        self.element_section_material_panel.set_visible_groups(material=False, section=True)
-        self.element_section_material_panel.section_saved.connect(self._save_user_section)
-        self.element_section_material_panel.apply_button.setText("Apply")
-        self.element_section_material_panel.apply_requested.connect(
-            self._apply_active_element_section
+        property_form = QFormLayout()
+        self.element_material_selector = QComboBox()
+        self.element_material_selector.setObjectName("elementMaterialSelector")
+        self.element_material_selector.currentIndexChanged.connect(
+            self._element_property_selection_changed
         )
-        root.addWidget(self.element_section_material_panel)
+        property_form.addRow("Material", self.element_material_selector)
+        self.element_section_selector = QComboBox()
+        self.element_section_selector.setObjectName("elementSectionSelector")
+        self.element_section_selector.currentIndexChanged.connect(
+            self._element_property_selection_changed
+        )
+        property_form.addRow("Section", self.element_section_selector)
+        root.addLayout(property_form)
 
-        self.active_element_status = QLabel("현재 설정된 재료·단면이 없습니다.")
+        self.active_element_status = QLabel(
+            "현재 생성 속성이 없습니다. Material과 Section을 선택하세요."
+        )
         self.active_element_status.setWordWrap(True)
         self.active_element_status.setObjectName("setupSectionHint")
         root.addWidget(self.active_element_status)
+        self.start_element_drawing_button = QPushButton("Create Element 시작")
+        self.start_element_drawing_button.setEnabled(False)
+        self.start_element_drawing_button.clicked.connect(self._activate_draw_tool)
+        root.addWidget(self.start_element_drawing_button)
+        root.addStretch(1)
+        self._refresh_element_property_selectors()
         return section
 
-    def _apply_active_element_section(self) -> None:
-        self._active_element_kwargs = (
-            self.element_section_material_panel.current_application_kwargs()
+    def _build_analysis_category(self) -> QWidget:
+        """3D workbench's Analysis tab. The header's own 정정성 검사 및 해석/
+        정밀해석으로 내보내기 buttons (``solve``/``_export_for_full_analysis``)
+        already do the actual work and stay untouched (2D shares that header
+        unconditionally) - this page just gives Analysis a home in the
+        workbench flow instead of the blank page it showed before, with its
+        own run/export buttons wired to those same handlers. The method
+        picker only has one real entry today; it exists so nonlinear/time
+        history/modal/buckling - all export-only for now - have somewhere to
+        slot in later without restructuring this page.
+        """
+        section, root = self._section("Analysis", show_title=False)
+        hint = QLabel(
+            "이 화면에서 바로 실행되는 해석은 현재 선형탄성해석 하나뿐입니다 — "
+            "부정정 구조를 정확히 풀려면 모든 부재에 실제 재료·단면(E/A/I)이 "
+            "필요합니다."
         )
-        section_id = self._active_element_kwargs.get("section_id")
-        shape = self._active_element_kwargs.get("shape")
-        self.active_element_status.setText(
-            f"현재 설정: {section_id or shape} — 지금부터 그리는 부재에 자동 적용됩니다."
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+
+        method_form = QFormLayout()
+        self.analysis_method_selector = QComboBox()
+        self.analysis_method_selector.addItem("선형탄성 (Linear Elastic)", "linear")
+        method_form.addRow("해석 방법", self.analysis_method_selector)
+        root.addLayout(method_form)
+
+        run_button = QPushButton("해석하기")
+        run_button.setObjectName("setupContinueButton")
+        run_button.clicked.connect(self.solve)
+        root.addWidget(run_button)
+
+        self.task_results_button = QPushButton("결과 보기")
+        self.task_results_button.setEnabled(False)
+        self.task_results_button.clicked.connect(lambda: self.workspace_stack.setCurrentIndex(1))
+        root.addWidget(self.task_results_button)
+
+        advanced_hint = QLabel(
+            "비선형정적·시간이력·모드(고유치)·좌굴·P-Delta 등은 이 캔버스 자체 "
+            "솔버가 지원하지 않습니다 — 모델을 OpenSeesPy 스크립트로 내보내 "
+            "\"파일 불러오기\" 화면의 정밀해석 엔진으로 돌리세요."
+        )
+        advanced_hint.setWordWrap(True)
+        advanced_hint.setObjectName("setupSectionHint")
+        root.addWidget(advanced_hint)
+        export_button = QPushButton("정밀해석으로 내보내기…")
+        export_button.setObjectName("direct2DSecondaryButton")
+        export_button.clicked.connect(self._export_for_full_analysis)
+        root.addWidget(export_button)
+
+        root.addStretch(1)
+        return section
+
+    def _element_property_selection_changed(self, _index: int | None = None) -> None:
+        material_id = self.element_material_selector.currentData()
+        section_id = self.element_section_selector.currentData()
+        material = next(
+            (item for item in self._user_materials if item.get("id") == material_id),
+            None,
+        )
+        section = next(
+            (item for item in self._user_sections if item.get("id") == section_id),
+            None,
+        )
+        if material is None or section is None:
+            self._active_element_kwargs = None
+            self.start_element_drawing_button.setEnabled(False)
+            self.active_element_status.setText(
+                "Properties에서 저장한 Material과 Section을 모두 선택하세요."
+            )
+            return
+        self._set_active_element_properties(
+            {
+                "shape": section["shape"],
+                "source": section["source"],
+                "dimensions": dict(section["dimensions"]),
+                "area": float(section["area"]),
+                "iy": float(section["iy"]),
+                "iz": float(section["iz"]),
+                "j": float(section["j"]),
+                "elastic": float(material["elastic"]),
+                "density": float(material.get("density", 0.0)),
+                "section_id": section.get("database_id") or section_id,
+                "material_id": material_id,
+                "material_category": material.get("category"),
+                "material_grade": material.get("grade"),
+            }
         )
 
+    def _set_active_element_properties(self, properties: dict[str, object]) -> None:
+        self._active_element_kwargs = dict(properties)
+        material_label = self.element_material_selector.currentText()
+        section_label = self.element_section_selector.currentText()
+        self.active_element_status.setText(
+            f"현재 생성 속성: {material_label} / {section_label} — "
+            "새 부재에 이 물성·단면이 적용됩니다."
+        )
+        self.start_element_drawing_button.setEnabled(True)
+
     def _apply_active_element_to_new_members(self, new_element_tags: set[int]) -> None:
-        """Give a just-drawn member the Element tab's currently Applied
-        material/section, the same way a CAD tool's "current layer" governs
+        """Give a just-drawn member the Element tab's selected definitions.
+
+        This works the same way a CAD tool's "current layer" governs
         what gets drawn next rather than anything already on the canvas.
-        A no-op both when nothing was Applied yet and when this particular
+        A no-op both when nothing was selected yet and when this particular
         click only continued the chain without creating a new member (e.g.
         clicking the same node the chain already ends on)."""
         if not new_element_tags or self._active_element_kwargs is None:
@@ -1417,6 +1741,8 @@ class ModelingInterfacePage(QFrame):
 
         if self._start_in_3d:
             root.addWidget(self._build_node_subcategory_row())
+            root.addWidget(self._build_element_subcategory_row())
+            self.element_subcategory_row.hide()
 
         self.category_stack = _CurrentPageOnlyStack()
         # QStackedWidget's own vertical size policy still allows it to grow
@@ -1436,18 +1762,57 @@ class ModelingInterfacePage(QFrame):
         self.category_pages["empty"] = self.category_stack.addWidget(empty)
         builders = {
             "add": self._build_add_category,
-            "move": self._build_transform_section,
+            "move": (
+                self._build_element_translate_section
+                if self._start_in_3d
+                else self._build_transform_section
+            ),
             "arch": self._build_arch_category,
             "support": self._build_support_category,
             "kind": self._build_node_kind_category,
             "member": self._build_member_category,
-            "load": self._build_load_category,
+            "load": self._build_3d_load_category if self._start_in_3d else self._build_load_category,
         }
         for key, _label in self._CATEGORY_OPTIONS:
             self.category_pages[key] = self.category_stack.addWidget(builders[key]())
         if self._start_in_3d:
             self.category_pages["element_picker"] = self.category_stack.addWidget(
                 self._build_element_category()
+            )
+            # Not in _CATEGORY_OPTIONS (that list also drives the 2D category
+            # bar's own buttons) - these four are 3D-only pages, reached
+            # exclusively through the Element tab's subcategory combo.
+            self.category_pages["duplicate"] = self.category_stack.addWidget(
+                self._build_duplicate_element_section()
+            )
+            self.category_pages["array"] = self.category_stack.addWidget(
+                self._build_array_copy_section()
+            )
+            self.category_pages["rotate"] = self.category_stack.addWidget(
+                self._build_rotate_copy_section()
+            )
+            self.category_pages["mirror"] = self.category_stack.addWidget(
+                self._build_mirror_copy_section()
+            )
+            self.category_pages["analysis"] = self.category_stack.addWidget(
+                self._build_analysis_category()
+            )
+            # Node's own move/copy/array/rotate/mirror set - mirrors the four
+            # above, but scoped to nodes only (see _NODE_SUBCATEGORIES).
+            self.category_pages["translate_node"] = self.category_stack.addWidget(
+                self._build_node_translate_section()
+            )
+            self.category_pages["duplicate_node"] = self.category_stack.addWidget(
+                self._build_node_duplicate_section()
+            )
+            self.category_pages["array_node"] = self.category_stack.addWidget(
+                self._build_node_array_copy_section()
+            )
+            self.category_pages["rotate_node"] = self.category_stack.addWidget(
+                self._build_node_rotate_copy_section()
+            )
+            self.category_pages["mirror_node"] = self.category_stack.addWidget(
+                self._build_node_mirror_copy_section()
             )
         self.category_stack.setCurrentIndex(self.category_pages["empty"])
         root.addWidget(self.category_stack)
@@ -1508,6 +1873,920 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(self._build_member_bar_content())
         root.addStretch(1)
         return section
+
+    # ================================================================
+    # 3D Loads tab (canvas_load_entries.py's own store - see that file's
+    # module docstring for why this is entirely separate from the 2D/legacy
+    # nodal_loads/element_loads path just below). Nothing here reaches the
+    # solver yet.
+    # ================================================================
+
+    _LOAD3D_KIND_GROUPS: ClassVar[tuple[tuple[tuple[str, ...], str, str], ...]] = (
+        (("nodal",), "Nodal Loads", "NL"),
+        (
+            ("member_point", "member_moment", "member_uniform", "member_linear", "member_partial"),
+            "Member Loads",
+            "ML",
+        ),
+        (("floor",), "Floor Loads", "FL"),
+        (("self_weight",), "Self Weight", "SW"),
+    )
+
+    def _build_load_task_bar(self) -> QFrame:
+        """Load Case / Display / Load Scale / Value Labels - sits directly
+        under the work-plane bar, same row style. Combination selection/
+        management itself lives in the left Loads panel instead (see
+        ``_build_3d_load_manager_content``'s "하중조합" row) - only the
+        Display mode dropdown (what the viewport currently shows) stays
+        here, since that is about the 3D view, not about combinations
+        specifically."""
+        bar = QFrame()
+        bar.setObjectName("loadTaskBar")
+        self.load_task_bar = bar
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(10)
+
+        layout.addWidget(QLabel("Load Case"))
+        self.load_case_combo = QComboBox()
+        self.load_case_combo.setMinimumWidth(140)
+        self.load_case_combo.currentIndexChanged.connect(self._on_load_case_combo_changed)
+        layout.addWidget(self.load_case_combo)
+        case_manage_button = QPushButton("관리")
+        case_manage_button.clicked.connect(self._open_load_case_manager)
+        layout.addWidget(case_manage_button)
+
+        layout.addWidget(QLabel("Display"))
+        self.load_display_combo = QComboBox()
+        self.load_display_combo.addItem("Current Load Case", "case")
+        self.load_display_combo.addItem("Load Combination", "combination")
+        self.load_display_combo.addItem("All Loads", "all")
+        self.load_display_combo.addItem("Hide Loads", "hidden")
+        self.load_display_combo.currentIndexChanged.connect(self._on_load_display_mode_changed)
+        layout.addWidget(self.load_display_combo)
+
+        layout.addWidget(QLabel("Load Scale"))
+        scale_minus = QPushButton("-")
+        scale_minus.setFixedWidth(24)
+        scale_minus.clicked.connect(lambda: self._nudge_load_scale(-10))
+        layout.addWidget(scale_minus)
+        self.load_scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self.load_scale_slider.setRange(10, 300)
+        self.load_scale_slider.setValue(100)
+        self.load_scale_slider.setFixedWidth(120)
+        self.load_scale_slider.setToolTip("뷰포트에 그려지는 하중 글리프의 크기 배율(%)")
+        layout.addWidget(self.load_scale_slider)
+        scale_plus = QPushButton("+")
+        scale_plus.setFixedWidth(24)
+        scale_plus.clicked.connect(lambda: self._nudge_load_scale(10))
+        layout.addWidget(scale_plus)
+
+        self.load_value_labels_checkbox = QCheckBox("Value Labels")
+        layout.addWidget(self.load_value_labels_checkbox)
+
+        layout.addStretch(1)
+        self.load_readonly_hint = QLabel("읽기 전용 미리보기 - 하중조합 표시 중에는 입력할 수 없습니다.")
+        self.load_readonly_hint.setObjectName("setupSectionHint")
+        self.load_readonly_hint.setVisible(False)
+        layout.addWidget(self.load_readonly_hint)
+
+        self.canvas.load_state_changed.connect(self._refresh_load_case_combo)
+        self._refresh_load_case_combo()
+        # The bar belongs to the case/combination manager, not to ordinary
+        # solver-connected load entry.  Keeping it hidden in the default mode
+        # removes a second, competing set of controls from the canvas header.
+        bar.setVisible(False)
+        return bar
+
+    def _refresh_load_case_combo(self) -> None:
+        self.load_case_combo.blockSignals(True)
+        self.load_case_combo.clear()
+        for case in self.canvas.load_cases.values():
+            self.load_case_combo.addItem(case.name, case.id)
+        index = self.load_case_combo.findData(self.canvas.active_load_case_id)
+        if index >= 0:
+            self.load_case_combo.setCurrentIndex(index)
+        self.load_case_combo.blockSignals(False)
+
+    def _refresh_load_combination_combo(self) -> None:
+        for combo in (
+            getattr(self, "load_combination_combo", None),
+            getattr(self, "make_load_combination_combo", None),
+        ):
+            if combo is None:
+                continue
+            previous = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            for combination in self.canvas.load_combinations.values():
+                combo.addItem(combination.name, combination.name)
+            selected = previous or self.canvas.active_combination_id
+            index = combo.findData(selected)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+
+    def _on_load_case_combo_changed(self, _index: int) -> None:
+        self.canvas.active_load_case_id = self.load_case_combo.currentData()
+
+    def _on_load_combination_combo_changed(self, _index: int) -> None:
+        self.canvas.active_combination_id = self.load_combination_combo.currentData()
+        if self.load_display_mode_key() == "combination":
+            self._refresh_load3d_viewport()
+
+    def load_display_mode_key(self) -> str:
+        return self.load_display_combo.currentData() or "case"
+
+    def _on_load_display_mode_changed(self, _index: int) -> None:
+        mode = self.load_display_mode_key()
+        self.canvas.load_display_mode = mode
+        read_only = mode == "combination"
+        self.load_readonly_hint.setVisible(read_only)
+        if hasattr(self, "load3d_apply_button"):
+            self.load3d_apply_button.setEnabled(not read_only)
+        if hasattr(self, "load_apply_button"):
+            self.load_apply_button.setEnabled(not read_only)
+        for group in (
+            getattr(self, "load3d_type_group", None),
+            getattr(self, "load3d_member_subtype_group", None),
+        ):
+            if group is not None:
+                for button in group.buttons():
+                    button.setEnabled(not read_only)
+        if hasattr(self, "load3d_form_stack"):
+            self.load3d_form_stack.setEnabled(not read_only)
+        self._refresh_load3d_viewport()
+
+    def _nudge_load_scale(self, delta: int) -> None:
+        self.load_scale_slider.setValue(self.load_scale_slider.value() + delta)
+
+    def _open_load_case_manager(self) -> None:
+        dialog = LoadCaseManagerDialog(self.canvas, self)
+        dialog.exec()
+
+    def _open_load_combination_manager(self) -> None:
+        dialog = LoadCombinationManagerDialog(self.canvas, self)
+        dialog.exec()
+
+    def _refresh_load3d_viewport(self) -> None:
+        """Placeholder hook for the viewport glyph refresh (wired once
+        Quick3DSceneBridge.set_load_entries exists) - kept as its own method
+        now so every state change that should eventually repaint the
+        viewport already calls it exactly once."""
+        preview = getattr(self, "preview_3d", None)
+        if preview is not None and hasattr(preview, "set_load_entries"):
+            preview.set_load_entries(
+                self.canvas.load_entries,
+                self.canvas.load_cases,
+                self.canvas.load_combinations,
+                mode=self.load_display_mode_key(),
+                active_case_id=self.canvas.active_load_case_id,
+                active_combination_id=self.canvas.active_combination_id,
+                scale=self.load_scale_slider.value() / 100.0 if hasattr(self, "load_scale_slider") else 1.0,
+            )
+
+    def _build_3d_load_category(self) -> QWidget:
+        """MIDAS-style Loads command picker with a command-specific editor.
+
+        The user first chooses *what load command to run* (Nodal Load,
+        Assign Floor Load, Self Weight, etc.); only that command's settings
+        are then shown below.  The solver-connected nodal/uniform/linear
+        editors remain the pages for those supported commands, while the
+        richer case-based store hosts point/partial/floor/self-weight data.
+        This keeps existing analysis behaviour intact without exposing two
+        competing global modes to the user.
+        """
+        section = QWidget()
+        root = QVBoxLayout(section)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+
+        command_bar = QFrame()
+        command_bar.setObjectName("setupConfigBar")
+        command_bar_layout = QHBoxLayout(command_bar)
+        command_bar_layout.setContentsMargins(12, 7, 12, 7)
+        command_bar_label = QLabel("LOADS")
+        command_bar_label.setObjectName("fieldLabel")
+        command_bar_layout.addWidget(command_bar_label)
+        self.load_command_combo = QComboBox()
+        for label, key in (
+            ("[관리] 하중케이스", "load_cases"),
+            ("[관리] 하중조합", "load_combinations"),
+            ("[관리] 조합 케이스 생성", "make_combination"),
+        ):
+            self.load_command_combo.addItem(label, key)
+        self.load_command_combo.insertSeparator(self.load_command_combo.count())
+        for label, key in (
+            ("[정적] 자중", "self_weight"),
+            ("[정적] 절점하중", "nodal"),
+            ("[정적] 부재 집중하중", "member_point"),
+            ("[정적] 부재 균등분포", "member_uniform"),
+            ("[정적] 부재 선형분포", "member_linear"),
+            ("[정적] 부재 부분분포", "member_partial"),
+            ("[정적] 부재 집중모멘트", "member_moment"),
+            ("[정적] 바닥하중 할당", "floor"),
+        ):
+            self.load_command_combo.addItem(label, key)
+        command_bar_layout.addWidget(self.load_command_combo, 1)
+        root.addWidget(command_bar)
+
+        self.load_command_stack = _CurrentPageOnlyStack()
+        self.load_command_pages = {
+            "quick": self.load_command_stack.addWidget(
+                self._build_load_bar_content(command_driven=True)
+            ),
+            "entry": self.load_command_stack.addWidget(
+                self._build_3d_load_manager_content()
+            ),
+            "load_cases": self.load_command_stack.addWidget(
+                self._build_load_case_command_page()
+            ),
+            "load_combinations": self.load_command_stack.addWidget(
+                self._build_load_combination_command_page()
+            ),
+            "make_combination": self.load_command_stack.addWidget(
+                self._build_make_load_case_command_page()
+            ),
+        }
+        settings_card = QFrame()
+        settings_card.setObjectName("propertySectionCard")
+        settings_layout = QVBoxLayout(settings_card)
+        settings_layout.setContentsMargins(10, 9, 10, 9)
+        settings_layout.addWidget(self.load_command_stack)
+        root.addWidget(settings_card)
+        self.load_command_combo.currentIndexChanged.connect(self._on_load_command_changed)
+        self.load_command_combo.setCurrentIndex(self.load_command_combo.findData("nodal"))
+        self._on_load_command_changed()
+        return section
+
+    def _build_load_case_command_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+        title = QLabel("하중케이스")
+        title.setObjectName("loadCommandTitle")
+        layout.addWidget(title)
+        hint = QLabel("고정하중, 활하중, 풍하중처럼 하중을 구분할 케이스를 정의합니다.")
+        hint.setObjectName("loadModeHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        button = QPushButton("하중케이스 관리 열기")
+        button.setObjectName("loadPrimaryButton")
+        button.clicked.connect(self._open_load_case_manager)
+        layout.addWidget(button)
+        layout.addStretch(1)
+        return page
+
+    def _build_load_combination_command_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+        title = QLabel("하중조합")
+        title.setObjectName("loadCommandTitle")
+        layout.addWidget(title)
+        hint = QLabel("하중케이스별 계수를 정의해 조합을 만들고 3D 화면에서 확인합니다.")
+        hint.setObjectName("loadModeHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        row = QHBoxLayout()
+        self.load_combination_combo = QComboBox()
+        self.load_combination_combo.currentIndexChanged.connect(
+            self._on_load_combination_combo_changed
+        )
+        row.addWidget(self.load_combination_combo, 1)
+        edit = QPushButton("편집")
+        edit.clicked.connect(self._open_load_combination_manager)
+        row.addWidget(edit)
+        layout.addLayout(row)
+        self.canvas.load_state_changed.connect(self._refresh_load_combination_combo)
+        self._refresh_load_combination_combo()
+        layout.addStretch(1)
+        return page
+
+    def _build_make_load_case_command_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+        title = QLabel("하중조합으로 하중케이스 생성")
+        title.setObjectName("loadCommandTitle")
+        layout.addWidget(title)
+        hint = QLabel(
+            "선택한 조합의 계수를 실제 하중 데이터에 곱해 하나의 새 정적 하중케이스로 만듭니다."
+        )
+        hint.setObjectName("loadModeHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        form = QFormLayout()
+        self.make_load_combination_combo = QComboBox()
+        form.addRow("원본 조합", self.make_load_combination_combo)
+        self.make_load_case_name = QLineEdit()
+        self.make_load_case_name.setPlaceholderText("예: ULS_APPLIED")
+        form.addRow("새 하중케이스", self.make_load_case_name)
+        layout.addLayout(form)
+        self.make_load_nodal = QCheckBox("절점하중")
+        self.make_load_member = QCheckBox("부재하중")
+        self.make_load_floor = QCheckBox("바닥하중")
+        self.make_load_self_weight = QCheckBox("자중")
+        for checkbox in (
+            self.make_load_nodal,
+            self.make_load_member,
+            self.make_load_floor,
+            self.make_load_self_weight,
+        ):
+            checkbox.setChecked(True)
+            layout.addWidget(checkbox)
+        self.make_load_replace_existing = QCheckBox("같은 이름의 기존 하중을 교체")
+        layout.addWidget(self.make_load_replace_existing)
+        self.make_load_activate_analysis = QCheckBox("생성 후 지원 하중을 해석 모델에 가력")
+        self.make_load_activate_analysis.setChecked(True)
+        self.make_load_activate_analysis.setToolTip(
+            "절점하중과 전체-span 부재 균등/선형분포하중을 현재 해석 하중으로 교체합니다."
+        )
+        layout.addWidget(self.make_load_activate_analysis)
+        self.make_load_status = QLabel()
+        self.make_load_status.setObjectName("setupSectionHint")
+        self.make_load_status.setWordWrap(True)
+        layout.addWidget(self.make_load_status)
+        self.make_load_create_button = QPushButton("하중케이스 생성")
+        self.make_load_create_button.setObjectName("loadPrimaryButton")
+        self.make_load_create_button.clicked.connect(self._make_load_case_from_combination)
+        layout.addWidget(self.make_load_create_button)
+        self._refresh_load_combination_combo()
+        layout.addStretch(1)
+        return page
+
+    def _on_load_command_changed(self, _index: int | None = None) -> None:
+        key = str(self.load_command_combo.currentData())
+        if key in {"load_cases", "load_combinations", "make_combination"}:
+            self.load_command_stack.setCurrentIndex(self.load_command_pages[key])
+            return
+        if key in {"nodal", "member_uniform", "member_linear"}:
+            self.load_command_stack.setCurrentIndex(self.load_command_pages["quick"])
+            target_id = {"nodal": 0, "member_uniform": 1, "member_linear": 2}[key]
+            self.load_target_group.button(target_id).setChecked(True)
+            self._load_target_changed()
+            self.load_command_form_title.setText(
+                {
+                    "nodal": "절점하중 설정",
+                    "member_uniform": "부재 균등분포하중 설정",
+                    "member_linear": "부재 선형변화하중 설정",
+                }[key]
+            )
+            return
+        self.load_command_stack.setCurrentIndex(self.load_command_pages["entry"])
+        top_kind = "member" if key.startswith("member_") else key
+        type_index = self.load3d_type_combo.findData(top_kind)
+        if type_index >= 0:
+            self.load3d_type_combo.setCurrentIndex(type_index)
+        subtype_index = self.load3d_member_subtype_combo.findData(key)
+        if subtype_index >= 0:
+            self.load3d_member_subtype_combo.setCurrentIndex(subtype_index)
+        self.load3d_command_title.setText(
+            {
+                "self_weight": "자중 설정",
+                "member_point": "부재 집중하중 설정",
+                "member_partial": "부재 부분분포하중 설정",
+                "member_moment": "부재 집중모멘트 설정",
+                "floor": "바닥하중 할당",
+            }.get(key, "하중 설정")
+        )
+
+    def _make_load_case_from_combination(self) -> None:
+        combination_name = self.make_load_combination_combo.currentData()
+        case_name = self.make_load_case_name.text().strip()
+        selected_groups = {
+            group
+            for group, checkbox in (
+                ("nodal", self.make_load_nodal),
+                ("member", self.make_load_member),
+                ("floor", self.make_load_floor),
+                ("self_weight", self.make_load_self_weight),
+            )
+            if checkbox.isChecked()
+        }
+        if not combination_name:
+            self.make_load_status.setText("⚠ 먼저 원본 하중조합을 선택하세요.")
+            return
+        if not case_name:
+            self.make_load_status.setText("⚠ 새 하중케이스 이름을 입력하세요.")
+            return
+        count = self.canvas.create_load_case_from_combination(
+            str(combination_name),
+            case_name,
+            replace_existing=self.make_load_replace_existing.isChecked(),
+            selected_groups=selected_groups,
+            activate_for_analysis=self.make_load_activate_analysis.isChecked(),
+        )
+        if count is None:
+            self.make_load_status.setText("⚠ 같은 이름의 하중케이스가 이미 있습니다.")
+            return
+        suffix = (
+            " · 지원되는 하중을 해석 모델에 가력했습니다."
+            if self.make_load_activate_analysis.isChecked()
+            else ""
+        )
+        self.make_load_status.setText(f"✓ {case_name}에 하중 {count}개를 생성했습니다{suffix}")
+
+    def _build_3d_load_manager_content(self) -> QWidget:
+        """Case-based settings host selected by the Loads command picker."""
+        section = QWidget()
+        root = QVBoxLayout(section)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+        self._editing_load_entry_id: int | None = None
+
+        self.load3d_command_title = QLabel("하중 설정")
+        self.load3d_command_title.setObjectName("loadCommandTitle")
+        root.addWidget(self.load3d_command_title)
+        manager_notice = QLabel(
+            "선택한 하중케이스에 저장되며 Work Tree와 3D 화면에서 관리됩니다. "
+            "일부 고급 하중의 해석 변환은 준비 중입니다."
+        )
+        manager_notice.setObjectName("loadModeHint")
+        manager_notice.setWordWrap(True)
+        manager_notice.setMaximumWidth(280)
+        root.addWidget(manager_notice)
+
+        # Internal selectors are driven by the command list above. They stay
+        # as real combo boxes so edit/reselect code can reuse the same state
+        # transitions without exposing a second load-type chooser.
+        self.load3d_type_combo = QComboBox()
+        for key, label in (
+            ("nodal", "절점하중"),
+            ("member", "부재하중"),
+            ("floor", "바닥하중"),
+            ("self_weight", "자중"),
+        ):
+            self.load3d_type_combo.addItem(label, key)
+        self.load3d_type_combo.currentIndexChanged.connect(self._on_load3d_type_changed)
+
+        self.load3d_member_subtype_row = QWidget()
+        subtype_layout = QFormLayout(self.load3d_member_subtype_row)
+        subtype_layout.setContentsMargins(0, 0, 0, 0)
+        self.load3d_member_subtype_combo = QComboBox()
+        for key, label in (
+            ("member_point", "집중하중"),
+            ("member_uniform", "균등분포하중"),
+            ("member_linear", "선형변화하중"),
+            ("member_partial", "부분 분포하중"),
+            ("member_moment", "집중모멘트"),
+        ):
+            self.load3d_member_subtype_combo.addItem(label, key)
+        subtype_layout.addRow("부재하중 형식", self.load3d_member_subtype_combo)
+        self.load3d_member_subtype_combo.currentIndexChanged.connect(
+            self._on_load3d_member_subtype_changed
+        )
+
+        self.load3d_form_stack = _CurrentPageOnlyStack()
+        self.load3d_form_pages = {
+            "nodal": self.load3d_form_stack.addWidget(self._build_load3d_nodal_form()),
+            "member": self.load3d_form_stack.addWidget(self._build_load3d_member_form()),
+            "floor": self.load3d_form_stack.addWidget(self._build_load3d_floor_form()),
+            "self_weight": self.load3d_form_stack.addWidget(self._build_load3d_self_weight_form()),
+        }
+        root.addWidget(self.load3d_form_stack)
+
+        self.load3d_target_count_label = QLabel()
+        self.load3d_target_count_label.setObjectName("setupSectionHint")
+        root.addWidget(self.load3d_target_count_label)
+        self.canvas.selection_changed.connect(self._refresh_load3d_target_count)
+
+        self.load3d_status_label = QLabel()
+        self.load3d_status_label.setObjectName("setupSectionHint")
+        self.load3d_status_label.setWordWrap(True)
+        root.addWidget(self.load3d_status_label)
+
+        self.load3d_apply_button = QPushButton("적용")
+        self.load3d_apply_button.setObjectName("loadPrimaryButton")
+        self.load3d_apply_button.clicked.connect(self._apply_load3d)
+        root.addWidget(self.load3d_apply_button)
+        root.addStretch(1)
+
+        self.load3d_type_combo.setCurrentIndex(0)
+        self._on_load3d_type_changed()
+        self.load3d_member_subtype_combo.setCurrentIndex(0)
+        self._on_load3d_member_subtype_changed()
+        self._refresh_load3d_target_count()
+        return section
+
+    def _build_load3d_nodal_form(self) -> QWidget:
+        widget = QWidget()
+        form = QFormLayout(widget)
+        self.load3d_nodal_coord = QComboBox()
+        self.load3d_nodal_coord.addItem("전역 좌표계", "global")
+        self.load3d_nodal_coord.addItem("로컬 좌표계", "local")
+        form.addRow("좌표계", self.load3d_nodal_coord)
+        self.load3d_nodal_fields: dict[str, QDoubleSpinBox] = {}
+        for key, label in (("fx", "Fx"), ("fy", "Fy"), ("fz", "Fz"), ("mx", "Mx"), ("my", "My"), ("mz", "Mz")):
+            spin = self._number(0.0)
+            self.load3d_nodal_fields[key] = spin
+            form.addRow(label, spin)
+        return widget
+
+    def _build_load3d_member_form(self) -> QWidget:
+        widget = QWidget()
+        form = QFormLayout(widget)
+        self._load3d_member_form = form
+        self.load3d_member_coord = QComboBox()
+        self.load3d_member_coord.addItem("전역 좌표계", "global")
+        self.load3d_member_coord.addItem("로컬 좌표계", "local")
+        form.addRow("좌표계", self.load3d_member_coord)
+        self.load3d_member_direction = QComboBox()
+        self.load3d_member_direction.addItems(["X", "Y", "Z"])
+        self.load3d_member_direction.setCurrentText("Y")
+        form.addRow("방향", self.load3d_member_direction)
+        self.load3d_member_start_value = self._number(0.0)
+        form.addRow("시작값", self.load3d_member_start_value)
+        self.load3d_member_end_value = self._number(0.0)
+        form.addRow("끝값", self.load3d_member_end_value)
+        self.load3d_member_start_position = self._number(0.0)
+        form.addRow("시작 위치", self.load3d_member_start_position)
+        self.load3d_member_end_position = self._number(1.0)
+        form.addRow("끝 위치", self.load3d_member_end_position)
+        self.load3d_member_position_unit = QComboBox()
+        self.load3d_member_position_unit.addItem("비율 (0~1)", "ratio")
+        self.load3d_member_position_unit.addItem("길이", "length")
+        form.addRow("위치 기준", self.load3d_member_position_unit)
+        return widget
+
+    def _build_load3d_floor_form(self) -> QWidget:
+        widget = QWidget()
+        form = QFormLayout(widget)
+        self.load3d_floor_magnitude = self._number(0.0)
+        form.addRow("크기", self.load3d_floor_magnitude)
+        self.load3d_floor_direction = QComboBox()
+        for value, label in (("-z", "-Z"), ("+z", "+Z"), ("-x", "-X"), ("+x", "+X"), ("-y", "-Y"), ("+y", "+Y")):
+            self.load3d_floor_direction.addItem(label, value)
+        form.addRow("방향", self.load3d_floor_direction)
+        self.load3d_floor_distribution = QComboBox()
+        self.load3d_floor_distribution.addItem("1방향", "one_way")
+        self.load3d_floor_distribution.addItem("2방향 (준비 중)", "two_way")
+        form.addRow("분배 방식", self.load3d_floor_distribution)
+        self.load3d_floor_span_direction = QComboBox()
+        self.load3d_floor_span_direction.addItem("X", "x")
+        self.load3d_floor_span_direction.addItem("Y", "y")
+        form.addRow("주방향", self.load3d_floor_span_direction)
+        self.load3d_floor_preview_button = QPushButton("분배 미리보기 (준비 중)")
+        self.load3d_floor_preview_button.setEnabled(False)
+        form.addRow(self.load3d_floor_preview_button)
+        return widget
+
+    def _build_load3d_self_weight_form(self) -> QWidget:
+        widget = QWidget()
+        form = QFormLayout(widget)
+        self.load3d_self_weight_case = QLabel()
+        form.addRow("하중케이스", self.load3d_self_weight_case)
+        self.canvas.load_state_changed.connect(self._refresh_load3d_self_weight_case_label)
+        self.load3d_self_weight_fx = self._number(0.0)
+        form.addRow("X 계수", self.load3d_self_weight_fx)
+        self.load3d_self_weight_fy = self._number(0.0)
+        form.addRow("Y 계수", self.load3d_self_weight_fy)
+        self.load3d_self_weight_fz = self._number(-1.0)
+        form.addRow("Z 계수", self.load3d_self_weight_fz)
+        self.load3d_self_weight_apply_all = QCheckBox("전체 부재에 적용")
+        self.load3d_self_weight_apply_all.setChecked(True)
+        form.addRow(self.load3d_self_weight_apply_all)
+        return widget
+
+    def _refresh_load3d_self_weight_case_label(self) -> None:
+        if not hasattr(self, "load3d_self_weight_case"):
+            return
+        case = self.canvas.load_cases.get(self.canvas.active_load_case_id)
+        self.load3d_self_weight_case.setText(case.name if case is not None else "—")
+
+    def _on_load3d_type_changed(self, _index: int | None = None) -> None:
+        key = self.load3d_type_combo.currentData()
+        self.load3d_member_subtype_row.setVisible(key == "member")
+        self.load3d_form_stack.setCurrentIndex(self.load3d_form_pages[key])
+        if key == "self_weight":
+            self._refresh_load3d_self_weight_case_label()
+        self._refresh_load3d_target_count()
+
+    def _on_load3d_member_subtype_changed(self, _index: int | None = None) -> None:
+        key = self.load3d_member_subtype_combo.currentData()
+        is_point = key in ("member_point", "member_moment")
+        form = self._load3d_member_form
+        form.setRowVisible(self.load3d_member_end_value, not is_point)
+        is_partial = key == "member_partial"
+        form.setRowVisible(self.load3d_member_start_position, is_point or is_partial)
+        form.setRowVisible(self.load3d_member_end_position, is_partial)
+        form.setRowVisible(self.load3d_member_position_unit, is_point or is_partial)
+
+    def _current_load3d_top_kind(self) -> str:
+        return str(self.load3d_type_combo.currentData())
+
+    def _current_load3d_member_subtype(self) -> str:
+        return str(self.load3d_member_subtype_combo.currentData())
+
+    def _refresh_load3d_target_count(self) -> None:
+        if not hasattr(self, "load3d_target_count_label"):
+            return
+        kind = self._current_load3d_top_kind()
+        if kind == "nodal":
+            self.load3d_target_count_label.setText(f"선택된 절점 수: {len(self.canvas.selected_nodes)}")
+        elif kind == "member":
+            self.load3d_target_count_label.setText(f"선택된 부재 수: {len(self.canvas.selected_elements)}")
+        elif kind == "floor":
+            self.load3d_target_count_label.setText(
+                f"선택된 경계 노드 수: {len(self.canvas.selected_nodes)} (3개 이상 필요)"
+            )
+        elif kind == "self_weight":
+            if self.load3d_self_weight_apply_all.isChecked():
+                self.load3d_target_count_label.setText("전체 부재에 적용됩니다.")
+            else:
+                self.load3d_target_count_label.setText(f"선택된 부재 수: {len(self.canvas.selected_elements)}")
+
+    def _apply_load3d(self) -> None:
+        case_id = self.canvas.active_load_case_id
+        if case_id is None:
+            self.load3d_status_label.setText("⚠ 먼저 Load Case를 선택하거나 [관리]에서 만드세요.")
+            return
+        kind = self._current_load3d_top_kind()
+        if kind == "nodal":
+            targets = tuple(self.canvas.selected_nodes)
+            if not targets:
+                self.load3d_status_label.setText("⚠ 절점을 선택하세요.")
+                return
+            fields = {key: spin.value() for key, spin in self.load3d_nodal_fields.items()}
+            payload = NodalLoadEntry(coordinate_system=self.load3d_nodal_coord.currentData(), **fields)
+            self._commit_load3d_entry(case_id, "nodal", targets, payload)
+        elif kind == "member":
+            targets = tuple(self.canvas.selected_elements)
+            if not targets:
+                self.load3d_status_label.setText("⚠ 부재를 선택하세요.")
+                return
+            subtype = self._current_load3d_member_subtype()
+            coordinate_system = self.load3d_member_coord.currentData()
+            direction = self.load3d_member_direction.currentText().lower()
+            position_unit = self.load3d_member_position_unit.currentData()
+            if subtype in ("member_point", "member_moment"):
+                payload = MemberPointLoadEntry(
+                    coordinate_system=coordinate_system,
+                    direction=direction,
+                    value=self.load3d_member_start_value.value(),
+                    position=self.load3d_member_start_position.value(),
+                    position_unit=position_unit,
+                )
+            else:
+                start_value = self.load3d_member_start_value.value()
+                end_value = start_value if subtype == "member_uniform" else self.load3d_member_end_value.value()
+                if subtype == "member_partial":
+                    start_position = self.load3d_member_start_position.value()
+                    end_position = self.load3d_member_end_position.value()
+                else:
+                    start_position, end_position = 0.0, 1.0
+                payload = MemberDistributedLoadEntry(
+                    coordinate_system=coordinate_system,
+                    direction=direction,
+                    start_value=start_value,
+                    end_value=end_value,
+                    start_position=start_position,
+                    end_position=end_position,
+                    position_unit=position_unit,
+                )
+            self._commit_load3d_entry(case_id, subtype, targets, payload)
+        elif kind == "floor":
+            targets = tuple(sorted(self.canvas.selected_nodes))
+            if len(targets) < 3:
+                self.load3d_status_label.setText("⚠ 폐합영역을 이룰 절점을 3개 이상 선택하세요.")
+                return
+            payload = FloorLoadEntry(
+                magnitude=self.load3d_floor_magnitude.value(),
+                direction=self.load3d_floor_direction.currentData(),
+                distribution=self.load3d_floor_distribution.currentData(),
+                span_direction=self.load3d_floor_span_direction.currentData(),
+                target_nodes=targets,
+            )
+            self._commit_load3d_entry(case_id, "floor", targets, payload)
+        elif kind == "self_weight":
+            apply_all = self.load3d_self_weight_apply_all.isChecked()
+            targets = () if apply_all else tuple(self.canvas.selected_elements)
+            if not apply_all and not targets:
+                self.load3d_status_label.setText("⚠ 부재를 선택하거나 '전체 부재에 적용'을 체크하세요.")
+                return
+            payload = SelfWeightEntry(
+                factor_x=self.load3d_self_weight_fx.value(),
+                factor_y=self.load3d_self_weight_fy.value(),
+                factor_z=self.load3d_self_weight_fz.value(),
+                apply_to_all=apply_all,
+                target_elements=targets,
+            )
+            self._commit_load3d_entry(case_id, "self_weight", targets, payload)
+
+    def _commit_load3d_entry(self, case_id: str, kind: str, targets: tuple[int, ...], payload: object) -> None:
+        if self._editing_load_entry_id is not None:
+            self.canvas.update_load_entry(self._editing_load_entry_id, target=targets, payload=payload)
+            self._editing_load_entry_id = None
+            self.load3d_apply_button.setText("적용")
+            self.load3d_status_label.setText("✓ 수정되었습니다.")
+        else:
+            self.canvas.add_load_entry(case_id, kind, targets, payload)
+            self.load3d_status_label.setText("✓ 적용되었습니다.")
+        self._refresh_load3d_viewport()
+
+    def _load_entry_display_id(self, entry) -> str:
+        for kinds, _label, prefix in self._LOAD3D_KIND_GROUPS:
+            if entry.kind not in kinds:
+                continue
+            siblings = sorted(
+                (e for e in self.canvas.load_entries.values() if e.case_id == entry.case_id and e.kind in kinds),
+                key=lambda e: e.id,
+            )
+            index = siblings.index(entry) + 1
+            return f"{prefix}-{index:03d}"
+        return f"#{entry.id}"
+
+    def _show_selected_load(self, entry_id: int) -> None:
+        entry = self.canvas.load_entries.get(entry_id)
+        if entry is None:
+            return
+        self._selected_load_id = entry_id
+        case = self.canvas.load_cases.get(entry.case_id)
+        self.selection_status_panel.show_load_entry(
+            entry, case, self._load_entry_display_id(entry), self._unit_system
+        )
+
+    def _populate_load3d_form(self, entry) -> None:
+        payload = entry.payload
+        if entry.kind == "nodal":
+            index = self.load3d_nodal_coord.findData(payload.coordinate_system)
+            if index >= 0:
+                self.load3d_nodal_coord.setCurrentIndex(index)
+            for key, spin in self.load3d_nodal_fields.items():
+                spin.setValue(getattr(payload, key))
+        elif entry.kind in ("member_point", "member_moment", "member_uniform", "member_linear", "member_partial"):
+            index = self.load3d_member_coord.findData(payload.coordinate_system)
+            if index >= 0:
+                self.load3d_member_coord.setCurrentIndex(index)
+            self.load3d_member_direction.setCurrentText(payload.direction.upper())
+            if hasattr(payload, "value"):
+                self.load3d_member_start_value.setValue(payload.value)
+                self.load3d_member_start_position.setValue(payload.position)
+            else:
+                self.load3d_member_start_value.setValue(payload.start_value)
+                self.load3d_member_end_value.setValue(payload.end_value)
+                self.load3d_member_start_position.setValue(payload.start_position)
+                self.load3d_member_end_position.setValue(payload.end_position)
+            unit_index = self.load3d_member_position_unit.findData(payload.position_unit)
+            if unit_index >= 0:
+                self.load3d_member_position_unit.setCurrentIndex(unit_index)
+        elif entry.kind == "floor":
+            self.load3d_floor_magnitude.setValue(payload.magnitude)
+            direction_index = self.load3d_floor_direction.findData(payload.direction)
+            if direction_index >= 0:
+                self.load3d_floor_direction.setCurrentIndex(direction_index)
+            distribution_index = self.load3d_floor_distribution.findData(payload.distribution)
+            if distribution_index >= 0:
+                self.load3d_floor_distribution.setCurrentIndex(distribution_index)
+            span_index = self.load3d_floor_span_direction.findData(payload.span_direction)
+            if span_index >= 0:
+                self.load3d_floor_span_direction.setCurrentIndex(span_index)
+        elif entry.kind == "self_weight":
+            self.load3d_self_weight_fx.setValue(payload.factor_x)
+            self.load3d_self_weight_fy.setValue(payload.factor_y)
+            self.load3d_self_weight_fz.setValue(payload.factor_z)
+            self.load3d_self_weight_apply_all.setChecked(payload.apply_to_all)
+
+    def _edit_load_entry(self, entry_id: int) -> None:
+        entry = self.canvas.load_entries.get(entry_id)
+        if entry is None:
+            return
+        self._editing_load_entry_id = entry_id
+        self.canvas.active_load_case_id = entry.case_id
+        self._refresh_load_case_combo()
+        command_index = self.load_command_combo.findData(entry.kind)
+        if command_index >= 0:
+            self.load_command_combo.setCurrentIndex(command_index)
+        # Existing entries are edited through the case-based form even when
+        # new nodal/uniform/linear loads use the solver-connected form. This
+        # preserves the entry id and updates in place rather than creating a
+        # second load when Apply is pressed.
+        self.load_command_stack.setCurrentIndex(self.load_command_pages["entry"])
+        top_kind = "member" if entry.kind.startswith("member_") else entry.kind
+        type_index = self.load3d_type_combo.findData(top_kind)
+        if type_index >= 0:
+            self.load3d_type_combo.setCurrentIndex(type_index)
+        subtype_index = self.load3d_member_subtype_combo.findData(entry.kind)
+        if subtype_index >= 0:
+            self.load3d_member_subtype_combo.setCurrentIndex(subtype_index)
+        self._populate_load3d_form(entry)
+        self.load3d_command_title.setText(
+            f"{self._load_entry_display_id(entry)} 수정"
+        )
+        self.load3d_apply_button.setText("수정 적용")
+        self.load3d_status_label.setText(f"'{self._load_entry_display_id(entry)}' 수정 중 - 값을 바꾸고 적용을 누르세요.")
+        self._show_category("load")
+
+    def _reselect_load_entry_target(self, entry_id: int) -> None:
+        entry = self.canvas.load_entries.get(entry_id)
+        if entry is None:
+            return
+        if entry.kind in ("nodal", "floor"):
+            self.canvas.selected_nodes = set(entry.target)
+            self.canvas.selected_elements.clear()
+        else:
+            self.canvas.selected_elements = set(entry.target)
+            self.canvas.selected_nodes.clear()
+        self.canvas.selection_changed.emit()
+        self._edit_load_entry(entry_id)
+
+    def _delete_load_entry_from_status(self, entry_id: int) -> None:
+        self.canvas.delete_load_entry(entry_id)
+        if getattr(self, "_selected_load_id", None) == entry_id:
+            self._selected_load_id = None
+            self._sync_selection_status()
+
+    def _refresh_load_tree(self) -> None:
+        if not hasattr(self, "work_tree"):
+            return
+        self.work_tree_load_combinations.takeChildren()
+        for combination in self.canvas.load_combinations.values():
+            factor_text = ", ".join(
+                f"{kind.value} {factor:g}" for kind, factor in combination.factors.items()
+            )
+            leaf = QTreeWidgetItem([combination.name, ""])
+            leaf.setToolTip(0, factor_text or "계수 없음")
+            self.work_tree_load_combinations.addChild(leaf)
+        self.work_tree_load_combinations.setText(1, str(len(self.canvas.load_combinations)))
+        self.work_tree_load_combinations.setExpanded(True)
+
+        for case_id in list(self._work_tree_case_items.keys()):
+            if case_id not in self.canvas.load_cases:
+                item = self._work_tree_case_items.pop(case_id)
+                index = self.work_tree.indexOfTopLevelItem(item)
+                if index >= 0:
+                    self.work_tree.takeTopLevelItem(index)
+
+        for case in self.canvas.load_cases.values():
+            item = self._work_tree_case_items.get(case.id)
+            if item is None:
+                item = QTreeWidgetItem(["", ""])
+                self._work_tree_case_items[case.id] = item
+                self.work_tree.addTopLevelItem(item)
+            item.setText(0, case.name)
+            item.setForeground(0, QBrush(QColor(LOAD_CASE_PRESENTATION[case.kind][1])))
+            item.takeChildren()
+            case_entries = [entry for entry in self.canvas.load_entries.values() if entry.case_id == case.id]
+            item.setText(1, str(len(case_entries)))
+            for kinds, label, prefix in self._LOAD3D_KIND_GROUPS:
+                group_entries = sorted(
+                    (entry for entry in case_entries if entry.kind in kinds), key=lambda e: e.id
+                )
+                if not group_entries:
+                    continue
+                group_item = QTreeWidgetItem([f"{label} ({len(group_entries)})", ""])
+                item.addChild(group_item)
+                for index, entry in enumerate(group_entries, start=1):
+                    leaf = QTreeWidgetItem([f"{prefix}-{index:03d}", ""])
+                    leaf.setData(0, Qt.ItemDataRole.UserRole, entry.id)
+                    if entry.hidden:
+                        leaf.setForeground(0, QBrush(QColor("#9ca3af")))
+                    group_item.addChild(leaf)
+            item.setExpanded(True)
+
+    def _on_work_tree_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        entry_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if entry_id is not None:
+            self._show_selected_load(int(entry_id))
+
+    def _show_work_tree_context_menu(self, position) -> None:
+        item = self.work_tree.itemAt(position)
+        if item is None:
+            return
+        entry_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if entry_id is None:
+            return
+        entry_id = int(entry_id)
+        entry = self.canvas.load_entries.get(entry_id)
+        if entry is None:
+            return
+        menu = QMenu(self.work_tree)
+        edit_action = menu.addAction("Edit")
+        duplicate_action = menu.addAction("Duplicate")
+        hide_action = menu.addAction("Show" if entry.hidden else "Hide")
+        delete_action = menu.addAction("Delete")
+        move_menu = menu.addMenu("Move to Load Case")
+        move_actions = {}
+        for case in self.canvas.load_cases.values():
+            if case.id == entry.case_id:
+                continue
+            move_actions[move_menu.addAction(case.name)] = case.id
+        chosen = menu.exec(self.work_tree.viewport().mapToGlobal(position))
+        if chosen is None:
+            return
+        if chosen is edit_action:
+            self._edit_load_entry(entry_id)
+        elif chosen is duplicate_action:
+            self.canvas.duplicate_load_entry(entry_id)
+        elif chosen is hide_action:
+            self.canvas.set_load_entry_hidden(entry_id, not entry.hidden)
+        elif chosen is delete_action:
+            self.canvas.delete_load_entry(entry_id)
+            if getattr(self, "_selected_load_id", None) == entry_id:
+                self._selected_load_id = None
+                self._sync_selection_status()
+        elif chosen in move_actions:
+            self.canvas.move_load_entry_to_case(entry_id, move_actions[chosen])
 
     def _build_load_category(self) -> QWidget:
         section, root = self._section("하중", show_title=False)
@@ -1809,14 +3088,21 @@ class ModelingInterfacePage(QFrame):
         self._sync_selection_status()
 
     def _build_transform_section(self) -> QWidget:
-        """Move, copy, array-copy and mirror — every operation that turns a hand-
-        drawn fragment into a repeated or symmetric shape without redrawing it.
-        Its own 이동·복사·배열 category page in the left-hand editor panel.
+        """2D's 이동·복사·배열 category page — move, copy, array-copy, rotate-copy
+        and mirror all together behind one combo, in the left-hand editor
+        panel. 3D splits these into their own flat Element-tab entries
+        instead (``_build_element_translate_section`` and
+        ``_build_duplicate_element_section``/``_build_array_copy_section``/
+        ``_build_rotate_copy_section``/``_build_mirror_copy_section``) - kept
+        as separate builders rather than branching this one on
+        ``_start_in_3d``, so 2D's combo (never asked to change) stays exactly
+        as it always has.
         """
         section, root = self._section("노드 이동 · 복사 · 배열", show_title=False)
         transform_hint = QLabel(
-            "위쪽 툴바의 '선택 필터'를 노드만/부재만으로 바꿔 옮기거나 복사할 대상을 "
-            "고르세요 — 부재를 선택하면 양쪽 끝 노드까지 함께 이동·복사됩니다."
+            "위쪽 툴바의 '선택 필터'를 노드만/부재만으로 바꿔 옮기거나 "
+            "복사할 대상을 고르세요 — 부재를 선택하면 양쪽 끝 노드까지 함께 "
+            "이동·복사됩니다."
         )
         transform_hint.setWordWrap(True)
         transform_hint.setObjectName("setupSectionHint")
@@ -1846,6 +3132,12 @@ class ModelingInterfacePage(QFrame):
         self.node_transform_repeat.setEnabled(False)
         form.addRow("반복/배열 개수", self.node_transform_repeat)
         root.addLayout(form)
+        self.copy_node_attributes = QCheckBox("Copy Node Attributes (지점·절점하중)")
+        self.copy_node_attributes.setChecked(False)
+        root.addWidget(self.copy_node_attributes)
+        self.copy_element_loads = QCheckBox("Copy Element Loads (부재하중)")
+        self.copy_element_loads.setChecked(False)
+        root.addWidget(self.copy_element_loads)
         self._sync_transform_form()
         apply_button = QPushButton("선택 항목에 적용")
         apply_button.clicked.connect(self._apply_node_transform)
@@ -1880,6 +3172,334 @@ class ModelingInterfacePage(QFrame):
         # something that actually wants the surplus, so every control here
         # keeps its natural size and any leftover space collects in one place
         # at the bottom instead.
+        root.addStretch(1)
+        return section
+
+    def _build_transform_offset_form(
+        self, *, dx_label: str = "dX", dy_label: str = "dY"
+    ) -> tuple[QFormLayout, QDoubleSpinBox, QDoubleSpinBox]:
+        """The dX/dY pair every 3D Element transform page needs, factored out
+        since Translate/Duplicate/Array/Rotate Copy each build their own
+        (rotate relabels them "중심 X"/"중심 Y" - same role a pivot plays that
+        an offset's dx/dy does, see the docstring 2D's combined combo used to
+        carry). Local widgets, not ``self.`` attributes - these five pages
+        all coexist in the same QStackedWidget, so five different pages
+        sharing one ``self.node_transform_dx`` name would each silently
+        overwrite the last one's reference.
+        """
+        form = QFormLayout()
+        dx_field = self._number(1.0)
+        dy_field = self._number(0.0)
+        form.addRow(dx_label, dx_field)
+        form.addRow(dy_label, dy_field)
+        return form, dx_field, dy_field
+
+    def _build_transform_copy_option_checkboxes(
+        self, root: QVBoxLayout
+    ) -> tuple[QCheckBox, QCheckBox]:
+        copy_node_cb = QCheckBox("Copy Node Attributes (지점·절점하중)")
+        root.addWidget(copy_node_cb)
+        copy_element_cb = QCheckBox("Copy Element Loads (부재하중)")
+        root.addWidget(copy_element_cb)
+        return copy_node_cb, copy_element_cb
+
+    def _build_element_translate_section(self) -> QWidget:
+        """3D Element tab's Translate page — move only. Copy/array/rotate/
+        mirror used to live behind the same combo (see ``_build_transform_
+        section``, which 2D still uses unchanged); split into their own flat
+        entries here for discoverability, matching Create/Translate Element's
+        existing equal-footing pattern."""
+        section, root = self._section("Element Translate", show_title=False)
+        hint = QLabel(
+            "부재를 선택하면 양쪽 끝 노드와 함께 이동됩니다. dX/dY는 현재 작업평면의 "
+            "로컬 축 기준입니다."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        form, dx_field, dy_field = self._build_transform_offset_form()
+        root.addLayout(form)
+        apply_button = QPushButton("선택 항목에 적용")
+
+        def _apply() -> None:
+            self.canvas.transform_selected_nodes("move", dx_field.value(), dy_field.value())
+
+        apply_button.clicked.connect(_apply)
+        root.addWidget(apply_button)
+        root.addStretch(1)
+        return section
+
+    def _build_duplicate_element_section(self) -> QWidget:
+        section, root = self._section("Element Duplicate", show_title=False)
+        hint = QLabel(
+            "부재를 선택하면 양쪽 끝 노드와 함께 복사됩니다. 복사된 부재는 원본의 "
+            "물성·단면·로컬축·단부 릴리즈를 그대로 유지합니다."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        form, dx_field, dy_field = self._build_transform_offset_form()
+        repeat_field = SafeSpinBox()
+        repeat_field.setRange(1, 1000)
+        form.addRow("복사 개수", repeat_field)
+        root.addLayout(form)
+        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
+        apply_button = QPushButton("선택 항목에 적용")
+
+        def _apply() -> None:
+            self.canvas.transform_selected_nodes(
+                "copy",
+                dx_field.value(),
+                dy_field.value(),
+                repeat_field.value(),
+                copy_node_attributes=copy_node_cb.isChecked(),
+                copy_element_loads=copy_element_cb.isChecked(),
+            )
+
+        apply_button.clicked.connect(_apply)
+        root.addWidget(apply_button)
+        root.addStretch(1)
+        return section
+
+    def _build_array_copy_section(self) -> QWidget:
+        section, root = self._section("Element Array Copy", show_title=False)
+        hint = QLabel("부재를 선택하면 양쪽 끝 노드와 함께 일정 간격으로 반복 복사됩니다.")
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        form, dx_field, dy_field = self._build_transform_offset_form()
+        repeat_field = SafeSpinBox()
+        repeat_field.setRange(1, 1000)
+        form.addRow("배열 개수", repeat_field)
+        root.addLayout(form)
+        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
+        apply_button = QPushButton("선택 항목에 적용")
+
+        def _apply() -> None:
+            self.canvas.array_copy_selection(
+                dx_field.value(),
+                dy_field.value(),
+                repeat_field.value(),
+                copy_node_attributes=copy_node_cb.isChecked(),
+                copy_element_loads=copy_element_cb.isChecked(),
+            )
+
+        apply_button.clicked.connect(_apply)
+        root.addWidget(apply_button)
+        root.addStretch(1)
+        return section
+
+    def _build_rotate_copy_section(self) -> QWidget:
+        section, root = self._section("Element Rotate Copy", show_title=False)
+        hint = QLabel("부재를 선택하면 중심점 기준으로 회전 복사됩니다.")
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        form, center_x_field, center_y_field = self._build_transform_offset_form(
+            dx_label="중심 X", dy_label="중심 Y"
+        )
+        angle_field = self._number(90.0)
+        angle_field.setToolTip(
+            "복사할 때마다 누적되는 회전각 — 예: 3개·30°면 원본 기준 30°/60°/90° 위치에 복사됩니다."
+        )
+        form.addRow("회전각(°)", angle_field)
+        repeat_field = SafeSpinBox()
+        repeat_field.setRange(1, 1000)
+        form.addRow("반복 개수", repeat_field)
+        root.addLayout(form)
+        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
+        apply_button = QPushButton("선택 항목에 적용")
+
+        def _apply() -> None:
+            self.canvas.rotate_copy_selection(
+                center_x_field.value(),
+                center_y_field.value(),
+                angle_field.value(),
+                repeat_field.value(),
+                copy_node_attributes=copy_node_cb.isChecked(),
+                copy_element_loads=copy_element_cb.isChecked(),
+            )
+
+        apply_button.clicked.connect(_apply)
+        root.addWidget(apply_button)
+        root.addStretch(1)
+        return section
+
+    def _build_mirror_copy_section(self) -> QWidget:
+        section, root = self._section("Element Mirror Copy", show_title=False)
+        hint = QLabel("대칭 복사 — 절반만 그린 뒤 축을 기준으로 나머지를 만듭니다.")
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        mirror_row = QHBoxLayout()
+        axis_field = QComboBox()
+        axis_field.addItem("수직선 X =", "x")
+        axis_field.addItem("수평선 Y =", "y")
+        mirror_row.addWidget(axis_field)
+        value_field = self._number(0.0)
+        mirror_row.addWidget(value_field, 1)
+        root.addLayout(mirror_row)
+        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
+        apply_button = QPushButton("선택 노드 대칭 복사")
+
+        def _apply() -> None:
+            self.canvas.mirror_selection(
+                axis_field.currentData(),
+                value_field.value(),
+                copy_node_attributes=copy_node_cb.isChecked(),
+                copy_element_loads=copy_element_cb.isChecked(),
+            )
+
+        apply_button.clicked.connect(_apply)
+        root.addWidget(apply_button)
+        root.addStretch(1)
+        return section
+
+    def _build_node_translate_section(self) -> QWidget:
+        """Node tab's own Translate page - the node-only counterpart of
+        ``_build_element_translate_section``. Same canvas call
+        (``transform_selected_nodes``), different selection scope: the Node
+        subcategory combo narrows ``selection_filter`` to "nodes" before
+        showing this page, so a member can never be dragged along by
+        accident here - picking it up (with its member) is what the Element
+        tab's Translate is for."""
+        section, root = self._section("Node Translate", show_title=False)
+        hint = QLabel("선택한 노드를 지정한 만큼 이동합니다.")
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        form, dx_field, dy_field = self._build_transform_offset_form()
+        root.addLayout(form)
+        apply_button = QPushButton("선택 항목에 적용")
+
+        def _apply() -> None:
+            self.canvas.transform_selected_nodes("move", dx_field.value(), dy_field.value())
+
+        apply_button.clicked.connect(_apply)
+        root.addWidget(apply_button)
+        root.addStretch(1)
+        return section
+
+    def _build_node_duplicate_section(self) -> QWidget:
+        section, root = self._section("Node Duplicate", show_title=False)
+        hint = QLabel("선택한 노드를 지정한 만큼 떨어진 위치에 복사합니다.")
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        form, dx_field, dy_field = self._build_transform_offset_form()
+        repeat_field = SafeSpinBox()
+        repeat_field.setRange(1, 1000)
+        form.addRow("복사 개수", repeat_field)
+        root.addLayout(form)
+        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
+        apply_button = QPushButton("선택 항목에 적용")
+
+        def _apply() -> None:
+            self.canvas.transform_selected_nodes(
+                "copy",
+                dx_field.value(),
+                dy_field.value(),
+                repeat_field.value(),
+                copy_node_attributes=copy_node_cb.isChecked(),
+                copy_element_loads=copy_element_cb.isChecked(),
+            )
+
+        apply_button.clicked.connect(_apply)
+        root.addWidget(apply_button)
+        root.addStretch(1)
+        return section
+
+    def _build_node_array_copy_section(self) -> QWidget:
+        section, root = self._section("Node Array Copy", show_title=False)
+        hint = QLabel("선택한 노드를 일정 간격으로 반복 복사합니다.")
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        form, dx_field, dy_field = self._build_transform_offset_form()
+        repeat_field = SafeSpinBox()
+        repeat_field.setRange(1, 1000)
+        form.addRow("배열 개수", repeat_field)
+        root.addLayout(form)
+        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
+        apply_button = QPushButton("선택 항목에 적용")
+
+        def _apply() -> None:
+            self.canvas.array_copy_selection(
+                dx_field.value(),
+                dy_field.value(),
+                repeat_field.value(),
+                copy_node_attributes=copy_node_cb.isChecked(),
+                copy_element_loads=copy_element_cb.isChecked(),
+            )
+
+        apply_button.clicked.connect(_apply)
+        root.addWidget(apply_button)
+        root.addStretch(1)
+        return section
+
+    def _build_node_rotate_copy_section(self) -> QWidget:
+        section, root = self._section("Node Rotate Copy", show_title=False)
+        hint = QLabel("선택한 노드를 중심점 기준으로 회전 복사합니다.")
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        form, center_x_field, center_y_field = self._build_transform_offset_form(
+            dx_label="중심 X", dy_label="중심 Y"
+        )
+        angle_field = self._number(90.0)
+        angle_field.setToolTip(
+            "복사할 때마다 누적되는 회전각 — 예: 3개·30°면 원본 기준 30°/60°/90° 위치에 복사됩니다."
+        )
+        form.addRow("회전각(°)", angle_field)
+        repeat_field = SafeSpinBox()
+        repeat_field.setRange(1, 1000)
+        form.addRow("반복 개수", repeat_field)
+        root.addLayout(form)
+        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
+        apply_button = QPushButton("선택 항목에 적용")
+
+        def _apply() -> None:
+            self.canvas.rotate_copy_selection(
+                center_x_field.value(),
+                center_y_field.value(),
+                angle_field.value(),
+                repeat_field.value(),
+                copy_node_attributes=copy_node_cb.isChecked(),
+                copy_element_loads=copy_element_cb.isChecked(),
+            )
+
+        apply_button.clicked.connect(_apply)
+        root.addWidget(apply_button)
+        root.addStretch(1)
+        return section
+
+    def _build_node_mirror_copy_section(self) -> QWidget:
+        section, root = self._section("Node Mirror Copy", show_title=False)
+        hint = QLabel("대칭 복사 — 절반만 그린 뒤 축을 기준으로 나머지를 만듭니다.")
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        root.addWidget(hint)
+        mirror_row = QHBoxLayout()
+        axis_field = QComboBox()
+        axis_field.addItem("수직선 X =", "x")
+        axis_field.addItem("수평선 Y =", "y")
+        mirror_row.addWidget(axis_field)
+        value_field = self._number(0.0)
+        mirror_row.addWidget(value_field, 1)
+        root.addLayout(mirror_row)
+        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
+        apply_button = QPushButton("선택 노드 대칭 복사")
+
+        def _apply() -> None:
+            self.canvas.mirror_selection(
+                axis_field.currentData(),
+                value_field.value(),
+                copy_node_attributes=copy_node_cb.isChecked(),
+                copy_element_loads=copy_element_cb.isChecked(),
+            )
+
+        apply_button.clicked.connect(_apply)
+        root.addWidget(apply_button)
         root.addStretch(1)
         return section
 
@@ -1948,15 +3568,52 @@ class ModelingInterfacePage(QFrame):
         self.section_material_panel = SectionMaterialPanel()
         if self._start_in_3d:
             self.section_material_panel.set_compact_mode()
-            # Section/Section Properties are the Element tab's concern now
-            # (it picks what future members are drawn with) - Properties only
-            # ever edits an already-drawn member's material, so it shows just
-            # that one group. See SectionMaterialPanel.set_visible_groups.
-            self.section_material_panel.set_visible_groups(material=True, section=False)
+            # MIDAS-style Properties defines and applies both reusable
+            # material and section data; Element consumes those definitions
+            # while creating or translating members.
+            self.section_material_panel.set_visible_groups(material=True, section=True)
             self.section_material_panel.material_saved.connect(self._save_user_material)
+            self.section_material_panel.section_saved.connect(self._save_user_section)
+            self.section_material_panel.apply_button.setVisible(True)
+            self.section_material_panel.apply_button.setText("선택 부재에 물성·단면 적용")
         self.section_material_panel.apply_requested.connect(self._apply_member_section)
         self.section_material_panel.edited.connect(self._selection_status_edited)
-        root.addWidget(self.section_material_panel)
+        if self._start_in_3d:
+            # A single "PROPERTIES" dropdown (same setupConfigBar/fieldLabel
+            # look as the Analysis tab's "ANALYSIS TYPE" bar) picks which one
+            # of SectionMaterialPanel's three MATERIAL/SECTION/SECTION
+            # PROPERTIES cards is showing below it - only the selected one is
+            # expanded at a time, so opening the tab never dumps all three
+            # field sets on screen at once. Each card's own clickable header
+            # is redundant once this combo owns which one shows, so it is
+            # hidden here (set_compact_mode() still leaves it there for any
+            # other embed that wants per-card click-to-expand instead).
+            properties_bar = QFrame()
+            properties_bar.setObjectName("setupConfigBar")
+            properties_bar_layout = QHBoxLayout(properties_bar)
+            properties_bar_layout.setContentsMargins(12, 7, 12, 7)
+            properties_bar_label = QLabel("PROPERTIES")
+            properties_bar_label.setObjectName("fieldLabel")
+            properties_bar_layout.addWidget(properties_bar_label)
+            self.properties_selector = QComboBox()
+            self.properties_selector.addItem("MATERIAL", "material")
+            self.properties_selector.addItem("SECTION", "section")
+            self.properties_selector.addItem("SECTION PROPERTIES", "section_properties")
+            self.properties_selector.currentIndexChanged.connect(
+                self._properties_selector_changed
+            )
+            properties_bar_layout.addWidget(self.properties_selector, 1)
+            root.addWidget(properties_bar)
+            for group in (
+                self.section_material_panel.material_group,
+                self.section_material_panel.section_group,
+                self.section_material_panel.properties_group,
+            ):
+                group.set_header_visible(False)
+            root.addWidget(self.section_material_panel)
+            self._properties_selector_changed()
+        else:
+            root.addWidget(self.section_material_panel)
         section_hint = QLabel(
             "저장한 물성과 섹션은 오른쪽 워크트리에서 관리합니다."
             if self._start_in_3d
@@ -2019,7 +3676,7 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(self.member_local_axis_row)
         return content
 
-    def _build_load_bar_content(self) -> QWidget:
+    def _build_load_bar_content(self, *, command_driven: bool = False) -> QWidget:
         """Every applicable load component as its own field, applied together.
 
         A direction dropdown plus one magnitude field cannot represent Fx and Fy
@@ -2038,7 +3695,16 @@ class ModelingInterfacePage(QFrame):
         root = QVBoxLayout(content)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
-        root.addWidget(self._build_load_target_icon_row())
+        self.load_command_form_title = QLabel("하중 설정")
+        self.load_command_form_title.setObjectName("loadCommandTitle")
+        root.addWidget(self.load_command_form_title)
+        kind_title = QLabel("하중 종류")
+        kind_title.setObjectName("loadStepTitle")
+        self.load_target_row = self._build_load_target_icon_row()
+        kind_title.setVisible(not command_driven)
+        self.load_target_row.setVisible(not command_driven)
+        root.addWidget(kind_title)
+        root.addWidget(self.load_target_row)
         # 기본은 다른 축 입력과 같은 방식인 Fx/Fy 직접 입력입니다. 경사 부재에
         # 수직인 하중(풍하중 등)처럼 각도를 직접 계산하기 번거로운 경우를 위해
         # '부재 수직' 입력(크기 하나 + 자동 각도)으로 전환할 수 있습니다. 노드가
@@ -2054,6 +3720,9 @@ class ModelingInterfacePage(QFrame):
         )
         self.load_mode_toggle.toggled.connect(self._toggle_load_input_mode)
         root.addWidget(self.load_mode_toggle)
+        value_title = QLabel("하중 값")
+        value_title.setObjectName("loadStepTitle")
+        root.addWidget(value_title)
         self.load_coordinate_row = QWidget()
         coordinate_layout = QHBoxLayout(self.load_coordinate_row)
         coordinate_layout.setContentsMargins(0, 0, 0, 0)
@@ -2078,10 +3747,11 @@ class ModelingInterfacePage(QFrame):
         self.load_form_layout.setSpacing(6)
         self.load_fields: dict[str, QDoubleSpinBox] = {}
         root.addLayout(self.load_form_layout)
-        apply_button = QPushButton("적용")
-        apply_button.setToolTip("선택 대상에 적용 (전체 성분)")
-        apply_button.clicked.connect(self._apply_load)
-        root.addWidget(apply_button)
+        self.load_apply_button = QPushButton("선택 대상에 적용")
+        self.load_apply_button.setObjectName("loadPrimaryButton")
+        self.load_apply_button.setToolTip("선택 대상에 적용 (전체 성분)")
+        self.load_apply_button.clicked.connect(self._apply_load)
+        root.addWidget(self.load_apply_button)
         self._load_target_changed()
         return content
 
@@ -2645,9 +4315,14 @@ class ModelingInterfacePage(QFrame):
         self.new_plane_label.clear()
 
     def _extrude_to_target_plane(self) -> None:
+        if self._start_in_3d and self._active_element_kwargs is None:
+            self._activate_draw_tool()
+            return
         target = self.column_target.currentData()
         if target is not None:
+            before = set(self.canvas.elements)
             self.canvas.extrude_selection_to_plane(target)
+            self._apply_active_element_to_new_members(set(self.canvas.elements) - before)
 
     def _on_3d_plane_picked(self, x: float, y: float, z: float) -> None:
         """A click on empty space on the active plane in the 3D view.
@@ -2668,6 +4343,10 @@ class ModelingInterfacePage(QFrame):
         while drawing, or just select it otherwise — matching what clicking a
         node on the 2D plan does in each of those tools."""
         if self.canvas.mode == "draw":
+            if self._active_element_kwargs is None:
+                self.canvas.end_chain()
+                self._activate_draw_tool()
+                return
             before = set(self.canvas.elements)
             self.canvas.continue_chain_to_node(tag)
             self._apply_active_element_to_new_members(set(self.canvas.elements) - before)
@@ -2675,6 +4354,30 @@ class ModelingInterfacePage(QFrame):
             self.canvas.selected_nodes = {tag}
             self.canvas.selected_elements.clear()
             self.canvas.selection_changed.emit()
+
+    def _on_3d_member_picked(self, tag: int, _screen_x: int, _screen_y: int) -> None:
+        """Select a member with a plain click in the 3D authoring view."""
+        if self.canvas.mode != "select" or tag not in self.canvas.elements:
+            return
+        if self.canvas.selection_filter == "nodes":
+            return
+        self.canvas.selected_nodes.clear()
+        self.canvas.selected_elements = {tag}
+        self.canvas.selection_changed.emit()
+
+    def _on_3d_box_selected(
+        self, node_tags: set[int], member_tags: set[int], additive: bool
+    ) -> None:
+        """Apply the QML viewport's projected rectangle selection to the
+        shared modeling canvas state, including the active selection filter."""
+        if not additive:
+            self.canvas.selected_nodes.clear()
+            self.canvas.selected_elements.clear()
+        if self.canvas.selection_filter in {"all", "nodes"}:
+            self.canvas.selected_nodes.update(node_tags)
+        if self.canvas.selection_filter in {"all", "elements"}:
+            self.canvas.selected_elements.update(member_tags)
+        self.canvas.selection_changed.emit()
 
     def _on_3d_node_hovered(self, tag: int) -> None:
         """Cursor is over an existing node while drawing — snap the rubber-band
@@ -2709,6 +4412,7 @@ class ModelingInterfacePage(QFrame):
     def _refresh_3d_preview(self) -> None:
         if self.canvas.ndm == 3:
             self.preview_3d.set_model(self.canvas.build_model(), reset_camera=False)
+            self._sync_3d_selection_highlight()
 
     def _set_mode(self, mode: str, description: str) -> None:
         self.canvas.set_mode(mode)
@@ -2749,12 +4453,59 @@ class ModelingInterfacePage(QFrame):
         )
         self._sync_property_panel()
 
+    def _handle_escape_shortcut_3d(self) -> None:
+        """Second copy of the canvas's own Escape handling (see
+        canvas_input_events.py's keyPressEvent) scoped to the whole 3D page -
+        self.canvas stays hidden in 3D mode and can never hold keyboard
+        focus, so its own keyPressEvent never fires while the user is
+        actually in preview_3d or the length/angle entry (same reason
+        draw_space_shortcut_3d exists as a second copy of the Space
+        shortcut). Escape exits draw mode without touching selection, same
+        as the 2D canvas; once already in select mode it clears the current
+        selection instead - the usual CAD Esc-to-deselect convention.
+        """
+        if self.canvas.mode == "draw":
+            self._activate_select_tool()
+            return
+        self.canvas.end_chain()
+        self.canvas.clear_selection()
+
     def _activate_draw_tool(self) -> None:
+        if self._start_in_3d and self._active_element_kwargs is None:
+            self.select_tool.setChecked(True)
+            self._set_mode(
+                "select",
+                "Create Element를 시작하려면 Material과 Section을 모두 선택하세요.",
+            )
+            self.workbench_buttons["element"].setChecked(True)
+            self.node_subcategory_row.hide()
+            self.element_subcategory_row.show()
+            index = self.element_subcategory_combo.findData("element_picker")
+            self.element_subcategory_combo.blockSignals(True)
+            self.element_subcategory_combo.setCurrentIndex(index)
+            self.element_subcategory_combo.blockSignals(False)
+            self._active_element_subcategory = "element_picker"
+            self._show_category("element_picker", sync_workbench=False)
+            self.active_element_status.setText(
+                "⚠ 물성·단면이 설정되지 않아 부재를 그릴 수 없습니다. "
+                "Material과 Section을 모두 선택하세요."
+            )
+            self.selection_summary.setText("⚠ Create Element에 필요한 물성·단면이 없습니다.")
+            return
         self.draw_tool.setChecked(True)
+        if self._start_in_3d:
+            self.workbench_buttons["element"].setChecked(True)
+            self.node_subcategory_row.hide()
+            self.element_subcategory_row.show()
+            index = self.element_subcategory_combo.findData("element_picker")
+            self.element_subcategory_combo.blockSignals(True)
+            self.element_subcategory_combo.setCurrentIndex(index)
+            self.element_subcategory_combo.blockSignals(False)
+            self._active_element_subcategory = "element_picker"
         self._set_mode(
             "draw",
             "그리기 · 연속 클릭으로 노드와 부재를 함께 만듭니다. "
-            "아래 입력칸에 길이·각도를 쳐도 됩니다. Esc로 연결을 끊습니다.",
+            "아래 입력칸에 길이·각도를 쳐도 됩니다. Esc로 그리기를 종료합니다.",
         )
         self.draw_entry.setFocus()
         self._sync_property_panel()
@@ -2788,12 +4539,15 @@ class ModelingInterfacePage(QFrame):
 
     def _activate_load_tool(self) -> None:
         self.select_tool.setChecked(True)
-        self._set_mode("select", "하중을 적용할 대상을 선택한 뒤 오른쪽 하중 패널에서 적용하세요.")
+        self._set_mode("select", "하중 명령을 선택하고 대상을 지정한 뒤 왼쪽 설정창에서 적용하세요.")
+        if self._start_in_3d and hasattr(self, "load_task_bar"):
+            self.load_task_bar.show()
         self._sync_property_panel()
         self._load_target_changed()
         self._show_category("load")
 
     def _selection_changed(self) -> None:
+        self._sync_3d_selection_highlight()
         self._sync_property_panel()
         if (
             self.canvas.ndm == 2
@@ -2811,6 +4565,12 @@ class ModelingInterfacePage(QFrame):
         # still nonzero) or disappear entirely (nothing selected any more),
         # never linger pointing at a node that isn't selected any more.
         self._update_load_preview()
+
+    def _sync_3d_selection_highlight(self) -> None:
+        if self.canvas.ndm == 3:
+            self.preview_3d.set_selection(
+                set(self.canvas.selected_nodes), set(self.canvas.selected_elements)
+            )
 
     def _node_selection_summary(self) -> str:
         """Count the selection as 노드 (rigid) versus 절점 (hinge) — MIDAS's split,
@@ -2903,21 +4663,36 @@ class ModelingInterfacePage(QFrame):
         self.member_local_axis_angle.blockSignals(False)
         self.section_material_panel.load_from_element(element)
 
+    def _properties_selector_changed(self, _index: int = 0) -> None:
+        """Show only the MATERIAL/SECTION/SECTION PROPERTIES card the
+        "PROPERTIES" dropdown currently names, hiding the other two - see
+        _build_member_bar_content for why this replaced each card's own
+        clickable header in the 3D Properties tab."""
+        key = self.properties_selector.currentData()
+        panel = self.section_material_panel
+        for group, group_key in (
+            (panel.material_group, "material"),
+            (panel.section_group, "section"),
+            (panel.properties_group, "section_properties"),
+        ):
+            active = key == group_key
+            group.set_expanded(active)
+            # Hiding just the body (set_expanded) leaves the two inactive
+            # cards' own bordered/padded card frame empty but still visible -
+            # a thin blank strip for each. Hide the whole card instead, so
+            # only the one actually-selected card's frame ever shows.
+            group.setVisible(active)
+
     def _apply_member_section(self) -> None:
-        """``SectionMaterialPanel`` only emits ``apply_requested`` once its own
-        validation (valid dimensions, positive Area/Iy/Iz/J) already passed -
-        the one thing left to guard here is the same "reads as the button
-        doesn't work" trap ``_apply_load``/the old rectangle-only apply
-        already guarded against: nothing selected."""
+        """Apply the Properties editor values to selected existing members."""
+        properties = self.section_material_panel.current_application_kwargs()
         if not self.canvas.selected_elements:
             self.selection_summary.setText(
                 "⚠ 선택된 부재가 없어 단면·재료를 적용하지 못했습니다 — 적용할 부재를 클릭하세요."
             )
             return
         count = len(self.canvas.selected_elements)
-        self.canvas.apply_full_section_to_selection(
-            **self.section_material_panel.current_application_kwargs()
-        )
+        self.canvas.apply_full_section_to_selection(**properties)
         self.selection_summary.setText(
             f"✓ 부재 {count}개에 단면·재료(E/A/I)와 단위중량을 적용했습니다."
         )
@@ -2964,7 +4739,12 @@ class ModelingInterfacePage(QFrame):
             self.canvas.subdivide_member(member_tag, self.member_segments.value())
 
     def _commit_draw_entry(self) -> None:
+        if self._start_in_3d and self._active_element_kwargs is None:
+            self._activate_draw_tool()
+            return
+        before = set(self.canvas.elements)
         if self.canvas.commit_entry(self.draw_entry.text()):
+            self._apply_active_element_to_new_members(set(self.canvas.elements) - before)
             self.draw_entry.clear()
             return
         self.draw_readout.setText("입력 형식을 인식하지 못했습니다.")
@@ -3037,6 +4817,12 @@ class ModelingInterfacePage(QFrame):
             item = self.load_form_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                # deleteLater alone leaves the detached QFormLayout labels
+                # paintable until the event loop processes DeferredDelete.
+                # During a 2D -> 3D switch that briefly draws old Fx/Fy/Mz
+                # labels over the new six-component form. Hide immediately,
+                # then dispose of them normally.
+                widget.hide()
                 widget.deleteLater()
         self.load_fields.clear()
         target = self._current_load_target()
@@ -3124,7 +4910,7 @@ class ModelingInterfacePage(QFrame):
         node(s), refreshed on every keystroke/spin — so an inclined load's
         direction can be checked (and corrected) before 적용 is even
         clicked, instead of only finding out it was wrong after committing."""
-        if not self.load_fields or self._current_load_target() != "node":
+        if not hasattr(self, "load_fields") or not self.load_fields or self._current_load_target() != "node":
             return
         self.canvas.set_pending_load_preview(self._node_load_values())
 
@@ -3147,6 +4933,7 @@ class ModelingInterfacePage(QFrame):
                 )
                 return
             self.canvas.apply_nodal_load_to_selection(self._node_load_values())
+            self._record_quick_load_entry()
         else:
             if not self.canvas.selected_elements:
                 self.selection_summary.setText(
@@ -3164,10 +4951,59 @@ class ModelingInterfacePage(QFrame):
             self.canvas.apply_uniform_load_to_selection(
                 values, coordinate_system=coordinate_system
             )
+            self._record_quick_load_entry()
         # A load actually landed - replace any stale ⚠ warning (e.g. from an
         # earlier failed attempt on this same selection) with the normal
         # selection summary, so success doesn't still look like an error.
         self._sync_property_panel()
+
+    def _record_quick_load_entry(self) -> None:
+        """Mirror solver-supported commands into the named Load Case store.
+
+        The command picker should not force users to choose between an
+        analysis-only load and a case-managed load. Nodal and the two member
+        distribution commands therefore commit to both existing stores from
+        the same Apply click. More advanced commands already use
+        ``_apply_load3d`` directly.
+        """
+        if not self._start_in_3d or self.canvas.active_load_case_id is None:
+            return
+        command = str(self.load_command_combo.currentData())
+        case_id = self.canvas.active_load_case_id
+        if command == "nodal":
+            values = self._node_load_values()
+            padded = (*values, *(0.0 for _ in range(max(0, 6 - len(values)))))
+            payload = NodalLoadEntry(
+                fx=padded[0],
+                fy=padded[1],
+                fz=padded[2],
+                mx=padded[3],
+                my=padded[4],
+                mz=padded[5],
+            )
+            self.canvas.add_load_entry(
+                case_id, "nodal", tuple(sorted(self.canvas.selected_nodes)), payload
+            )
+            return
+        if command not in {"member_uniform", "member_linear"}:
+            return
+        end_suffix = command == "member_linear"
+        for axis in ("x", "y"):
+            start = self.load_fields[f"q{axis}"].value()
+            end = self.load_fields[f"q{axis}_j"].value() if end_suffix else start
+            if start == 0.0 and end == 0.0:
+                continue
+            self.canvas.add_load_entry(
+                case_id,
+                command,
+                tuple(sorted(self.canvas.selected_elements)),
+                MemberDistributedLoadEntry(
+                    coordinate_system="local",
+                    direction=axis,
+                    start_value=start,
+                    end_value=end,
+                ),
+            )
 
     @staticmethod
     def _parse_xy_text(text: str) -> tuple[float, float] | None:
@@ -3248,10 +5084,11 @@ class ModelingInterfacePage(QFrame):
         the one genuinely new field, shown only for that operation."""
         operation = self.node_transform_operation.currentData()
         is_rotate = operation == "rotate"
+        is_copy = operation in {"copy", "array", "rotate"}
         self.node_transform_dx_label.setText("중심 X" if is_rotate else "dX")
         self.node_transform_dy_label.setText("중심 Y" if is_rotate else "dY")
         self.node_transform_form.setRowVisible(self.node_transform_angle, is_rotate)
-        self.node_transform_repeat.setEnabled(operation in {"copy", "array", "rotate"})
+        self.node_transform_repeat.setEnabled(is_copy)
 
     def _apply_node_transform(self) -> None:
         operation = self.node_transform_operation.currentData()
@@ -3260,6 +5097,8 @@ class ModelingInterfacePage(QFrame):
                 self.node_transform_dx.value(),
                 self.node_transform_dy.value(),
                 self.node_transform_repeat.value(),
+                copy_node_attributes=self.copy_node_attributes.isChecked(),
+                copy_element_loads=self.copy_element_loads.isChecked(),
             )
             return
         if operation == "rotate":
@@ -3268,6 +5107,8 @@ class ModelingInterfacePage(QFrame):
                 self.node_transform_dy.value(),
                 self.node_transform_angle.value(),
                 self.node_transform_repeat.value(),
+                copy_node_attributes=self.copy_node_attributes.isChecked(),
+                copy_element_loads=self.copy_element_loads.isChecked(),
             )
             return
         self.canvas.transform_selected_nodes(
@@ -3275,10 +5116,17 @@ class ModelingInterfacePage(QFrame):
             self.node_transform_dx.value(),
             self.node_transform_dy.value(),
             self.node_transform_repeat.value(),
+            copy_node_attributes=self.copy_node_attributes.isChecked(),
+            copy_element_loads=self.copy_element_loads.isChecked(),
         )
 
     def _apply_mirror(self) -> None:
-        self.canvas.mirror_selection(self.mirror_axis.currentData(), self.mirror_value.value())
+        self.canvas.mirror_selection(
+            self.mirror_axis.currentData(),
+            self.mirror_value.value(),
+            copy_node_attributes=self.copy_node_attributes.isChecked(),
+            copy_element_loads=self.copy_element_loads.isChecked(),
+        )
 
     def _refresh_status(self) -> None:
         model = self.canvas.build_model()

@@ -4,6 +4,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from _solve_helpers import solve_and_wait
+from PySide6.QtCore import QObject, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from openframe.features.model.drawing import PlaneKind, WorkPlane
@@ -24,6 +26,24 @@ def _page(*, start_in_3d: bool = False) -> ModelingInterfacePage:
     page.resize(1400, 900)
     page.show()
     return page
+
+
+def _enable_element_drawing(page: ModelingInterfacePage) -> None:
+    """Save Properties definitions, then select them for Create Element."""
+    panel = page.section_material_panel
+    panel.material_name.setText("Default Material")
+    panel.section_name.setText("Default Section")
+    panel.material_save_button.click()
+    panel.section_save_button.click()
+    page.element_material_selector.setCurrentIndex(
+        page.element_material_selector.findData("MAT-001")
+    )
+    page.element_section_selector.setCurrentIndex(
+        page.element_section_selector.findData("SEC-001")
+    )
+    page.start_element_drawing_button.click()
+    assert page._active_element_kwargs is not None
+    assert page.canvas.mode == "draw"
 
 
 def test_entering_3d_mode_does_not_disturb_geometry_already_drawn_in_2d() -> None:
@@ -188,7 +208,7 @@ def test_adding_a_level_from_the_bar_populates_both_plane_selectors() -> None:
 
 def test_drawing_a_plan_and_extruding_a_column_reaches_the_3d_preview() -> None:
     page = _page(start_in_3d=True)
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
     page.canvas.place_point(0.0, 0.0)
     page.canvas.place_point(4.0, 0.0)
     page.canvas.end_chain()
@@ -313,7 +333,7 @@ def test_the_draw_tool_enables_plane_picking_on_the_3d_view_not_node_picking() -
     page = _page(start_in_3d=True)
     root = page.preview_3d.quick_widget.rootObject()
 
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
     assert root.property("planePickingEnabled") is True
     assert root.property("pickingEnabled") is False
 
@@ -329,7 +349,7 @@ def test_clicking_empty_plane_space_in_3d_does_nothing() -> None:
     node nobody meant to place. Node creation is exact-coordinate-only now
     (the Node tab's Create Node form); a plane click is a pure no-op."""
     page = _page(start_in_3d=True)
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
 
     page._on_3d_plane_picked(0.0, 0.0, 0.0)
     page._on_3d_plane_picked(4.0, 0.0, 0.0)
@@ -346,7 +366,7 @@ def test_clicking_two_existing_nodes_in_3d_still_connects_them_while_drawing() -
     page = _page(start_in_3d=True)
     first = page.canvas._add_node_at((0.0, 0.0, 0.0))
     second = page.canvas._add_node_at((4.0, 0.0, 0.0))
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
 
     page._on_3d_node_picked(first, 0, 0)
     page._on_3d_node_picked(second, 0, 0)
@@ -366,7 +386,7 @@ def test_clicking_an_existing_node_in_3d_continues_the_chain_while_drawing() -> 
     top = next(iter(page.canvas.elements.values())).node_j
     page.canvas.end_chain()
 
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
     page.canvas.place_point(2.0, 2.0)
     page._on_3d_node_picked(top, 0, 0)
 
@@ -383,6 +403,27 @@ def test_clicking_an_existing_node_in_3d_selects_it_outside_draw_mode() -> None:
     page._on_3d_node_picked(node, 0, 0)
 
     assert page.canvas.selected_nodes == {node}
+    highlighted = next(item for item in page.preview_3d.bridge.nodes if item["tag"] == node)
+    assert highlighted["color"] == "#ef4444"
+    assert highlighted["selected"] is True
+
+
+def test_clicking_an_existing_member_in_3d_selects_and_highlights_it() -> None:
+    page = _page(start_in_3d=True)
+    left = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    right = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    member = page.canvas.add_member(left, right)
+    page._activate_select_tool()
+
+    page._on_3d_member_picked(member, 0, 0)
+
+    assert page.canvas.selected_nodes == set()
+    assert page.canvas.selected_elements == {member}
+    highlighted = next(
+        item for item in page.preview_3d.bridge.members if item["tag"] == member
+    )
+    assert highlighted["color"] == "#ef4444"
+    assert highlighted["selected"] is True
 
 
 def test_changing_the_active_plane_keeps_the_3d_view_in_sync() -> None:
@@ -406,7 +447,7 @@ def test_drawing_in_3d_does_not_reset_the_orbit_camera_on_every_click() -> None:
 
     first = page.canvas._add_node_at((0.0, 0.0, 0.0))
     second = page.canvas._add_node_at((3.0, 0.0, 0.0))
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
     page._on_3d_node_picked(first, 0, 0)
     page._on_3d_node_picked(second, 0, 0)
 
@@ -415,7 +456,7 @@ def test_drawing_in_3d_does_not_reset_the_orbit_camera_on_every_click() -> None:
 
 def test_hovering_while_drawing_previews_a_segment_from_the_chain_anchor() -> None:
     page = _page(start_in_3d=True)
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
     page.canvas.place_point(0.0, 0.0)  # opens a chain at (0, 0, 0)
 
     page._on_3d_plane_hovered(4.0, 0.0, 0.0)
@@ -428,7 +469,7 @@ def test_hovering_an_existing_node_while_drawing_snaps_the_preview_onto_it() -> 
     page = _page(start_in_3d=True)
     anchor = page.canvas._add_node_at((0.0, 0.0, 0.0))
     target = page.canvas._add_node_at((0.0, 0.0, 3.0))
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
     page._on_3d_node_picked(anchor, 0, 0)  # opens a chain at the anchor node
 
     # A hover point deliberately off the target node's exact coordinates -
@@ -442,7 +483,7 @@ def test_hovering_an_existing_node_while_drawing_snaps_the_preview_onto_it() -> 
 
 def test_no_open_chain_produces_no_hover_preview() -> None:
     page = _page(start_in_3d=True)
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
 
     page._on_3d_plane_hovered(1.0, 2.0, 3.0)
 
@@ -451,7 +492,7 @@ def test_no_open_chain_produces_no_hover_preview() -> None:
 
 def test_hover_cleared_removes_the_preview() -> None:
     page = _page(start_in_3d=True)
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
     page.canvas.place_point(0.0, 0.0)
     page._on_3d_plane_hovered(4.0, 0.0, 0.0)
     assert page.preview_3d.bridge.previewMembers != []
@@ -466,7 +507,7 @@ def test_committing_a_point_drops_the_stale_preview() -> None:
     placed - the chain moved on, so the preview has to wait for a fresh
     hover before showing anything again."""
     page = _page(start_in_3d=True)
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
     page.canvas.place_point(0.0, 0.0)
     page._on_3d_plane_hovered(4.0, 0.0, 0.0)
     assert page.preview_3d.bridge.previewMembers != []
@@ -478,7 +519,7 @@ def test_committing_a_point_drops_the_stale_preview() -> None:
 
 def test_leaving_draw_mode_drops_the_preview() -> None:
     page = _page(start_in_3d=True)
-    page._activate_draw_tool()
+    _enable_element_drawing(page)
     page.canvas.place_point(0.0, 0.0)
     page._on_3d_plane_hovered(4.0, 0.0, 0.0)
     assert page.preview_3d.bridge.previewMembers != []
@@ -501,6 +542,128 @@ def test_the_3d_viewport_accepts_keyboard_focus_so_space_can_reach_it() -> None:
     assert page.draw_space_shortcut_3d.parent() is page.preview_3d
 
 
+def test_escape_in_the_3d_view_exits_draw_mode() -> None:
+    page = _page(start_in_3d=True)
+    _enable_element_drawing(page)
+    assert page.canvas.mode == "draw"
+
+    # Draw mode intentionally focuses the numeric entry. Escape still needs
+    # to leave drawing even though the QQuickWidget no longer owns focus.
+    page.draw_entry.setFocus()
+    QTest.keyClick(page.draw_entry, Qt.Key.Key_Escape)
+    QApplication.processEvents()
+
+    assert page.canvas.mode == "select"
+    assert page.escape_shortcut_3d.parent() is page
+
+
+def test_3d_view_exposes_clear_snap_and_directional_selection_feedback() -> None:
+    page = _page(start_in_3d=True)
+    root = page.preview_3d.quick_widget.rootObject()
+    snap = root.findChild(QObject, "nodeSnapIndicator")
+    box = root.findChild(QObject, "selectionRubberBand")
+
+    assert snap is not None
+    assert box is not None
+
+    root.setProperty("selectionStartY", 20.0)
+    root.setProperty("selectionCurrentY", 100.0)
+    QApplication.processEvents()
+    assert box.property("crossing") is False
+
+    root.setProperty("selectionStartY", 100.0)
+    root.setProperty("selectionCurrentY", 20.0)
+    QApplication.processEvents()
+    assert box.property("crossing") is True
+
+
+def test_3d_box_selection_updates_and_highlights_nodes_and_members() -> None:
+    page = _page(start_in_3d=True)
+    left = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    right = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    member = page.canvas.add_member(left, right)
+
+    page._on_3d_box_selected({left}, {member}, False)
+
+    assert page.canvas.selected_nodes == {left}
+    assert page.canvas.selected_elements == {member}
+    selected_node = next(node for node in page.preview_3d.bridge.nodes if node["tag"] == left)
+    selected_member = next(
+        item for item in page.preview_3d.bridge.members if item["tag"] == member
+    )
+    assert selected_node["color"] == "#ef4444"
+    assert selected_member["color"] == "#ef4444"
+
+
+def test_delete_and_ctrl_z_reach_the_canvas_while_the_3d_viewport_has_focus() -> None:
+    """Delete/Ctrl+Z/Ctrl+Y are scoped to self.canvas, which stays hidden in
+    3D mode and can therefore never hold keyboard focus - so a node/member
+    selected via preview_3d's own drag-box (see test above) could be
+    highlighted but never actually deleted or undone. A second copy of the
+    shortcuts scoped to preview_3d (same pattern as draw_space_shortcut_3d)
+    fixes that."""
+    page = _page(start_in_3d=True)
+    left = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    right = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    member = page.canvas.add_member(left, right)
+    page._on_3d_box_selected({left, right}, {member}, False)
+
+    page.preview_3d.quick_widget.setFocus()
+    QApplication.processEvents()
+
+    QTest.keyClick(page.preview_3d.quick_widget, Qt.Key.Key_Delete)
+    assert page.canvas.elements == {}
+
+    QTest.keyClick(page.preview_3d.quick_widget, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert member in page.canvas.elements
+
+    QTest.keyClick(page.preview_3d.quick_widget, Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier)
+    assert page.canvas.elements == {}
+
+
+def test_empty_space_click_in_the_3d_view_clears_the_selection() -> None:
+    """The QML view's own onClicked emits emptySpaceClicked() when a plain
+    click (not a drag-box) hits neither a node nor a member - the 3D
+    equivalent of clicking empty space on the 2D canvas, which already
+    deselects there. Simulated directly on the relayed Quick3DViewport
+    signal, the same way the box-selection tests above simulate
+    selectionBoxFinished, since real 3D picking needs a GPU-backed pick()
+    this offscreen test environment cannot reliably provide."""
+    page = _page(start_in_3d=True)
+    left = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    right = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    member = page.canvas.add_member(left, right)
+    page._on_3d_box_selected({left, right}, {member}, False)
+    assert page.canvas.selected_nodes and page.canvas.selected_elements
+
+    page.preview_3d.empty_space_clicked.emit()
+
+    assert not page.canvas.selected_nodes
+    assert not page.canvas.selected_elements
+    assert member in page.canvas.elements  # deselects only, never deletes
+
+
+def test_escape_in_the_3d_view_clears_selection_when_not_drawing() -> None:
+    """Companion to test_escape_in_the_3d_view_exits_draw_mode above: once
+    already in select mode (not drawing), Escape must clear the current
+    selection instead of just re-entering the tool it is already in -
+    _handle_escape_shortcut_3d is the second copy of the 2D canvas's own
+    Escape-to-deselect (canvas_input_events.py) scoped to the whole 3D page,
+    since self.canvas never holds focus in 3D mode."""
+    page = _page(start_in_3d=True)
+    left = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    right = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    member = page.canvas.add_member(left, right)
+    page._on_3d_box_selected({left, right}, {member}, False)
+    assert page.canvas.mode == "select"
+
+    page._handle_escape_shortcut_3d()
+
+    assert not page.canvas.selected_nodes
+    assert not page.canvas.selected_elements
+    assert member in page.canvas.elements
+
+
 def test_snapping_only_reaches_nodes_on_the_active_plane() -> None:
     canvas = _canvas()
     canvas.enter_3d_mode()
@@ -511,3 +674,115 @@ def test_snapping_only_reaches_nodes_on_the_active_plane() -> None:
     snap = canvas.snap_at(2.02, 0.01)
 
     assert snap.node_tag is None, "a ground-floor node must not be reachable from the roof plan"
+
+
+def test_moving_a_member_off_the_active_plane_preserves_its_true_height() -> None:
+    """transform_selected_nodes("move", ...) used to round-trip every node
+    through _uv()/WorkPlane.to_3d(), which always snaps the third coordinate
+    to the *active plane's own offset* - fine for a node that actually sits
+    on that plane, but it silently dropped an elevated member (e.g. a beam
+    at Z=3 while the ground plane at Z=0 is still active) down onto the
+    active plane's height instead of moving it sideways in place."""
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    left = canvas._add_node_at((0.0, 0.0, 3.0))
+    right = canvas._add_node_at((4.0, 0.0, 3.0))
+    member = canvas.add_member(left, right)
+    canvas.selected_nodes = {left, right}
+    canvas.selected_elements = {member}
+
+    canvas.transform_selected_nodes("move", 1.0, 0.0)
+
+    assert canvas.nodes[left].x == pytest.approx(1.0)
+    assert canvas.nodes[left].z == pytest.approx(3.0)
+    assert canvas.nodes[right].x == pytest.approx(5.0)
+    assert canvas.nodes[right].z == pytest.approx(3.0)
+
+
+def test_copying_a_member_off_the_active_plane_preserves_its_true_height() -> None:
+    """Same bug as the move test above, for "copy" - the copied nodes (and
+    therefore the copied member) used to land on the active plane's Z
+    instead of the source member's own Z."""
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    left = canvas._add_node_at((0.0, 0.0, 3.0))
+    right = canvas._add_node_at((4.0, 0.0, 3.0))
+    member = canvas.add_member(left, right)
+    canvas.selected_nodes = {left, right}
+    canvas.selected_elements = {member}
+
+    created = canvas.transform_selected_nodes("copy", 5.0, 0.0)
+
+    assert created == 2
+    new_nodes = [node for tag, node in canvas.nodes.items() if tag not in (left, right)]
+    assert len(new_nodes) == 2
+    assert all(node.z == pytest.approx(3.0) for node in new_nodes)
+    assert {round(node.x, 6) for node in new_nodes} == {5.0, 9.0}
+    assert len(canvas.elements) == 2, "the copied member itself must exist, not just its nodes"
+
+
+def test_copying_a_member_onto_an_existing_members_line_still_creates_the_copy() -> None:
+    """A copy offset that happens to land the new start node exactly on an
+    *existing* member's own line makes _add_node_at split that member into
+    two pieces (its own documented behaviour - landing on a line means "put
+    a real joint here"). When the split member was the very one being
+    copied, re-fetching it from self.elements by its old tag *after* the
+    split silently returned the wrong (truncated) piece, whose endpoints no
+    longer both appear in the copy's node mapping - so the actual copied
+    member was never created at all, even though its two nodes were.
+    Copying a 4m member by exactly half its own span (2.0) reproduces this
+    directly: the new start node lands exactly on the original's midpoint."""
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    left = canvas._add_node_at((0.0, 0.0, 3.0))
+    right = canvas._add_node_at((4.0, 0.0, 3.0))
+    member = canvas.add_member(left, right)
+    canvas.selected_nodes = {left, right}
+    canvas.selected_elements = {member}
+
+    created = canvas.transform_selected_nodes("copy", 2.0, 0.0)
+
+    assert created == 2
+    copy_start = next(
+        node for tag, node in canvas.nodes.items() if tag not in (left, right) and node.x == 2.0
+    )
+    copy_end = next(
+        node for tag, node in canvas.nodes.items() if tag not in (left, right) and node.x == 6.0
+    )
+    matches_copy = [
+        element
+        for element in canvas.elements.values()
+        if {canvas.nodes[element.node_i].x, canvas.nodes[element.node_j].x}
+        == {copy_start.x, copy_end.x}
+    ]
+    assert len(matches_copy) == 1, "the copied member must exist even though its start landed on the original's line"
+
+
+def test_array_and_rotate_copy_also_preserve_true_height_off_the_active_plane() -> None:
+    """array_copy_selection and rotate_copy_selection share the same
+    _uv()-based node placement as move/copy - regression coverage that they
+    were not (and stay not) affected by the same active-plane-snapping bug."""
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    left = canvas._add_node_at((0.0, 0.0, 3.0))
+    right = canvas._add_node_at((4.0, 0.0, 3.0))
+    member = canvas.add_member(left, right)
+
+    canvas.selected_nodes = {left, right}
+    canvas.selected_elements = {member}
+    canvas.array_copy_selection(0.0, 5.0, count=1)
+    array_copies = [node for tag, node in canvas.nodes.items() if tag not in (left, right)]
+    assert len(array_copies) == 2
+    assert all(node.z == pytest.approx(3.0) for node in array_copies)
+
+    canvas2 = _canvas()
+    canvas2.enter_3d_mode()
+    left2 = canvas2._add_node_at((0.0, 0.0, 3.0))
+    right2 = canvas2._add_node_at((4.0, 0.0, 3.0))
+    member2 = canvas2.add_member(left2, right2)
+    canvas2.selected_nodes = {left2, right2}
+    canvas2.selected_elements = {member2}
+    canvas2.rotate_copy_selection(0.0, 10.0, 30.0, count=1)
+    rotate_copies = [node for tag, node in canvas2.nodes.items() if tag not in (left2, right2)]
+    assert len(rotate_copies) == 2
+    assert all(node.z == pytest.approx(3.0) for node in rotate_copies)

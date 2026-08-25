@@ -20,7 +20,16 @@ from openframe.core.domain.geometric_transform import (
     validate_orientation_vector,
 )
 from openframe.core.domain.ground_motion import GroundMotion, GroundMotionRecord, GroundMotionSource
+from openframe.core.domain.load_case import LoadCase
 from openframe.core.domain.load_combination import LoadCombination
+from openframe.core.domain.load_entry import (
+    FloorLoadEntry,
+    LoadEntry,
+    MemberDistributedLoadEntry,
+    MemberPointLoadEntry,
+    NodalLoadEntry,
+    SelfWeightEntry,
+)
 from openframe.core.domain.material_section_db import (
     DataStatus,
     DuplicateRecordError,
@@ -120,13 +129,16 @@ __all__ = [
     "Element",
     "ElementResult",
     "FieldState",
+    "FloorLoadEntry",
     "GeometricTransform",
     "GroundMotion",
     "GroundMotionRecord",
     "GroundMotionSource",
+    "LoadCase",
     "LoadCaseKind",
     "LoadCombination",
     "LoadDisplacementPoint",
+    "LoadEntry",
     "MaterialDatabase",
     "MaterialDefinition",
     "MaterialFamily",
@@ -134,8 +146,11 @@ __all__ = [
     "MaterialSectionComposition",
     "MaterialSectionDBError",
     "MaterialSource",
+    "MemberDistributedLoadEntry",
+    "MemberPointLoadEntry",
     "ModeShape",
     "NodalLoad",
+    "NodalLoadEntry",
     "Node",
     "NodeResult",
     "NonlinearConvergence",
@@ -148,6 +163,7 @@ __all__ = [
     "SectionDimensionError",
     "SectionProperties",
     "SectionRecord",
+    "SelfWeightEntry",
     "ShearDeformationSettings",
     "ShearModulusMode",
     "Source",

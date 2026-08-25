@@ -27,12 +27,13 @@ inside ``SectionMaterialPanel`` (top), not duplicated down here.
 import math
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -41,12 +42,26 @@ from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
     BoundaryCondition,
     Element,
+    LoadCase,
+    LoadEntry,
     NodalLoad,
     Node,
     SectionDimensionError,
     UnitSystem,
     dimension_fields,
 )
+
+#: Korean display label per LoadEntry.kind, for the "Load Type" row.
+_LOAD_ENTRY_KIND_LABELS: dict[str, str] = {
+    "nodal": "절점하중",
+    "member_point": "부재 집중하중",
+    "member_moment": "부재 집중모멘트",
+    "member_uniform": "부재 균등분포하중",
+    "member_linear": "부재 선형변화하중",
+    "member_partial": "부재 부분분포하중",
+    "floor": "바닥하중",
+    "self_weight": "자중",
+}
 from openframe.features.model.presentation.model_inspector_panel import SUPPORT_LABELS
 from openframe.features.model.presentation.section_material_panel import _load_database_safely
 
@@ -78,6 +93,14 @@ class SelectionStatusPanel(QWidget):
     """Content only - the caller wraps this in its own ``QScrollArea`` (see
     ``ModelingInterfacePage``'s splitter), matching how ``SectionMaterialPanel``
     is wrapped externally rather than scrolling itself."""
+
+    #: This widget "never edits anything" (see module docstring) - a Load
+    #: entry's [수정]/[대상 다시 선택]/[삭제] buttons emit these instead of
+    #: calling canvas mutators directly; ``ModelingInterfacePage`` (which
+    #: already owns both the canvas and this panel) connects them.
+    load_edit_requested = Signal(int)
+    load_reselect_requested = Signal(int)
+    load_delete_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -156,6 +179,115 @@ class SelectionStatusPanel(QWidget):
             badge.setProperty("state", state)
             badge.style().unpolish(badge)
             badge.style().polish(badge)
+
+    def show_load_entry(
+        self,
+        entry: LoadEntry,
+        case: LoadCase | None,
+        display_id: str,
+        unit_system: UnitSystem,
+    ) -> None:
+        """Switch to the Load properties view - called directly by the page
+        (Work Tree row click / viewport glyph pick), bypassing ``refresh()``'s
+        node/element dispatch entirely, since a "selected load" is not part
+        of ``canvas.selected_nodes``/``selected_elements`` at all (see
+        ``canvas_load_entries.py``'s own module docstring for why loads are
+        their own id-keyed store)."""
+        self._unit_system = unit_system
+        self._status_elements = []
+        self._status_badges = []
+        self._clear_cards()
+
+        _, layout = self._card("SELECTED LOAD")
+        form = self._form_in(layout)
+        form.addRow("ID", self._value_label(display_id))
+        form.addRow("Load Case", self._value_label(case.name if case is not None else "—"))
+        form.addRow("Load Type", self._value_label(_LOAD_ENTRY_KIND_LABELS.get(entry.kind, entry.kind)))
+        form.addRow("Target", self._value_label(self._load_entry_target_summary(entry)))
+        form.addRow(
+            "Coordinate System",
+            self._value_label(str(getattr(entry.payload, "coordinate_system", "—")).upper()),
+        )
+        form.addRow("Direction", self._value_label(self._load_entry_direction_summary(entry)))
+        form.addRow("Magnitude", self._value_label(self._load_entry_magnitude_summary(entry)))
+        form.addRow("Range", self._value_label(self._load_entry_range_summary(entry)))
+        form.addRow("Display Status", self._value_label("숨김" if entry.hidden else "표시"))
+
+        button_row = QWidget()
+        button_layout = QHBoxLayout(button_row)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        edit_button = QPushButton("수정")
+        edit_button.clicked.connect(lambda: self.load_edit_requested.emit(entry.id))
+        button_layout.addWidget(edit_button)
+        reselect_button = QPushButton("대상 다시 선택")
+        reselect_button.clicked.connect(lambda: self.load_reselect_requested.emit(entry.id))
+        button_layout.addWidget(reselect_button)
+        delete_button = QPushButton("삭제")
+        delete_button.clicked.connect(lambda: self.load_delete_requested.emit(entry.id))
+        button_layout.addWidget(delete_button)
+        button_layout.addStretch(1)
+        layout.addWidget(button_row)
+
+    # -- load entry summaries ---------------------------------------------
+    @staticmethod
+    def _load_entry_target_summary(entry: LoadEntry) -> str:
+        if entry.kind == "nodal":
+            return ", ".join(f"N{tag}" for tag in entry.target) or "—"
+        if entry.kind == "floor":
+            return f"경계 노드 {len(entry.target)}개" if entry.target else "—"
+        if entry.kind == "self_weight":
+            if entry.payload.apply_to_all:
+                return "전체 부재"
+            return ", ".join(f"M{tag}" for tag in entry.target) or "—"
+        return ", ".join(f"M{tag}" for tag in entry.target) or "—"
+
+    @staticmethod
+    def _load_entry_direction_summary(entry: LoadEntry) -> str:
+        payload = entry.payload
+        if hasattr(payload, "direction"):
+            return str(payload.direction).upper()
+        if entry.kind == "nodal":
+            names = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
+            values = (payload.fx, payload.fy, payload.fz, payload.mx, payload.my, payload.mz)
+            active = [name for name, value in zip(names, values, strict=True) if value != 0.0]
+            return ", ".join(active) if active else "—"
+        return "—"
+
+    def _load_entry_magnitude_summary(self, entry: LoadEntry) -> str:
+        payload = entry.payload
+        unit = self._unit_system
+        if entry.kind == "nodal":
+            names = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
+            values = (payload.fx, payload.fy, payload.fz, payload.mx, payload.my, payload.mz)
+            parts = [
+                f"{name} {value:g} {unit.moment if name[0] == 'M' else unit.force}"
+                for name, value in zip(names, values, strict=True)
+                if value != 0.0
+            ]
+            return ", ".join(parts) if parts else "0"
+        if entry.kind in ("member_point", "member_moment"):
+            component_unit = unit.moment if entry.kind == "member_moment" else unit.force
+            return f"{payload.value:g} {component_unit}"
+        if entry.kind in ("member_uniform", "member_linear", "member_partial"):
+            distributed_unit = f"{unit.force}/{unit.length}"
+            if payload.start_value == payload.end_value:
+                return f"{payload.start_value:g} {distributed_unit}"
+            return f"{payload.start_value:g} → {payload.end_value:g} {distributed_unit}"
+        if entry.kind == "floor":
+            return f"{payload.magnitude:g} {unit.force}/{unit.length}²"
+        if entry.kind == "self_weight":
+            return f"x {payload.factor_x:g}, y {payload.factor_y:g}, z {payload.factor_z:g}"
+        return "—"
+
+    def _load_entry_range_summary(self, entry: LoadEntry) -> str:
+        payload = entry.payload
+        if entry.kind in ("member_point", "member_moment"):
+            unit = "" if payload.position_unit == "ratio" else f" {self._unit_system.length}"
+            return f"{payload.position:g}{unit}"
+        if entry.kind in ("member_uniform", "member_linear", "member_partial"):
+            unit = "" if payload.position_unit == "ratio" else f" {self._unit_system.length}"
+            return f"{payload.start_position:g}{unit} ~ {payload.end_position:g}{unit}"
+        return "—"
 
     # -- card/row builders ------------------------------------------------
     def _clear_cards(self) -> None:

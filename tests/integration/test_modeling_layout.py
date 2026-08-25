@@ -123,7 +123,7 @@ def test_3d_work_tabs_switch_the_left_editor_and_canvas_tool_together() -> None:
 
     page.workbench_buttons["node"].click()
     assert page.category_stack.currentIndex() == page.category_pages["add"]
-    assert page.canvas.mode == "draw"
+    assert page.canvas.mode == "select"
     assert page.canvas_stack.currentWidget() is viewport
 
     page.workbench_buttons["properties"].click()
@@ -151,12 +151,9 @@ def test_3d_work_tabs_switch_the_left_editor_and_canvas_tool_together() -> None:
     page.model_settings_dialog.reject()
 
 
-def test_node_tab_shows_a_dropdown_picker_for_its_own_four_actions() -> None:
-    """Node is the one 3D tab whose work still splits into several distinct
-    actions - a plain combo box (same "click to expand, pick one, it closes
-    itself" behaviour as the reference Tree Menu's own action dropdown)
-    instead of a custom toggle+list, so the current action always shows in
-    its closed state and there is nothing separate to collapse."""
+def test_node_and_element_tabs_separate_node_tools_from_element_translation() -> None:
+    """MIDAS-style: node creation stays under Node; member translation is
+    discoverable from Element's own action picker."""
     page = _page(start_in_3d=True)
 
     page.workbench_buttons["properties"].click()
@@ -165,13 +162,8 @@ def test_node_tab_shows_a_dropdown_picker_for_its_own_four_actions() -> None:
     page.workbench_buttons["node"].click()
     assert page.node_subcategory_row.isVisible() is True
     assert page.node_subcategory_combo.currentData() == "add"
-    assert page.canvas.mode == "draw"
-
-    page.node_subcategory_combo.setCurrentIndex(
-        page.node_subcategory_combo.findData("move")
-    )
-    assert page.category_stack.currentIndex() == page.category_pages["move"]
     assert page.canvas.mode == "select"
+    assert page.node_subcategory_combo.findData("move") == -1
 
     page.node_subcategory_combo.setCurrentIndex(
         page.node_subcategory_combo.findData("arch")
@@ -189,39 +181,95 @@ def test_node_tab_shows_a_dropdown_picker_for_its_own_four_actions() -> None:
         page.node_subcategory_combo.findData("add")
     )
     assert page.category_stack.currentIndex() == page.category_pages["add"]
-    assert page.canvas.mode == "draw"
+    assert page.canvas.mode == "select"
+
+    page.workbench_buttons["element"].click()
+    assert page.element_subcategory_row.isVisible() is True
+    assert page.element_subcategory_combo.currentData() == "element_picker"
+    assert page.canvas.mode == "select", "drawing stays locked until properties are applied"
+
+    page.element_subcategory_combo.setCurrentIndex(
+        page.element_subcategory_combo.findData("move")
+    )
+    assert page.category_stack.currentIndex() == page.category_pages["move"]
+    assert page.selection_filter.currentData() == "elements"
 
 
 def test_element_tab_applied_section_is_picked_up_by_the_next_drawn_member() -> None:
-    """Element is "what the next member gets", distinct from Properties
-    ("edit the already-selected member") - Applying a section there must
-    not touch any existing member, and a member drawn afterwards must carry
-    it automatically without the user ever selecting anything."""
+    """Element assigns saved definitions to members drawn afterwards."""
     page = _page(start_in_3d=True)
     first = page.canvas._add_node_at((0.0, 0.0, 0.0))
     second = page.canvas._add_node_at((4.0, 0.0, 0.0))
 
-    page.workbench_buttons["element"].click()
-    assert page.category_stack.currentIndex() == page.category_pages["element_picker"]
-    panel = page.element_section_material_panel
+    panel = page.section_material_panel
     panel.shape_combo.setCurrentText("Rectangle")
     panel.source_custom.setChecked(True)
     panel._dimension_spinboxes["b"].setValue(0.3)
     panel._dimension_spinboxes["h"].setValue(0.5)
     panel.material_e.setValue(200_000.0)
     panel.material_unit_weight.setValue(24.0)
-    panel.apply_button.click()
+    panel.material_name.setText("Test Material")
+    panel.section_name.setText("Test Section")
+    panel.material_save_button.click()
+    panel.section_save_button.click()
+
+    page.workbench_buttons["element"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["element_picker"]
+    page.element_material_selector.setCurrentIndex(
+        page.element_material_selector.findData("MAT-001")
+    )
+    page.element_section_selector.setCurrentIndex(
+        page.element_section_selector.findData("SEC-001")
+    )
 
     assert page._active_element_kwargs is not None
-    assert "설정" in page.active_element_status.text()
+    assert "Test Material" in page.active_element_status.text()
+    assert "Test Section" in page.active_element_status.text()
+    page.start_element_drawing_button.click()
 
-    page._node_subcategory_clicked("add")  # Node tab's Create Node -> draw mode
+    assert page.canvas.mode == "draw"
     page._on_3d_node_picked(first, 0, 0)
     page._on_3d_node_picked(second, 0, 0)
 
     member = next(iter(page.canvas.elements.values()))
     assert member.properties["E"] == pytest.approx(200_000.0)
     assert member.properties["A"] == pytest.approx(0.15)
+
+
+def test_3d_element_drawing_is_blocked_until_material_and_section_are_applied() -> None:
+    page = _page(start_in_3d=True)
+    first = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    second = page.canvas._add_node_at((4.0, 0.0, 0.0))
+
+    page._activate_draw_tool()
+    page._on_3d_node_picked(first, 0, 0)
+    page._on_3d_node_picked(second, 0, 0)
+
+    assert page.canvas.mode == "select"
+    assert page.canvas.elements == {}
+    assert "물성·단면" in page.active_element_status.text()
+
+
+def test_3d_properties_can_reassign_material_and_section_to_selected_members() -> None:
+    page = _page(start_in_3d=True)
+    first = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    second = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    member = page.canvas.add_member(first, second)
+    page.canvas.selected_elements = {member}
+    page.canvas.selection_changed.emit()
+    page.workbench_buttons["properties"].click()
+
+    panel = page.section_material_panel
+    panel.shape_combo.setCurrentText("Rectangle")
+    panel.source_custom.setChecked(True)
+    panel._dimension_spinboxes["b"].setValue(0.4)
+    panel._dimension_spinboxes["h"].setValue(0.6)
+    panel.material_e.setValue(205_000.0)
+    panel.apply_button.click()
+
+    changed = page.canvas.elements[member]
+    assert changed.properties["E"] == pytest.approx(205_000.0)
+    assert changed.properties["A"] == pytest.approx(0.24)
 
 
 def test_switching_back_to_model_tab_opens_the_centered_model_settings_dialog() -> None:
@@ -277,45 +325,96 @@ def test_3d_property_editor_orders_material_before_section_and_properties() -> N
     assert panel.material_group.title_label.text() == "MATERIAL"
     assert panel.section_group.title_label.text() == "SECTION"
     assert panel.properties_group.title_label.text() == "SECTION PROPERTIES"
-    assert panel.material_group.body.isHidden() is False
-    assert panel.apply_button.isHidden() is True
-
-
-def test_3d_properties_tab_shows_only_material_not_section() -> None:
-    """Section/Section Properties are the Element tab's job now (it picks
-    what future members are drawn with) - Properties only ever edits an
-    already-drawn member's material, so the other two groups (and their
-    "save to library" controls) stay hidden here."""
-    page = _page(start_in_3d=True)
-    panel = page.section_material_panel
-
+    # The "PROPERTIES" dropdown (see test_3d_properties_selector_switches_
+    # which_card_is_shown below) defaults to its first item, MATERIAL, so
+    # only that card's whole frame is shown - the other two are hidden
+    # entirely, not just their body (a hidden body alone would still leave
+    # an empty bordered card strip behind).
     assert panel.material_group.isHidden() is False
     assert panel.section_group.isHidden() is True
     assert panel.properties_group.isHidden() is True
-    assert panel.material_save_button.isHidden() is False
-    assert panel.section_save_button.isHidden() is True
-
-
-def test_3d_element_tab_shows_only_section_not_material() -> None:
-    """The Element tab only ever picks a section for future members -
-    material is set afterwards on the selection via Properties - so its
-    Material group (and save-to-library controls) stay hidden."""
-    page = _page(start_in_3d=True)
-    panel = page.element_section_material_panel
-
-    assert panel.material_group.isHidden() is True
-    assert panel.section_group.isHidden() is False
-    assert panel.properties_group.isHidden() is False
-    assert panel.material_save_button.isHidden() is True
-    assert panel.section_save_button.isHidden() is False
     assert panel.apply_button.isHidden() is False
 
 
+def test_3d_properties_selector_switches_which_card_is_shown() -> None:
+    """The Properties tab replaces each MATERIAL/SECTION/SECTION PROPERTIES
+    card's own clickable header with one "PROPERTIES" dropdown (same
+    setupConfigBar/fieldLabel look as the Analysis tab's "ANALYSIS TYPE"
+    bar) - selecting an item shows only that card's whole frame, hiding the
+    other two outright (not just collapsing their body, which would leave
+    an empty bordered strip for each). 2D keeps SectionMaterialPanel's
+    original always-expanded, per-card-header layout untouched."""
+    page = _page(start_in_3d=True)
+    panel = page.section_material_panel
+
+    assert page.properties_selector.currentData() == "material"
+    for group in (panel.material_group, panel.section_group, panel.properties_group):
+        assert group._header.isHidden() is True
+
+    page.properties_selector.setCurrentIndex(page.properties_selector.findData("section"))
+
+    assert panel.material_group.isHidden() is True
+    assert panel.section_group.isHidden() is False
+    assert panel.properties_group.isHidden() is True
+
+    page.properties_selector.setCurrentIndex(
+        page.properties_selector.findData("section_properties")
+    )
+
+    assert panel.material_group.isHidden() is True
+    assert panel.section_group.isHidden() is True
+    assert panel.properties_group.isHidden() is False
+
+
+def test_2d_properties_panel_has_no_selector_and_keeps_headers() -> None:
+    page = _page(start_in_3d=False)
+    panel = page.section_material_panel
+
+    assert not hasattr(page, "properties_selector")
+    for group in (panel.material_group, panel.section_group, panel.properties_group):
+        assert group._header.isHidden() is False
+        assert group.isHidden() is False
+
+
+def test_3d_properties_tab_defines_and_applies_material_and_section() -> None:
+    page = _page(start_in_3d=True)
+    panel = page.section_material_panel
+
+    # material_group is the only one of the three cards visible until the
+    # PROPERTIES dropdown picks a different one (see test_3d_properties_
+    # selector_switches_which_card_is_shown) - both material/section save
+    # buttons still exist underneath regardless of which card currently shows.
+    assert panel.material_group.isHidden() is False
+    assert panel.material_save_button.isHidden() is False
+    assert panel.section_save_button.isHidden() is False
+    assert panel.apply_button.text() == "선택 부재에 물성·단면 적용"
+
+
+def test_3d_element_create_requires_both_material_and_section() -> None:
+    page = _page(start_in_3d=True)
+
+    assert not hasattr(page, "element_section_material_panel")
+    assert page.element_material_selector.count() == 1
+    assert page.element_section_selector.count() == 1
+    assert page.element_material_selector.currentData() is None
+    assert page.element_section_selector.currentData() is None
+    assert page.start_element_drawing_button.isEnabled() is False
+
+    panel = page.section_material_panel
+    panel.material_name.setText("SM355")
+    panel.section_name.setText("H-400")
+    panel.material_save_button.click()
+    panel.section_save_button.click()
+
+    assert page.element_material_selector.count() == 2
+    assert page.element_section_selector.count() == 2
+    page.element_material_selector.setCurrentIndex(1)
+    assert page.start_element_drawing_button.isEnabled() is False
+    page.element_section_selector.setCurrentIndex(1)
+    assert page.start_element_drawing_button.isEnabled() is True
+
+
 def test_saved_user_material_and_section_appear_in_the_work_tree_and_round_trip() -> None:
-    """Material is saved from the Properties tab's panel, section from the
-    Element tab's - see test_3d_properties_tab_shows_only_material_not_section
-    and test_3d_element_tab_shows_only_section_not_material for why they are
-    split across the two panel instances now."""
     page = _page(start_in_3d=True)
     material_panel = page.section_material_panel
     material_panel.material_name.setText("사용자 강재 SM355")
@@ -328,7 +427,7 @@ def test_saved_user_material_and_section_appear_in_the_work_tree_and_round_trip(
     assert page.work_tree_materials.child(0).text(0) == "사용자 강재 SM355"
     assert page.work_tree_materials.child(0).text(1) == "MAT-001"
 
-    section_panel = page.element_section_material_panel
+    section_panel = page.section_material_panel
     section_panel.section_name.setText("C1-기둥")
     section_panel.section_save_button.click()
     assert page.work_tree_sections.childCount() == 1
@@ -341,6 +440,8 @@ def test_saved_user_material_and_section_appear_in_the_work_tree_and_round_trip(
     assert restored.work_tree_materials.child(0).text(0) == "사용자 강재 SM355"
     assert restored.work_tree_sections.childCount() == 1
     assert restored.work_tree_sections.child(0).text(0) == "C1-기둥"
+    assert restored.element_material_selector.itemData(1) == "MAT-001"
+    assert restored.element_section_selector.itemData(1) == "SEC-001"
 
 
 def test_member_group_counts_are_derived_from_true_3d_geometry() -> None:

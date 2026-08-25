@@ -37,7 +37,31 @@ class _RenderingMixin:
         return current_px.y() < start_px.y() - _CROSSING_DRAG_DEAD_ZONE_PX
 
     def _changed(self) -> None:
+        """Redraw the 2D canvas immediately (cheap - a direct QPainter repaint
+        of the current in-memory state), but only actually emit
+        model_changed while no history group is open.
+
+        model_changed drives the 3D preview's full rebuild
+        (Quick3DSceneBridge.set_model(), a fresh Repeater3D-backed scene for
+        every node/member). An operation like transform_selected_nodes's
+        "copy" calls _add_node_at/add_member several times in a row - each
+        one its own call to this method - and firing that rebuild once per
+        intermediate step (nodes created, then the member joining them, all
+        within the same Python call) fires several full QML scene rebuilds
+        back to back with no event-loop turn between them. Qt Quick 3D's
+        Repeater3D does not reliably finish constructing a brand-new
+        delegate before the next rebuild replaces its model out from under
+        it, which is what made a freshly copied member intermittently render
+        as a bare hairline instead of its real cross-section - a bug an
+        immediately following undo+redo (a single _changed() call) always
+        "fixed" by forcing one last clean rebuild. Deferring to a single
+        emit in end_history_group() (see canvas_history.py) removes the
+        rapid-fire rebuilds instead of relying on a coincidental extra one.
+        """
         self._redraw()
+        if self._history_group_depth:
+            self._pending_change_notification = True
+            return
         self.model_changed.emit()
 
     def _projected_node(self, node: Node) -> Node:

@@ -873,6 +873,7 @@ class TestGroundMotionRowFileImport:
         assert row.active_motion() is not None
         assert row.active_motion().pga == pytest.approx(0.5)
         assert row.record_label.text() == "motion.AT2"
+        assert row.preview._corner_label == "motion.AT2"
         assert row.readout_values["Record dt"].text() == "0.02 s"
         assert row.readout_values["NPTS"].text() == "4"
 
@@ -960,6 +961,28 @@ class TestBuiltInGroundMotionLibrary:
         assert panel.build_options()["directions"][0]["path"] == str(record.path)
         application.processEvents()
 
+    def test_built_in_pga_shows_raw_g_and_model_unit_conversion(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A PEER PGA is not tenfold inflated; 0.5146 g is 5.046 m/s²."""
+        application = QApplication.instance() or QApplication([])
+        panel = _time_history_panel()
+        row = panel.time_history_direction_rows[0]
+        record = next(
+            record
+            for record in row._catalog.list_records()
+            if record.record_id == "RSN1633_MANJIL_ABBAR--L"
+        )
+        _stub_builtin_picker(monkeypatch, record)
+        row.builtin_radio.setChecked(True)
+
+        row._choose_record_or_file()
+
+        assert row.active_motion() is not None
+        assert row.active_motion().pga == pytest.approx(0.5145641)
+        assert row.readout_values["Original PGA"].text() == "0.5146 g → 5.046 m/s²"
+        application.processEvents()
+
     def test_scale_factor_change_updates_the_effective_scale_readout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -995,6 +1018,7 @@ class TestBuiltInGroundMotionLibrary:
         assert motion is not None
         assert len(row.preview._values) == motion.npts
         assert row.preview._values == pytest.approx(motion.accelerations)
+        assert row.preview._corner_label == motion.name
 
         row.scale_factor_spin.setValue(2.0)
         assert row.preview._values == pytest.approx(tuple(v * 2.0 for v in motion.accelerations))

@@ -115,7 +115,7 @@ _COMBO_WIDTH = 168
 _NUMBER_WIDTH = 92
 
 
-class _CollapsibleSection(QFrame):
+class CollapsibleSection(QFrame):
     """A foldable ``propertySectionCard`` - title header (click to toggle) +
     body. Deliberately a fresh, minimal, file-local implementation rather
     than reusing ``features.results.presentation.result_type_sidebar``'s
@@ -143,6 +143,7 @@ class _CollapsibleSection(QFrame):
         header_layout.addWidget(self.title_label)
         header_layout.addStretch(1)
         header.mousePressEvent = self._header_clicked  # type: ignore[method-assign]
+        self._header = header
         outer.addWidget(header)
 
         self.body = QWidget()
@@ -165,6 +166,14 @@ class _CollapsibleSection(QFrame):
 
     def set_title(self, title: str) -> None:
         self.title_label.setText(title)
+
+    def set_header_visible(self, visible: bool) -> None:
+        """Hide this card's own clickable title bar - for an embed where an
+        *external* control (e.g. a "PROPERTIES" dropdown picking which one
+        of several cards shows) already decides which card is expanded, so
+        the card's own click-to-toggle header would just be a second,
+        redundant way to do the same thing."""
+        self._header.setVisible(visible)
 
     def add_widget(self, widget: QWidget) -> None:
         self.body_layout.addWidget(widget)
@@ -557,7 +566,7 @@ class SectionMaterialPanel(QWidget):
         root.setSpacing(8)
 
         # -- SECTION ----------------------------------------------------------
-        section_group = _CollapsibleSection("SECTION")
+        section_group = CollapsibleSection("SECTION")
         self.section_group = section_group
 
         self.section_name_row = QWidget()
@@ -640,7 +649,7 @@ class SectionMaterialPanel(QWidget):
         root.addWidget(section_group)
 
         # -- SECTION PROPERTIES -------------------------------------------
-        properties_group = _CollapsibleSection("SECTION PROPERTIES")
+        properties_group = CollapsibleSection("SECTION PROPERTIES")
         self.properties_group = properties_group
         self.property_form = QFormLayout()
         self.property_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -670,7 +679,7 @@ class SectionMaterialPanel(QWidget):
         root.addWidget(properties_group)
 
         # -- MATERIAL -----------------------------------------------------
-        material_group = _CollapsibleSection("MATERIAL")
+        material_group = CollapsibleSection("MATERIAL")
         self.material_group = material_group
         self.material_name_row = QWidget()
         material_name_layout = QHBoxLayout(self.material_name_row)
@@ -799,7 +808,13 @@ class SectionMaterialPanel(QWidget):
         self.section_save_button.setVisible(compact)
         self.section_save_status.setVisible(compact)
         self.apply_button.setVisible(not compact)
-        self.material_group.set_expanded(compact)
+        # Compact (3D) mode nests these three cards under the Properties tab's
+        # own outer accordion (see modeling_interface_page.py's
+        # _build_member_bar_content) - all three start collapsed so opening
+        # Properties shows a plain MATERIAL/SECTION/SECTION PROPERTIES list,
+        # each one still a click away from its own fields, rather than
+        # immediately dumping one of the three's whole field set on screen.
+        self.material_group.set_expanded(not compact)
         self.section_group.set_expanded(not compact)
         self.properties_group.set_expanded(not compact)
 

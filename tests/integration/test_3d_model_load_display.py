@@ -71,7 +71,8 @@ def test_3d_nodal_and_vertical_beam_loads_are_imported_and_drawn() -> None:
     rendered_member = next(
         member for member in bridge.members if member["tag"] == first_loaded_element
     )
-    assert arrow_tip_y > member_center_y + rendered_member["thickness"] / 2
+    footprint = max(rendered_member["width_b"], rendered_member["width_h"])
+    assert arrow_tip_y > member_center_y + footprint / 2
 
     bridge.set_loads_visible(False)
     assert bridge.loadArrows == []

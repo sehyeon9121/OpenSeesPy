@@ -358,6 +358,42 @@ def test_delete_and_ctrl_z_restore_the_selected_member() -> None:
     assert not page.canvas.elements
 
 
+def test_escape_clears_the_current_selection_in_select_mode() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    page.show()
+    application.processEvents()
+    left = page.canvas.add_node(0.0, 0.0)
+    right = page.canvas.add_node(4.0, 0.0)
+    member = page.canvas.add_member(left, right)
+    page.canvas.selected_nodes = {left}
+    page.canvas.selected_elements = {member}
+
+    QTest.keyClick(page.canvas, Qt.Key.Key_Escape)
+
+    assert not page.canvas.selected_nodes
+    assert not page.canvas.selected_elements
+    # The member/node themselves must survive - Escape deselects, it never deletes.
+    assert member in page.canvas.elements
+    assert left in page.canvas.nodes
+
+
+def test_clicking_empty_canvas_space_clears_the_current_selection() -> None:
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    page.resize(1000, 700)
+    page.show()
+    application.processEvents()
+    canvas = page.canvas
+    node = canvas.add_node(0.0, 0.0)
+    canvas.selected_nodes = {node}
+
+    empty_point = canvas.mapFromScene(300.0, 300.0)
+    QTest.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton, pos=empty_point)
+
+    assert not canvas.selected_nodes
+
+
 def test_repeated_node_creation_is_one_undo_operation() -> None:
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()

@@ -20,8 +20,10 @@ from openframe.core.domain import LoadCaseKind, StructuralModel, SupportKind
 LOAD_CASE_PRESENTATION = {
     LoadCaseKind.DEAD: ("고정하중 (DL)", "#2563eb"),
     LoadCaseKind.LIVE: ("활하중 (LL)", "#16a34a"),
+    LoadCaseKind.ROOF_LIVE: ("지붕활하중 (RL)", "#65a30d"),
     LoadCaseKind.SEISMIC: ("지진하중 (EQ)", "#f97316"),
     LoadCaseKind.WIND: ("풍하중 (WL)", "#8b5cf6"),
+    LoadCaseKind.SNOW: ("적설하중 (SL)", "#0ea5e9"),
     LoadCaseKind.OTHER: ("기타하중", "#64748b"),
     LoadCaseKind.UNCLASSIFIED: ("미분류 하중", "#6b7280"),
 }

@@ -12,12 +12,22 @@ from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QWidget
 
-from openframe.core.domain import BoundaryCondition, Element, NodalLoad, Node, UniformElementLoad
+from openframe.core.domain import (
+    BoundaryCondition,
+    Element,
+    LoadCase,
+    LoadCombination,
+    LoadEntry,
+    NodalLoad,
+    Node,
+    UniformElementLoad,
+)
 from openframe.features.model.drawing import SnapOptions, WorkPlane
 from openframe.features.model.presentation.canvas_drawing_mode import _DrawingModeMixin
 from openframe.features.model.presentation.canvas_geometry import _GeometryMixin
 from openframe.features.model.presentation.canvas_history import _HistoryMixin
 from openframe.features.model.presentation.canvas_input_events import _InputEventsMixin
+from openframe.features.model.presentation.canvas_load_entries import _LoadEntryMixin
 from openframe.features.model.presentation.canvas_model_build import _ModelBuildMixin
 from openframe.features.model.presentation.canvas_property_application import (
     _PropertyApplicationMixin,
@@ -46,12 +56,19 @@ class StaticsDrawingCanvas(
     _HistoryMixin,
     _InputEventsMixin,
     _RenderingMixin,
+    _LoadEntryMixin,
     QGraphicsView,
 ):
     model_changed = Signal()
     draw_state_changed = Signal()
     selection_changed = Signal()
     escape_requested = Signal()
+    #: Fired by every ``_LoadEntryMixin`` CRUD method - separate from
+    #: ``model_changed`` (geometry/material) so the 3D Loads tab's own
+    #: refresh (Work Tree load groups, viewport load glyphs) never re-runs
+    #: whatever the much more common geometry-changed listeners do, and
+    #: vice versa.
+    load_state_changed = Signal()
     _DRAW_SCALE = 40.0
     _SNAP_PIXELS = 14.0
 
@@ -71,6 +88,18 @@ class StaticsDrawingCanvas(
         self.nodal_loads: dict[int, NodalLoad] = {}
         self.element_loads: dict[int, UniformElementLoad] = {}
         self.embedded_nodes: dict[int, tuple[int, float]] = {}
+        # 3D Loads tab state (see canvas_load_entries.py) - entirely separate
+        # from nodal_loads/element_loads above, which 2D and every real
+        # solve path still own unchanged.
+        self.load_cases: dict[str, LoadCase] = {}
+        self.active_load_case_id: str | None = None
+        self.load_entries: dict[int, LoadEntry] = {}
+        self._next_load_entry_id = 1
+        self.load_combinations: dict[str, LoadCombination] = {}
+        self.active_combination_id: str | None = None
+        #: "case" | "combination" | "all" | "hidden" - what the Loads tab's
+        #: Display dropdown currently shows in the 3D viewport/Work Tree.
+        self.load_display_mode = "case"
         self.mode = "select"
         # "frame" members carry moment/shear/axial; "truss" members are pinned at
         # both ends and carry axial force only. This governs every member drawn
@@ -117,6 +146,11 @@ class StaticsDrawingCanvas(
         self._redo_stack: list[dict[str, object]] = []
         self._history_group_depth = 0
         self._history_group_snapshot: dict[str, object] | None = None
+        #: Set by _changed() while a history group is open, so end_history_
+        #: group() can fire exactly one model_changed at the very end instead
+        #: of once per node/member created mid-operation - see _changed()'s
+        #: own docstring for why firing on every intermediate step is wrong.
+        self._pending_change_notification = False
         # A plain 2D canvas is a 3D one whose only plane is the ground (identity
         # XY at 0): every coordinate a node ever gets is (u, v, 0), which is
         # exactly what this class always produced before it knew about planes.

@@ -82,6 +82,21 @@ def test_no_series_means_no_click_handling() -> None:
     assert received == []
 
 
+def test_optional_series_name_is_kept_for_the_lower_left_graph_label() -> None:
+    view = _view()
+
+    view.set_series(
+        view._times,
+        view._values,
+        y_label="Accel [m/s²]",
+        corner_label="Manjil Iran — Abbar (L)",
+    )
+    image = view.grab().toImage()
+
+    assert view._corner_label == "Manjil Iran — Abbar (L)"
+    assert not image.isNull()
+
+
 def test_selected_time_can_show_its_curve_point_and_value_callout() -> None:
     view = _view()
 

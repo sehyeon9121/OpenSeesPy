@@ -5,11 +5,47 @@ standalone class.
 """
 
 import math
+from dataclasses import replace
 
 from openframe.core.domain import Node
 
 
 class _TransformMixin:
+    def _copy_member_between(
+        self,
+        source,
+        node_i: int,
+        node_j: int,
+        *,
+        copy_element_loads: bool,
+    ) -> int | None:
+        """Create a geometric copy without dropping its structural identity."""
+        new_tag = self.add_member(node_i, node_j)
+        if new_tag is None:
+            return None
+        self.elements[new_tag] = replace(
+            source,
+            tag=new_tag,
+            node_i=node_i,
+            node_j=node_j,
+            properties=dict(source.properties),
+        )
+        if copy_element_loads and source.tag in self.element_loads:
+            self.element_loads[new_tag] = replace(
+                self.element_loads[source.tag], element_tag=new_tag
+            )
+        return new_tag
+
+    def _copy_node_attributes(self, source_tag: int, target_tag: int) -> None:
+        if source_tag in self.boundaries:
+            self.boundaries[target_tag] = replace(
+                self.boundaries[source_tag], node_tag=target_tag
+            )
+        if source_tag in self.nodal_loads:
+            self.nodal_loads[target_tag] = replace(
+                self.nodal_loads[source_tag], node_tag=target_tag
+            )
+
     def _effective_transform_nodes(self) -> set[int]:
         """Nodes a move/copy/array/rotate/mirror operation should act on:
         whatever is directly selected, plus the endpoints of any selected
@@ -30,6 +66,9 @@ class _TransformMixin:
         dx: float,
         dy: float,
         repeat: int = 1,
+        *,
+        copy_node_attributes: bool = False,
+        copy_element_loads: bool = False,
     ) -> int:
         """Move selected nodes (and any selected member's endpoints), or create
         translated copies with new node tags - and, for "copy", a new member
@@ -46,7 +85,7 @@ class _TransformMixin:
             targets: dict[int, tuple[float, float, float]] = {}
             for tag in selected:
                 u, v = self._uv(self.nodes[tag])
-                targets[tag] = self.work_plane.to_3d(u + dx, v + dy)
+                targets[tag] = self._replace_uv(self.nodes[tag], u + dx, v + dy)
             occupied = {
                 (round(node.x, 12), round(node.y, 12), round(node.z, 12))
                 for tag, node in self.nodes.items()
@@ -71,29 +110,49 @@ class _TransformMixin:
         self.begin_history_group()
         created: set[int] = set()
         created_elements: set[int] = set()
+        # Captured once, up front - a target point that happens to land
+        # exactly on an existing member's own line makes _add_node_at split
+        # that member into two pieces (see its own docstring), and if the
+        # split member is itself one of the ones being copied, re-fetching
+        # it from self.elements by tag *after* that split would silently
+        # hand back the wrong (truncated) piece instead of the original
+        # member's real endpoints - exactly the case that made a member's
+        # copy quietly vanish while its nodes still got copied fine.
+        selected_element_snapshot = [
+            (element_tag, self.elements[element_tag])
+            for element_tag in self.selected_elements
+            if element_tag in self.elements
+        ]
         try:
             for step in range(1, max(1, repeat) + 1):
                 mapping: dict[int, int] = {}
                 for source_tag in selected:
                     source_u, source_v = self._uv(self.nodes[source_tag])
                     before = set(self.nodes)
-                    tag = self.add_node(source_u + dx * step, source_v + dy * step)
+                    target_point = self._replace_uv(
+                        self.nodes[source_tag], source_u + dx * step, source_v + dy * step
+                    )
+                    tag = self._add_node_at(target_point)
                     mapping[source_tag] = tag
                     if tag in before:
                         continue
                     created.add(tag)
                     if source_tag in self.hinge_nodes:
                         self.hinge_nodes.add(tag)
+                    if copy_node_attributes:
+                        self._copy_node_attributes(source_tag, tag)
                 # Only a *selected* member gets carried along - copying two nodes
                 # that happen to be a member's endpoints must not invent one, or
                 # a plain node-only copy (no member picked) would start growing
                 # members nobody asked for.
-                for element_tag in self.selected_elements:
-                    element = self.elements.get(element_tag)
-                    if element is None:
-                        continue
+                for _element_tag, element in selected_element_snapshot:
                     if element.node_i in mapping and element.node_j in mapping:
-                        new_tag = self.add_member(mapping[element.node_i], mapping[element.node_j])
+                        new_tag = self._copy_member_between(
+                            element,
+                            mapping[element.node_i],
+                            mapping[element.node_j],
+                            copy_element_loads=copy_element_loads,
+                        )
                         if new_tag is not None:
                             created_elements.add(new_tag)
         finally:
@@ -103,7 +162,14 @@ class _TransformMixin:
         self._selection_changed()
         return len(created)
 
-    def mirror_selection(self, axis: str, value: float) -> int:
+    def mirror_selection(
+        self,
+        axis: str,
+        value: float,
+        *,
+        copy_node_attributes: bool = False,
+        copy_element_loads: bool = False,
+    ) -> int:
         """Mirror the selected nodes, and any selected member between them, across
         a vertical (``axis="x"``) or horizontal (``axis="y"``) line **within the
         active work plane** — the plane's local axes, not necessarily global X/Y.
@@ -122,12 +188,20 @@ class _TransformMixin:
             for tag in sorted(effective_nodes):
                 u, v = self._uv(self.nodes[tag])
                 mirrored = (2.0 * value - u, v) if axis == "x" else (u, 2.0 * value - v)
-                mapping[tag] = self.add_node(*mirrored)
+                before = set(self.nodes)
+                mapping[tag] = self._add_node_at(self._replace_uv(self.nodes[tag], *mirrored))
                 if tag in self.hinge_nodes:
                     self.hinge_nodes.add(mapping[tag])
+                if copy_node_attributes and mapping[tag] not in before:
+                    self._copy_node_attributes(tag, mapping[tag])
             for element in list(self.elements.values()):
                 if element.node_i in mapping and element.node_j in mapping:
-                    self.add_member(mapping[element.node_i], mapping[element.node_j])
+                    self._copy_member_between(
+                        element,
+                        mapping[element.node_i],
+                        mapping[element.node_j],
+                        copy_element_loads=copy_element_loads,
+                    )
         finally:
             self.end_history_group()
         self.selected_nodes = set(mapping.values())
@@ -135,7 +209,15 @@ class _TransformMixin:
         self._selection_changed()
         return len(mapping)
 
-    def array_copy_selection(self, dx: float, dy: float, count: int) -> int:
+    def array_copy_selection(
+        self,
+        dx: float,
+        dy: float,
+        count: int,
+        *,
+        copy_node_attributes: bool = False,
+        copy_element_loads: bool = False,
+    ) -> int:
         """Repeat the selected nodes, and the members between them, along a step.
 
         This is what turning one truss panel into a run of ``count`` panels needs:
@@ -152,14 +234,25 @@ class _TransformMixin:
                 mapping: dict[int, int] = {}
                 for tag in sorted(effective_nodes):
                     source_u, source_v = self._uv(self.nodes[tag])
-                    mapping[tag] = self.add_node(source_u + dx * step, source_v + dy * step)
+                    before = set(self.nodes)
+                    target_point = self._replace_uv(
+                        self.nodes[tag], source_u + dx * step, source_v + dy * step
+                    )
+                    mapping[tag] = self._add_node_at(target_point)
                     if tag in self.hinge_nodes:
                         self.hinge_nodes.add(mapping[tag])
+                    if copy_node_attributes and mapping[tag] not in before:
+                        self._copy_node_attributes(tag, mapping[tag])
                 for element in original_elements:
                     if (
                         element.node_i in mapping
                         and element.node_j in mapping
-                        and self.add_member(mapping[element.node_i], mapping[element.node_j])
+                        and self._copy_member_between(
+                            element,
+                            mapping[element.node_i],
+                            mapping[element.node_j],
+                            copy_element_loads=copy_element_loads,
+                        )
                         is not None
                     ):
                         created_members += 1
@@ -169,7 +262,14 @@ class _TransformMixin:
         return created_members
 
     def rotate_copy_selection(
-        self, center_u: float, center_v: float, angle_degrees: float, count: int
+        self,
+        center_u: float,
+        center_v: float,
+        angle_degrees: float,
+        count: int,
+        *,
+        copy_node_attributes: bool = False,
+        copy_element_loads: bool = False,
     ) -> int:
         """Repeat the selected nodes, and the members between them, rotated by
         ``angle_degrees`` increments around ``(center_u, center_v)`` — the
@@ -195,14 +295,23 @@ class _TransformMixin:
                     du, dv = source_u - center_u, source_v - center_v
                     rotated_u = center_u + du * cos_t - dv * sin_t
                     rotated_v = center_v + du * sin_t + dv * cos_t
-                    mapping[tag] = self.add_node(rotated_u, rotated_v)
+                    before = set(self.nodes)
+                    target_point = self._replace_uv(self.nodes[tag], rotated_u, rotated_v)
+                    mapping[tag] = self._add_node_at(target_point)
                     if tag in self.hinge_nodes:
                         self.hinge_nodes.add(mapping[tag])
+                    if copy_node_attributes and mapping[tag] not in before:
+                        self._copy_node_attributes(tag, mapping[tag])
                 for element in original_elements:
                     if (
                         element.node_i in mapping
                         and element.node_j in mapping
-                        and self.add_member(mapping[element.node_i], mapping[element.node_j])
+                        and self._copy_member_between(
+                            element,
+                            mapping[element.node_i],
+                            mapping[element.node_j],
+                            copy_element_loads=copy_element_loads,
+                        )
                         is not None
                     ):
                         created_members += 1

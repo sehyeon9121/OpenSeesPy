@@ -4,15 +4,38 @@ See ``canvas_work_planes.py`` for why this is a mixin rather than a
 standalone class.
 """
 
+from dataclasses import asdict
+
 from openframe.core.domain import (
     BoundaryCondition,
     Element,
+    FloorLoadEntry,
+    LoadCase,
     LoadCaseKind,
+    LoadCombination,
+    LoadEntry,
+    MemberDistributedLoadEntry,
+    MemberPointLoadEntry,
     NodalLoad,
+    NodalLoadEntry,
     Node,
+    SelfWeightEntry,
     UniformElementLoad,
 )
 from openframe.features.model.drawing import PlaneKind, WorkPlane
+
+#: Which payload dataclass a ``LoadEntry.kind`` implies - both directions of
+#: (de)serialization dispatch off this instead of duplicating the mapping.
+_LOAD_ENTRY_PAYLOAD_TYPES: dict[str, type] = {
+    "nodal": NodalLoadEntry,
+    "member_point": MemberPointLoadEntry,
+    "member_moment": MemberPointLoadEntry,
+    "member_uniform": MemberDistributedLoadEntry,
+    "member_linear": MemberDistributedLoadEntry,
+    "member_partial": MemberDistributedLoadEntry,
+    "floor": FloorLoadEntry,
+    "self_weight": SelfWeightEntry,
+}
 
 
 class _SerializationMixin:
@@ -88,6 +111,27 @@ class _SerializationMixin:
                 for tag, (host_tag, position) in self.embedded_nodes.items()
             ],
             "hinge_nodes": sorted(self.hinge_nodes),
+            "load_cases": [
+                {"id": case.id, "name": case.name, "kind": case.kind.value, "description": case.description}
+                for case in self.load_cases.values()
+            ],
+            "active_load_case_id": self.active_load_case_id,
+            "load_entries": [
+                {
+                    "id": entry.id,
+                    "case_id": entry.case_id,
+                    "kind": entry.kind,
+                    "target": list(entry.target),
+                    "payload": asdict(entry.payload),
+                    "hidden": entry.hidden,
+                }
+                for entry in self.load_entries.values()
+            ],
+            "load_combinations": [
+                {"name": combination.name, "factors": {k.value: v for k, v in combination.factors.items()}}
+                for combination in self.load_combinations.values()
+            ],
+            "active_combination_id": self.active_combination_id,
         }
 
     def load_dict(self, data: dict[str, object]) -> None:
@@ -162,6 +206,37 @@ class _SerializationMixin:
         }
         hinge_nodes = {int(tag) for tag in data.get("hinge_nodes", [])}
 
+        load_cases = {
+            str(case["id"]): LoadCase(
+                id=str(case["id"]),
+                name=str(case["name"]),
+                kind=LoadCaseKind(case.get("kind", LoadCaseKind.UNCLASSIFIED.value)),
+                description=str(case.get("description", "")),
+            )
+            for case in data.get("load_cases", [])
+        }
+        load_entries = {
+            int(entry["id"]): LoadEntry(
+                id=int(entry["id"]),
+                case_id=str(entry["case_id"]),
+                kind=str(entry["kind"]),
+                target=tuple(entry.get("target", [])),
+                payload=_LOAD_ENTRY_PAYLOAD_TYPES[str(entry["kind"])](**entry.get("payload", {})),
+                hidden=bool(entry.get("hidden", False)),
+            )
+            for entry in data.get("load_entries", [])
+        }
+        load_combinations = {
+            str(combination["name"]): LoadCombination(
+                name=str(combination["name"]),
+                factors={
+                    LoadCaseKind(kind): float(factor)
+                    for kind, factor in combination.get("factors", {}).items()
+                },
+            )
+            for combination in data.get("load_combinations", [])
+        }
+
         self._restore(
             {
                 "nodes": nodes,
@@ -171,7 +246,13 @@ class _SerializationMixin:
                 "element_loads": element_loads,
                 "hinge_nodes": hinge_nodes,
                 "embedded_nodes": embedded_nodes,
+                "load_cases": load_cases,
+                "active_load_case_id": data.get("active_load_case_id"),
+                "load_entries": load_entries,
+                "load_combinations": load_combinations,
+                "active_combination_id": data.get("active_combination_id"),
             }
         )
+        self._next_load_entry_id = max(load_entries.keys(), default=0) + 1
         self._undo_stack.clear()
         self._redo_stack.clear()

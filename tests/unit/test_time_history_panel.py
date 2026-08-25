@@ -12,6 +12,7 @@ from openframe.core.domain import (
     StructuralModel,
     TimeHistoryStep,
 )
+from openframe.features.results.presentation.node_picker_dialog import NodePickerDialog
 from openframe.features.results.presentation.time_history_panel import TimeHistoryPanel
 
 
@@ -65,6 +66,21 @@ def test_node_selector_lists_every_node_from_the_first_time_step() -> None:
 
     labels = [panel.node_selector.itemText(index) for index in range(panel.node_selector.count())]
     assert labels == ["Node 1", "Node 2"]
+
+
+def test_node_picker_is_searchable_and_limited_to_ten_visible_rows() -> None:
+    application = QApplication.instance() or QApplication([])
+    dialog = NodePickerDialog(tuple(range(1, 31)), initial=25)
+
+    assert dialog.list_widget.count() == 30
+    row_height = max(dialog.list_widget.sizeHintForRow(0), 24)
+    assert dialog.list_widget.maximumHeight() <= row_height * 10 + 2
+
+    dialog.search_box.setText("Node 25")
+
+    assert dialog.list_widget.count() == 1
+    assert dialog.list_widget.currentItem().text() == "Node 25"
+    application.processEvents()
 
 
 def test_dof_selector_matches_the_models_ndf_and_labels() -> None:

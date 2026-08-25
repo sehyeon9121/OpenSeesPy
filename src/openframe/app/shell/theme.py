@@ -882,8 +882,49 @@ QToolButton#workbenchTab:checked {
     color: #174ea6; background: #eef3fa; border-bottom-color: #174ea6;
 }
 
+/* 3D Loads editor: one quiet analysis flow, with case management secondary. */
+QLabel#loadPanelIntro {
+    color: #526579; font-size: 8pt; padding: 0 0 4px 0;
+}
+QLabel#loadCommandTitle {
+    color: #172b43; font-size: 10pt; font-weight: 700;
+    padding: 8px 0 4px 0;
+}
+QToolButton#loadModeTab {
+    min-height: 32px; padding: 0 8px;
+    color: #526579; background: #f4f6f8;
+    border: 1px solid #ccd6e2; border-radius: 4px;
+    font-size: 8pt; font-weight: 700;
+}
+QToolButton#loadModeTab:hover { background: #edf2f8; color: #174ea6; }
+QToolButton#loadModeTab:checked {
+    color: #ffffff; background: #174ea6; border-color: #174ea6;
+}
+QLabel#loadModeHint {
+    color: #607288; background: #f2f5f8;
+    border-radius: 4px; padding: 6px 8px; font-size: 8pt;
+}
+QLabel#loadManagerNotice {
+    color: #71510b; background: #fff7df;
+    border: 1px solid #ead9a7; border-radius: 4px;
+    padding: 7px 8px; font-size: 8pt;
+}
+QLabel#loadStepTitle {
+    color: #263b53; font-size: 8pt; font-weight: 700;
+    padding: 7px 0 2px 0;
+}
+QPushButton#loadPrimaryButton {
+    min-height: 34px; padding: 0 12px;
+    color: #ffffff; background: #174ea6;
+    border: 1px solid #174ea6; border-radius: 4px;
+    font-size: 9pt; font-weight: 700;
+}
+QPushButton#loadPrimaryButton:hover { background: #0f428f; border-color: #0f428f; }
+QPushButton#loadPrimaryButton:pressed { background: #0c3677; }
+
 QStackedWidget#modelingLeftDock,
 QFrame#modelExplorerPanel { background: #f8f9fa; border-right: 1px solid #c4c5d5; }
+QFrame#modelingLeftDockDivider { background: #c4c5d5; border: 0; }
 QFrame#modelExplorerHeader {
     min-height: 42px; max-height: 42px;
     background: #f8f9fa; border-bottom: 1px solid #d8e0e9;

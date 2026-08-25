@@ -183,6 +183,10 @@ class _InputEventsMixin:
                 self.escape_requested.emit()
             else:
                 self.end_chain()
+                # Esc doubles as "deselect" in select mode - matches the
+                # usual CAD convention, and means clearing a selection never
+                # requires reaching for empty canvas space to click on.
+                self.clear_selection()
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete:

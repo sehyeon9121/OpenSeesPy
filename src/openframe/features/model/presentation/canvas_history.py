@@ -15,11 +15,19 @@ class _HistoryMixin:
         if self._history_group_depth == 0:
             return
         self._history_group_depth -= 1
-        if self._history_group_depth == 0 and self._history_group_snapshot is not None:
+        if self._history_group_depth != 0:
+            return
+        if self._history_group_snapshot is not None:
             if self._history_group_snapshot != self._snapshot():
                 self._undo_stack.append(self._history_group_snapshot)
                 self._redo_stack.clear()
             self._history_group_snapshot = None
+        # One clean model_changed for the whole group, instead of the one
+        # _changed() swallowed per intermediate node/member it created along
+        # the way - see _changed()'s own docstring (canvas_rendering.py).
+        if self._pending_change_notification:
+            self._pending_change_notification = False
+            self.model_changed.emit()
 
     def undo(self) -> None:
         if not self._undo_stack:
@@ -48,6 +56,11 @@ class _HistoryMixin:
             "element_loads": dict(self.element_loads),
             "hinge_nodes": set(self.hinge_nodes),
             "embedded_nodes": dict(self.embedded_nodes),
+            "load_cases": dict(self.load_cases),
+            "active_load_case_id": self.active_load_case_id,
+            "load_entries": dict(self.load_entries),
+            "load_combinations": dict(self.load_combinations),
+            "active_combination_id": self.active_combination_id,
         }
 
     def _restore(self, snapshot: dict[str, object]) -> None:
@@ -58,6 +71,11 @@ class _HistoryMixin:
         self.element_loads = dict(snapshot["element_loads"])
         self.hinge_nodes = set(snapshot["hinge_nodes"])
         self.embedded_nodes = dict(snapshot["embedded_nodes"])
+        self.load_cases = dict(snapshot["load_cases"])
+        self.active_load_case_id = snapshot["active_load_case_id"]
+        self.load_entries = dict(snapshot["load_entries"])
+        self.load_combinations = dict(snapshot["load_combinations"])
+        self.active_combination_id = snapshot["active_combination_id"]
         self.selected_nodes.clear()
         self.selected_elements.clear()
         self._selected = None
@@ -68,3 +86,4 @@ class _HistoryMixin:
         self._changed()
         self.draw_state_changed.emit()
         self.selection_changed.emit()
+        self.load_state_changed.emit()

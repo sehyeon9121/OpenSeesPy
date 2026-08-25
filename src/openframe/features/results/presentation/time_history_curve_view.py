@@ -30,6 +30,7 @@ class TimeHistoryCurveView(QWidget):
         self._empty_message = "시간이력해석을 먼저 실행하세요"
         self._marker: tuple[float, float] | None = None
         self._marker_label = ""
+        self._corner_label = ""
         self._selected_time: float | None = None
         self._selected_point: tuple[float, float] | None = None
         self._selected_label = ""
@@ -44,6 +45,7 @@ class TimeHistoryCurveView(QWidget):
         y_label: str,
         marker: tuple[float, float] | None = None,
         marker_label: str = "",
+        corner_label: str = "",
         selected_time: float | None = None,
         selected_point: tuple[float, float] | None = None,
         selected_label: str = "",
@@ -54,12 +56,15 @@ class TimeHistoryCurveView(QWidget):
         highlight - the point the user last clicked in the graph - drawn as a
         vertical guide line so it stays visually distinct from the marker.
         ``selected_point`` and ``selected_label`` add the curve value at that
-        guide, so a click is useful without opening the animation panel."""
+        guide, so a click is useful without opening the animation panel.
+        ``corner_label`` identifies the plotted series in the lower-left of
+        the graph (used by SETUP's ground-motion preview)."""
         self._times = times
         self._values = values
         self._y_label = y_label
         self._marker = marker
         self._marker_label = marker_label
+        self._corner_label = corner_label
         self._selected_time = selected_time
         self._selected_point = selected_point
         self._selected_label = selected_label
@@ -210,6 +215,33 @@ class TimeHistoryCurveView(QWidget):
         painter.setPen(QPen(QColor("#174ea6"), 1.4))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(curve_path)
+
+        if self._corner_label:
+            max_label_width = max(40, int(plot_rect.width() * 0.7))
+            display_label = font_metrics.elidedText(
+                self._corner_label,
+                Qt.TextElideMode.ElideRight,
+                max_label_width - 14,
+            )
+            label_width = min(
+                float(max_label_width),
+                float(font_metrics.horizontalAdvance(display_label) + 14),
+            )
+            badge_rect = QRectF(
+                plot_rect.left() + 6.0,
+                plot_rect.bottom() - label_height - 11.0,
+                label_width,
+                label_height + 5.0,
+            )
+            painter.setPen(QPen(QColor("#7b8a9e"), 1.0))
+            painter.setBrush(QColor(255, 255, 255, 225))
+            painter.drawRoundedRect(badge_rect, 4.0, 4.0)
+            painter.setPen(QColor("#41536a"))
+            painter.drawText(
+                badge_rect.adjusted(7.0, 0.0, -7.0, 0.0),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                display_label,
+            )
 
         if self._selected_time is not None:
             selected_x, _ = to_screen(self._selected_time, 0.0)

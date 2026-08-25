@@ -16,6 +16,7 @@ from openframe.features.viewport.presentation.quick3d_scene_bridge import (
 class Quick3DViewport(QFrame):
     camera_mode_changed = Signal(str)
     node_picked = Signal(int, int, int)
+    member_picked = Signal(int, int, int)
     #: A click on the active work plane, as structural (x, y, z) — already
     #: converted out of the QML scene's y-up view coordinates, so callers never
     #: need to know about that mapping.
@@ -26,6 +27,10 @@ class Quick3DViewport(QFrame):
     node_hovered = Signal(int)
     plane_point_hovered = Signal(float, float, float)
     hover_cleared = Signal()
+    selection_box_finished = Signal(object, object, bool)
+    #: A plain click in select mode that hit neither a node nor a member -
+    #: the 3D-view equivalent of clicking empty space on the 2D canvas.
+    empty_space_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -72,10 +77,13 @@ class Quick3DViewport(QFrame):
         if root is not None:
             root.cameraModeChanged.connect(self.camera_mode_changed.emit)
             root.nodePicked.connect(self._on_node_picked)
+            root.memberPicked.connect(self._on_member_picked)
             root.planePicked.connect(self._on_plane_picked)
             root.nodeHovered.connect(self.node_hovered.emit)
             root.planeHovered.connect(self._on_plane_hovered)
             root.hoverCleared.connect(self.hover_cleared.emit)
+            root.selectionBoxFinished.connect(self._on_selection_box_finished)
+            root.emptySpaceClicked.connect(self.empty_space_clicked.emit)
             if self._pending_camera_preset is not None:
                 root.setPreset(self._pending_camera_preset)
 
@@ -83,12 +91,26 @@ class Quick3DViewport(QFrame):
         global_pos = self.quick_widget.mapToGlobal(QPoint(int(x), int(y)))
         self.node_picked.emit(tag, global_pos.x(), global_pos.y())
 
+    def _on_member_picked(self, tag: int, x: float, y: float) -> None:
+        global_pos = self.quick_widget.mapToGlobal(QPoint(int(x), int(y)))
+        self.member_picked.emit(tag, global_pos.x(), global_pos.y())
+
     def _on_plane_picked(self, view_x: float, view_y: float, view_z: float) -> None:
         # Inverse of Quick3DSceneBridge._view_coordinates: view = (x, z, -y).
         self.plane_point_picked.emit(view_x, -view_z, view_y)
 
     def _on_plane_hovered(self, view_x: float, view_y: float, view_z: float) -> None:
         self.plane_point_hovered.emit(view_x, -view_z, view_y)
+
+    def _on_selection_box_finished(
+        self, node_tags: str, member_tags: str, additive: bool
+    ) -> None:
+        def parse_tags(serialized: str) -> set[int]:
+            return {int(value) for value in serialized.split(",") if value}
+
+        self.selection_box_finished.emit(
+            parse_tags(node_tags), parse_tags(member_tags), additive
+        )
 
     def set_preview_segment(
         self,
@@ -170,6 +192,9 @@ class Quick3DViewport(QFrame):
 
     def set_selected_node(self, tag: int | None) -> None:
         self.bridge.set_selected_node(tag)
+
+    def set_selection(self, node_tags: set[int], member_tags: set[int]) -> None:
+        self.bridge.set_selection(node_tags, member_tags)
 
     def set_camera_preset(self, preset: str) -> None:
         if preset not in {"iso", "xy", "xz", "yz"}:

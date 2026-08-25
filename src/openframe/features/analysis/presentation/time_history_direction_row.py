@@ -17,7 +17,7 @@ Reuses (never duplicates): ``BuiltInGroundMotionCatalog``,
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -50,6 +50,19 @@ from openframe.infrastructure.opensees.ground_motion_scaling import (
 )
 
 _UNIT_LABELS = {"g": "g", "m/s2": "m/s²", "cm/s2": "cm/s²", "model": "Model Unit"}
+
+
+def _pga_readout(raw_pga: float, unit: str, model_pga: float, length_unit: str) -> str:
+    """Show the record peak first, followed by its model-unit equivalent.
+
+    For example, 0.5146 g is about 5.047 m/s². Previously only the latter
+    number appeared and had no unit, making the correct conversion look like
+    an accidental tenfold PGA increase.
+    """
+    model_unit = f"{length_unit}/s²"
+    if unit == "model":
+        return f"{raw_pga:.4g} {model_unit}"
+    return f"{raw_pga:.4g} {_UNIT_LABELS[unit]} → {model_pga:.4g} {model_unit}"
 
 
 class TimeHistoryDirectionRow(QFrame):
@@ -293,6 +306,11 @@ class TimeHistoryDirectionRow(QFrame):
             return self._builtin_record.path if self._builtin_record is not None else None
         return self._imported_path
 
+    def _active_motion_label(self) -> str:
+        if self.builtin_radio.isChecked():
+            return self._builtin_motion.name if self._builtin_motion is not None else ""
+        return self._imported_path.name if self._imported_path is not None else ""
+
     def set_length_unit(self, length_unit: str) -> None:
         self._length_unit = length_unit
         self._refresh_readouts()
@@ -329,7 +347,14 @@ class TimeHistoryDirectionRow(QFrame):
             self.readout_values["Effective Scale"].setText("—")
             self.preview.set_series((), (), y_label="")
             return
-        self.readout_values["Original PGA"].setText(f"{scaling.original_pga_model_units:.4g}")
+        self.readout_values["Original PGA"].setText(
+            _pga_readout(
+                motion.pga,
+                self.unit_combo.currentData(),
+                scaling.original_pga_model_units,
+                self._length_unit,
+            )
+        )
         self.readout_values["Effective Scale"].setText(f"{scaling.effective_scale:.4g}")
 
         # The applied (unit-converted + scaled) waveform - what actually
@@ -338,7 +363,12 @@ class TimeHistoryDirectionRow(QFrame):
         # solver will really run.
         times = tuple(index * motion.dt for index in range(motion.npts))
         values = tuple(value * scaling.total_factor for value in motion.accelerations)
-        self.preview.set_series(times, values, y_label=f"Accel [{self._length_unit}/s²]")
+        self.preview.set_series(
+            times,
+            values,
+            y_label=f"Accel [{self._length_unit}/s²]",
+            corner_label=self._active_motion_label(),
+        )
 
     def _emit_changed(self) -> None:
         self._refresh_readouts()

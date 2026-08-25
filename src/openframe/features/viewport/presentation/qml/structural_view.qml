@@ -12,6 +12,16 @@ Item {
     property real lastMouseY: 0
     property bool panning: false
     property bool pickingEnabled: false
+    property int hoveredNodeTag: -1
+    property real snapScreenX: 0
+    property real snapScreenY: 0
+    property real selectionStartX: 0
+    property real selectionStartY: 0
+    property real selectionCurrentX: 0
+    property real selectionCurrentY: 0
+    property bool selectionCandidate: false
+    property bool selectionDragging: false
+    property bool selectionCompletedDrag: false
     // Free-form 3D authoring: clicking the active work plane places a point
     // there (in view coordinates — Python converts back to structural and
     // then to the plane's own u/v); clicking an existing node instead
@@ -22,6 +32,7 @@ Item {
     property real planeOffset: 0
     signal cameraModeChanged(string mode)
     signal nodePicked(int tag, real screenX, real screenY)
+    signal memberPicked(int tag, real screenX, real screenY)
     signal planePicked(real viewX, real viewY, real viewZ)
     // Hover equivalents of the two signals above, fired continuously (no
     // button held) while planePickingEnabled - drive the free-form 3D draw
@@ -31,6 +42,33 @@ Item {
     signal nodeHovered(int tag)
     signal planeHovered(real viewX, real viewY, real viewZ)
     signal hoverCleared()
+    signal selectionBoxFinished(string nodeTags, string memberTags, bool additive)
+    //: A plain click (not a drag-box) in select mode that hit neither a node
+    //: nor a member - the 3D-view equivalent of clicking empty space on the
+    //: 2D canvas, which clears the current selection there.
+    signal emptySpaceClicked()
+
+    onPlanePickingEnabledChanged: {
+        if (!planePickingEnabled)
+            clearSnapFeedback()
+    }
+
+    function clearSnapFeedback() {
+        hoveredNodeTag = -1
+    }
+
+    function showSnapFeedback(tag) {
+        hoveredNodeTag = tag
+        for (let index = 0; index < sceneBridge.nodes.length; ++index) {
+            const node = sceneBridge.nodes[index]
+            if (node.tag !== tag)
+                continue
+            const screen = view3d.mapFrom3DScene(Qt.vector3d(node.x, node.y, node.z))
+            snapScreenX = screen.x
+            snapScreenY = screen.y
+            return
+        }
+    }
 
     // view3d.pick() only ever hits the exact rendered pixel, so a node whose
     // on-screen radius shrinks to a couple of pixels at any real zoom level
@@ -57,6 +95,69 @@ Item {
             }
         }
         return exact
+    }
+
+    function pointInSelection(point, left, top, right, bottom) {
+        return point.x >= left && point.x <= right
+            && point.y >= top && point.y <= bottom
+    }
+
+    function orientation2d(ax, ay, bx, by, cx, cy) {
+        return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    }
+
+    function segmentsCross(ax, ay, bx, by, cx, cy, dx, dy) {
+        const o1 = orientation2d(ax, ay, bx, by, cx, cy)
+        const o2 = orientation2d(ax, ay, bx, by, dx, dy)
+        const o3 = orientation2d(cx, cy, dx, dy, ax, ay)
+        const o4 = orientation2d(cx, cy, dx, dy, bx, by)
+        return ((o1 >= 0 && o2 <= 0) || (o1 <= 0 && o2 >= 0))
+            && ((o3 >= 0 && o4 <= 0) || (o3 <= 0 && o4 >= 0))
+    }
+
+    function memberTouchesSelection(a, b, left, top, right, bottom) {
+        if (pointInSelection(a, left, top, right, bottom)
+                || pointInSelection(b, left, top, right, bottom))
+            return true
+        return segmentsCross(a.x, a.y, b.x, b.y, left, top, right, top)
+            || segmentsCross(a.x, a.y, b.x, b.y, right, top, right, bottom)
+            || segmentsCross(a.x, a.y, b.x, b.y, right, bottom, left, bottom)
+            || segmentsCross(a.x, a.y, b.x, b.y, left, bottom, left, top)
+    }
+
+    function finishSelectionBox(additive) {
+        const left = Math.min(selectionStartX, selectionCurrentX)
+        const right = Math.max(selectionStartX, selectionCurrentX)
+        const top = Math.min(selectionStartY, selectionCurrentY)
+        const bottom = Math.max(selectionStartY, selectionCurrentY)
+        // Same vertical gesture used by the 2D canvas: a member with both
+        // endpoints inside the box is always selected ("window"); dragging
+        // upward ("crossing") additionally grabs members the box merely
+        // touches, same as canvas_rendering.py's _select_in_rect.
+        const crossing = selectionCurrentY < selectionStartY - 4
+        let nodeTags = []
+        let memberTags = []
+        for (let index = 0; index < sceneBridge.nodes.length; ++index) {
+            const node = sceneBridge.nodes[index]
+            const point = view3d.mapFrom3DScene(Qt.vector3d(node.x, node.y, node.z))
+            if (pointInSelection(point, left, top, right, bottom))
+                nodeTags.push(node.tag)
+        }
+        for (let index = 0; index < sceneBridge.members.length; ++index) {
+            const member = sceneBridge.members[index]
+            const start = view3d.mapFrom3DScene(
+                Qt.vector3d(member.start_x, member.start_y, member.start_z)
+            )
+            const end = view3d.mapFrom3DScene(
+                Qt.vector3d(member.end_x, member.end_y, member.end_z)
+            )
+            const fullyInside = pointInSelection(start, left, top, right, bottom)
+                && pointInSelection(end, left, top, right, bottom)
+            if (fullyInside
+                    || (crossing && memberTouchesSelection(start, end, left, top, right, bottom)))
+                memberTags.push(member.tag)
+        }
+        selectionBoxFinished(nodeTags.join(","), memberTags.join(","), additive)
     }
 
     function setPreset(preset) {
@@ -237,9 +338,22 @@ Item {
         }
 
         Repeater3D {
+            // Each list entry is already a fully self-contained box/cylinder
+            // part (position, rotation, its own width_b x width_h) computed
+            // in Python - Quick3DSceneBridge._member_parts. A plain member
+            // is one part; an H/I section is three (web + two flanges),
+            // each its own independent entry rather than a Node group
+            // nesting several conditionally-visible children under one
+            // parent transform - the same flat-list-of-parts shape
+            // loadArrows/supportSymbols below already use, and Repeater3D
+            // keeps that in sync with model changes far more reliably than
+            // it does a nested multi-child delegate (a copied member
+            // intermittently rendered as a bare hairline instead of its
+            // real cross-section under the nested form).
             model: sceneBridge.members
             delegate: Model {
-                source: "#Cube"
+                property int memberTag: modelData.tag
+                source: modelData.source
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 rotation: Qt.quaternion(
                     modelData.qscalar,
@@ -248,9 +362,9 @@ Item {
                     modelData.qz
                 )
                 scale: Qt.vector3d(
-                    modelData.thickness / 100,
+                    modelData.width_b / 100,
                     modelData.length / 100,
-                    modelData.thickness / 100
+                    modelData.width_h / 100
                 )
                 materials: [
                     PrincipledMaterial {
@@ -262,6 +376,10 @@ Item {
                 ]
                 castsShadows: false
                 receivesShadows: false
+                // Members participate in click picking only in selection
+                // mode.  Keeping them non-pickable while drawing lets the
+                // invisible work plane and nearby node snaps remain reachable.
+                pickable: root.pickingEnabled
             }
         }
 
@@ -301,16 +419,19 @@ Item {
         Repeater3D {
             model: sceneBridge.nodes
             delegate: Model {
+                property int nodeTag: modelData.tag
+                property bool snapTarget: root.planePickingEnabled
+                    && root.hoveredNodeTag === nodeTag
                 source: "#Sphere"
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 scale: Qt.vector3d(
-                    modelData.radius * 2 / 100,
-                    modelData.radius * 2 / 100,
-                    modelData.radius * 2 / 100
+                    modelData.radius * 2 * (snapTarget ? 1.65 : 1) / 100,
+                    modelData.radius * 2 * (snapTarget ? 1.65 : 1) / 100,
+                    modelData.radius * 2 * (snapTarget ? 1.65 : 1) / 100
                 )
                 materials: [
                     PrincipledMaterial {
-                        baseColor: modelData.color
+                        baseColor: snapTarget ? "#f59e0b" : modelData.color
                         opacity: modelData.opacity
                         metalness: 0.0
                         roughness: 0.55
@@ -319,14 +440,45 @@ Item {
                 castsShadows: false
                 receivesShadows: false
                 pickable: true
-                property int nodeTag: modelData.tag
             }
         }
 
         Repeater3D {
+            // A translucent outer sphere makes a selected node unmistakable
+            // even when its solid red core is partly hidden by several
+            // members. It is deliberately non-pickable.
+            model: sceneBridge.nodes
+            delegate: Model {
+                visible: modelData.selected === true
+                source: "#Sphere"
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                scale: Qt.vector3d(
+                    modelData.radius * 2.75 / 100,
+                    modelData.radius * 2.75 / 100,
+                    modelData.radius * 2.75 / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: "#ef4444"
+                        opacity: 0.24
+                        metalness: 0.0
+                        roughness: 0.35
+                        cullMode: Material.NoCulling
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                pickable: false
+            }
+        }
+
+        Repeater3D {
+            // Translucent undeformed reference overlay - a plain B x H box
+            // is enough here (no flange/web split), since it is only a faint
+            // low-opacity backdrop behind the actual deformed member.
             model: sceneBridge.ghostMembers
             delegate: Model {
-                source: "#Cube"
+                source: modelData.source
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 rotation: Qt.quaternion(
                     modelData.qscalar,
@@ -335,9 +487,9 @@ Item {
                     modelData.qz
                 )
                 scale: Qt.vector3d(
-                    modelData.thickness / 100,
+                    modelData.width_b / 100,
                     modelData.length / 100,
-                    modelData.thickness / 100
+                    modelData.width_h / 100
                 )
                 materials: [
                     PrincipledMaterial {
@@ -434,6 +586,67 @@ Item {
                 castsShadows: false
                 receivesShadows: false
             }
+        }
+    }
+
+    Rectangle {
+        id: nodeSnapIndicator
+        objectName: "nodeSnapIndicator"
+        z: 24
+        visible: root.planePickingEnabled && root.hoveredNodeTag >= 0
+        x: root.snapScreenX - width / 2
+        y: root.snapScreenY - height / 2
+        width: 30
+        height: 30
+        radius: 15
+        color: "#33f59e0b"
+        border.color: "#f59e0b"
+        border.width: 2
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: 7
+            height: 7
+            radius: 3.5
+            color: "#f59e0b"
+        }
+        Text {
+            x: parent.width + 7
+            anchors.verticalCenter: parent.verticalCenter
+            text: "N" + root.hoveredNodeTag + "  SNAP"
+            color: "#92400e"
+            font.family: "Segoe UI"
+            font.pixelSize: 12
+            font.bold: true
+            style: Text.Outline
+            styleColor: "#fffaf0"
+        }
+    }
+
+    Rectangle {
+        id: selectionRubberBand
+        objectName: "selectionRubberBand"
+        z: 22
+        visible: root.selectionDragging
+        x: Math.min(root.selectionStartX, root.selectionCurrentX)
+        y: Math.min(root.selectionStartY, root.selectionCurrentY)
+        width: Math.abs(root.selectionCurrentX - root.selectionStartX)
+        height: Math.abs(root.selectionCurrentY - root.selectionStartY)
+        property bool crossing: root.selectionCurrentY < root.selectionStartY - 4
+        color: crossing ? "#2516a34a" : "#252563eb"
+        border.color: crossing ? "#16a34a" : "#2563eb"
+        border.width: 2
+
+        Text {
+            x: 6
+            y: parent.crossing ? -25 : 5
+            text: parent.crossing ? "노드 + 부재 선택" : "노드 선택"
+            color: parent.crossing ? "#166534" : "#1d4ed8"
+            font.family: "Segoe UI"
+            font.pixelSize: 12
+            font.bold: true
+            style: Text.Outline
+            styleColor: "#ffffff"
         }
     }
 
@@ -534,12 +747,18 @@ Item {
         acceptedButtons: Qt.MiddleButton | Qt.LeftButton
         hoverEnabled: true
         onExited: {
-            if (root.planePickingEnabled)
+            if (root.planePickingEnabled) {
+                root.clearSnapFeedback()
                 root.hoverCleared()
+            }
         }
         onClicked: function(mouse) {
             if (mouse.button !== Qt.LeftButton)
                 return
+            if (root.selectionCompletedDrag) {
+                root.selectionCompletedDrag = false
+                return
+            }
             if (root.planePickingEnabled) {
                 let result = root.pickNearestNode(mouse.x, mouse.y)
                 if (result.objectHit && result.objectHit.nodeTag !== undefined) {
@@ -554,13 +773,27 @@ Item {
             if (!root.pickingEnabled)
                 return
             let result = root.pickNearestNode(mouse.x, mouse.y)
-            if (result.objectHit && result.objectHit.nodeTag !== undefined)
+            if (result.objectHit && result.objectHit.nodeTag !== undefined) {
                 root.nodePicked(result.objectHit.nodeTag, mouse.x, mouse.y)
+            } else if (result.objectHit && result.objectHit.memberTag !== undefined) {
+                root.memberPicked(result.objectHit.memberTag, mouse.x, mouse.y)
+            } else {
+                root.emptySpaceClicked()
+            }
         }
         onPressed: function(mouse) {
             root.lastMouseX = mouse.x
             root.lastMouseY = mouse.y
             root.panning = Boolean(mouse.modifiers & Qt.ShiftModifier)
+            if (mouse.button === Qt.LeftButton && root.pickingEnabled) {
+                root.selectionStartX = mouse.x
+                root.selectionStartY = mouse.y
+                root.selectionCurrentX = mouse.x
+                root.selectionCurrentY = mouse.y
+                root.selectionCandidate = true
+                root.selectionDragging = false
+                root.selectionCompletedDrag = false
+            }
         }
         onPositionChanged: function(mouse) {
             if (root.planePickingEnabled && !(mouse.buttons & Qt.MiddleButton)) {
@@ -571,12 +804,26 @@ Item {
                 // exactly, so hover and click always agree on what counts as
                 // a hit.
                 let hover = root.pickNearestNode(mouse.x, mouse.y)
-                if (hover.objectHit && hover.objectHit.nodeTag !== undefined)
+                if (hover.objectHit && hover.objectHit.nodeTag !== undefined) {
+                    root.showSnapFeedback(hover.objectHit.nodeTag)
                     root.nodeHovered(hover.objectHit.nodeTag)
-                else if (hover.objectHit === activePlaneModel)
+                } else if (hover.objectHit === activePlaneModel) {
+                    root.clearSnapFeedback()
                     root.planeHovered(hover.scenePosition.x, hover.scenePosition.y, hover.scenePosition.z)
-                else
+                } else {
+                    root.clearSnapFeedback()
                     root.hoverCleared()
+                }
+            }
+            if (root.selectionCandidate && (mouse.buttons & Qt.LeftButton)) {
+                root.selectionCurrentX = mouse.x
+                root.selectionCurrentY = mouse.y
+                const dx = mouse.x - root.selectionStartX
+                const dy = mouse.y - root.selectionStartY
+                if (dx * dx + dy * dy >= 25)
+                    root.selectionDragging = true
+                if (root.selectionDragging)
+                    return
             }
             if (!(mouse.buttons & Qt.MiddleButton))
                 return
@@ -593,6 +840,22 @@ Item {
                 root.cameraPitch = Math.max(-85, Math.min(85, root.cameraPitch - dy * 0.38))
             }
             root.cameraModeChanged("free")
+        }
+        onReleased: function(mouse) {
+            if (mouse.button !== Qt.LeftButton || !root.selectionCandidate)
+                return
+            root.selectionCurrentX = mouse.x
+            root.selectionCurrentY = mouse.y
+            if (root.selectionDragging) {
+                root.finishSelectionBox(Boolean(mouse.modifiers & Qt.ControlModifier))
+                root.selectionCompletedDrag = true
+            }
+            root.selectionCandidate = false
+            root.selectionDragging = false
+        }
+        onCanceled: {
+            root.selectionCandidate = false
+            root.selectionDragging = false
         }
         onWheel: function(wheel) {
             let factor = wheel.angleDelta.y > 0 ? 0.88 : 1.14

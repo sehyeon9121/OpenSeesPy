@@ -33,6 +33,9 @@ from openframe.core.domain import (
     StructuralModel,
     UnitSystem,
 )
+from openframe.features.results.presentation.node_picker_dialog import (
+    SearchableNodeSelector,
+)
 from openframe.features.results.presentation.time_history_curve_view import (
     TimeHistoryCurveView,
 )
@@ -100,7 +103,7 @@ class TimeHistoryPanel(QFrame):
         self.response_selector.currentIndexChanged.connect(self._on_selector_changed)
         picker_row.addWidget(self.response_selector, 1)
         picker_row.addWidget(QLabel("NODE"))
-        self.node_selector = QComboBox()
+        self.node_selector = SearchableNodeSelector()
         self.node_selector.setObjectName("timeHistoryNodeSelector")
         self.node_selector.currentIndexChanged.connect(self._on_selector_changed)
         picker_row.addWidget(self.node_selector, 1)

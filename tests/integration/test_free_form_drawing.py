@@ -4,6 +4,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from _solve_helpers import solve_and_wait
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication
@@ -12,8 +13,6 @@ from openframe.features.analysis.statics import check_determinacy
 from openframe.features.model.drawing import PlaneKind
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
-
-from _solve_helpers import solve_and_wait
 
 
 def _canvas() -> StaticsDrawingCanvas:
@@ -651,6 +650,52 @@ def test_selecting_a_member_and_copying_carries_both_its_endpoints() -> None:
     copied_right = canvas.nodes[new_element.node_j]
     assert {copied_left.y, copied_right.y} == {3.0}
     assert canvas.selected_elements == {new_member}
+
+
+def test_element_copy_preserves_structural_properties_and_optional_attributes() -> None:
+    from openframe.core.domain import (
+        BoundaryCondition,
+        Element,
+        NodalLoad,
+        UniformElementLoad,
+    )
+
+    canvas = _canvas()
+    left = canvas.place_point(0.0, 0.0)
+    right = canvas.place_point(4.0, 0.0)
+    canvas.end_chain()
+    member = next(iter(canvas.elements))
+    canvas.elements[member] = Element(
+        member,
+        left,
+        right,
+        "frame",
+        properties={"E": 210_000_000.0, "A": 0.12, "section_id": "SEC-7"},
+        moment_release_i=True,
+        local_axis_angle=30.0,
+    )
+    canvas.boundaries[left] = BoundaryCondition(left, (True, True, True))
+    canvas.nodal_loads[right] = NodalLoad(right, (5.0, 0.0, 0.0))
+    canvas.element_loads[member] = UniformElementLoad(member, wy=-12.0)
+    canvas.selected_elements = {member}
+
+    canvas.transform_selected_nodes(
+        "copy",
+        0.0,
+        3.0,
+        copy_node_attributes=True,
+        copy_element_loads=True,
+    )
+
+    copied_tag = next(tag for tag in canvas.elements if tag != member)
+    copied = canvas.elements[copied_tag]
+    assert copied.properties == canvas.elements[member].properties
+    assert copied.properties is not canvas.elements[member].properties
+    assert copied.moment_release_i is True
+    assert copied.local_axis_angle == pytest.approx(30.0)
+    assert canvas.element_loads[copied_tag].wy == pytest.approx(-12.0)
+    assert copied.node_i in canvas.boundaries
+    assert copied.node_j in canvas.nodal_loads
 
 
 def test_selecting_only_nodes_still_copies_without_inventing_a_member() -> None:

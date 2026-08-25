@@ -59,6 +59,26 @@ class _WorkPlaneMixin:
         """Project a node onto the active work plane's local 2D coordinates."""
         return self.work_plane.to_2d((node.x, node.y, node.z))
 
+    def _replace_uv(self, node: Node, u: float, v: float) -> tuple[float, float, float]:
+        """``node``'s true 3D point with its in-plane (u, v) coordinates
+        replaced by the given values, but its actual out-of-plane coordinate
+        preserved exactly.
+
+        ``WorkPlane.to_3d(u, v)`` always snaps the third coordinate to the
+        plane's own offset - correct for placing a brand-new drawn point
+        exactly on the active plane (``add_node``), but wrong for moving,
+        copying, mirroring or array/rotate-copying an *existing* node that
+        is not already sitting exactly on that plane (e.g. a column's top
+        node on a different storey's plane than the one currently active) -
+        that node would otherwise silently jump onto the active plane's
+        height/offset instead of staying at its own.
+        """
+        if self.work_plane.kind == PlaneKind.XY:
+            return (u, v, node.z)
+        if self.work_plane.kind == PlaneKind.XZ:
+            return (u, node.y, v)
+        return (node.x, u, v)
+
     def _on_plane(self, node: Node) -> bool:
         return self.work_plane.contains((node.x, node.y, node.z))
 

@@ -40,16 +40,20 @@ _UNIFORM_AXIAL_COLOR = "#8b5cf6"
 _LOAD_CASE_COLORS = {
     LoadCaseKind.DEAD: "#2563eb",
     LoadCaseKind.LIVE: "#16a34a",
+    LoadCaseKind.ROOF_LIVE: "#65a30d",
     LoadCaseKind.SEISMIC: "#f97316",
     LoadCaseKind.WIND: "#8b5cf6",
+    LoadCaseKind.SNOW: "#0ea5e9",
     LoadCaseKind.OTHER: "#64748b",
     LoadCaseKind.UNCLASSIFIED: "#e5484d",
 }
 #: Picked-node highlight. Bright cyan sits outside the blue-yellow-red displacement
 #: ramp and the load-arrow reds/oranges/purples, so it reads as "selected" regardless
 #: of what colour the node would otherwise have.
-_SELECTED_NODE_COLOR = "#00e5ff"
-_SELECTED_NODE_RADIUS_SCALE = 1.6
+_SELECTED_NODE_COLOR = "#ef4444"
+_SELECTED_NODE_RADIUS_SCALE = 2.0
+_SELECTED_MEMBER_COLOR = "#ef4444"
+_SELECTED_MEMBER_THICKNESS_SCALE = 1.35
 _SUPPORT_COLORS = {
     SupportKind.FIXED: "#00856a",
     SupportKind.PINNED: "#00a6a6",
@@ -122,11 +126,13 @@ class Quick3DSceneBridge(QObject):
         self._default_thickness = 0.025
         self._node_radius = 0.018
         self._last_model: StructuralModel | None = None
-        self._selected_node_tag: int | None = None
+        self._selected_node_tags: set[int] = set()
+        self._selected_member_tags: set[int] = set()
 
     def set_model(self, model: StructuralModel) -> None:
         self._last_model = model
-        self._selected_node_tag = None
+        self._selected_node_tags.clear()
+        self._selected_member_tags.clear()
         if not model.nodes:
             self._clear()
             return
@@ -223,14 +229,14 @@ class Quick3DSceneBridge(QObject):
         members: list[dict[str, float | int | str]] = []
         for element in sorted(model.elements.values(), key=lambda item: item.tag):
             ratio = 0.5 * (ratios.get(element.node_i, 0.0) + ratios.get(element.node_j, 0.0))
-            entry = self._member_entry(
-                element,
-                deformed_points,
-                self._default_thickness,
-                color=_color_for_ratio(ratio),
+            members.extend(
+                self._member_parts(
+                    element,
+                    deformed_points,
+                    self._default_thickness,
+                    color=_color_for_ratio(ratio),
+                )
             )
-            if entry is not None:
-                members.append(entry)
         self._members = members
 
         if show_undeformed:
@@ -248,15 +254,15 @@ class Quick3DSceneBridge(QObject):
             ]
             ghost_members: list[dict[str, float | int | str]] = []
             for element in sorted(model.elements.values(), key=lambda item: item.tag):
-                entry = self._member_entry(
-                    element,
-                    self._points,
-                    self._default_thickness,
-                    color=_GHOST_COLOR,
-                    opacity=_GHOST_OPACITY,
+                ghost_members.extend(
+                    self._member_parts(
+                        element,
+                        self._points,
+                        self._default_thickness,
+                        color=_GHOST_COLOR,
+                        opacity=_GHOST_OPACITY,
+                    )
                 )
-                if entry is not None:
-                    ghost_members.append(entry)
             self._ghost_members = ghost_members
         else:
             self._ghost_nodes = []
@@ -297,7 +303,18 @@ class Quick3DSceneBridge(QObject):
         self.scene_changed.emit()
 
     def set_selected_node(self, tag: int | None) -> None:
-        self._selected_node_tag = tag
+        self._selected_node_tags = set() if tag is None else {tag}
+        self._selected_member_tags.clear()
+        self.scene_changed.emit()
+
+    def set_selection(self, node_tags: set[int], member_tags: set[int]) -> None:
+        """Highlight the authoring canvas selection in the 3D scene.
+
+        The result viewport still uses :meth:`set_selected_node`; modeling needs
+        the full node/member sets because a box selection can contain both.
+        """
+        self._selected_node_tags = set(node_tags)
+        self._selected_member_tags = set(member_tags)
         self.scene_changed.emit()
 
     def set_preview_segment(
@@ -343,15 +360,16 @@ class Quick3DSceneBridge(QObject):
 
     @Property("QVariantList", notify=scene_changed)
     def nodes(self) -> list[dict[str, float | int | str]]:
-        if self._selected_node_tag is None:
+        if not self._selected_node_tags:
             return self._nodes
         # A picked node is highlighted here rather than baked into `_nodes` at build
         # time, so the highlight survives whatever set_result()/clear_result() next
         # rebuilds `_nodes` with (deformation scale changes, undeformed toggle, ...).
         highlighted = []
         for node in self._nodes:
-            if node["tag"] == self._selected_node_tag:
+            if node["tag"] in self._selected_node_tags:
                 node = dict(node)
+                node["selected"] = True
                 node["color"] = _SELECTED_NODE_COLOR
                 node["radius"] = node["radius"] * _SELECTED_NODE_RADIUS_SCALE
             highlighted.append(node)
@@ -359,7 +377,22 @@ class Quick3DSceneBridge(QObject):
 
     @Property("QVariantList", notify=scene_changed)
     def members(self) -> list[dict[str, float | int | str]]:
-        return self._members
+        if not self._selected_member_tags:
+            return self._members
+        highlighted = []
+        for member in self._members:
+            if member["tag"] in self._selected_member_tags:
+                member = dict(member)
+                member["selected"] = True
+                member["color"] = _SELECTED_MEMBER_COLOR
+                # Each part (a plain box, or one of an H-section's web/
+                # flanges) is now fully self-contained - scaling its own
+                # width_b/width_h is enough, no separate web/flange keys to
+                # keep in sync with it any more.
+                member["width_b"] = member["width_b"] * _SELECTED_MEMBER_THICKNESS_SCALE
+                member["width_h"] = member["width_h"] * _SELECTED_MEMBER_THICKNESS_SCALE
+            highlighted.append(member)
+        return highlighted
 
     @Property("QVariantList", notify=scene_changed)
     def ghostNodes(self) -> list[dict[str, float | int | str]]:
@@ -436,14 +469,11 @@ class Quick3DSceneBridge(QObject):
         ]
         members: list[dict[str, float | int | str]] = []
         for element in sorted(model.elements.values(), key=lambda item: item.tag):
-            entry = self._member_entry(
-                element,
-                self._points,
-                self._default_thickness,
-                color=_DEFAULT_MEMBER_COLOR,
+            members.extend(
+                self._member_parts(
+                    element, self._points, self._default_thickness, color=_DEFAULT_MEMBER_COLOR,
+                )
             )
-            if entry is not None:
-                members.append(entry)
         self._members = members
 
     def _build_support_parts(
@@ -632,36 +662,218 @@ class Quick3DSceneBridge(QObject):
                 )
         return parts
 
-    def _member_entry(
+    def _section_visual_dimensions(
+        self, properties: dict[str, float | str], default_thickness: float
+    ) -> dict[str, float | str]:
+        """Cross-section box dimensions for rendering, in the same B(width)/
+        H(height) convention ``core.domain.section_properties`` uses: H is
+        the extent along the member's local Z axis (its H^3 term drives Iy,
+        the strong-axis inertia), B the extent along local Y (drives Iz).
+
+        Reads only what ``apply_full_section_to_selection`` already writes -
+        ``section_shape``, ``width``/``height`` (Rectangle only), and the
+        shape-agnostic ``dim_<key>`` entries every shape's raw dimensions are
+        stored under (``dim_H``/``dim_B``/``dim_tw``/``dim_tf`` for an H/I
+        section, ``dim_D`` for Circle/Pipe, ...) - no schema change needed.
+        An H/I section additionally gets web/flange sub-dimensions so the
+        renderer can draw three boxes (two flanges + a web) instead of one.
+        Anything else (a User Defined custom section, or a member that
+        predates this feature and only ever got A/Iy/Iz/J) falls back to the
+        old uniform sqrt(area) square, unchanged.
+        """
+        minimum = default_thickness * 0.2
+        maximum = self._extent * 0.055
+
+        def clamp(value: float) -> float:
+            return min(max(value, minimum), maximum)
+
+        def dim(key: str) -> float | None:
+            return self._number_property(properties, f"dim_{key}")
+
+        shape = properties.get("section_shape")
+
+        if shape in {"Circle", "Pipe"}:
+            diameter = dim("D")
+            if diameter is not None and diameter > 0.0:
+                size = clamp(diameter)
+                return {"shape": shape, "width_b": size, "width_h": size}
+
+        if shape in {"H/I Section", "Box", "Channel", "Angle"}:
+            overall_h, overall_b = dim("H"), dim("B")
+            if overall_h is not None and overall_b is not None and overall_h > 0.0 and overall_b > 0.0:
+                result: dict[str, float | str] = {
+                    "shape": shape,
+                    "width_b": clamp(overall_b),
+                    "width_h": clamp(overall_h),
+                }
+                if shape == "H/I Section":
+                    web_thickness, flange_thickness = dim("tw"), dim("tf")
+                    if (
+                        web_thickness is not None
+                        and flange_thickness is not None
+                        and 0.0 < flange_thickness < overall_h / 2.0
+                        and 0.0 < web_thickness < overall_b
+                    ):
+                        # tw/tf must shrink by the same ratio a clamped H/B
+                        # just did, or the web/flange sub-boxes would still be
+                        # sized for the *real* H/B and no longer fit inside
+                        # the clamped outer footprint above.
+                        ratio = min(result["width_h"] / overall_h, result["width_b"] / overall_b)
+                        # A real steel section's web/flange (millimetres) is
+                        # imperceptibly thin next to a member several metres
+                        # long when drawn strictly to scale - it renders as a
+                        # near-invisible hairline, not a recognisable H-shape.
+                        # Floor both at a visible fraction of the section's
+                        # own outer envelope instead - the same exaggeration
+                        # trade-off architectural visualisation tools make
+                        # for thin walls/plates - and derive web_height/
+                        # flange_offset from that same floored value so the
+                        # three boxes still meet exactly with no gap/overlap.
+                        visible_floor = max(result["width_h"], result["width_b"]) * 0.08
+                        visible_flange = max(flange_thickness * ratio, visible_floor)
+                        result["web_thickness"] = max(web_thickness * ratio, visible_floor)
+                        result["web_height"] = max(result["width_h"] - 2.0 * visible_flange, minimum)
+                        result["flange_thickness"] = visible_flange
+                        result["flange_offset"] = (result["width_h"] - visible_flange) / 2.0
+                return result
+
+        width = self._number_property(properties, "width")
+        height = self._number_property(properties, "height")
+        if width is not None and height is not None and width > 0.0 and height > 0.0:
+            # Rectangle, or any custom section that only ever stored plain
+            # width/height (e.g. an RC member via apply_section_to_selection).
+            return {"shape": shape or "Rectangle", "width_b": clamp(width), "width_h": clamp(height)}
+
+        area = self._number_property(properties, "A")
+        fallback = clamp(math.sqrt(area)) if area is not None and area > 0.0 else minimum
+        return {"shape": shape or "", "width_b": fallback, "width_h": fallback}
+
+    @staticmethod
+    def _structural_from_view(vector: tuple[float, float, float]) -> tuple[float, float, float]:
+        """Inverse of ``_view_coordinates`` - view (x, y, z) -> structural
+        (x, -z, y). Needed because ``auto_reference_vector``/``local_y_z_axes``
+        are defined in terms of the structural model's own up axis (global
+        Z), not the Quick 3D view's Y-up space."""
+        vx, vy, vz = vector
+        return vx, -vz, vy
+
+    @staticmethod
+    def _quaternion_from_columns(
+        col_x: tuple[float, float, float],
+        col_y: tuple[float, float, float],
+        col_z: tuple[float, float, float],
+    ) -> tuple[float, float, float, float]:
+        """Standard trace-based rotation-matrix -> quaternion conversion for
+        the proper (det = +1) rotation whose columns are the three given
+        orthonormal axes - unlike ``_rotation_from_y_axis``, which only pins
+        down one axis and leaves the roll around it at an arbitrary minimal-
+        rotation value, this fixes the full orientation."""
+        m00, m10, m20 = col_x
+        m01, m11, m21 = col_y
+        m02, m12, m22 = col_z
+        trace = m00 + m11 + m22
+        if trace > 0.0:
+            s = math.sqrt(trace + 1.0) * 2.0
+            return 0.25 * s, (m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s
+        if m00 > m11 and m00 > m22:
+            s = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+            return (m21 - m12) / s, 0.25 * s, (m01 + m10) / s, (m02 + m20) / s
+        if m11 > m22:
+            s = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+            return (m02 - m20) / s, (m01 + m10) / s, 0.25 * s, (m12 + m21) / s
+        s = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+        return (m10 - m01) / s, (m02 + m20) / s, (m12 + m21) / s, 0.25 * s
+
+    def _member_frame_rotation(
         self,
-        element: Element,
-        points: dict[int, tuple[float, float, float]],
-        default_thickness: float,
-        *,
-        color: str,
-        opacity: float = 1.0,
-    ) -> dict[str, float | int | str] | None:
-        start = points.get(element.node_i)
-        end = points.get(element.node_j)
-        if start is None or end is None:
-            return None
-        orientation = self._member_orientation(start, end)
-        if orientation is None:
-            return None
-        length, scalar, qx, qy, qz = orientation
-        area = self._number_property(element.properties, "A")
-        section_size = math.sqrt(area) if area is not None and area > 0.0 else 0.0
-        thickness = min(
-            max(section_size, default_thickness),
-            self._extent * 0.055,
+        direction: tuple[float, float, float],
+        local_axis_angle: float,
+    ) -> tuple[float, float, float, float]:
+        """Full orientation for a member's rendered box/cylinder: local +Y
+        follows the member's axial ``direction`` (view space, as
+        ``_rotation_from_y_axis`` already did), while the roll around that
+        axis now comes from the exact same ``local_y_z_axes``/
+        ``auto_reference_vector``/``local_axis_angle`` math the local-axis
+        preview gizmo uses (``_build_local_axis_preview``) - so a non-square
+        section's width/height (and an H-section's flanges) land on the
+        member's real structural y/z axes instead of an arbitrary roll.
+        """
+        structural_axis = self._normalized(self._structural_from_view(direction))
+        if structural_axis is None:
+            structural_axis = (1.0, 0.0, 0.0)
+        reference = auto_reference_vector(structural_axis)
+        if local_axis_angle:
+            reference = rotate_about_axis(reference, structural_axis, math.radians(local_axis_angle))
+        y_axis, _z_axis = local_y_z_axes(structural_axis, reference)
+        col_x = self._view_coordinates(*y_axis)
+        col_y = direction
+        col_z = self._cross(col_x, col_y)
+        return self._quaternion_from_columns(col_x, col_y, col_z)
+
+    @staticmethod
+    def _rotate_by_quaternion(
+        vector: tuple[float, float, float],
+        scalar: float,
+        qx: float,
+        qy: float,
+        qz: float,
+    ) -> tuple[float, float, float]:
+        """``vector`` rotated by the unit quaternion (scalar, qx, qy, qz) -
+        the same operation Qt.quaternion(...) applies to a Model's local
+        axes in QML, used here to bake a flange's offset from the web's
+        centreline into a plain world-space position ahead of time (see
+        _member_parts) instead of relying on QML parent/child nesting."""
+        qvx, qvy, qvz = qx, qy, qz
+        vx, vy, vz = vector
+        cross1 = (qvy * vz - qvz * vy, qvz * vx - qvx * vz, qvx * vy - qvy * vx)
+        cross2 = (
+            qvy * cross1[2] - qvz * cross1[1],
+            qvz * cross1[0] - qvx * cross1[2],
+            qvx * cross1[1] - qvy * cross1[0],
         )
+        return (
+            vx + 2.0 * scalar * cross1[0] + 2.0 * cross2[0],
+            vy + 2.0 * scalar * cross1[1] + 2.0 * cross2[1],
+            vz + 2.0 * scalar * cross1[2] + 2.0 * cross2[2],
+        )
+
+    @staticmethod
+    def _box_part(
+        tag: int,
+        start: tuple[float, float, float],
+        end: tuple[float, float, float],
+        position: tuple[float, float, float],
+        length: float,
+        width_b: float,
+        width_h: float,
+        scalar: float,
+        qx: float,
+        qy: float,
+        qz: float,
+        color: str,
+        opacity: float,
+        source: str = "#Cube",
+    ) -> dict[str, float | int | str]:
         return {
-            "tag": element.tag,
-            "x": 0.5 * (start[0] + end[0]),
-            "y": 0.5 * (start[1] + end[1]),
-            "z": 0.5 * (start[2] + end[2]),
+            "tag": tag,
+            # Screen-space box selection projects both real endpoints.  The
+            # rendered part itself only needs its own midpoint/orientation,
+            # but those are insufficient to tell whether a drag rectangle
+            # crosses the member - start/end are always the member's own
+            # true endpoints, the same on every part of a multi-part member.
+            "start_x": start[0],
+            "start_y": start[1],
+            "start_z": start[2],
+            "end_x": end[0],
+            "end_y": end[1],
+            "end_z": end[2],
+            "x": position[0],
+            "y": position[1],
+            "z": position[2],
             "length": length,
-            "thickness": thickness,
+            "width_b": width_b,
+            "width_h": width_h,
+            "source": source,
             "qscalar": scalar,
             "qx": qx,
             "qy": qy,
@@ -669,6 +881,97 @@ class Quick3DSceneBridge(QObject):
             "color": color,
             "opacity": opacity,
         }
+
+    def _member_parts(
+        self,
+        element: Element,
+        points: dict[int, tuple[float, float, float]],
+        default_thickness: float,
+        *,
+        color: str,
+        opacity: float = 1.0,
+    ) -> list[dict[str, float | int | str]]:
+        """One flat box/cylinder part per member, or three (web + two
+        flanges) for an H/I section - matching the flat-list-of-parts
+        convention every other multi-piece visual in this file already uses
+        (_build_load_arrows, _build_support_parts, _local_axis_gizmo_parts):
+        each part is fully self-contained (its own resolved world position),
+        computed once here in Python, rather than a QML Node group nesting
+        conditionally-visible Model children under a shared parent
+        transform - Qt Quick 3D's Repeater3D does not reliably keep a nested
+        multi-child delegate's geometry in sync with model changes (a copied
+        member intermittently rendered as a bare hairline instead of its
+        real cross-section), while a flat list of independent parts is
+        exactly the pattern the loadArrows/gizmo parts above already rely on
+        without that problem.
+        """
+        start = points.get(element.node_i)
+        end = points.get(element.node_j)
+        if start is None or end is None:
+            return []
+        orientation = self._member_orientation(start, end)
+        if orientation is None:
+            return []
+        length, old_scalar, old_qx, old_qy, old_qz = orientation
+        direction = tuple((end[k] - start[k]) / length for k in range(3))
+        mid = (
+            0.5 * (start[0] + end[0]),
+            0.5 * (start[1] + end[1]),
+            0.5 * (start[2] + end[2]),
+        )
+
+        is_truss = element.element_type.lower() in _TRUSS_ELEMENT_TYPES
+        if is_truss:
+            # A truss carries no bending orientation at all (matches
+            # _build_local_axis_preview's own truss exclusion) - render it
+            # as the old uniform sqrt(area) square with the old rotation,
+            # unchanged, regardless of any section_shape it happens to carry.
+            area = self._number_property(element.properties, "A")
+            size = min(
+                max(math.sqrt(area) if area is not None and area > 0.0 else 0.0, default_thickness),
+                self._extent * 0.055,
+            )
+            return [
+                self._box_part(
+                    element.tag, start, end, mid, length, size, size,
+                    old_scalar, old_qx, old_qy, old_qz, color, opacity,
+                )
+            ]
+
+        visual = self._section_visual_dimensions(element.properties, default_thickness)
+        scalar, qx, qy, qz = self._member_frame_rotation(direction, element.local_axis_angle)
+
+        if visual["shape"] == "H/I Section" and visual.get("web_height", 0.0) > 0.0:
+            flange_offset = visual["flange_offset"]
+            local_z_world = self._rotate_by_quaternion((0.0, 0.0, 1.0), scalar, qx, qy, qz)
+            parts = [
+                self._box_part(
+                    element.tag, start, end, mid, length,
+                    visual["web_thickness"], visual["web_height"],
+                    scalar, qx, qy, qz, color, opacity,
+                )
+            ]
+            for sign in (1.0, -1.0):
+                flange_position = tuple(
+                    mid[k] + sign * flange_offset * local_z_world[k] for k in range(3)
+                )
+                parts.append(
+                    self._box_part(
+                        element.tag, start, end, flange_position, length,
+                        visual["width_b"], visual["flange_thickness"],
+                        scalar, qx, qy, qz, color, opacity,
+                    )
+                )
+            return parts
+
+        source = "#Cylinder" if visual["shape"] in {"Circle", "Pipe"} else "#Cube"
+        return [
+            self._box_part(
+                element.tag, start, end, mid, length,
+                visual["width_b"], visual["width_h"],
+                scalar, qx, qy, qz, color, opacity, source=source,
+            )
+        ]
 
     def _build_load_arrows(
         self,

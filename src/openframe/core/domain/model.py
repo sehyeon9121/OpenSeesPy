@@ -16,12 +16,22 @@ class SupportKind(StrEnum):
 
 
 class LoadCaseKind(StrEnum):
-    """Semantic load categories explicitly declared by an imported model."""
+    """Semantic load categories explicitly declared by an imported model.
+
+    ``ROOF_LIVE``/``SNOW`` were added alongside the free-named ``LoadCase``
+    registry (``core.domain.load_case``) for its Type dropdown - purely
+    additive, so every existing exhaustive-looking dict keyed by this enum
+    (``_LOAD_CASE_COLORS`` in ``quick3d_scene_bridge.py``,
+    ``LOAD_CASE_PRESENTATION`` in ``model_sidebar.py``) needs a matching entry
+    or risks a ``KeyError`` the moment either value actually appears.
+    """
 
     DEAD = "DEAD"
     LIVE = "LIVE"
+    ROOF_LIVE = "ROOF_LIVE"
     SEISMIC = "SEISMIC"
     WIND = "WIND"
+    SNOW = "SNOW"
     OTHER = "OTHER"
     UNCLASSIFIED = "UNCLASSIFIED"
 
