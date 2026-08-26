@@ -54,6 +54,7 @@ def run_desktop_app() -> int:
     from openframe.features.analysis.linear_static.module import LinearStaticAnalysis
     from openframe.features.analysis.modal.module import ModalAnalysis
     from openframe.features.analysis.nonlinear_static.module import NonlinearStaticAnalysis
+    from openframe.features.analysis.response_spectrum.module import ResponseSpectrumAnalysis
     from openframe.features.analysis.time_history.module import TimeHistoryAnalysis
     from openframe.features.model.application.open_model import OpenModelService
     from openframe.infrastructure.opensees.model_importer import OpenSeesModelImporter
@@ -75,6 +76,7 @@ def run_desktop_app() -> int:
     modal = ModalAnalysis(analysis_runner)
     time_history = TimeHistoryAnalysis(analysis_runner)
     buckling = BucklingAnalysis(analysis_runner)
+    response_spectrum = ResponseSpectrumAnalysis(analysis_runner)
     run_analysis_service = RunAnalysisService(
         {
             AnalysisKind.LINEAR_STATIC: linear_static,
@@ -82,6 +84,7 @@ def run_desktop_app() -> int:
             AnalysisKind.MODAL: modal,
             AnalysisKind.TIME_HISTORY: time_history,
             AnalysisKind.BUCKLING: buckling,
+            AnalysisKind.RESPONSE_SPECTRUM: response_spectrum,
         }
     )
 

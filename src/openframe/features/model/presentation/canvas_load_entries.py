@@ -31,6 +31,7 @@ from openframe.core.domain import (
     UniformElementLoad,
 )
 from openframe.core.domain.load_entry import LoadEntryPayload
+from openframe.features.model.presentation.floor_tributary import convert_floor_entry
 
 
 class _LoadEntryMixin:
@@ -323,9 +324,11 @@ class _LoadEntryMixin:
         """Project solver-supported generated entries into the analysis store.
 
         The current material-free solver supports nodal loads and full-span
-        uniform/linearly-varying member loads. Point, partial, floor and
-        arbitrary self-weight-factor entries remain in the named case store
-        until their dedicated conversion paths exist.
+        uniform/linearly-varying member loads, plus floor loads (converted to
+        boundary-beam member loads via ``floor_tributary.convert_floor_entry``
+        - see that module for the tributary-area math and its limits). Point,
+        partial and arbitrary self-weight-factor entries remain in the named
+        case store until their own dedicated conversion paths exist.
         """
         nodal_totals: dict[int, list[float]] = {}
         member_totals: dict[int, list[float]] = {}
@@ -347,6 +350,11 @@ class _LoadEntryMixin:
                     total = member_totals.setdefault(element_tag, [0.0] * 6)
                     total[axis] += payload.start_value
                     total[axis + 3] += payload.end_value
+            elif entry.kind == "floor" and isinstance(payload, FloorLoadEntry):
+                for element_tag, values in convert_floor_entry(entry, self.nodes, self.elements).items():
+                    total = member_totals.setdefault(element_tag, [0.0] * 6)
+                    for index, value in enumerate(values):
+                        total[index] += value
 
         self.nodal_loads = {
             node_tag: NodalLoad(

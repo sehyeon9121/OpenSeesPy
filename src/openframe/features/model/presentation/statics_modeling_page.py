@@ -39,6 +39,7 @@ from openframe.features.model.presentation.canvas_selection import _SelectionMix
 from openframe.features.model.presentation.canvas_serialization import _SerializationMixin
 from openframe.features.model.presentation.canvas_stories import _StoryMixin
 from openframe.features.model.presentation.canvas_transforms import _TransformMixin
+from openframe.features.model.presentation.canvas_units import _UnitConversionMixin
 from openframe.features.model.presentation.canvas_work_planes import _WorkPlaneMixin
 
 
@@ -61,6 +62,7 @@ class StaticsDrawingCanvas(
     _RenderingMixin,
     _LoadEntryMixin,
     _StoryMixin,
+    _UnitConversionMixin,
     QGraphicsView,
 ):
     model_changed = Signal()

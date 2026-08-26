@@ -56,12 +56,14 @@ from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
     FORCE_UNITS,
     LENGTH_UNITS,
+    AnalysisKind,
     FloorLoadEntry,
     MemberDistributedLoadEntry,
     MemberPointLoadEntry,
     NodalLoadEntry,
     SelfWeightEntry,
     UnitSystem,
+    unit_conversion_factors,
 )
 from openframe.features.analysis.statics import (
     MaterialFreeSolveThread,
@@ -83,6 +85,12 @@ from openframe.features.model.presentation.canvas_glyphs import (
     _render_dof_icon,
     _render_glyph_icon,
 )
+from openframe.features.model.presentation.analysis_settings_dialogs import (
+    BucklingSettingsDialog,
+    ModalSettingsDialog,
+    NonlinearStaticSettingsDialog,
+    TimeHistorySettingsDialog,
+)
 from openframe.features.model.presentation.floor_load_type_manager_dialog import (
     FloorLoadTypeManagerDialog,
 )
@@ -91,7 +99,11 @@ from openframe.features.model.presentation.load_combination_manager_dialog impor
     LoadCombinationManagerDialog,
 )
 from openframe.features.model.presentation.model_sidebar import LOAD_CASE_PRESENTATION
-from openframe.features.model.presentation.safe_spinbox import SafeDoubleSpinBox, SafeSpinBox
+from openframe.features.model.presentation.safe_spinbox import (
+    DownwardComboBox,
+    SafeDoubleSpinBox,
+    SafeSpinBox,
+)
 from openframe.features.model.presentation.section_material_panel import SectionMaterialPanel
 from openframe.features.model.presentation.selection_status_panel import SelectionStatusPanel
 from openframe.features.model.presentation.story_manager_dialog import StoryManagerDialog
@@ -1596,17 +1608,38 @@ class ModelingInterfacePage(QFrame):
         self._refresh_element_property_selectors()
         return section
 
+    #: Label + the dialog class that captures "what kind of run this is
+    #: meant to be" for every AnalysisKind this canvas cannot execute
+    #: directly yet - see analysis_settings_dialogs.py's own module
+    #: docstring for why each is deliberately narrower than SETUP's own
+    #: per-kind panel.
+    _ANALYSIS_METHOD_OPTIONS: ClassVar[tuple[tuple[str, AnalysisKind, type | None], ...]] = (
+        ("선형탄성 (Linear Elastic)", AnalysisKind.LINEAR_STATIC, None),
+        ("비선형 정적 (Pushover)", AnalysisKind.NONLINEAR_STATIC, NonlinearStaticSettingsDialog),
+        ("모드/고유치 (Modal)", AnalysisKind.MODAL, ModalSettingsDialog),
+        ("좌굴 (Buckling)", AnalysisKind.BUCKLING, BucklingSettingsDialog),
+        ("시간이력 (Time History)", AnalysisKind.TIME_HISTORY, TimeHistorySettingsDialog),
+    )
+
     def _build_analysis_category(self) -> QWidget:
         """3D workbench's Analysis tab. The header's own 정정성 검사 및 해석/
         정밀해석으로 내보내기 buttons (``solve``/``_export_for_full_analysis``)
         already do the actual work and stay untouched (2D shares that header
         unconditionally) - this page just gives Analysis a home in the
         workbench flow instead of the blank page it showed before, with its
-        own run/export buttons wired to those same handlers. The method
-        picker only has one real entry today; it exists so nonlinear/time
-        history/modal/buckling - all export-only for now - have somewhere to
-        slot in later without restructuring this page.
+        own run/export buttons wired to those same handlers.
+
+        Only Linear Static actually runs from here - picking anything else
+        swaps 해석하기 for a 설정... button that opens that kind's own small
+        dialog (analysis_settings_dialogs.py) instead of trying to cram a
+        nonlinear/time-history-sized settings form into this panel's fixed
+        320px width. Nothing those dialogs collect is wired to execution
+        yet (see their own module docstring) - it is staged in
+        ``self._analysis_settings`` purely so a student does not have to
+        re-enter it if they switch methods and back, ready for whichever
+        future step actually bridges it into a real solve.
         """
+        self._analysis_settings: dict[str, dict] = {}
         section, root = self._section("Analysis", show_title=False)
         hint = QLabel(
             "이 화면에서 바로 실행되는 해석은 현재 선형탄성해석 하나뿐입니다 — "
@@ -1619,14 +1652,24 @@ class ModelingInterfacePage(QFrame):
 
         method_form = QFormLayout()
         self.analysis_method_selector = QComboBox()
-        self.analysis_method_selector.addItem("선형탄성 (Linear Elastic)", "linear")
+        for label, kind, _dialog_cls in self._ANALYSIS_METHOD_OPTIONS:
+            self.analysis_method_selector.addItem(label, kind.value)
+        self.analysis_method_selector.currentIndexChanged.connect(self._on_analysis_method_changed)
         method_form.addRow("해석 방법", self.analysis_method_selector)
         root.addLayout(method_form)
 
-        run_button = QPushButton("해석하기")
-        run_button.setObjectName("setupContinueButton")
-        run_button.clicked.connect(self.solve)
-        root.addWidget(run_button)
+        self.analysis_settings_button = QPushButton("설정...")
+        self.analysis_settings_button.clicked.connect(self._open_analysis_settings_dialog)
+        root.addWidget(self.analysis_settings_button)
+        self.analysis_settings_summary = QLabel()
+        self.analysis_settings_summary.setObjectName("setupSectionHint")
+        self.analysis_settings_summary.setWordWrap(True)
+        root.addWidget(self.analysis_settings_summary)
+
+        self.analysis_run_button = QPushButton("해석하기")
+        self.analysis_run_button.setObjectName("setupContinueButton")
+        self.analysis_run_button.clicked.connect(self.solve)
+        root.addWidget(self.analysis_run_button)
 
         self.task_results_button = QPushButton("결과 보기")
         self.task_results_button.setEnabled(False)
@@ -1634,8 +1677,8 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(self.task_results_button)
 
         advanced_hint = QLabel(
-            "비선형정적·시간이력·모드(고유치)·좌굴·P-Delta 등은 이 캔버스 자체 "
-            "솔버가 지원하지 않습니다 — 모델을 OpenSeesPy 스크립트로 내보내 "
+            "선형탄성 외의 방법은 이 캔버스에서 아직 실행할 수 없습니다 — 위 "
+            "설정...으로 내용을 채워둔 뒤, 모델을 OpenSeesPy 스크립트로 내보내 "
             "\"파일 불러오기\" 화면의 정밀해석 엔진으로 돌리세요."
         )
         advanced_hint.setWordWrap(True)
@@ -1647,7 +1690,36 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(export_button)
 
         root.addStretch(1)
+        self._on_analysis_method_changed()
         return section
+
+    def _current_analysis_method_option(self) -> tuple[str, AnalysisKind, type | None]:
+        index = max(self.analysis_method_selector.currentIndex(), 0)
+        return self._ANALYSIS_METHOD_OPTIONS[index]
+
+    def _on_analysis_method_changed(self, _index: int | None = None) -> None:
+        _label, kind, dialog_cls = self._current_analysis_method_option()
+        is_linear = dialog_cls is None
+        self.analysis_settings_button.setVisible(not is_linear)
+        self.analysis_settings_summary.setVisible(not is_linear)
+        self.analysis_run_button.setEnabled(is_linear)
+        self.analysis_run_button.setToolTip(
+            "" if is_linear else "이 방법은 아직 실행에 연결되지 않았습니다 - 정밀해석으로 내보내세요."
+        )
+        if not is_linear:
+            has_settings = kind.value in self._analysis_settings
+            self.analysis_settings_summary.setText(
+                "✓ 설정을 저장했습니다." if has_settings else "아직 설정하지 않았습니다."
+            )
+
+    def _open_analysis_settings_dialog(self) -> None:
+        _label, kind, dialog_cls = self._current_analysis_method_option()
+        if dialog_cls is None:
+            return
+        dialog = dialog_cls(self._analysis_settings.get(kind.value), self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._analysis_settings[kind.value] = dialog.result_options()
+            self._on_analysis_method_changed()
 
     def _element_property_selection_changed(self, _index: int | None = None) -> None:
         material_id = self.element_material_selector.currentData()
@@ -1911,18 +1983,21 @@ class ModelingInterfacePage(QFrame):
             spring_header.setWordWrap(True)
             custom_layout.addWidget(spring_header, 5, 0, 1, 3)
             self.support_spring_fields: dict[str, SafeDoubleSpinBox] = {}
+            self.support_spring_field_labels: dict[str, QLabel] = {}
             for i, dof in enumerate(("Ux", "Uy", "Uz", "Rx", "Ry", "Rz")):
                 field_row = QWidget()
                 field_layout = QHBoxLayout(field_row)
                 field_layout.setContentsMargins(0, 0, 0, 0)
                 field_layout.setSpacing(4)
-                field_layout.addWidget(QLabel(dof))
+                dof_label = QLabel(dof)
+                field_layout.addWidget(dof_label)
+                self.support_spring_field_labels[dof] = dof_label
                 field = self._number(0.0)
-                field.setToolTip(f"{dof} 방향 스프링 강성")
                 field.editingFinished.connect(self._apply_support)
                 field_layout.addWidget(field, 1)
                 self.support_spring_fields[dof] = field
                 custom_layout.addWidget(field_row, 6 + i // 3, i % 3)
+            self._refresh_support_spring_unit_labels()
         self.support_custom_row.setVisible(False)
         root.addWidget(self.support_custom_row)
 
@@ -1936,7 +2011,7 @@ class ModelingInterfacePage(QFrame):
         return section
 
     def _open_story_manager(self) -> None:
-        dialog = StoryManagerDialog(self.canvas, self)
+        dialog = StoryManagerDialog(self.canvas, unit_system=self._unit_system, parent=self)
         dialog.exec()
         self._refresh_3d_preview()
 
@@ -2108,7 +2183,7 @@ class ModelingInterfacePage(QFrame):
         dialog.exec()
 
     def _open_floor_load_type_manager(self) -> None:
-        dialog = FloorLoadTypeManagerDialog(self.canvas, self)
+        dialog = FloorLoadTypeManagerDialog(self.canvas, unit_system=self._unit_system, parent=self)
         dialog.exec()
 
     def _refresh_floor_load_type_combo(self) -> None:
@@ -2187,7 +2262,7 @@ class ModelingInterfacePage(QFrame):
         command_bar_label = QLabel("LOADS")
         command_bar_label.setObjectName("fieldLabel")
         command_bar_layout.addWidget(command_bar_label)
-        self.load_command_combo = QComboBox()
+        self.load_command_combo = DownwardComboBox()
         for label, key in (
             ("[관리] Load Cases", "load_cases"),
             ("[관리] Load Combos", "load_combinations"),
@@ -2496,10 +2571,13 @@ class ModelingInterfacePage(QFrame):
         self.load3d_nodal_coord.addItem("로컬 좌표계", "local")
         form.addRow("좌표계", self.load3d_nodal_coord)
         self.load3d_nodal_fields: dict[str, QDoubleSpinBox] = {}
+        self.load3d_nodal_field_labels: dict[str, QLabel] = {}
         for key, label in (("fx", "Fx"), ("fy", "Fy"), ("fz", "Fz"), ("mx", "Mx"), ("my", "My"), ("mz", "Mz")):
             spin = self._number(0.0)
             self.load3d_nodal_fields[key] = spin
-            form.addRow(label, spin)
+            label_widget = QLabel(label)
+            self.load3d_nodal_field_labels[key] = label_widget
+            form.addRow(label_widget, spin)
         return widget
 
     def _build_load3d_member_form(self) -> QWidget:
@@ -2515,9 +2593,11 @@ class ModelingInterfacePage(QFrame):
         self.load3d_member_direction.setCurrentText("Y")
         form.addRow("방향", self.load3d_member_direction)
         self.load3d_member_start_value = self._number(0.0)
-        form.addRow("시작값", self.load3d_member_start_value)
+        self.load3d_member_start_value_label = QLabel("시작값")
+        form.addRow(self.load3d_member_start_value_label, self.load3d_member_start_value)
         self.load3d_member_end_value = self._number(0.0)
-        form.addRow("끝값", self.load3d_member_end_value)
+        self.load3d_member_end_value_label = QLabel("끝값")
+        form.addRow(self.load3d_member_end_value_label, self.load3d_member_end_value)
         self.load3d_member_start_position = self._number(0.0)
         form.addRow("시작 위치", self.load3d_member_start_position)
         self.load3d_member_end_position = self._number(1.0)
@@ -2551,7 +2631,8 @@ class ModelingInterfacePage(QFrame):
         self._refresh_floor_load_type_combo()
 
         self.load3d_floor_magnitude = self._number(0.0)
-        form.addRow("크기 (직접 입력)", self.load3d_floor_magnitude)
+        self.load3d_floor_magnitude_label = QLabel()
+        form.addRow(self.load3d_floor_magnitude_label, self.load3d_floor_magnitude)
         self.load3d_floor_direction = QComboBox()
         for value, label in (("-z", "-Z"), ("+z", "+Z"), ("-x", "-X"), ("+x", "+X"), ("-y", "-Y"), ("+y", "+Y")):
             self.load3d_floor_direction.addItem(label, value)
@@ -2609,6 +2690,41 @@ class ModelingInterfacePage(QFrame):
         form.setRowVisible(self.load3d_member_start_position, is_point or is_partial)
         form.setRowVisible(self.load3d_member_end_position, is_partial)
         form.setRowVisible(self.load3d_member_position_unit, is_point or is_partial)
+        self._refresh_load3d_unit_labels()
+
+    def _refresh_support_spring_unit_labels(self) -> None:
+        """Translational spring stiffness is force/length; rotational is
+        moment/radian, which is just ``moment`` since a radian is
+        dimensionless - see the custom support row's own spring fields."""
+        if not hasattr(self, "support_spring_field_labels"):
+            return
+        for dof, label_widget in self.support_spring_field_labels.items():
+            unit = self._unit_system.moment if dof.startswith("R") else self._unit_system.force_per_length
+            label_widget.setText(f"{dof} ({unit})")
+            self.support_spring_fields[dof].setToolTip(f"{dof} 방향 스프링 강성 ({unit})")
+
+    def _refresh_load3d_unit_labels(self) -> None:
+        """Every unit-bearing label in the Loads tab's case-based forms
+        (nodal/member/floor), rebuilt from the live ``self._unit_system`` -
+        called on unit-system change and whenever the member subtype changes
+        (a member load's own unit depends on whether it is a point force,
+        a point moment, or a distributed load intensity)."""
+        if not hasattr(self, "load3d_nodal_field_labels"):
+            return
+        for key, label_widget in self.load3d_nodal_field_labels.items():
+            base = key.capitalize()
+            unit = self._unit_system.moment if key.startswith("m") else self._unit_system.force
+            label_widget.setText(f"{base} ({unit})")
+        member_subtype = self.load3d_member_subtype_combo.currentData()
+        if member_subtype == "member_moment":
+            member_unit = self._unit_system.moment
+        elif member_subtype == "member_point":
+            member_unit = self._unit_system.force
+        else:
+            member_unit = self._unit_system.force_per_length
+        self.load3d_member_start_value_label.setText(f"시작값 ({member_unit})")
+        self.load3d_member_end_value_label.setText(f"끝값 ({member_unit})")
+        self.load3d_floor_magnitude_label.setText(f"크기 (직접 입력) ({self._unit_system.stress})")
 
     def _current_load3d_top_kind(self) -> str:
         return str(self.load3d_type_combo.currentData())
@@ -3844,19 +3960,28 @@ class ModelingInterfacePage(QFrame):
             "i단(첫 번째 절점)에서 부재 축을 따라 강체로 처리할 길이. 0이면 강체 단부 없음."
         )
         self.member_offset_i.editingFinished.connect(self._apply_member_rigid_offsets)
-        offset_layout.addRow("i단 강체길이", self.member_offset_i)
+        self.member_offset_i_label = QLabel()
+        offset_layout.addRow(self.member_offset_i_label, self.member_offset_i)
         self.member_offset_j = self._number(0.0)
         self.member_offset_j.setToolTip(
             "j단(두 번째 절점)에서 부재 축을 따라 강체로 처리할 길이. 0이면 강체 단부 없음."
         )
         self.member_offset_j.editingFinished.connect(self._apply_member_rigid_offsets)
-        offset_layout.addRow("j단 강체길이", self.member_offset_j)
+        self.member_offset_j_label = QLabel()
+        offset_layout.addRow(self.member_offset_j_label, self.member_offset_j)
         offset_hint = QLabel("기둥-보 접합부의 패널존처럼, 부재 끝 일부를 휘지 않는 강체로 처리합니다.")
         offset_hint.setObjectName("setupSectionHint")
         offset_hint.setWordWrap(True)
         offset_layout.addRow(offset_hint)
         root.addWidget(self.member_offset_row)
+        self._refresh_member_offset_unit_labels()
         return content
+
+    def _refresh_member_offset_unit_labels(self) -> None:
+        if not hasattr(self, "member_offset_i_label"):
+            return
+        self.member_offset_i_label.setText(f"i단 강체길이 ({self._unit_system.length})")
+        self.member_offset_j_label.setText(f"j단 강체길이 ({self._unit_system.length})")
 
     def _apply_member_rigid_offsets(self) -> None:
         self.canvas.apply_rigid_offset_lengths_to_selection(
@@ -4235,7 +4360,21 @@ class ModelingInterfacePage(QFrame):
     # --- behaviour ---------------------------------------------------------
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
+        """Rescale every already-entered value (node coordinates, section
+        dimensions, materials, loads, springs, stories, ...) to the new
+        units, then refresh every label that shows one - the two are kept
+        as separate steps (``canvas.convert_units`` / ``_refresh_unit_
+        system_ui``) because ``load_project_dict`` needs the second without
+        the first (a freshly-loaded project's raw numbers are already
+        expressed in its own saved unit system - converting them again
+        against a mismatched "from" would double-convert everything the
+        instant a project file is opened).
+        """
+        self.canvas.convert_units(unit_conversion_factors(self._unit_system, unit_system))
         self._unit_system = unit_system
+        self._refresh_unit_system_ui(unit_system)
+
+    def _refresh_unit_system_ui(self, unit_system: UnitSystem) -> None:
         self.results.set_unit_system(unit_system)
         self.result_unit_status.setText(
             f"UNITS: {unit_system.force} · {unit_system.length}"
@@ -4250,6 +4389,9 @@ class ModelingInterfacePage(QFrame):
             combo.blockSignals(False)
         self._load_target_changed()
         self.section_material_panel.set_unit_system(unit_system)
+        self._refresh_load3d_unit_labels()
+        self._refresh_support_spring_unit_labels()
+        self._refresh_member_offset_unit_labels()
         self._sync_selection_status()
         self._refresh_model_settings_summary()
 
@@ -4274,6 +4416,16 @@ class ModelingInterfacePage(QFrame):
         return data
 
     def load_project_dict(self, data: dict[str, object]) -> None:
+        # The saved unit system must be adopted BEFORE canvas.load_dict()
+        # populates raw values, not after: those values are already
+        # expressed in this saved unit system, so calling the ordinary
+        # set_unit_system() afterward (which also rescales stored values -
+        # see its own docstring) would convert them a second time against a
+        # "from" unit that never actually applied to this data.
+        self._unit_system = UnitSystem(
+            force=str(data.get("unit_force", self._unit_system.force)),
+            length=str(data.get("unit_length", self._unit_system.length)),
+        )
         self.canvas.load_dict(data)
         if self._start_in_3d:
             self._model_name = str(data.get("model_name", self._model_name))
@@ -4296,12 +4448,7 @@ class ModelingInterfacePage(QFrame):
                 if isinstance(stored_sections, list)
                 else []
             )
-        self.set_unit_system(
-            UnitSystem(
-                force=str(data.get("unit_force", self._unit_system.force)),
-                length=str(data.get("unit_length", self._unit_system.length)),
-            )
-        )
+        self._refresh_unit_system_ui(self._unit_system)
         self.truss_mode_toggle.blockSignals(True)
         self.truss_mode_toggle.setChecked(self.canvas.element_family == "truss")
         self.truss_mode_toggle.blockSignals(False)
@@ -5047,7 +5194,7 @@ class ModelingInterfacePage(QFrame):
                 field.setRange(-1_000_000.0, 1_000_000.0)
                 unit = self._unit_system.moment if component[0] == "m" else self._unit_system.force
                 if not is_node:
-                    unit = f"{self._unit_system.force}/{self._unit_system.length}"
+                    unit = self._unit_system.force_per_length
                 self.load_fields[component] = field
                 global_member_load = (
                     not is_node

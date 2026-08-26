@@ -227,4 +227,36 @@ ANALYSIS_CAPABILITIES: dict[AnalysisKind, AnalysisCapabilities] = {
         ),
         damping=ComponentField(FieldState.NOT_APPLICABLE),
     ),
+    AnalysisKind.RESPONSE_SPECTRUM: AnalysisCapabilities(
+        # infrastructure/opensees/response_spectrum_solver.py:
+        # run_response_spectrum_analysis(source, *, periods=, spectral_accelerations=,
+        # acceleration_unit=, num_modes=, directions=, model_length_unit=) - like Modal,
+        # only num_modes/directions are real user-facing knobs; every ops.* call other
+        # than ops.eigen(...) and the per-mode equivalent-static ops.analyze(1) is a
+        # bare literal issued to put the model in a valid state.
+        equation_solver=ComponentField(FieldState.ENGINE_FIXED, "BandGeneral"),
+        algorithm=ComponentField(FieldState.ENGINE_FIXED, "Linear"),
+        static_integrator=ComponentField(
+            FieldState.ENGINE_FIXED,
+            "LoadControl",
+            (("purpose", "모드별 등가정적하중을 1회 해석씩 적용, 매 해석 전 pseudo-time 초기화"),),
+        ),
+        dynamic_integrator=ComponentField(FieldState.NOT_APPLICABLE),
+        convergence_test=ComponentField(FieldState.NOT_APPLICABLE),
+        constraint_handler=ComponentField(FieldState.ENGINE_FIXED, "Transformation"),
+        numberer=ComponentField(FieldState.ENGINE_FIXED, "RCM"),
+        eigen_solver=ComponentField(
+            FieldState.AUTOMATIC,
+            details=(("primary", "ARPACK"), ("fallback", "FullGenLapack")),
+        ),
+        damping=ComponentField(
+            FieldState.NOT_APPLICABLE,
+            details=(
+                (
+                    "purpose",
+                    "스펙트럼 곡선 자체에 이미 반영된 감쇠비를 그대로 사용 - 별도 감쇠 입력 없음",
+                ),
+            ),
+        ),
+    ),
 }

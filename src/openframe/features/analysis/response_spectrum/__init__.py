@@ -1,0 +1,1 @@
+"""Response spectrum analysis implementation."""

@@ -4,6 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QCheckBox
 
+from openframe.core.domain import UnitSystem
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 from openframe.features.model.presentation.story_manager_dialog import (
     _DIAPHRAGM_COLUMN,
@@ -122,3 +123,13 @@ def test_auto_detect_button_reports_when_nothing_new_is_found() -> None:
     dialog._auto_detect()
 
     assert "새로 추가할 층이 없습니다" in dialog.status_label.text()
+
+
+def test_elevation_labels_default_to_meters() -> None:
+    dialog = StoryManagerDialog(_canvas())
+    assert dialog.table.horizontalHeaderItem(_ELEVATION_COLUMN).text() == "표고 Z (m)"
+
+
+def test_elevation_labels_reflect_the_pages_own_unit_system() -> None:
+    dialog = StoryManagerDialog(_canvas(), unit_system=UnitSystem(force="kN", length="mm"))
+    assert dialog.table.horizontalHeaderItem(_ELEVATION_COLUMN).text() == "표고 Z (mm)"

@@ -22,6 +22,13 @@ class UnitSystem:
         return f"{self.force}·{self.length}"
 
     @property
+    def force_per_length(self) -> str:
+        """A member's own distributed-load intensity (e.g. a beam UDL) -
+        force per unit length along the member, not the cross-sectional
+        ``stress``/``volumetric_force`` below."""
+        return f"{self.force}/{self.length}"
+
+    @property
     def stress(self) -> str:
         return f"{self.force}/{self.length}²"
 
@@ -34,6 +41,44 @@ FORCE_UNITS = ("kN", "N", "kip")
 LENGTH_UNITS = ("m", "mm", "ft", "in")
 TIME_UNITS = ("s",)
 DEFAULT_UNIT_SYSTEM = UnitSystem(force=FORCE_UNITS[0], length=LENGTH_UNITS[0])
+
+
+@dataclass(frozen=True, slots=True)
+class UnitConversionFactors:
+    """Multiply a value expressed in the *old* unit system by the matching
+    property here to get the same physical quantity expressed in the *new*
+    one - see :func:`unit_conversion_factors`. Every compound factor is
+    derived from just ``length``/``force`` so it can never drift out of sync
+    with them the way a hand-maintained second copy could.
+    """
+
+    length: float
+    force: float
+
+    @property
+    def area(self) -> float:
+        return self.length**2
+
+    @property
+    def inertia(self) -> float:
+        """A cross-section's second moment of area (Iy/Iz/J) - length^4."""
+        return self.length**4
+
+    @property
+    def stress(self) -> float:
+        return self.force / self.length**2
+
+    @property
+    def force_per_length(self) -> float:
+        return self.force / self.length
+
+    @property
+    def unit_weight(self) -> float:
+        return self.force / self.length**3
+
+    @property
+    def moment(self) -> float:
+        return self.force * self.length
 
 #: Standard gravity, matching the Material & Section Master DB's own ``Meta``
 #: sheet (``GRAVITY`` = 9.80665 m/s^2) - kept here so every density/unit-weight
@@ -60,6 +105,18 @@ def density_kg_m3_to_unit_weight_kN_m3(
 _LENGTH_TO_MM: dict[str, float] = {"m": 1000.0, "mm": 1.0, "ft": 304.8, "in": 25.4}
 #: 1 kip = 4.4482216152605 kN exactly (the internationally defined pound-force).
 _FORCE_TO_N: dict[str, float] = {"kN": 1000.0, "N": 1.0, "kip": 4448.2216152605}
+
+
+def unit_conversion_factors(old: UnitSystem, new: UnitSystem) -> UnitConversionFactors:
+    """Every already-entered value in a model must be rescaled when the app's
+    own force/length unit changes, or a number that meant "500 kN" keeps its
+    digits but silently means "500 N" instead - see
+    ``canvas_units.py``'s ``convert_units``, the one place every one of these
+    factors actually gets applied to stored model data."""
+    return UnitConversionFactors(
+        length=_LENGTH_TO_MM[old.length] / _LENGTH_TO_MM[new.length],
+        force=_FORCE_TO_N[old.force] / _FORCE_TO_N[new.force],
+    )
 
 
 def mm_to_length_unit(value_mm: float, length_unit: str) -> float:

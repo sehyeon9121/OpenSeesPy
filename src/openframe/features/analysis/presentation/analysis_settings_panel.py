@@ -16,17 +16,21 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QProgressBar,
     QPushButton,
     QRadioButton,
     QScrollArea,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from openframe.core.domain import (
+    ACCELERATION_UNITS,
     ANALYSIS_CAPABILITIES,
     DEFAULT_UNIT_SYSTEM,
     AnalysisKind,
@@ -40,6 +44,9 @@ from openframe.features.analysis.presentation.analysis_config_store import (
 )
 from openframe.features.analysis.presentation.time_history_direction_row import (
     TimeHistoryDirectionRow,
+)
+from openframe.features.results.presentation.time_history_curve_view import (
+    TimeHistoryCurveView,
 )
 from openframe.infrastructure.ground_motions import BuiltInGroundMotionCatalog
 
@@ -153,6 +160,7 @@ class AnalysisSettingsPanel(QFrame):
         self.analysis_type.addItem("Modal (Eigenvalue)", AnalysisKind.MODAL)
         self.analysis_type.addItem("Time History", AnalysisKind.TIME_HISTORY)
         self.analysis_type.addItem("Elastic Buckling", AnalysisKind.BUCKLING)
+        self.analysis_type.addItem("Response Spectrum", AnalysisKind.RESPONSE_SPECTRUM)
         self.analysis_type.setCurrentIndex(self.analysis_type.findData(self.config_store.kind))
         self.analysis_type.currentIndexChanged.connect(self._analysis_type_changed)
         kind_layout.addWidget(self.analysis_type, 1)
@@ -548,6 +556,104 @@ class AnalysisSettingsPanel(QFrame):
         self.modal_engine_details_body.setVisible(False)
         modal_engine_layout.addWidget(self.modal_engine_details_body)
         settings_layout.addWidget(self.modal_engine_card)
+
+        # Response Spectrum - Model -> Response Spectrum -> Modal Parameters ->
+        # Pre-check -> Run. The (Period, Sa) table + live preview chart reuse
+        # TimeHistoryCurveView (the same generic X/Y plot Time History's own
+        # ground-motion preview uses) rather than a new chart widget; modes/
+        # directions are split into their own titled block below it, the same
+        # way Modal's MODAL PARAMETERS card stays separate from EIGEN SOLUTION.
+        self.response_spectrum_group = QFrame()
+        self.response_spectrum_group.setObjectName("setupConfigCard")
+        rs_layout = QVBoxLayout(self.response_spectrum_group)
+        rs_layout.setContentsMargins(12, 10, 12, 10)
+        rs_layout.setSpacing(8)
+
+        rs_title = QLabel("RESPONSE SPECTRUM")
+        rs_title.setObjectName("setupConfigTitle")
+        rs_layout.addWidget(rs_title)
+
+        rs_table_row = QHBoxLayout()
+        rs_table_row.setSpacing(8)
+        self.response_spectrum_table = QTableWidget(0, 2)
+        self.response_spectrum_table.setHorizontalHeaderLabels(["Period (s)", "Sa"])
+        self.response_spectrum_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.response_spectrum_table.setMinimumHeight(140)
+        self.response_spectrum_table.itemChanged.connect(self._response_spectrum_table_changed)
+        rs_table_row.addWidget(self.response_spectrum_table, 1)
+
+        rs_table_buttons = QVBoxLayout()
+        rs_table_buttons.setSpacing(6)
+        rs_add_row_button = QPushButton("+ Row")
+        rs_add_row_button.clicked.connect(lambda: self._add_response_spectrum_row(0.0, 0.0))
+        rs_remove_row_button = QPushButton("- Row")
+        rs_remove_row_button.clicked.connect(self._remove_response_spectrum_row)
+        rs_table_buttons.addWidget(rs_add_row_button)
+        rs_table_buttons.addWidget(rs_remove_row_button)
+        rs_table_buttons.addStretch(1)
+        rs_table_row.addLayout(rs_table_buttons)
+        rs_layout.addLayout(rs_table_row)
+
+        rs_layout.addWidget(self._field_label("Sa UNIT"))
+        self.response_spectrum_unit = QComboBox()
+        for unit in ACCELERATION_UNITS:
+            self.response_spectrum_unit.addItem(unit, unit)
+        self.response_spectrum_unit.currentIndexChanged.connect(self._sync_store_options)
+        rs_layout.addWidget(self.response_spectrum_unit)
+
+        self.response_spectrum_preview = TimeHistoryCurveView()
+        self.response_spectrum_preview.setMinimumHeight(160)
+        self.response_spectrum_preview.set_empty_message("스펙트럼 표를 입력하세요 (주기, Sa)")
+        rs_layout.addWidget(self.response_spectrum_preview)
+
+        for period, sa in ((0.1, 0.5), (0.5, 1.0), (1.0, 0.4)):
+            self._add_response_spectrum_row(period, sa)
+
+        rs_divider = QFrame()
+        rs_divider.setObjectName("setupGuideDivider")
+        rs_divider.setFrameShape(QFrame.Shape.HLine)
+        rs_layout.addWidget(rs_divider)
+
+        rs_params_title = QLabel("MODAL PARAMETERS")
+        rs_params_title.setObjectName("setupConfigTitle")
+        rs_layout.addWidget(rs_params_title)
+
+        rs_layout.addWidget(self._field_label("NUMBER OF MODES"))
+        self.response_spectrum_num_modes = QSpinBox()
+        self.response_spectrum_num_modes.setRange(1, 200)
+        self.response_spectrum_num_modes.setValue(10)
+        self.response_spectrum_num_modes.setToolTip(
+            "The model's own script must define nodal mass (ops.mass(...)) - "
+            "response spectrum analysis has no natural frequency to find without it."
+        )
+        self.response_spectrum_num_modes.valueChanged.connect(self._sync_store_options)
+        rs_layout.addWidget(self.response_spectrum_num_modes)
+
+        rs_layout.addWidget(self._field_label("EXCITATION DIRECTIONS"))
+        rs_directions_row = QHBoxLayout()
+        rs_directions_row.setSpacing(10)
+        self.response_spectrum_direction_checks: dict[str, QCheckBox] = {}
+        for direction in ("X", "Y"):
+            checkbox = QCheckBox(direction)
+            checkbox.setChecked(True)
+            checkbox.toggled.connect(self._sync_store_options)
+            self.response_spectrum_direction_checks[direction] = checkbox
+            rs_directions_row.addWidget(checkbox)
+        rs_directions_row.addStretch(1)
+        rs_layout.addLayout(rs_directions_row)
+
+        rs_note = QLabel(
+            "Every combined value (displacement/reaction/member force) is an "
+            "SRSS result - non-negative, sign is lost. Apply it as +/- yourself "
+            "when checking design combinations."
+        )
+        rs_note.setObjectName("secondaryText")
+        rs_note.setWordWrap(True)
+        rs_layout.addWidget(rs_note)
+
+        settings_layout.addWidget(self.response_spectrum_group)
 
         # Elastic Buckling - Model -> Reference Load -> Buckling Parameters ->
         # Pre-check -> Run, a short flow like Modal's (no "3. SOLUTION METHOD"/
@@ -2170,6 +2276,21 @@ class AnalysisSettingsPanel(QFrame):
             return options
         if self.selected_analysis_kind() == AnalysisKind.TIME_HISTORY:
             return self._build_time_history_options()
+        if self.selected_analysis_kind() == AnalysisKind.RESPONSE_SPECTRUM:
+            periods, spectral_accelerations = self._response_spectrum_table_values()
+            directions = [
+                direction
+                for direction, checkbox in self.response_spectrum_direction_checks.items()
+                if checkbox.isChecked()
+            ]
+            return {
+                "periods": periods,
+                "spectral_accelerations": spectral_accelerations,
+                "acceleration_unit": self.response_spectrum_unit.currentData() or "g",
+                "num_modes": self.response_spectrum_num_modes.value(),
+                "directions": directions,
+                "model_length_unit": self._unit_system.length,
+            }
         options: dict[str, float | int | str | bool] = {
             "system": self.solver.currentText(),
             "num_steps": self.num_steps.value(),
@@ -2259,9 +2380,13 @@ class AnalysisSettingsPanel(QFrame):
         is_nonlinear_static = kind == AnalysisKind.NONLINEAR_STATIC
         is_time_history = kind == AnalysisKind.TIME_HISTORY
         is_buckling = kind == AnalysisKind.BUCKLING
+        is_response_spectrum = kind == AnalysisKind.RESPONSE_SPECTRUM
         self.nonlinear_group.setVisible(is_nonlinear_static)
         self.time_history_group.setVisible(is_time_history)
         self.buckling_group.setVisible(is_buckling)
+        self.response_spectrum_group.setVisible(is_response_spectrum)
+        if is_response_spectrum:
+            self._update_response_spectrum_preview()
         self.buckling_precheck_card.setVisible(is_buckling)
         if is_buckling:
             self._update_buckling_summary()
@@ -2314,6 +2439,63 @@ class AnalysisSettingsPanel(QFrame):
         self.modal_engine_details_body.setVisible(expanded)
         arrow = "▾" if expanded else "▸"
         self.modal_engine_details_toggle.setText(f"{arrow}  ADVANCED ENGINE DETAILS")
+
+    def _add_response_spectrum_row(self, period: float, sa: float) -> None:
+        table = self.response_spectrum_table
+        table.blockSignals(True)
+        row = table.rowCount()
+        table.insertRow(row)
+        table.setItem(row, 0, QTableWidgetItem(f"{period:g}"))
+        table.setItem(row, 1, QTableWidgetItem(f"{sa:g}"))
+        table.blockSignals(False)
+        self._update_response_spectrum_preview()
+
+    def _remove_response_spectrum_row(self) -> None:
+        table = self.response_spectrum_table
+        row = table.currentRow()
+        if row < 0:
+            row = table.rowCount() - 1
+        if row < 0:
+            return
+        table.removeRow(row)
+        self._update_response_spectrum_preview()
+
+    def _response_spectrum_table_changed(self) -> None:
+        self._update_response_spectrum_preview()
+        self._sync_store_options()
+
+    def _response_spectrum_table_values(self) -> tuple[list[float], list[float]]:
+        """(periods, Sa values) currently entered - a row with either cell
+        blank or unparsable is skipped rather than treated as 0.0, so a
+        still-being-typed row never corrupts the spectrum silently."""
+        periods: list[float] = []
+        values: list[float] = []
+        table = self.response_spectrum_table
+        for row in range(table.rowCount()):
+            period_item = table.item(row, 0)
+            sa_item = table.item(row, 1)
+            if period_item is None or sa_item is None:
+                continue
+            try:
+                period = float(period_item.text())
+                sa = float(sa_item.text())
+            except ValueError:
+                continue
+            periods.append(period)
+            values.append(sa)
+        return periods, values
+
+    def _update_response_spectrum_preview(self) -> None:
+        periods, values = self._response_spectrum_table_values()
+        paired = sorted(zip(periods, values, strict=True))
+        sorted_periods = tuple(period for period, _ in paired)
+        sorted_values = tuple(value for _, value in paired)
+        self.response_spectrum_preview.set_series(
+            sorted_periods,
+            sorted_values,
+            y_label=f"Sa ({self.response_spectrum_unit.currentData() or 'g'})",
+            corner_label="Response Spectrum",
+        )
 
     def _update_buckling_summary(self) -> None:
         self._update_buckling_precheck()

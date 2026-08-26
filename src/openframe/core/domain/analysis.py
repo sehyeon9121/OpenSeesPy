@@ -11,6 +11,7 @@ class AnalysisKind(StrEnum):
     TIME_HISTORY = "time_history"
     MODAL = "modal"
     BUCKLING = "buckling"
+    RESPONSE_SPECTRUM = "response_spectrum"
 
 
 @dataclass(frozen=True, slots=True)

@@ -30,6 +30,7 @@ _INFRASTRUCTURE_DIR = Path(__file__).parents[2] / "src" / "openframe" / "infrast
 _SOLVER_SOURCE_BY_KIND = {
     AnalysisKind.LINEAR_STATIC: _INFRASTRUCTURE_DIR / "linear_static_solver.py",
     AnalysisKind.MODAL: _INFRASTRUCTURE_DIR / "modal_solver.py",
+    AnalysisKind.RESPONSE_SPECTRUM: _INFRASTRUCTURE_DIR / "response_spectrum_solver.py",
 }
 
 

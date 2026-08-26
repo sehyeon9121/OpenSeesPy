@@ -28,6 +28,7 @@ ALL_KINDS = {
     AnalysisKind.MODAL,
     AnalysisKind.TIME_HISTORY,
     AnalysisKind.BUCKLING,
+    AnalysisKind.RESPONSE_SPECTRUM,
 }
 
 

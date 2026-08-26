@@ -47,6 +47,7 @@ _KIND_LABELS: dict[AnalysisKind, str] = {
     AnalysisKind.MODAL: "Modal (Eigenvalue)",
     AnalysisKind.TIME_HISTORY: "Time History",
     AnalysisKind.BUCKLING: "Elastic Buckling",
+    AnalysisKind.RESPONSE_SPECTRUM: "Response Spectrum",
 }
 
 _FLOW_STEPS: dict[AnalysisKind, tuple[str, ...]] = {
@@ -80,6 +81,13 @@ _FLOW_STEPS: dict[AnalysisKind, tuple[str, ...]] = {
         "Model",
         "Reference Load",
         "Buckling Parameters",
+        "Pre-check",
+        "Run",
+    ),
+    AnalysisKind.RESPONSE_SPECTRUM: (
+        "Model",
+        "Response Spectrum",
+        "Modal Parameters",
         "Pre-check",
         "Run",
     ),
@@ -132,6 +140,18 @@ _GUIDE_TEXT: dict[AnalysisKind, str] = {
         "Material yielding, initial imperfections, post-buckling behavior and "
         "local/section buckling are not included."
     ),
+    AnalysisKind.RESPONSE_SPECTRUM: (
+        "Runs a real eigenvalue solve, then applies each retained mode's "
+        "equivalent static force (from your entered period/Sa table) and "
+        "re-solves the structure, combining every response quantity via "
+        "SRSS across modes and across the X/Y excitation directions.\n\n"
+        "Enter the response spectrum as a (Period, Sa) table below - no "
+        "design-code formula is generated automatically.\n\n"
+        "Results include:\n"
+        "•  Combined Displacement\n"
+        "•  Combined Reaction\n"
+        "•  Combined Member Force"
+    ),
 }
 
 _GUIDE_TOPIC: dict[AnalysisKind, str] = {
@@ -140,6 +160,7 @@ _GUIDE_TOPIC: dict[AnalysisKind, str] = {
     AnalysisKind.MODAL: "MODAL ANALYSIS",
     AnalysisKind.TIME_HISTORY: "DYNAMIC RESPONSE",
     AnalysisKind.BUCKLING: "ELASTIC BUCKLING",
+    AnalysisKind.RESPONSE_SPECTRUM: "RESPONSE SPECTRUM",
 }
 
 _GUIDE_CALLOUT: dict[AnalysisKind, str] = {
@@ -161,6 +182,10 @@ _GUIDE_CALLOUT: dict[AnalysisKind, str] = {
         "Not an actual collapse load, design buckling strength, inelastic buckling "
         "strength, or a completed local-buckling check - an elastic global buckling "
         "factor for the reference load pattern only."
+    ),
+    AnalysisKind.RESPONSE_SPECTRUM: (
+        "Every combined value is a non-negative SRSS result - sign is lost. "
+        "Apply it as +/- yourself when checking design combinations."
     ),
 }
 

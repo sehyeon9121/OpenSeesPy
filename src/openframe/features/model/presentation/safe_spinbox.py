@@ -34,3 +34,21 @@ class SafeComboBox(QComboBox):
 
     def wheelEvent(self, event) -> None:
         event.ignore()
+
+
+class DownwardComboBox(QComboBox):
+    """Dropdown whose popup always opens below it, never above.
+
+    Qt's default popup placement flips the list above the combo box
+    whenever it judges there isn't enough room below it on the physical
+    screen. For a combo living low in a tall scrollable panel (e.g. the
+    Loads command bar), that "no room below" reading is usually just the
+    rest of the window being scrolled out of view, not an actual screen
+    edge - so force the popup to stay below instead of trusting the guess.
+    """
+
+    def showPopup(self) -> None:
+        super().showPopup()
+        popup = self.view().window()
+        anchor = self.mapToGlobal(self.rect().bottomLeft())
+        popup.move(anchor.x(), anchor.y())

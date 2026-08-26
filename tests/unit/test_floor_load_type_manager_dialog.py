@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from openframe.core.domain import FloorLoadTypeRow, LoadCaseKind
+from openframe.core.domain import FloorLoadTypeRow, LoadCaseKind, UnitSystem
 from openframe.features.model.presentation.floor_load_type_manager_dialog import (
     FloorLoadTypeManagerDialog,
 )
@@ -14,6 +14,16 @@ from openframe.features.model.presentation.statics_modeling_page import StaticsD
 def _canvas() -> StaticsDrawingCanvas:
     QApplication.instance() or QApplication([])
     return StaticsDrawingCanvas()
+
+
+def test_magnitude_header_defaults_to_kN_m2() -> None:
+    dialog = FloorLoadTypeManagerDialog(_canvas())
+    assert dialog.magnitude_header.text() == "크기 (kN/m²)"
+
+
+def test_magnitude_header_reflects_the_pages_own_unit_system() -> None:
+    dialog = FloorLoadTypeManagerDialog(_canvas(), unit_system=UnitSystem(force="N", length="mm"))
+    assert dialog.magnitude_header.text() == "크기 (N/mm²)"
 
 
 def test_dialog_lists_every_existing_type_on_open() -> None:

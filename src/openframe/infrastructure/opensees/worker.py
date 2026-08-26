@@ -21,6 +21,9 @@ from openframe.infrastructure.opensees.model_collector import ModelCommandCollec
 from openframe.infrastructure.opensees.nonlinear_static_solver import (
     run_nonlinear_static_analysis,
 )
+from openframe.infrastructure.opensees.response_spectrum_solver import (
+    run_response_spectrum_analysis,
+)
 from openframe.infrastructure.opensees.script_execution import (
     AnalysisStageTracker,
     run_model_definition_only,
@@ -77,6 +80,12 @@ def run_analysis(
         return run_modal_analysis(source, **options)
     if kind == "buckling":
         return run_buckling_analysis(source, **options)
+    if kind == "response_spectrum":
+        response_spectrum_options = dict(options)
+        response_spectrum_options["directions"] = tuple(
+            response_spectrum_options.get("directions", ("X", "Y"))
+        )
+        return run_response_spectrum_analysis(source, **response_spectrum_options)
     if kind == "time_history":
         time_history_options = dict(options)
         # Each direction's "path" arrives as a JSON string (round-tripped

@@ -42,6 +42,7 @@ class ResultToolbar(QFrame):
             AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
             AnalysisKind.BUCKLING: "Elastic Buckling",
+            AnalysisKind.RESPONSE_SPECTRUM: "Response Spectrum",
         }
         self.result_case.setText(labels[kind])
 

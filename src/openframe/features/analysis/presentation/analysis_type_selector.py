@@ -21,6 +21,7 @@ _KIND_LABELS = {
     AnalysisKind.MODAL: "Modal (Eigenvalue)",
     AnalysisKind.TIME_HISTORY: "Time History",
     AnalysisKind.BUCKLING: "Elastic Buckling",
+    AnalysisKind.RESPONSE_SPECTRUM: "Response Spectrum",
 }
 
 

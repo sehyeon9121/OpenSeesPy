@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from openframe.core.domain import UnitSystem
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
 
@@ -37,7 +38,7 @@ def test_story_manager_button_opens_a_dialog_that_edits_the_canvas() -> None:
     from openframe.features.model.presentation.story_manager_dialog import StoryManagerDialog
 
     page = _page(start_in_3d=True)
-    dialog = StoryManagerDialog(page.canvas, page)
+    dialog = StoryManagerDialog(page.canvas, parent=page)
     dialog.name_input.setText("1층")
     dialog._add_story()
 
@@ -108,3 +109,31 @@ def test_rigid_offset_row_is_hidden_in_2d() -> None:
     page.canvas.selection_changed.emit()
 
     assert page.member_offset_row.isVisible() is False
+
+
+def test_spring_field_labels_show_translational_vs_rotational_units() -> None:
+    page = _page(start_in_3d=True)
+    page._show_category("support")
+
+    assert page.support_spring_field_labels["Uy"].text() == "Uy (kN/m)"
+    assert page.support_spring_field_labels["Rz"].text() == "Rz (kN·m)"
+
+
+def test_rigid_offset_labels_show_the_length_unit() -> None:
+    page = _page(start_in_3d=True)
+    page._show_category("member")
+
+    assert page.member_offset_i_label.text() == "i단 강체길이 (m)"
+    assert page.member_offset_j_label.text() == "j단 강체길이 (m)"
+
+
+def test_changing_units_updates_spring_and_offset_labels() -> None:
+    page = _page(start_in_3d=True)
+    page._show_category("support")
+    page._show_category("member")
+
+    page.set_unit_system(UnitSystem(force="N", length="mm"))
+
+    assert page.support_spring_field_labels["Uy"].text() == "Uy (N/mm)"
+    assert page.support_spring_field_labels["Rz"].text() == "Rz (N·mm)"
+    assert page.member_offset_i_label.text() == "i단 강체길이 (mm)"

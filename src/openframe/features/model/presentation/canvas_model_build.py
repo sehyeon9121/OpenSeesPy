@@ -28,6 +28,48 @@ def _lerp(start: float, end: float, fraction: float) -> float:
     return start + (end - start) * fraction
 
 
+def _local_axes(
+    element: Element, nodes: dict, ndm: int
+) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None:
+    """(local_x, local_y, local_z) unit-vector triad for ``element``, using
+    the same vecxz-picking rule ``solver.py``'s ``_build`` uses to orient
+    every 3D element's ``geomTransf`` - ``None`` for a zero-length member.
+    Extracted out of ``_self_weight_local`` so any other feature projecting
+    a global force onto a member's own local axes (see
+    ``floor_tributary.py``) can never drift from what the solver itself
+    actually built the element with. 2D returns ``local_z=(0,0,1)``, the
+    plane normal, matching this mixin's existing 2D self-weight convention."""
+    start = nodes[element.node_i]
+    end = nodes[element.node_j]
+    if ndm != 2:
+        dx, dy, dz = end.x - start.x, end.y - start.y, end.z - start.z
+        length = (dx * dx + dy * dy + dz * dz) ** 0.5
+        if length <= 0.0:
+            return None
+        local_x = (dx / length, dy / length, dz / length)
+        reference = _reference_vector(start, end)
+        raw_y = (
+            reference[1] * local_x[2] - reference[2] * local_x[1],
+            reference[2] * local_x[0] - reference[0] * local_x[2],
+            reference[0] * local_x[1] - reference[1] * local_x[0],
+        )
+        y_length = (raw_y[0] ** 2 + raw_y[1] ** 2 + raw_y[2] ** 2) ** 0.5 or 1.0
+        local_y = tuple(component / y_length for component in raw_y)
+        local_z = (
+            local_x[1] * local_y[2] - local_x[2] * local_y[1],
+            local_x[2] * local_y[0] - local_x[0] * local_y[2],
+            local_x[0] * local_y[1] - local_x[1] * local_y[0],
+        )
+        return local_x, local_y, local_z
+    dx, dy = end.x - start.x, end.y - start.y
+    length = (dx * dx + dy * dy) ** 0.5
+    if length <= 0.0:
+        return None
+    local_x = (dx / length, dy / length, 0.0)
+    local_y = (-dy / length, dx / length, 0.0)
+    return local_x, local_y, (0.0, 0.0, 1.0)
+
+
 class _ModelBuildMixin:
     def _self_weight_local(self, element: Element) -> tuple[float, float, float] | None:
         """Self-weight of one member as a (wx, wy, wz) uniform load in the
@@ -63,43 +105,23 @@ class _ModelBuildMixin:
             return None
         if density == 0.0 or area == 0.0:
             return None
-        start = self.nodes[element.node_i]
-        end = self.nodes[element.node_j]
+        axes = _local_axes(element, self.nodes, self.ndm)
+        if axes is None:
+            return None
+        local_x, local_y, local_z = axes
         weight_per_length = density * area
         if self.ndm != 2:
-            dx, dy, dz = end.x - start.x, end.y - start.y, end.z - start.z
-            length = (dx * dx + dy * dy + dz * dz) ** 0.5
-            if length <= 0.0:
-                return None
-            local_x = (dx / length, dy / length, dz / length)
-            reference = _reference_vector(start, end)
-            raw_y = (
-                reference[1] * local_x[2] - reference[2] * local_x[1],
-                reference[2] * local_x[0] - reference[0] * local_x[2],
-                reference[0] * local_x[1] - reference[1] * local_x[0],
-            )
-            y_length = (raw_y[0] ** 2 + raw_y[1] ** 2 + raw_y[2] ** 2) ** 0.5 or 1.0
-            local_y = tuple(component / y_length for component in raw_y)
-            local_z = (
-                local_x[1] * local_y[2] - local_x[2] * local_y[1],
-                local_x[2] * local_y[0] - local_x[0] * local_y[2],
-                local_x[0] * local_y[1] - local_x[1] * local_y[0],
-            )
             # Global weight vector (0, 0, -w) dotted with each local axis -
             # only the axis's own Z-component survives that dot product.
             wx = -weight_per_length * local_x[2]
             wy = -weight_per_length * local_y[2]
             wz = -weight_per_length * local_z[2]
             return wx, wy, wz
-        dx, dy = end.x - start.x, end.y - start.y
-        length = (dx * dx + dy * dy) ** 0.5
-        if length <= 0.0:
-            return None
-        # Global weight vector (0, -w) dotted with the local x axis (dx, dy)/L
-        # and the local y axis (-dy, dx)/L - the same along/normal pair
-        # load_arrow_segments and _draw_distributed_load_box already use.
-        wx = -weight_per_length * dy / length
-        wy = -weight_per_length * dx / length
+        # Global weight vector (0, -w) dotted with the local x/y axes - the
+        # same along/normal pair load_arrow_segments/_draw_distributed_load_box
+        # already use.
+        wx = -weight_per_length * local_x[1]
+        wy = -weight_per_length * local_y[1]
         return wx, wy, 0.0
 
     def build_model(self) -> StructuralModel:

@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from openframe.core.domain import DEFAULT_UNIT_SYSTEM, UnitSystem
 from openframe.features.model.presentation.safe_spinbox import SafeDoubleSpinBox
 
 _NAME_COLUMN = 0
@@ -50,9 +51,15 @@ def _elevation_field() -> SafeDoubleSpinBox:
 
 
 class StoryManagerDialog(QDialog):
-    def __init__(self, canvas, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        canvas,
+        unit_system: UnitSystem | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._canvas = canvas
+        self._unit_system = unit_system or DEFAULT_UNIT_SYSTEM
         self.setWindowTitle("Story Manager")
         self.resize(560, 520)
 
@@ -71,7 +78,9 @@ class StoryManagerDialog(QDialog):
         layout.addWidget(auto_detect_button)
 
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["층 이름", "표고 (Z)", "절점 수", "강체 다이아프램", ""])
+        self.table.setHorizontalHeaderLabels(
+            ["층 이름", f"표고 Z ({self._unit_system.length})", "절점 수", "강체 다이아프램", ""]
+        )
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(_NAME_COLUMN, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(_ELEVATION_COLUMN, QHeaderView.ResizeMode.ResizeToContents)
@@ -92,7 +101,7 @@ class StoryManagerDialog(QDialog):
         self.name_input.setPlaceholderText("예: 1층")
         form.addRow("새 층 이름", self.name_input)
         self.elevation_input = _elevation_field()
-        form.addRow("표고 (Z)", self.elevation_input)
+        form.addRow(f"표고 Z ({self._unit_system.length})", self.elevation_input)
         self.diaphragm_input = QCheckBox("강체 다이아프램으로 지정")
         form.addRow(self.diaphragm_input)
         layout.addLayout(form)

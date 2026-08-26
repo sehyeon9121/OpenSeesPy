@@ -20,6 +20,7 @@ from openframe.core.domain import (
     ModeShape,
     NodeResult,
     NonlinearConvergence,
+    ResponseSpectrumSettings,
     TimeHistoryDirectionSummary,
     TimeHistorySettings,
     TimeHistoryStep,
@@ -57,7 +58,12 @@ class OpenSeesProcessRunner:
         requested_timeout = solver_options.pop("execution_timeout_seconds", None)
         if requested_timeout is not None:
             timeout_seconds = max(1.0, min(float(requested_timeout), 86_400.0))
-        elif str(request.kind) in ("nonlinear_static", "time_history", "buckling"):
+        elif str(request.kind) in (
+            "nonlinear_static",
+            "time_history",
+            "buckling",
+            "response_spectrum",
+        ):
             # A time-history run repeats the same per-step solve as many times
             # as the ground motion has points (often thousands) - the same
             # "this can genuinely take a while" reasoning as the nonlinear
@@ -65,6 +71,10 @@ class OpenSeesProcessRunner:
             # Buckling's own two solves are cheap, but extracting/reshaping a
             # dense N-by-N FullGeneral matrix and running scipy.linalg.eig on it
             # is O(n^3) - slow enough on a large model to need the same room.
+            # Response spectrum re-solves the model once per (mode, direction)
+            # pair on top of its own eigen solve - the same "many repeated
+            # solves" shape as time history's, just bounded by mode count
+            # instead of record length.
             timeout_seconds = self._nonlinear_timeout_seconds
         else:
             timeout_seconds = self._timeout_seconds
@@ -343,6 +353,22 @@ class OpenSeesProcessRunner:
             if isinstance(settings_payload, dict)
             else None
         )
+        response_spectrum_payload = payload.get("response_spectrum_settings")
+        response_spectrum_settings = (
+            ResponseSpectrumSettings(
+                num_modes=int(response_spectrum_payload.get("num_modes", 0)),
+                directions=tuple(str(value) for value in response_spectrum_payload.get("directions", [])),
+                combination_method=str(response_spectrum_payload.get("combination_method", "SRSS")),
+                periods=tuple(float(value) for value in response_spectrum_payload.get("periods", [])),
+                spectral_accelerations=tuple(
+                    float(value)
+                    for value in response_spectrum_payload.get("spectral_accelerations", [])
+                ),
+                acceleration_unit=str(response_spectrum_payload.get("acceleration_unit", "g")),
+            )
+            if isinstance(response_spectrum_payload, dict)
+            else None
+        )
         try:
             status = AnalysisStatus(str(payload.get("status", "completed")))
         except ValueError:
@@ -358,4 +384,5 @@ class OpenSeesProcessRunner:
             time_history=time_history,
             buckling_modes=buckling_modes,
             time_history_settings=time_history_settings,
+            response_spectrum_settings=response_spectrum_settings,
         )

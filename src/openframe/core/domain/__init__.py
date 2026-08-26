@@ -75,6 +75,7 @@ from openframe.core.domain.results import (
     ModeShape,
     NodeResult,
     NonlinearConvergence,
+    ResponseSpectrumSettings,
     TimeHistoryDirectionSummary,
     TimeHistorySettings,
     TimeHistoryStep,
@@ -94,6 +95,7 @@ from openframe.core.domain.units import (
     LENGTH_UNITS,
     STANDARD_GRAVITY_M_S2,
     TIME_UNITS,
+    UnitConversionFactors,
     UnitSystem,
     acceleration_to_model_unit_factor,
     density_kg_m3_to_unit_weight_kN_m3,
@@ -103,6 +105,7 @@ from openframe.core.domain.units import (
     mm4_to_length_unit,
     mm_to_length_unit,
     mpa_to_stress_unit,
+    unit_conversion_factors,
 )
 
 __all__ = [
@@ -165,6 +168,7 @@ __all__ = [
     "PropertyType",
     "RCSectionRecord",
     "RecordNotFoundError",
+    "ResponseSpectrumSettings",
     "RigidDiaphragm",
     "SectionDimensionError",
     "SectionProperties",
@@ -180,6 +184,7 @@ __all__ = [
     "TimeHistorySettings",
     "TimeHistoryStep",
     "UniformElementLoad",
+    "UnitConversionFactors",
     "UnitSystem",
     "UnsupportedConditionTypeError",
     "acceleration_to_model_unit_factor",
@@ -195,5 +200,6 @@ __all__ = [
     "mm_to_length_unit",
     "mpa_to_stress_unit",
     "rotate_about_axis",
+    "unit_conversion_factors",
     "validate_orientation_vector",
 ]

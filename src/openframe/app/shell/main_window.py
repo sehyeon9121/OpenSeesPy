@@ -708,6 +708,7 @@ class MainWindow(QMainWindow):
             AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
             AnalysisKind.BUCKLING: "Elastic Buckling",
+            AnalysisKind.RESPONSE_SPECTRUM: "Response Spectrum",
         }
         self.results_workspace.set_analysis_kind(kind)
         self.statusBar().showMessage(f"Analysis type · {names[kind]}")
@@ -737,6 +738,7 @@ class MainWindow(QMainWindow):
             AnalysisKind.MODAL: "Modal (Eigenvalue)",
             AnalysisKind.TIME_HISTORY: "Time History",
             AnalysisKind.BUCKLING: "Elastic Buckling",
+            AnalysisKind.RESPONSE_SPECTRUM: "Response Spectrum",
         }[kind]
         self.analysis_progress.show_running(analysis_name)
         self.header.set_busy(True, None)

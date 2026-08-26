@@ -232,6 +232,25 @@ class TimeHistorySettings:
     status: str = "completed"
 
 
+@dataclass(frozen=True, slots=True)
+class ResponseSpectrumSettings:
+    """Whole-run configuration summary for a response spectrum analysis -
+    echoed back as a result fact (mirrors ``TimeHistorySettings``) so
+    Result Tables can show what produced ``node_results``/``element_results``
+    without re-opening SETUP. Every value in those two dicts is an SRSS
+    combination across modes and directions and therefore has no sign - see
+    this dataclass's own presence (not ``None``) as the signal Result Tables
+    uses to show its own-sign-lost disclaimer, the same way a populated
+    ``buckling_modes`` tuple signals the buckling-specific caveat."""
+
+    num_modes: int = 0
+    directions: tuple[str, ...] = ()
+    combination_method: str = "SRSS"
+    periods: tuple[float, ...] = ()
+    spectral_accelerations: tuple[float, ...] = ()
+    acceleration_unit: str = "g"
+
+
 @dataclass(slots=True)
 class AnalysisResult:
     status: AnalysisStatus = AnalysisStatus.NOT_RUN
@@ -254,3 +273,7 @@ class AnalysisResult:
     #: None except for time-history analysis - the whole-run ground-motion/
     #: integrator/damping/time-step configuration that produced ``time_history``.
     time_history_settings: TimeHistorySettings | None = None
+    #: None except for response spectrum analysis - see ResponseSpectrumSettings.
+    #: node_results/element_results carry the SRSS-combined values themselves,
+    #: same shape as a plain static result.
+    response_spectrum_settings: ResponseSpectrumSettings | None = None

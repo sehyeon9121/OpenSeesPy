@@ -194,9 +194,14 @@ class ResultTablesPanel(QFrame):
         if result is None:
             self.status_label.setText("해석을 실행하면 값이 표시됩니다.")
         else:
-            self.status_label.setText(
-                f"{len(result.node_results)} NODES · {len(result.element_results)} ELEMENTS"
-            )
+            summary = f"{len(result.node_results)} NODES · {len(result.element_results)} ELEMENTS"
+            if result.response_spectrum_settings is not None:
+                # Every value below (변위/반력/부재력) is an SRSS combination
+                # across modes and directions - see ResponseSpectrumSettings'
+                # own docstring for why that makes sign meaningless, the same
+                # caveat the buckling tab gives its own scope_note for.
+                summary += " · SRSS 결합값(부호 없음, 설계 시 ±로 적용)"
+            self.status_label.setText(summary)
         self._refresh_displacements()
         self._refresh_reactions()
         self._refresh_member_forces()

@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from openframe.core.domain import FloorLoadTypeRow
+from openframe.core.domain import DEFAULT_UNIT_SYSTEM, FloorLoadTypeRow, UnitSystem
 from openframe.features.model.presentation.load_case_manager_dialog import LoadCaseManagerDialog
 from openframe.features.model.presentation.safe_spinbox import SafeComboBox, SafeDoubleSpinBox
 
@@ -45,9 +45,15 @@ def _magnitude_field() -> SafeDoubleSpinBox:
 
 
 class FloorLoadTypeManagerDialog(QDialog):
-    def __init__(self, canvas, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        canvas,
+        unit_system: UnitSystem | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._canvas = canvas
+        self._unit_system = unit_system or DEFAULT_UNIT_SYSTEM
         self.setWindowTitle("Floor Load Type Manager")
         self.resize(520, 640)
 
@@ -63,7 +69,8 @@ class FloorLoadTypeManagerDialog(QDialog):
 
         rows_grid = QGridLayout()
         rows_grid.addWidget(QLabel("Load Case"), 0, 1)
-        rows_grid.addWidget(QLabel("크기 (kN/m²)"), 0, 2)
+        self.magnitude_header = QLabel(f"크기 ({self._unit_system.stress})")
+        rows_grid.addWidget(self.magnitude_header, 0, 2)
         self.row_case_combos: list[SafeComboBox] = []
         self.row_magnitude_spins: list[SafeDoubleSpinBox] = []
         for index in range(_ROW_COUNT):
