@@ -58,6 +58,7 @@ from openframe.core.domain import (
     kN_m3_to_volumetric_force_unit,
     length_unit_to_mm,
     mm2_to_length_unit,
+    mm3_to_length_unit,
     mm4_to_length_unit,
     mm_to_length_unit,
     mpa_to_stress_unit,
@@ -742,11 +743,25 @@ class SectionMaterialPanel(QWidget):
         self.material_fy.setDecimals(3)
         self.material_fy.setMaximumWidth(_NUMBER_WIDTH)
         self.material_fy.setToolTip(
-            "참고용 항복강도 표시입니다 - 이번 단계의 해석은 탄성 재료만 다루므로 "
-            "이 값 자체는 해석에 쓰이지 않습니다."
+            "항복강도 - 0보다 크면 이 부재는 3D 비선형 정적(Pushover) 해석에서 "
+            "양단에 집중소성힌지(Mp = fy x 단면의 소성단면계수)를 갖습니다. "
+            "Channel/Angle 단면과 선형탄성 해석은 이 값을 읽지 않습니다."
         )
+        self.material_fy.valueChanged.connect(self._notify_edited)
         self._material_fy_label = QLabel("fy")
         material_form.addRow(self._material_fy_label, self.material_fy)
+        self.material_hardening_ratio = SafeDoubleSpinBox()
+        self.material_hardening_ratio.setRange(0.0, 1.0)
+        self.material_hardening_ratio.setDecimals(4)
+        self.material_hardening_ratio.setValue(0.02)
+        self.material_hardening_ratio.setMaximumWidth(_NUMBER_WIDTH)
+        self.material_hardening_ratio.setToolTip(
+            "변형경화비 b - 항복 이후 강성이 초기강성(E)의 몇 배 기울기로 증가하는지 "
+            "(Steel01의 b 파라미터). fy가 0이면 쓰이지 않습니다."
+        )
+        self.material_hardening_ratio.valueChanged.connect(self._notify_edited)
+        self._material_hardening_ratio_label = QLabel("변형경화비 (b)")
+        material_form.addRow(self._material_hardening_ratio_label, self.material_hardening_ratio)
         material_group.add_layout(material_form)
 
         self.material_save_button = QPushButton("물성 저장")
@@ -1369,6 +1384,12 @@ class SectionMaterialPanel(QWidget):
         if elastic is not None:
             self.material_e.setValue(float(elastic))
         self.material_unit_weight.setValue(float(density) if density is not None else 0.0)
+        fy = element.properties.get("Fy")
+        self.material_fy.setValue(float(fy) if fy is not None else 0.0)
+        hardening_ratio = element.properties.get("StrainHardeningRatio")
+        self.material_hardening_ratio.setValue(
+            float(hardening_ratio) if hardening_ratio is not None else 0.02
+        )
         # Reverse G = E / (2*(1+v)) back to v = E/(2G) - 1 - takes priority over
         # whatever a Database material selection just auto-filled above, the
         # same way the stored E/density just did, so this reflects whatever v
@@ -1425,6 +1446,18 @@ class SectionMaterialPanel(QWidget):
             "material_id": self._selected_material.material_id if self._selected_material else None,
             "material_category": self.material_category_combo.currentText() or None,
             "material_grade": self.material_grade_combo.currentText() or None,
+            "fy": self.material_fy.value(),
+            "strain_hardening_ratio": self.material_hardening_ratio.value(),
+            "zy": (
+                mm3_to_length_unit(self._properties.Zy_mm3, length)
+                if self._properties.Zy_mm3 is not None
+                else None
+            ),
+            "zz": (
+                mm3_to_length_unit(self._properties.Zz_mm3, length)
+                if self._properties.Zz_mm3 is not None
+                else None
+            ),
         }
 
     def current_edit_kwargs(self) -> dict[str, object] | None:

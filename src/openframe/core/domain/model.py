@@ -200,6 +200,17 @@ class UniformElementLoad:
     wx_j: float | None = None
     wy_j: float | None = None
     wz_j: float | None = None
+    #: Span fraction (0..1, measured from node_i) the load actually covers -
+    #: (0.0, 1.0), the default, is the whole member and behaves exactly as
+    #: every call site before these two fields existed. A constant
+    #: (wx == wx_j etc.) load confined to a sub-range maps directly onto
+    #: OpenSeesPy's own native ``eleLoad -beamUniform``'s trailing xL1/xL2
+    #: arguments - no sub-element splitting needed, unlike a linearly-varying
+    #: (wx != wx_j) load, which OpenSees still has no native form for
+    #: (see solver.py's trapezoid sub-element discretization) and which this
+    #: field does not attempt to combine with a partial span.
+    xL1: float = 0.0
+    xL2: float = 1.0
     pattern_tag: int | None = None
     case_type: LoadCaseKind = LoadCaseKind.UNCLASSIFIED
 
@@ -215,6 +226,27 @@ class UniformElementLoad:
     def is_uniform(self) -> bool:
         return self.wx == self.wx_j and self.wy == self.wy_j and self.wz == self.wz_j
 
+    @property
+    def is_full_span(self) -> bool:
+        return self.xL1 == 0.0 and self.xL2 == 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class PointElementLoad:
+    """A concentrated force at a single station along a member's local axes -
+    OpenSeesPy's native ``eleLoad -type -beamPoint`` (confirmed to exist and
+    work in the installed openseespy 3.8.0.0), unlike a concentrated moment,
+    which has no native eleLoad type at all (see solver.py's own handling of
+    ``member_moment``, which never creates one of these)."""
+
+    element_tag: int
+    position: float = 0.5
+    py: float = 0.0
+    pz: float = 0.0
+    n: float = 0.0
+    pattern_tag: int | None = None
+    case_type: LoadCaseKind = LoadCaseKind.UNCLASSIFIED
+
 
 @dataclass(slots=True)
 class StructuralModel:
@@ -225,6 +257,11 @@ class StructuralModel:
     boundaries: list[BoundaryCondition] = field(default_factory=list)
     nodal_loads: list[NodalLoad] = field(default_factory=list)
     element_loads: list[UniformElementLoad] = field(default_factory=list)
+    #: Concentrated (point) member loads - absent ([]) for every model built
+    #: before this field existed, same convention as every other list field
+    #: here. A concentrated moment never appears here (see PointElementLoad's
+    #: own docstring) - it is expressed as an extra node + NodalLoad instead.
+    point_loads: list[PointElementLoad] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
     #: Every ``ops.geomTransf(...)`` call collected from the model, keyed by
     #: tag - absent (``{}``) for models imported before this field existed

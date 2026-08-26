@@ -1095,13 +1095,18 @@ def test_2d_editor_and_selection_panels_are_independent_fixed_width_columns() ->
     page.show()
     QApplication.processEvents()
 
+    # Model keeps the contextual editor closed. Opening any authoring tab
+    # reveals the same 320 px left dock used by the 3D workbench.
+    page.workbench_buttons["node"].click()
+    QApplication.processEvents()
+
     editor = page._editor_scroll
     status = page.findChild(QScrollArea, "modelingSelectionInspector")
 
     assert isinstance(editor, QScrollArea)
     assert isinstance(status, QScrollArea)
     assert editor is not status
-    assert editor.width() == 300
+    assert editor.width() == 320
     assert status.width() == 320
     assert editor.verticalScrollBar() is not status.verticalScrollBar()
     assert status.widget() is page.selection_status_panel

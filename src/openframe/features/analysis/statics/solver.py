@@ -22,7 +22,9 @@ from openframe.core.domain.results import (
     AnalysisResult,
     AnalysisStatus,
     ElementResult,
+    LoadDisplacementPoint,
     NodeResult,
+    NonlinearConvergence,
 )
 
 # Ground node and zero-length element tags for inclined supports are offset well
@@ -77,6 +79,18 @@ _HINGE_STIFFNESS = 1.0e8
 # offset instead of one shared tag. Kept clear of every other dummy-tag range
 # above.
 _SPRING_TAG_OFFSET = 9_500_000
+
+# A lumped-plasticity (pushover) hinge reuses the exact same duplicate-node +
+# zeroLength technique as an ordinary moment release (_build_hinge) - rigid in
+# translation/torsion (dofs 1-4, the same _HINGE_MATERIAL_TAG) but, unlike a
+# release, dofs 5/6 (local My/Mz bending) get a real Steel01 moment-rotation
+# material instead of being left unassigned (= perfectly free) - so this needs
+# its own node/material tag ranges, kept clear of _HINGE_NODE_TAG_OFFSET's own
+# range (a given element end only ever gets one or the other - see _build's
+# "elif" between the two - but a distinct range avoids ever having to prove
+# that if the two features' scopes drift apart later).
+_PLASTIC_HINGE_NODE_TAG_OFFSET = 8_600_000
+_PLASTIC_HINGE_MATERIAL_TAG_OFFSET = 8_700_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,6 +259,151 @@ class MaterialFreeStaticsSolver:
         finally:
             ops.wipe()
 
+    def solve_nonlinear_static(
+        self,
+        model: StructuralModel,
+        *,
+        control_node: int,
+        control_dof: int = 1,
+        num_steps: int = 10,
+        tolerance: float = 1.0e-6,
+        max_iterations: int = 25,
+        integrator_type: str = "LoadControl",
+    ) -> AnalysisResult:
+        """3D lumped-plasticity pushover: every beam-column element carrying a
+        yield strength and a plastic section modulus (see
+        ``apply_full_section_to_selection``'s "Fy"/"Zy"/"Zz" - only ever set
+        for Rectangle/Circle/Pipe/Box/H-I Section, never Channel/Angle/
+        Database/User Defined, see ``SectionProperties``) gets a Steel01
+        moment-rotation hinge at both ends (``_build_plastic_hinge``); every
+        other member stays purely elastic. This is intentionally the
+        simplest real form of material nonlinearity, not full-spectrum
+        fibre-section plasticity or concrete/RC support - see the feature
+        audit that scoped it this way.
+
+        Only ``integrator_type="LoadControl"`` (the settings dialog's own
+        default) actually runs - Displacement Control and Arc-Length are
+        collected by that dialog for a future step but have no target
+        displacement/arc-length-radius field yet to drive them correctly, so
+        this refuses rather than silently running the wrong increment shape.
+        Pushes the model's own currently-defined loads to full scale (load
+        factor 1.0) over ``num_steps`` Newton-Raphson increments, stopping
+        early (without discarding the steps already converged) the moment
+        one fails - typically because a hinge has driven the frame into a
+        collapse mechanism.
+        """
+        if model.ndm != 3:
+            return AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=["비선형 정적(Pushover) 해석은 현재 3D 모델만 지원합니다."],
+            )
+        if integrator_type != "LoadControl":
+            return AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=[
+                    f"{integrator_type} 적분법은 아직 실행에 연결되지 않았습니다 - "
+                    "Load Control을 사용하세요."
+                ],
+            )
+        check = check_determinacy(model)
+        if check.system != "frame":
+            return AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=[check.message, "비선형 정적 해석은 골조(프레임) 모델만 지원합니다."],
+            )
+        if not self._has_material_everywhere(model, "frame", 3):
+            return AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=["모든 부재에 실제 재료·단면(E/A/G/J/Iy/Iz)이 필요합니다."],
+            )
+        ops.wipe()
+        try:
+            self._build(model, "frame", None, "Linear", material_nonlinearity=True)
+            self._apply_loads(model, "frame")
+            messages, curve, convergence = self._analyze_nonlinear_static(
+                control_node,
+                control_dof,
+                num_steps,
+                tolerance,
+                max_iterations,
+                has_multipoint_constraints=bool(model.rigid_diaphragms),
+            )
+            result = self._collect(
+                model, "frame", "비선형 정적(Pushover) 해석 결과입니다 (마지막으로 수렴한 스텝).", None
+            )
+            if not any(
+                MaterialFreeStaticsSolver._plastic_hinge_capacities(element) is not None
+                for element in model.elements.values()
+            ):
+                messages.append(
+                    "항복강도(fy)가 설정된 강재 부재가 없어 전 구간 탄성으로 거동했습니다."
+                )
+            return AnalysisResult(
+                status=result.status,
+                node_results=result.node_results,
+                element_results=result.element_results,
+                messages=[*result.messages, *messages],
+                load_displacement_curve=curve,
+                convergence=convergence,
+            )
+        except (RuntimeError, ValueError, ops.OpenSeesError) as error:
+            return AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=[f"비선형 정적 해석에 실패했습니다: {error}"],
+            )
+        finally:
+            ops.wipe()
+
+    @staticmethod
+    def _analyze_nonlinear_static(
+        control_node: int,
+        control_dof: int,
+        num_steps: int,
+        tolerance: float,
+        max_iterations: int,
+        *,
+        has_multipoint_constraints: bool = False,
+    ) -> tuple[list[str], tuple[LoadDisplacementPoint, ...], NonlinearConvergence]:
+        ops.system("BandGeneral")
+        ops.numberer("RCM")
+        ops.constraints("Transformation" if has_multipoint_constraints else "Plain")
+        ops.test("NormDispIncr", tolerance, max_iterations)
+        ops.algorithm("Newton")
+        ops.integrator("LoadControl", 1.0 / num_steps)
+        ops.analysis("Static")
+        fixed_nodes = [int(tag) for tag in ops.getFixedNodes()]
+        messages: list[str] = []
+        points: list[LoadDisplacementPoint] = []
+        completed_steps = 0
+        failed_step: int | None = None
+        for step in range(1, num_steps + 1):
+            if ops.analyze(1) != 0:
+                failed_step = step
+                messages.append(
+                    f"스텝 {step}/{num_steps}에서 수렴하지 않았습니다 - 힌지가 붕괴 메커니즘에 "
+                    "도달했거나 하중이 구조의 소성 강도를 초과했을 수 있습니다."
+                )
+                break
+            completed_steps = step
+            ops.reactions()
+            # Reactions oppose the applied load - flipped so base shear grows
+            # positive with the push, matching the script-based pushover
+            # engine's own convention (infrastructure/opensees/
+            # nonlinear_static_solver.py's _base_shear).
+            base_shear = -sum(
+                float(ops.nodeReaction(tag)[control_dof - 1])
+                for tag in fixed_nodes
+                if len(ops.nodeReaction(tag)) >= control_dof
+            )
+            control_disp = float(ops.nodeDisp(control_node, control_dof))
+            points.append(LoadDisplacementPoint(step, control_disp, base_shear))
+        if completed_steps == 0:
+            raise RuntimeError("첫 스텝부터 수렴하지 않았습니다 - 모델과 하중을 확인하세요.")
+        convergence = NonlinearConvergence(
+            requested_steps=num_steps, completed_steps=completed_steps, failed_step=failed_step
+        )
+        return messages, tuple(points), convergence
+
     @staticmethod
     def _element_material(element: Element) -> tuple[float, float, float] | None:
         """(E, A, I) from ``element.properties``, or ``None`` if any of the
@@ -328,6 +487,7 @@ class MaterialFreeStaticsSolver:
         system: str,
         material: tuple[float, float, float] | None = None,
         geometric_nonlinearity: str = "Linear",
+        material_nonlinearity: bool = False,
     ) -> None:
         ndm = model.ndm
         ndf = (2 if system == "truss" else 3) if ndm == 2 else (3 if system == "truss" else 6)
@@ -394,7 +554,17 @@ class MaterialFreeStaticsSolver:
                 ops.element(*arguments)
             return
 
-        if any(element.release_count for element in model.elements.values()):
+        plastic_hinge_capacities = (
+            {
+                tag: capacities
+                for tag, element in model.elements.items()
+                if (capacities := MaterialFreeStaticsSolver._plastic_hinge_capacities(element))
+                is not None
+            }
+            if material_nonlinearity
+            else {}
+        )
+        if any(element.release_count for element in model.elements.values()) or plastic_hinge_capacities:
             ops.uniaxialMaterial("Elastic", _HINGE_MATERIAL_TAG, _HINGE_STIFFNESS)
             # A node where every touching element releases there (a true shared
             # hinge - see _hinge_condition_equations) ends up with no element or
@@ -422,13 +592,24 @@ class MaterialFreeStaticsSolver:
             ops.geomTransf("Linear", transf_tag, *transf_args)
             end_i_tag = element.node_i
             end_j_tag = element.node_j
+            hinge_capacities = plastic_hinge_capacities.get(element.tag)
             if element.moment_release_i:
                 end_i_tag = MaterialFreeStaticsSolver._build_hinge(
                     element.tag, "i", node_i, node_j
                 )
+            elif hinge_capacities is not None:
+                my_capacity, mz_capacity, hardening_ratio = hinge_capacities
+                end_i_tag = MaterialFreeStaticsSolver._build_plastic_hinge(
+                    element.tag, "i", node_i, node_j, my_capacity, mz_capacity, hardening_ratio
+                )
             if element.moment_release_j:
                 end_j_tag = MaterialFreeStaticsSolver._build_hinge(
                     element.tag, "j", node_i, node_j
+                )
+            elif hinge_capacities is not None:
+                my_capacity, mz_capacity, hardening_ratio = hinge_capacities
+                end_j_tag = MaterialFreeStaticsSolver._build_plastic_hinge(
+                    element.tag, "j", node_i, node_j, my_capacity, mz_capacity, hardening_ratio
                 )
             elastic, area, shear, torsion, inertia_y, inertia_z = (
                 MaterialFreeStaticsSolver._resolve_material_3d(element)
@@ -489,6 +670,91 @@ class MaterialFreeStaticsSolver:
             2,
             3,
             4,
+            "-orient",
+            *vector_x,
+            *vector_y,
+        )
+        return dummy_tag
+
+    @staticmethod
+    def _plastic_hinge_node_tag(element_tag: int, end: str) -> int:
+        return _PLASTIC_HINGE_NODE_TAG_OFFSET + element_tag * 10 + (0 if end == "i" else 1)
+
+    @staticmethod
+    def _plastic_hinge_material_tags(element_tag: int, end: str) -> tuple[int, int]:
+        base = _PLASTIC_HINGE_MATERIAL_TAG_OFFSET + (element_tag * 10 + (0 if end == "i" else 1)) * 2
+        return base, base + 1
+
+    @staticmethod
+    def _plastic_hinge_capacities(element: Element) -> tuple[float, float, float] | None:
+        """(My capacity, Mz capacity, strain-hardening ratio) for a lumped-
+        plasticity hinge, or ``None`` when this element cannot get one -
+        missing/non-positive yield strength, or a section with no plastic
+        modulus recorded (Channel/Angle, Database, User Defined - see
+        ``SectionProperties``' own docstring and
+        ``apply_full_section_to_selection``'s "Fy"/"Zy"/"Zz" keys). Every
+        element without a hinge here just keeps its ordinary elastic
+        ``elasticBeamColumn`` behaviour, unchanged."""
+        try:
+            fy = float(element.properties["Fy"])
+            zy = float(element.properties["Zy"])
+            zz = float(element.properties["Zz"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if fy <= 0.0 or zy <= 0.0 or zz <= 0.0:
+            return None
+        hardening_ratio = float(element.properties.get("StrainHardeningRatio", 0.02))
+        return fy * zy, fy * zz, hardening_ratio
+
+    @staticmethod
+    def _build_plastic_hinge(
+        element_tag: int,
+        end: str,
+        node_i,
+        node_j,
+        my_capacity: float,
+        mz_capacity: float,
+        hardening_ratio: float,
+    ) -> int:
+        """Same duplicate-node + zeroLength construction as ``_build_hinge``,
+        except local bending dofs 5 (My) and 6 (Mz) get a real ``Steel01``
+        moment-rotation material (``Fy=capacity``, ``E0=_HINGE_STIFFNESS`` so
+        the hinge stays effectively rigid - all the pre-yield flexibility
+        comes from the elastic beam-column itself - ``b=hardening_ratio``)
+        instead of being left unassigned. This is the whole of this
+        solver's "material nonlinearity": a concentrated plastic hinge at
+        each end of a qualifying steel member, not a fibre section - see the
+        feature's own scoping note in solve_nonlinear_static's docstring.
+        """
+        real_node = node_i if end == "i" else node_j
+        dummy_tag = MaterialFreeStaticsSolver._plastic_hinge_node_tag(element_tag, end)
+        ops.node(dummy_tag, real_node.x, real_node.y, real_node.z)
+        vector_x, vector_y = _hinge_local_axes(node_i, node_j)
+        real_tag = node_i.tag if end == "i" else node_j.tag
+        my_material_tag, mz_material_tag = MaterialFreeStaticsSolver._plastic_hinge_material_tags(
+            element_tag, end
+        )
+        ops.uniaxialMaterial("Steel01", my_material_tag, my_capacity, _HINGE_STIFFNESS, hardening_ratio)
+        ops.uniaxialMaterial("Steel01", mz_material_tag, mz_capacity, _HINGE_STIFFNESS, hardening_ratio)
+        ops.element(
+            "zeroLength",
+            dummy_tag,
+            real_tag,
+            dummy_tag,
+            "-mat",
+            _HINGE_MATERIAL_TAG,
+            _HINGE_MATERIAL_TAG,
+            _HINGE_MATERIAL_TAG,
+            _HINGE_MATERIAL_TAG,
+            my_material_tag,
+            mz_material_tag,
+            "-dir",
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
             "-orient",
             *vector_x,
             *vector_y,

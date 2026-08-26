@@ -1090,6 +1090,53 @@ QFrame#modelingPropertyPanel { background: #e4e9f0; }
 QFrame#propertySectionCard {
     background: #ffffff; border: 1px solid #c9d3e0; border-radius: 8px;
 }
+QFrame#loadCommandBar {
+    background: #e9edf2;
+    border: 1px solid #c4cdd8;
+    border-radius: 3px;
+}
+QFrame#loadCommandBar QComboBox {
+    min-height: 28px; max-height: 28px;
+    background: #ffffff;
+}
+QFrame#loadGroupCard, QFrame#loadSettingsCard {
+    background: #ffffff;
+    border: 1px solid #c9d2dd;
+    border-radius: 3px;
+}
+QLabel#loadGroupTitle {
+    color: #24384f;
+    font-size: 8pt;
+    font-weight: 700;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #e1e6ec;
+}
+QPushButton#loadEllipsisButton {
+    min-width: 28px; max-width: 28px;
+    min-height: 27px; max-height: 27px;
+    padding: 0;
+    font-weight: 700;
+}
+QLabel#loadDiagramPanel {
+    min-height: 92px;
+    background: #fafbfc;
+    border: 1px solid #d8e0e8;
+    border-radius: 2px;
+}
+QToolButton#loadCategoryTab {
+    min-height: 24px;
+    padding: 3px 5px;
+    border: 1px solid #cfd8e3;
+    border-radius: 3px;
+    background: #ffffff;
+    color: #415269;
+    font-size: 7pt;
+    font-weight: 600;
+}
+QToolButton#loadCategoryTab:hover { color: #174ea6; background: #f1f5fb; }
+QToolButton#loadCategoryTab:checked {
+    color: #ffffff; background: #174ea6; border-color: #174ea6;
+}
 QLabel#setupSectionTitle {
     color: #213953; font-size: 10pt; font-weight: 700;
 }

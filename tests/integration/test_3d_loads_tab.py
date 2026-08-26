@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from openframe.app.shell.theme import apply_application_theme
 from openframe.core.domain import LoadCaseKind, NodalLoadEntry
 from openframe.features.model.presentation.load_combination_manager_dialog import (
     LoadCombinationManagerDialog,
@@ -14,7 +15,10 @@ from openframe.features.model.presentation.modeling_interface_page import Modeli
 
 
 def _page() -> ModelingInterfacePage:
-    QApplication.instance() or QApplication([])
+    application = QApplication.instance() or QApplication([])
+    if not application.property("openframeThemeApplied"):
+        apply_application_theme(application)
+        application.setProperty("openframeThemeApplied", True)
     page = ModelingInterfacePage(start_in_3d=True)
     page.resize(1400, 900)
     page.show()
@@ -112,6 +116,33 @@ def test_member_partial_load_keeps_its_own_start_and_end_position() -> None:
     assert (entry.payload.start_position, entry.payload.end_position) == (0.25, 0.75)
 
 
+def test_shared_operation_mode_also_controls_case_based_member_loads() -> None:
+    page = _page()
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    member = page.canvas.add_member(a, b)
+    page.canvas.selected_elements = {member}
+    page.canvas.selection_changed.emit()
+    page.canvas.add_load_case("LL_OFFICE")
+    page._activate_load_tool()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("member_partial"))
+
+    page.load3d_member_start_value.setValue(-1.0)
+    page.load3d_apply_button.click()
+    page.load3d_member_start_value.setValue(-2.0)
+    page.load3d_apply_button.click()
+    assert len(page.canvas.load_entries) == 1
+    assert next(iter(page.canvas.load_entries.values())).payload.start_value == -2.0
+
+    page.load_apply_mode_buttons["add"].setChecked(True)
+    page.load3d_apply_button.click()
+    assert len(page.canvas.load_entries) == 2
+
+    page.load_apply_mode_buttons["delete"].setChecked(True)
+    page.load3d_apply_button.click()
+    assert page.canvas.load_entries == {}
+
+
 def test_clicking_a_tree_leaf_shows_its_properties_in_selection_status() -> None:
     page = _page()
     node = page.canvas.add_node(0.0, 0.0)
@@ -207,9 +238,8 @@ def test_display_mode_combination_disables_the_apply_button() -> None:
 
 def test_combination_button_lives_in_the_left_panel_not_the_top_task_bar() -> None:
     """Relocated on user request: the Combination picker/manager button used
-    to sit in the top load task bar next to Display - it now lives at the
-    top of the left Loads panel (_build_3d_load_manager_content), with only
-    Load Case/Display staying in the top bar."""
+    to sit in the top load task bar next to Display. Management and active
+    Load Case now live in the left editor; the canvas row is display-only."""
     page = _page()
     page._activate_load_tool()
 
@@ -217,10 +247,11 @@ def test_combination_button_lives_in_the_left_panel_not_the_top_task_bar() -> No
     assert page.load_combination_combo.parentWidget() is not None
     # The top bar no longer owns a "조합 관리" button - only the left panel's
     # combination editor button does.
-    from PySide6.QtWidgets import QPushButton
+    from PySide6.QtWidgets import QComboBox, QPushButton
 
     assert not any(button.text() == "조합 관리" for button in page.findChildren(QPushButton))
     assert any(button.text() == "편집" for button in page.findChildren(QPushButton))
+    assert page.load_case_combo not in page.load_task_bar.findChildren(QComboBox)
 
 
 def test_loads_uses_one_command_picker_and_shows_only_the_selected_command_form() -> None:
@@ -242,9 +273,25 @@ def test_loads_uses_one_command_picker_and_shows_only_the_selected_command_form(
 def test_load_manager_uses_width_safe_comboboxes_instead_of_clipped_button_rows() -> None:
     page = _page()
     page._activate_load_tool()
-    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("member_partial"))
+    for key in (
+        "self_weight",
+        "nodal",
+        "member_point",
+        "member_uniform",
+        "member_linear",
+        "member_partial",
+        "member_moment",
+        "floor",
+        "load_cases",
+        "wind",
+        "seismic",
+        "load_combinations",
+        "make_combination",
+    ):
+        page.load_command_combo.setCurrentIndex(page.load_command_combo.findData(key))
+        assert page.category_stack.sizeHint().width() <= page.left_panel_stack.width() - 24
 
-    assert page.category_stack.sizeHint().width() <= page.left_panel_stack.width()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("member_partial"))
     assert page.load3d_member_subtype_combo.isVisible()
 
 
@@ -264,18 +311,28 @@ def test_switching_to_3d_quick_entry_does_not_leave_duplicate_form_labels_visibl
 
 
 def test_properties_style_selector_keeps_load_command_hierarchy_in_each_label() -> None:
+    """One MIDAS-style picker carries both hierarchy and command."""
     page = _page()
-    labels = [page.load_command_combo.itemText(i) for i in range(page.load_command_combo.count())]
+    commands = [
+        (page.load_command_combo.itemData(i), page.load_command_combo.itemText(i))
+        for i in range(page.load_command_combo.count())
+        if page.load_command_combo.itemData(i) is not None
+    ]
 
-    assert [label for label in labels if label.startswith("[정적] ")] == [
-        "[정적] Self Weight",
-        "[정적] Nodal Load",
-        "[정적] Mem Point",
-        "[정적] Mem Uniform",
-        "[정적] Mem Linear",
-        "[정적] Mem Partial",
-        "[정적] Mem Moment",
-        "[정적] Floor Load",
+    assert commands == [
+        ("load_cases", "[정의] 하중케이스"),
+        ("self_weight", "[직접 하중] 자중"),
+        ("nodal", "[직접 하중] 절점하중"),
+        ("member_point", "[직접 하중] 부재 집중하중"),
+        ("member_uniform", "[직접 하중] 부재 균등분포하중"),
+        ("member_linear", "[직접 하중] 부재 선형분포하중"),
+        ("member_partial", "[직접 하중] 부재 부분분포하중"),
+        ("member_moment", "[직접 하중] 부재 집중모멘트"),
+        ("floor", "[직접 하중] 바닥하중 할당"),
+        ("wind", "[자동 생성] 풍하중"),
+        ("seismic", "[자동 생성] 정적 지진하중"),
+        ("load_combinations", "[하중 조합] 하중조합"),
+        ("make_combination", "[하중 조합] 조합으로 케이스 생성"),
     ]
 
 
@@ -356,3 +413,179 @@ def test_saving_a_combination_in_the_dialog_populates_the_combo_and_work_tree() 
     page.load_display_combo.setCurrentIndex(case_index)
     assert not page.load_readonly_hint.isVisible()
     assert page.load3d_apply_button.isEnabled()
+
+
+def test_right_panel_shows_load_inspector_only_while_loads_tab_is_active() -> None:
+    """Requirement: Work Tree/Selection Status stay as-is for every other
+    workbench tab, and only swap for the Load Inspector while Loads is
+    active - see _build_3d_selection_panel/_activate_workbench_tab."""
+    page = _page()
+
+    page._activate_workbench_tab("loads")
+    assert page.right_panel_stack.currentIndex() == page.right_panel_pages["load_inspector"]
+
+    page._activate_workbench_tab("node")
+    assert page.right_panel_stack.currentIndex() == page.right_panel_pages["default"]
+
+    page._activate_workbench_tab("loads")
+    assert page.right_panel_stack.currentIndex() == page.right_panel_pages["load_inspector"]
+
+
+def test_load_inspector_tree_selects_the_same_entry_as_the_work_tree() -> None:
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+    page.canvas.add_load_case("LL_OFFICE", kind=LoadCaseKind.LIVE)
+    page._activate_load_tool()
+    page.load3d_nodal_fields["fz"].setValue(-10.0)
+    page.load3d_apply_button.click()
+    entry_id = next(iter(page.canvas.load_entries))
+
+    leaf = page._load_inspector_case_items["LL_OFFICE"].child(0).child(0)
+    page._on_work_tree_item_clicked(leaf, 0)
+
+    assert page._selected_load_id == entry_id
+    labels = [
+        label.text()
+        for label in page.load_inspector_status_panel.findChildren(type(page.selection_summary))
+    ]
+    assert any("NL-001" in text for text in labels)
+
+
+def test_load_inspector_context_menu_edit_lands_on_direct_loads_category() -> None:
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+    page.canvas.add_load_case("LL_OFFICE")
+    page._activate_load_tool()
+    page.load3d_apply_button.click()
+    entry_id = next(iter(page.canvas.load_entries))
+
+    page.load_command_combo.setCurrentIndex(
+        page.load_command_combo.findData("load_combinations")
+    )
+    assert page.load_category_stack.currentIndex() == page.load_category_pages["combinations"]
+
+    page._edit_load_entry(entry_id)
+
+    assert page.load_command_combo.currentData() == "nodal"
+    assert page.load_category_stack.currentIndex() == page.load_category_pages["direct"]
+
+
+def test_generators_category_only_shows_placeholders() -> None:
+    page = _page()
+    page._activate_load_tool()
+
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("wind"))
+    assert page.load_category_stack.currentIndex() == page.load_category_pages["generators"]
+    assert [
+        page.load_generators_subnav_combo.itemText(i)
+        for i in range(page.load_generators_subnav_combo.count())
+    ] == ["Wind Load", "Static Seismic Load"]
+
+    entries_before = dict(page.canvas.load_entries)
+    page.load_generators_subnav_combo.setCurrentIndex(
+        page.load_generators_subnav_combo.findData("seismic")
+    )
+    assert page.canvas.load_entries == entries_before
+
+
+def test_definitions_and_combinations_categories_reach_existing_pages() -> None:
+    page = _page()
+    page._activate_load_tool()
+
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("load_cases"))
+    assert page.load_category_stack.currentIndex() == page.load_category_pages["definitions"]
+
+    page.load_command_combo.setCurrentIndex(
+        page.load_command_combo.findData("load_combinations")
+    )
+    assert page.load_category_stack.currentIndex() == page.load_category_pages["combinations"]
+    assert page.load_combinations_stack.currentIndex() == page.load_combinations_pages["load_combinations"]
+
+    page.load_combinations_subnav_combo.setCurrentIndex(
+        page.load_combinations_subnav_combo.findData("make_combination")
+    )
+    assert page.load_combinations_stack.currentIndex() == page.load_combinations_pages["make_combination"]
+
+
+def test_add_mode_sums_onto_the_existing_nodal_load() -> None:
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+    page.canvas.add_load_case("LL_OFFICE")
+    page._activate_load_tool()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("nodal"))
+
+    page.load_fields["fz"].setValue(-10.0)
+    page.load_apply_button.click()
+    assert page.canvas.nodal_loads[node].values[2] == -10.0
+
+    page.load_apply_mode_buttons["add"].setChecked(True)
+    page.load_fields["fz"].setValue(-5.0)
+    page.load_apply_button.click()
+
+    assert page.canvas.nodal_loads[node].values[2] == -15.0
+
+
+def test_replace_mode_is_the_default_and_overwrites() -> None:
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+    page._activate_load_tool()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("nodal"))
+
+    assert page.load_apply_mode_buttons["replace"].isChecked()
+    page.load_fields["fz"].setValue(-10.0)
+    page.load_apply_button.click()
+    page.load_fields["fz"].setValue(-3.0)
+    page.load_apply_button.click()
+
+    assert page.canvas.nodal_loads[node].values[2] == -3.0
+
+
+def test_delete_mode_clears_both_the_solver_load_and_its_tree_entry() -> None:
+    page = _page()
+    node = page.canvas.add_node(0.0, 0.0)
+    page.canvas.selected_nodes = {node}
+    page.canvas.selection_changed.emit()
+    page.canvas.add_load_case("LL_OFFICE")
+    page._activate_load_tool()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("nodal"))
+    page.load_fields["fz"].setValue(-10.0)
+    page.load_apply_button.click()
+    assert node in page.canvas.nodal_loads
+    entries_before = len(page.canvas.load_entries)
+
+    page.load_apply_mode_buttons["delete"].setChecked(True)
+    assert not page.load_fields["fz"].isEnabled()
+    page.load_apply_button.click()
+
+    assert node not in page.canvas.nodal_loads
+    assert entries_before == 1
+    assert len(page.canvas.load_entries) == 0
+
+
+def test_diagram_swaps_between_nodal_and_uniform_targets() -> None:
+    page = _page()
+    page._activate_load_tool()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("nodal"))
+    nodal_pixmap = page.load_diagram_label.pixmap()
+    assert nodal_pixmap is not None and not nodal_pixmap.isNull()
+
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("member_uniform"))
+    uniform_pixmap = page.load_diagram_label.pixmap()
+    assert uniform_pixmap is not None and not uniform_pixmap.isNull()
+    assert uniform_pixmap.toImage() != nodal_pixmap.toImage()
+
+
+def test_load_case_name_label_tracks_the_active_case() -> None:
+    page = _page()
+    page.canvas.add_load_case("LL_OFFICE", kind=LoadCaseKind.LIVE)
+    page._activate_load_tool()
+
+    assert page.load_case_combo.currentText() == "LL_OFFICE"

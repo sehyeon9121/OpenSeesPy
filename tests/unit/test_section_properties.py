@@ -163,3 +163,64 @@ def test_compute_section_properties_rejects_an_unknown_shape() -> None:
 def test_compute_section_properties_reports_a_missing_dimension() -> None:
     with pytest.raises(SectionDimensionError, match="치수"):
         compute_section_properties("Rectangle", {"b": 300.0})
+
+
+# -- Plastic section modulus (Zy/Zz) - lumped-plasticity hinge capacities
+# (Mp = Fy * Z), see SectionProperties' own docstring for which shapes get
+# these and why Channel/Angle deliberately do not (yet).
+
+
+def test_rectangle_plastic_modulus_matches_the_textbook_bh2_over_4_formula() -> None:
+    result = rectangle_properties(200.0, 400.0)
+    assert result.Zy_mm3 == pytest.approx(200.0 * 400.0**2 / 4.0)
+    assert result.Zz_mm3 == pytest.approx(400.0 * 200.0**2 / 4.0)
+
+
+def test_circle_plastic_modulus_matches_the_textbook_d3_over_6_formula() -> None:
+    result = circle_properties(300.0)
+    assert result.Zy_mm3 == pytest.approx(300.0**3 / 6.0)
+    assert result.Zz_mm3 == result.Zy_mm3
+
+
+def test_pipe_plastic_modulus_matches_the_annulus_do3_minus_di3_over_6_formula() -> None:
+    result = pipe_properties(300.0, 10.0)
+    outer, inner = 300.0, 300.0 - 2.0 * 10.0
+    assert result.Zy_mm3 == pytest.approx((outer**3 - inner**3) / 6.0)
+    assert result.Zz_mm3 == result.Zy_mm3
+
+
+def test_box_plastic_modulus_is_the_outer_minus_inner_solid_rectangle() -> None:
+    result = box_properties(300.0, 200.0, 10.0)
+    inner_h, inner_b = 300.0 - 20.0, 200.0 - 20.0
+    assert result.Zy_mm3 == pytest.approx((200.0 * 300.0**2 - inner_b * inner_h**2) / 4.0)
+    assert result.Zz_mm3 == pytest.approx((300.0 * 200.0**2 - inner_h * inner_b**2) / 4.0)
+
+
+def test_h_section_plastic_modulus_matches_the_aisc_zx_zy_formulas() -> None:
+    """Cross-checked against a real rolled shape (AISC W10x33: d=9.73in,
+    bf=7.965in, tf=0.435in, tw=0.29in, published Zx=38.8 in^3) - this
+    idealised flat-plate formula gives 37.9 in^3, ~2% low, the expected size
+    of error from ignoring the web-flange fillet a real rolled section has
+    (the same idealisation this module's Iy/Iz already use)."""
+    H, B, tw, tf = 400.0, 200.0, 10.0, 16.0
+    result = h_section_properties(H, B, tw, tf)
+    web_height = H - 2.0 * tf
+    assert result.Zy_mm3 == pytest.approx(B * tf * (H - tf) + tw * web_height**2 / 4.0)
+    assert result.Zz_mm3 == pytest.approx((B**2 * tf) / 2.0 + (web_height * tw**2) / 4.0)
+
+
+def test_channel_gets_the_same_strong_axis_plastic_modulus_as_an_h_section() -> None:
+    """Symmetric top-to-bottom (see channel_properties' own docstring) - the
+    weak axis needs the asymmetric equal-area plastic neutral axis, not yet
+    derived, so it stays None rather than guess."""
+    H, B, tw, tf = 400.0, 200.0, 10.0, 16.0
+    channel = channel_properties(H, B, tw, tf)
+    h_section = h_section_properties(H, B, tw, tf)
+    assert channel.Zy_mm3 == pytest.approx(h_section.Zy_mm3)
+    assert channel.Zz_mm3 is None
+
+
+def test_angle_has_no_plastic_modulus_yet_on_either_axis() -> None:
+    result = angle_properties(100.0, 100.0, 10.0)
+    assert result.Zy_mm3 is None
+    assert result.Zz_mm3 is None

@@ -68,3 +68,41 @@ class ModalSolveThread(QThread):
                 messages=[f"예상하지 못한 해석 오류: {error}"],
             )
         self.completed.emit(result)
+
+
+class NonlinearStaticSolveThread(QThread):
+    completed = Signal(object)
+
+    def __init__(
+        self,
+        solver: MaterialFreeStaticsSolver,
+        model: StructuralModel,
+        *,
+        control_node: int,
+        control_dof: int,
+        num_steps: int,
+        tolerance: float,
+        max_iterations: int,
+        integrator_type: str,
+    ) -> None:
+        super().__init__()
+        self._solver = solver
+        self._model = model
+        self._options = {
+            "control_node": control_node,
+            "control_dof": control_dof,
+            "num_steps": num_steps,
+            "tolerance": tolerance,
+            "max_iterations": max_iterations,
+            "integrator_type": integrator_type,
+        }
+
+    def run(self) -> None:
+        try:
+            result = self._solver.solve_nonlinear_static(self._model, **self._options)
+        except Exception as error:  # noqa: BLE001 - never crash the GUI event loop.
+            result = AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=[f"예상하지 못한 해석 오류: {error}"],
+            )
+        self.completed.emit(result)

@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from _solve_helpers import solve_and_wait
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QFrame, QPushButton
+from PySide6.QtWidgets import QApplication, QFrame
 
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
@@ -67,22 +67,50 @@ def test_direct_2d_workspace_uses_the_compact_modeling_and_result_shell() -> Non
     assert page.header_controls_stack.currentIndex() == 0
 
 
-def test_2d_category_bar_absorbed_the_old_tool_rails_buttons() -> None:
-    """선택/그리기 and the UNDO/REDO/DELETE/FIT commands moved from their own
-    72px rail onto this same bar's leading and trailing edges, and the
-    rail's duplicate 지점/속성/하중 shortcuts were dropped entirely - the
-    bar's own 지점/부재/하중 category buttons already do the same thing."""
+def test_2d_uses_the_same_workbench_navigation_as_3d() -> None:
+    """2D shares the 3D shell while each tab keeps its own 2D page."""
     page = _page()
-    bar = page.findChild(QFrame, "direct2DCanvasToolbar")
+    assert page.findChild(QFrame, "direct2DCanvasToolbar") is None
+    assert page.findChild(QFrame, "modelingWorkbenchBar") is not None
+    assert list(page.workbench_buttons) == [
+        "model",
+        "node",
+        "properties",
+        "element",
+        "boundary",
+        "loads",
+        "analysis",
+        "results",
+    ]
+    page.workbench_buttons["node"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["add"]
+    assert page.node_subcategory_row.isVisible()
+    assert page.left_panel_stack.isVisible()
+    assert page.left_panel_stack.width() == 320
 
-    assert bar is not None
-    assert page.select_tool.parent() is bar
-    assert page.draw_tool.parent() is bar
-    command_labels = {
-        button.text()
-        for button in bar.findChildren(QPushButton, "railCommandButton")
-    }
-    assert command_labels == {"UNDO", "REDO", "DELETE", "FIT"}
+    page.workbench_buttons["properties"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["member"]
+
+    page.workbench_buttons["element"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["element_picker"]
+    assert page.element_subcategory_row.isVisible()
+    assert page.canvas.mode == "draw"
+
+    page.workbench_buttons["boundary"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["support"]
+    assert page.selection_filter.currentData() == "nodes"
+
+    page.workbench_buttons["loads"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["load"]
+    assert hasattr(page, "load_target_group")
+    assert not hasattr(page, "load_command_combo")
+
+    page.workbench_buttons["analysis"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["analysis"]
+    assert page.canvas.ndm == 2
+
+    page.workbench_buttons["model"].click()
+    assert page.left_panel_stack.isHidden()
 
 
 def test_3d_workspace_hides_the_context_dock_until_a_tool_needs_it() -> None:
@@ -250,6 +278,37 @@ def test_3d_element_drawing_is_blocked_until_material_and_section_are_applied() 
     assert "물성·단면" in page.active_element_status.text()
 
 
+def test_2d_element_can_optionally_apply_saved_properties_to_new_members() -> None:
+    """The shared Element UI may enrich 2D drawing without making it mandatory."""
+    page = _page(start_in_3d=False)
+    panel = page.section_material_panel
+    panel.shape_combo.setCurrentText("Rectangle")
+    panel.source_custom.setChecked(True)
+    panel._dimension_spinboxes["b"].setValue(0.25)
+    panel._dimension_spinboxes["h"].setValue(0.4)
+    panel.material_e.setValue(210_000.0)
+    panel.material_name.setText("2D Test Material")
+    panel.section_name.setText("2D Test Section")
+    panel.material_save_button.click()
+    panel.section_save_button.click()
+
+    page.workbench_buttons["element"].click()
+    page.element_material_selector.setCurrentIndex(
+        page.element_material_selector.findData("MAT-001")
+    )
+    page.element_section_selector.setCurrentIndex(
+        page.element_section_selector.findData("SEC-001")
+    )
+
+    first = page.canvas.add_node(0.0, 0.0)
+    second = page.canvas.add_node(4.0, 0.0)
+    member = page.canvas.add_member(first, second)
+
+    assert member is not None
+    assert page.canvas.elements[member].properties["E"] == pytest.approx(210_000.0)
+    assert page.canvas.elements[member].properties["A"] == pytest.approx(0.1)
+
+
 def test_3d_properties_can_reassign_material_and_section_to_selected_members() -> None:
     page = _page(start_in_3d=True)
     first = page.canvas._add_node_at((0.0, 0.0, 0.0))
@@ -342,8 +401,8 @@ def test_3d_properties_selector_switches_which_card_is_shown() -> None:
     setupConfigBar/fieldLabel look as the Analysis tab's "ANALYSIS TYPE"
     bar) - selecting an item shows only that card's whole frame, hiding the
     other two outright (not just collapsing their body, which would leave
-    an empty bordered strip for each). 2D keeps SectionMaterialPanel's
-    original always-expanded, per-card-header layout untouched."""
+    an empty bordered strip for each). The 2D Properties tab now uses this
+    same interaction and visual hierarchy."""
     page = _page(start_in_3d=True)
     panel = page.section_material_panel
 
@@ -366,14 +425,16 @@ def test_3d_properties_selector_switches_which_card_is_shown() -> None:
     assert panel.properties_group.isHidden() is False
 
 
-def test_2d_properties_panel_has_no_selector_and_keeps_headers() -> None:
+def test_2d_properties_panel_uses_the_same_single_card_selector_as_3d() -> None:
     page = _page(start_in_3d=False)
     panel = page.section_material_panel
 
-    assert not hasattr(page, "properties_selector")
+    assert page.properties_selector.currentData() == "material"
     for group in (panel.material_group, panel.section_group, panel.properties_group):
-        assert group._header.isHidden() is False
-        assert group.isHidden() is False
+        assert group._header.isHidden()
+    assert panel.material_group.isHidden() is False
+    assert panel.section_group.isHidden()
+    assert panel.properties_group.isHidden()
 
 
 def test_3d_properties_tab_defines_and_applies_material_and_section() -> None:

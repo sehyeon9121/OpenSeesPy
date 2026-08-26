@@ -141,6 +141,13 @@ def mm4_to_length_unit(value_mm4: float, length_unit: str) -> float:
     return value_mm4 / _LENGTH_TO_MM[length_unit] ** 4
 
 
+def mm3_to_length_unit(value_mm3: float, length_unit: str) -> float:
+    """Same conversion as ``mm2_to_length_unit``/``mm4_to_length_unit``, for a
+    plastic section modulus (mm^3) - see ``section_properties.SectionProperties.
+    Zy_mm3``/``Zz_mm3``."""
+    return value_mm3 / _LENGTH_TO_MM[length_unit] ** 3
+
+
 def mpa_to_stress_unit(value_MPa: float, force_unit: str, length_unit: str) -> float:
     """A Master DB stress (MPa, i.e. N/mm^2) expressed in this model's own
     force/length^2 combination - e.g. a Database material's ``E_MPa`` shown

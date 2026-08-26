@@ -48,12 +48,24 @@ class SectionDimensionError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class SectionProperties:
-    """Computed cross-section properties, always in mm-based units."""
+    """Computed cross-section properties, always in mm-based units.
+
+    ``Zy_mm3``/``Zz_mm3`` (plastic section modulus about each bending axis,
+    for a lumped-plasticity hinge's ``Mp = Fy * Z`` - see
+    ``features.analysis.statics.solver``'s ``_build_plastic_hinge``) are only
+    populated for the five doubly-symmetric shapes (Rectangle, Circle, Pipe,
+    Box, H/I Section), where the plastic neutral axis is simply the
+    centroidal axis. Channel and Angle are singly-/non-symmetric - their
+    plastic neutral axis is the *equal-area* axis, which differs from the
+    centroid and needs its own per-shape derivation nobody has done yet, so
+    both stay ``None`` (never a wrong number) until that exists."""
 
     area_mm2: float
     Iy_mm4: float
     Iz_mm4: float
     J_mm4: float
+    Zy_mm3: float | None = None
+    Zz_mm3: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +135,12 @@ def rectangle_properties(b: float, h: float) -> SectionProperties:
     iy = b * h**3 / 12.0
     iz = h * b**3 / 12.0
     j = _rectangle_torsion_constant(b, h)
-    return SectionProperties(area, iy, iz, j)
+    # Plastic modulus of a solid rectangle about its own centroidal axis -
+    # textbook Z = (width) * (depth)^2 / 4, depth being the dimension that
+    # extends away from that axis (matches Iy/Iz's own b/h roles above).
+    zy = b * h**2 / 4.0
+    zz = h * b**2 / 4.0
+    return SectionProperties(area, iy, iz, j, zy, zz)
 
 
 def _rectangle_torsion_constant(b: float, h: float) -> float:
@@ -141,7 +158,11 @@ def circle_properties(d: float) -> SectionProperties:
     iy = math.pi * d**4 / 64.0
     iz = iy
     j = math.pi * d**4 / 32.0
-    return SectionProperties(area, iy, iz, j)
+    # Plastic modulus of a solid circle, Z = D^3/6 (shape factor 16/(3*pi) =~
+    # 1.698 versus the elastic S = pi*D^3/32) - a standard textbook result,
+    # symmetric about every axis through the centroid.
+    z = d**3 / 6.0
+    return SectionProperties(area, iy, iz, j, z, z)
 
 
 def h_section_properties(H: float, B: float, tw: float, tf: float) -> SectionProperties:
@@ -157,7 +178,14 @@ def h_section_properties(H: float, B: float, tw: float, tf: float) -> SectionPro
     iy = B * H**3 / 12.0 - (B - tw) * web_height**3 / 12.0
     iz = 2.0 * (tf * B**3 / 12.0) + web_height * tw**3 / 12.0
     j = (1.0 / 3.0) * (2.0 * B * tf**3 + web_height * tw**3)
-    return SectionProperties(area, iy, iz, j)
+    # Standard AISC plastic-modulus formulas for a doubly-symmetric I-shape:
+    # strong axis sums each flange's area times its centroid distance from
+    # the neutral axis plus the same for each half of the web; weak axis
+    # treats each flange as a b x d rectangle bent about its own centroidal
+    # axis (the flanges' contribution) plus the web's own b x d^2/4 term.
+    zy = B * tf * (H - tf) + tw * web_height**2 / 4.0
+    zz = (B**2 * tf) / 2.0 + (web_height * tw**2) / 4.0
+    return SectionProperties(area, iy, iz, j, zy, zz)
 
 
 def box_properties(H: float, B: float, t: float) -> SectionProperties:
@@ -180,7 +208,13 @@ def box_properties(H: float, B: float, t: float) -> SectionProperties:
     enclosed_area = mid_h * mid_b
     mid_perimeter = 2.0 * (mid_h + mid_b)
     j = 4.0 * enclosed_area**2 * t / mid_perimeter
-    return SectionProperties(area, iy, iz, j)
+    # Doubly-symmetric hollow rectangle: plastic modulus of the outer solid
+    # rectangle minus the inner one, about the same centroidal axis both
+    # share - valid because subtracting two shapes with a common centroid
+    # and axis of symmetry subtracts their plastic moduli directly.
+    zy = (B * H**2 - inner_b * inner_h**2) / 4.0
+    zz = (H * B**2 - inner_h * inner_b**2) / 4.0
+    return SectionProperties(area, iy, iz, j, zy, zz)
 
 
 def pipe_properties(D: float, t: float) -> SectionProperties:
@@ -193,7 +227,11 @@ def pipe_properties(D: float, t: float) -> SectionProperties:
     iy = math.pi * (outer_radius**4 - inner_radius**4) / 4.0
     iz = iy
     j = math.pi * (outer_radius**4 - inner_radius**4) / 2.0
-    return SectionProperties(area, iy, iz, j)
+    # Plastic modulus of an annulus (outer/inner diameter): (Do^3 - Di^3)/6 -
+    # the same solid-circle result above, subtracted between two shapes that
+    # share a centroid and every axis of symmetry.
+    z = (outer_radius * 2.0) ** 3 / 6.0 - (inner_radius * 2.0) ** 3 / 6.0
+    return SectionProperties(area, iy, iz, j, z, z)
 
 
 def channel_properties(H: float, B: float, tw: float, tf: float) -> SectionProperties:
@@ -230,7 +268,15 @@ def channel_properties(H: float, B: float, tw: float, tf: float) -> SectionPrope
         own_i + part_area * (y - y_centroid) ** 2 for part_area, own_i, y in parts
     )
     j = (1.0 / 3.0) * (2.0 * B * tf**3 + web_height * tw**3)
-    return SectionProperties(area, iy, iz, j)
+    # Strong-axis (Iy) plastic modulus: identical to an H-section's, per this
+    # function's own docstring - top/bottom symmetry means the web's
+    # horizontal offset never enters this axis's neutral-axis position.
+    # Weak-axis (Iz) plastic bending uses the *equal-area* axis, not the
+    # elastic centroid used above for Iz - genuinely different for this
+    # asymmetric shape and not yet derived, so Zz stays None (see
+    # SectionProperties' own docstring) rather than guess.
+    zy = B * tf * (H - tf) + tw * web_height**2 / 4.0
+    return SectionProperties(area, iy, iz, j, zy, None)
 
 
 def angle_properties(H: float, B: float, t: float) -> SectionProperties:

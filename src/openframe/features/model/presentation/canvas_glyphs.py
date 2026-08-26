@@ -8,8 +8,8 @@ placed on the model read as the same symbol, just simplified for icon size.
 
 from typing import Callable
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 #: (button label, tooltip, glyph key, restraint preset). Restraint presets are always
 #: the 2D (Ux, Uy, Rz) triple, matching the combo box they replaced. Only used when
@@ -318,6 +318,118 @@ def _render_dof_icon(kind: str, color: str, size: int = 20) -> QPixmap:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     _paint_dof_icon(painter, kind, color)
+    painter.end()
+    return pixmap
+
+
+#: Direct Loads' MIDAS-style static reference diagrams (see
+#: _build_load_bar_content's "command_driven" 3D path) - unlike every other
+#: glyph in this file these are not tied to the actual model geometry or
+#: typed-in values, only to which load *kind* is currently selected. Purely
+#: illustrative, same as MIDAS' own Nodal Loads/Element Beam Loads dialogs.
+_LOAD_DIAGRAM_SIZE = (160, 120)
+
+
+def _paint_arrowhead(painter: QPainter, tip, back1, back2) -> None:
+    painter.drawLine(tip, back1)
+    painter.drawLine(tip, back2)
+
+
+def _paint_nodal_load_diagram(painter: QPainter, color: str) -> None:
+    """Origin node + FX/FY/FZ straight arrows and MX/MY/MZ curved arrows on
+    a simple 3-axis triad (Z up, Y right, X toward lower-left) - the same
+    layout MIDAS' own "Nodal Loads" dialog draws."""
+    origin = QPointF(55.0, 85.0)
+    pen = QPen(QColor(color), 1.6)
+    pen.setCosmetic(True)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    font = QFont()
+    font.setPointSizeF(7.5)
+    painter.setFont(font)
+
+    painter.setBrush(QColor("#f59e0b"))
+    painter.drawEllipse(origin, 3.5, 3.5)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    # Straight force arrows: FZ up, FY right, FX toward lower-left.
+    fz_tip = QPointF(55.0, 15.0)
+    painter.drawLine(origin, fz_tip)
+    _paint_arrowhead(painter, fz_tip, QPointF(51.0, 22.0), QPointF(59.0, 22.0))
+    painter.drawText(QPointF(60.0, 18.0), "FZ")
+
+    fy_tip = QPointF(120.0, 85.0)
+    painter.drawLine(origin, fy_tip)
+    _paint_arrowhead(painter, fy_tip, QPointF(112.0, 81.0), QPointF(112.0, 89.0))
+    painter.drawText(QPointF(122.0, 89.0), "FY")
+
+    fx_tip = QPointF(15.0, 108.0)
+    painter.drawLine(origin, fx_tip)
+    _paint_arrowhead(painter, fx_tip, QPointF(23.0, 103.0), QPointF(19.0, 111.0))
+    painter.drawText(QPointF(2.0, 112.0), "FX")
+
+    # Curved moment arrows: a short arc plus arrowhead near each axis.
+    painter.drawArc(QRectF(35.0, 30.0, 24.0, 24.0), 30 * 16, 220 * 16)
+    _paint_arrowhead(painter, QPointF(37.0, 42.0), QPointF(41.0, 37.0), QPointF(43.0, 46.0))
+    painter.drawText(QPointF(10.0, 40.0), "MX")
+
+    painter.drawArc(QRectF(65.0, 45.0, 24.0, 24.0), 60 * 16, 220 * 16)
+    _paint_arrowhead(painter, QPointF(75.0, 68.0), QPointF(70.0, 65.0), QPointF(76.0, 60.0))
+    painter.drawText(QPointF(95.0, 68.0), "MY")
+
+    painter.drawArc(QRectF(20.0, 60.0, 24.0, 24.0), 300 * 16, 220 * 16)
+    _paint_arrowhead(painter, QPointF(37.0, 79.0), QPointF(29.0, 79.0), QPointF(35.0, 72.0))
+    painter.drawText(QPointF(15.0, 62.0), "MZ")
+
+
+def _paint_uniform_load_diagram(painter: QPainter, color: str) -> None:
+    """N1-N2 member line with evenly spaced downward arrows (w) and x1/x2
+    span markers - the same layout MIDAS' own "Element/Line Beam Loads"
+    dialog draws for a Uniform Loads type."""
+    pen = QPen(QColor(color), 1.6)
+    pen.setCosmetic(True)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    font = QFont()
+    font.setPointSizeF(7.5)
+    painter.setFont(font)
+
+    n1 = QPointF(20.0, 75.0)
+    n2 = QPointF(140.0, 75.0)
+    painter.drawLine(n1, n2)
+    painter.setBrush(QColor("#f59e0b"))
+    painter.drawEllipse(n1, 3.5, 3.5)
+    painter.drawEllipse(n2, 3.5, 3.5)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawText(QPointF(10.0, 92.0), "N1")
+    painter.drawText(QPointF(132.0, 92.0), "N2")
+
+    top = 30.0
+    for x in range(30, 131, 20):
+        tip = QPointF(float(x), 75.0)
+        painter.drawLine(QPointF(float(x), top), tip)
+        _paint_arrowhead(painter, tip, QPointF(x - 3.0, 68.0), QPointF(x + 3.0, 68.0))
+    painter.drawLine(QPointF(20.0, top), QPointF(140.0, top))
+    painter.drawText(QPointF(142.0, top + 4.0), "w")
+
+    painter.drawText(QPointF(15.0, 108.0), "x1")
+    painter.drawText(QPointF(130.0, 108.0), "x2")
+
+
+def _render_load_diagram(kind: str, color: str = "#415269") -> QPixmap:
+    """``kind`` is ``"node"`` or ``"element"`` - matches
+    ``ModelingInterfacePage._current_load_target()``'s own values for the
+    two commands this currently covers (Nodal Load, Mem Uniform)."""
+    width, height = _LOAD_DIAGRAM_SIZE
+    pixmap = QPixmap(width * 2, height * 2)
+    pixmap.setDevicePixelRatio(2.0)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    if kind == "node":
+        _paint_nodal_load_diagram(painter, color)
+    else:
+        _paint_uniform_load_diagram(painter, color)
     painter.end()
     return pixmap
 

@@ -52,6 +52,102 @@ def test_apply_full_section_stores_a_database_h_section_and_material() -> None:
     assert "height" not in element.properties
 
 
+def test_apply_full_section_stores_fy_and_plastic_modulus_when_given() -> None:
+    canvas = _canvas()
+    a = canvas.add_node(0.0, 0.0)
+    b = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(a, b)
+    canvas.selected_elements = {member}
+
+    canvas.apply_full_section_to_selection(
+        shape="Rectangle",
+        source="custom",
+        dimensions={"b": 0.2, "h": 0.4},
+        area=0.08,
+        iy=0.0002,
+        iz=0.0002,
+        j=0.0003,
+        elastic=2.0e8,
+        fy=2.4e5,
+        strain_hardening_ratio=0.015,
+        zy=0.016,
+        zz=0.008,
+    )
+
+    properties = canvas.elements[member].properties
+    assert properties["Fy"] == 2.4e5
+    assert properties["StrainHardeningRatio"] == 0.015
+    assert properties["Zy"] == 0.016
+    assert properties["Zz"] == 0.008
+
+
+def test_apply_full_section_omits_fy_and_plastic_modulus_by_default() -> None:
+    """A member applied without fy/zy/zz (every existing caller before this
+    feature, and every Channel/Angle/User Defined section going forward)
+    must not end up with a spurious "Fy" key - solver.py's
+    ``_plastic_hinge_capacities`` treats a missing key as "no hinge",
+    exactly what a member drawn before this feature existed must keep
+    doing."""
+    canvas = _canvas()
+    a = canvas.add_node(0.0, 0.0)
+    b = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(a, b)
+    canvas.selected_elements = {member}
+
+    canvas.apply_full_section_to_selection(
+        shape="Rectangle",
+        source="custom",
+        dimensions={"b": 0.2, "h": 0.4},
+        area=0.08,
+        iy=0.0002,
+        iz=0.0002,
+        j=0.0003,
+        elastic=2.0e8,
+    )
+
+    properties = canvas.elements[member].properties
+    assert "Fy" not in properties
+    assert "StrainHardeningRatio" not in properties
+    assert "Zy" not in properties
+    assert "Zz" not in properties
+
+
+def test_switching_shape_clears_a_previously_stored_fy_and_plastic_modulus() -> None:
+    canvas = _canvas()
+    a = canvas.add_node(0.0, 0.0)
+    b = canvas.add_node(4.0, 0.0)
+    member = canvas.add_member(a, b)
+    canvas.selected_elements = {member}
+    canvas.apply_full_section_to_selection(
+        shape="Rectangle",
+        source="custom",
+        dimensions={"b": 0.2, "h": 0.4},
+        area=0.08,
+        iy=0.0002,
+        iz=0.0002,
+        j=0.0003,
+        elastic=2.0e8,
+        fy=2.4e5,
+        zy=0.016,
+        zz=0.008,
+    )
+
+    canvas.apply_full_section_to_selection(
+        shape="Channel",
+        source="custom",
+        dimensions={"H": 0.4, "B": 0.2, "tw": 0.01, "tf": 0.016},
+        area=0.01,
+        iy=0.0002,
+        iz=0.00003,
+        j=0.0000001,
+        elastic=2.0e8,
+    )
+
+    assert "Fy" not in canvas.elements[member].properties
+    assert "Zy" not in canvas.elements[member].properties
+    assert "Zz" not in canvas.elements[member].properties
+
+
 def test_apply_full_section_clears_stale_dimension_keys_on_shape_change() -> None:
     """Switching a member from an H-section to a plain Rectangle must not
     leave tw/tf lingering under their dim_ keys, and must not leave the old

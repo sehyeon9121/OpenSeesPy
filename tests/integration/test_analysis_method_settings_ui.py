@@ -30,13 +30,27 @@ def test_linear_static_keeps_the_run_button_enabled_and_hides_settings() -> None
     assert page.analysis_settings_button.isVisible() is False
 
 
-def test_picking_a_nonlinear_method_disables_run_and_reveals_settings() -> None:
+def test_picking_modal_disables_run_and_reveals_settings() -> None:
+    """Modal/Buckling/Time History still only stage settings - see
+    ``_on_analysis_method_changed``'s ``can_run`` gate. Nonlinear Static is
+    the one exception (below): it has a real solve wired up now."""
+    page = _page()
+    index = page.analysis_method_selector.findData(AnalysisKind.MODAL.value)
+
+    page.analysis_method_selector.setCurrentIndex(index)
+
+    assert page.analysis_run_button.isEnabled() is False
+    assert page.analysis_settings_button.isVisible() is True
+    assert "아직 설정하지 않았습니다" in page.analysis_settings_summary.text()
+
+
+def test_picking_nonlinear_static_keeps_run_enabled_since_it_actually_solves() -> None:
     page = _page()
     index = page.analysis_method_selector.findData(AnalysisKind.NONLINEAR_STATIC.value)
 
     page.analysis_method_selector.setCurrentIndex(index)
 
-    assert page.analysis_run_button.isEnabled() is False
+    assert page.analysis_run_button.isEnabled() is True
     assert page.analysis_settings_button.isVisible() is True
     assert "아직 설정하지 않았습니다" in page.analysis_settings_summary.text()
 

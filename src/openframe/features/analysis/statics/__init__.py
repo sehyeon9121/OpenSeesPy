@@ -5,6 +5,7 @@ from openframe.features.analysis.statics.opensees_script_export import export_op
 from openframe.features.analysis.statics.solve_thread import (
     MaterialFreeSolveThread,
     ModalSolveThread,
+    NonlinearStaticSolveThread,
 )
 from openframe.features.analysis.statics.solver import (
     DeterminacyCheck,
@@ -18,6 +19,7 @@ __all__ = [
     "MaterialFreeStaticsSolver",
     "ModalSolveThread",
     "ModalStaticsSolver",
+    "NonlinearStaticSolveThread",
     "check_determinacy",
     "export_opensees_script",
 ]

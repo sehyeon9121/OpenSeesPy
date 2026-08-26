@@ -31,6 +31,10 @@ _SECTION_PROPERTY_KEYS = frozenset(
         "material_id",
         "material_category",
         "material_grade",
+        "Fy",
+        "StrainHardeningRatio",
+        "Zy",
+        "Zz",
     }
 )
 
@@ -66,12 +70,30 @@ class _PropertyApplicationMixin:
                 self.boundaries.pop(node_tag, None)
         self._changed()
 
-    def apply_nodal_load_to_selection(self, values: tuple[float, ...]) -> None:
+    def apply_nodal_load_to_selection(
+        self, values: tuple[float, ...], *, mode: str = "replace"
+    ) -> None:
+        """``mode`` mirrors MIDAS' Add/Replace/Delete Options group:
+        "replace" (default, the only behaviour this ever had) overwrites
+        whatever load tag already carries; "add" sums ``values`` onto it
+        component-wise instead; "delete" drops the tag's load entirely and
+        ignores ``values``. ``values`` itself is never mutated in the loop -
+        each node computes its own ``applied`` from its own prior value, so
+        a multi-node "add" selection never double-counts one node's sum onto
+        the next."""
         if not self.selected_nodes:
             return
         self._record_history()
         for node_tag in self.selected_nodes:
-            self.nodal_loads[node_tag] = NodalLoad(node_tag, values)
+            if mode == "delete":
+                self.nodal_loads.pop(node_tag, None)
+                continue
+            applied = values
+            if mode == "add":
+                existing = self.nodal_loads.get(node_tag)
+                if existing is not None:
+                    applied = tuple(a + b for a, b in zip(existing.values, values))
+            self.nodal_loads[node_tag] = NodalLoad(node_tag, applied)
         self.set_pending_load_preview(None)
         self._changed()
 
@@ -213,6 +235,10 @@ class _PropertyApplicationMixin:
         material_id: str | None = None,
         material_category: str | None = None,
         material_grade: str | None = None,
+        fy: float = 0.0,
+        strain_hardening_ratio: float = 0.02,
+        zy: float | None = None,
+        zz: float | None = None,
     ) -> None:
         """General section+material application - any of the seven supported
         shapes (Rectangle/Circle/H-I/Box/Pipe/Channel/Angle) or a fully
@@ -244,6 +270,15 @@ class _PropertyApplicationMixin:
         related key instead of merging - switching shape (or from a Database
         section back to Custom) must not leave a stale key from what the
         member carried before.
+
+        ``fy``/``strain_hardening_ratio``/``zy``/``zz`` feed the 3D pushover
+        (Nonlinear Static) solve's lumped-plasticity hinges (see solver.py's
+        ``_build_plastic_hinge``): a member only gets a hinge there when
+        ``fy`` is positive AND at least one of ``zy``/``zz`` (the section's
+        plastic modulus - ``None`` for Channel/Angle, see
+        ``SectionProperties``) is given, so "Fy"/"Zy"/"Zz" are only ever
+        written when actually usable rather than as a placeholder zero that
+        would silently mean something different (0 capacity) if ever read.
         """
         if not self.selected_elements:
             return
@@ -265,6 +300,13 @@ class _PropertyApplicationMixin:
             "section_shape": shape,
             "section_source": source,
         }
+        if fy > 0.0:
+            new_properties["Fy"] = fy
+            new_properties["StrainHardeningRatio"] = strain_hardening_ratio
+        if zy is not None:
+            new_properties["Zy"] = zy
+        if zz is not None:
+            new_properties["Zz"] = zz
         if shape == "Rectangle":
             new_properties["width"] = dimensions.get("b", 0.0)
             new_properties["height"] = dimensions.get("h", 0.0)
@@ -298,6 +340,7 @@ class _PropertyApplicationMixin:
         values: tuple[float, float] | tuple[float, float, float, float],
         *,
         coordinate_system: str = "local",
+        mode: str = "replace",
     ) -> None:
         """Apply a 2D member load in local or global coordinates.
 
@@ -307,6 +350,11 @@ class _PropertyApplicationMixin:
         selected member, so one wind load can be applied to horizontal,
         vertical and diagonal members together without sharing the wrong
         local components.
+
+        ``mode`` mirrors ``apply_nodal_load_to_selection``'s Add/Replace/
+        Delete Options group - see its docstring. "add" sums onto the
+        existing *local* wx/wy/wx_j/wy_j (i.e. after any global->local
+        conversion below), since that is what is actually stored.
         """
         if not self.selected_elements:
             return
@@ -320,6 +368,9 @@ class _PropertyApplicationMixin:
         )
         self._record_history()
         for element_tag in self.selected_elements:
+            if mode == "delete":
+                self.element_loads.pop(element_tag, None)
+                continue
             wx_i, wy_i, wx_j, wy_j = qx_i, qy_i, qx_j, qy_j
             if coordinate_system == "global":
                 element = self.elements.get(element_tag)
@@ -338,6 +389,13 @@ class _PropertyApplicationMixin:
                 wx_j, wy_j = self._global_to_local_load(
                     qx_j, qy_j, cosine, sine
                 )
+            if mode == "add":
+                existing = self.element_loads.get(element_tag)
+                if existing is not None:
+                    wx_i += existing.wx
+                    wy_i += existing.wy
+                    wx_j += existing.wx_j
+                    wy_j += existing.wy_j
             self.element_loads[element_tag] = UniformElementLoad(
                 element_tag, wx=wx_i, wy=wy_i, wx_j=wx_j, wy_j=wy_j
             )

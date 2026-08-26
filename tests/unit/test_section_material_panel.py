@@ -268,3 +268,87 @@ def test_unit_system_change_rescales_the_displayed_dimensions_not_the_underlying
     assert panel._dimension_spinboxes["H"].value() == 300.0  # same physical H, now in mm
     kwargs = panel.current_application_kwargs()
     assert kwargs["dimensions"]["H"] == 300.0
+
+
+def test_current_application_kwargs_carries_fy_hardening_and_plastic_modulus() -> None:
+    panel = _panel()
+    panel.shape_combo.setCurrentText("Rectangle")
+    panel._dimension_spinboxes["b"].setValue(0.2)
+    panel._dimension_spinboxes["h"].setValue(0.4)
+    panel.material_fy.setValue(240000.0)
+    panel.material_hardening_ratio.setValue(0.015)
+
+    kwargs = panel.current_application_kwargs()
+
+    assert kwargs["fy"] == 240000.0
+    assert kwargs["strain_hardening_ratio"] == 0.015
+    assert kwargs["zy"] == pytest.approx(0.2 * 0.4**2 / 4.0)
+    assert kwargs["zz"] == pytest.approx(0.4 * 0.2**2 / 4.0)
+
+
+def test_a_shape_with_no_plastic_modulus_reports_none_not_zero() -> None:
+    """Channel has no Zz yet (see SectionProperties' own docstring) - the
+    panel must pass that through as None, not silently default to 0.0 (which
+    solver.py would read as "no capacity" - a very different, wrong,
+    meaning from "not computed")."""
+    panel = _panel()
+    panel.shape_combo.setCurrentText("Channel")
+    panel._dimension_spinboxes["H"].setValue(0.4)
+    panel._dimension_spinboxes["B"].setValue(0.2)
+    panel._dimension_spinboxes["tw"].setValue(0.01)
+    panel._dimension_spinboxes["tf"].setValue(0.016)
+
+    kwargs = panel.current_application_kwargs()
+
+    assert kwargs["zy"] is not None
+    assert kwargs["zz"] is None
+
+
+def test_reselecting_a_member_restores_its_fy_and_hardening_ratio() -> None:
+    panel = _panel()
+    panel.shape_combo.setCurrentText("Rectangle")
+    panel._dimension_spinboxes["b"].setValue(0.2)
+    panel._dimension_spinboxes["h"].setValue(0.4)
+    panel.material_fy.setValue(240000.0)
+    panel.material_hardening_ratio.setValue(0.015)
+    kwargs = panel.current_application_kwargs()
+
+    element = Element(
+        tag=1,
+        node_i=1,
+        node_j=2,
+        element_type="elasticBeamColumn",
+        properties={
+            "E": kwargs["elastic"],
+            "A": kwargs["area"],
+            "I": kwargs["iy"],
+            "Iz": kwargs["iz"],
+            "J": kwargs["j"],
+            "density": kwargs["density"],
+            "section_shape": kwargs["shape"],
+            "section_source": kwargs["source"],
+            "Fy": kwargs["fy"],
+            "StrainHardeningRatio": kwargs["strain_hardening_ratio"],
+            **{f"dim_{key}": value for key, value in kwargs["dimensions"].items()},
+        },
+    )
+
+    fresh_panel = _panel()
+    fresh_panel.load_from_element(element)
+
+    assert fresh_panel.material_fy.value() == 240000.0
+    assert fresh_panel.material_hardening_ratio.value() == 0.015
+
+
+def test_reselecting_a_member_with_no_fy_shows_zero_not_a_stale_value() -> None:
+    panel = _panel()
+    panel.material_fy.setValue(240000.0)  # some prior selection's leftover UI state
+
+    element = Element(tag=1, node_i=1, node_j=2, element_type="elasticBeamColumn", properties={})
+    fresh_panel = _panel()
+    fresh_panel.material_fy.setValue(999.0)
+
+    fresh_panel.load_from_element(element)
+
+    assert fresh_panel.material_fy.value() == 0.0
+    assert fresh_panel.material_hardening_ratio.value() == 0.02
