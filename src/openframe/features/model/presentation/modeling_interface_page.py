@@ -19,6 +19,7 @@ never adds another mode to learn, just another category button.
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import ClassVar, NamedTuple
 
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -47,6 +49,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -2706,17 +2709,39 @@ class ModelingInterfacePage(QFrame):
         return row
 
     def _build_seismic_load_generator_page(self) -> QWidget:
-        """A readable KDS-style Equivalent Lateral Force setup.
+        """Compact launcher for a tabbed KDS Equivalent Lateral Force setup.
 
-        Formula results are automatic, but edition/site/system lookup-table
-        values remain explicit engineer inputs. This prevents a stale table
-        from silently choosing Fa/Fv/R while giving first-time users the full
-        meaning of every symbol and an immediate SDS/SD1/Cs preview.
+        The Loads sidebar only keeps the current specification summary and
+        actions. Full-name engineering inputs live in a small modal window,
+        grouped into four tabs instead of forming one very long left column.
+        Formula results are automatic, while edition/site/system lookup-table
+        values remain explicit engineer inputs.
         """
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 0)
         layout.setSpacing(8)
+
+        self.seismic_settings_dialog = QDialog(self)
+        self.seismic_settings_dialog.setObjectName("seismicSettingsDialog")
+        self.seismic_settings_dialog.setWindowTitle("정적 지진하중 설정")
+        self.seismic_settings_dialog.resize(460, 720)
+        dialog_layout = QVBoxLayout(self.seismic_settings_dialog)
+        dialog_layout.setContentsMargins(10, 10, 10, 10)
+        dialog_layout.setSpacing(8)
+        self.seismic_settings_tabs = QTabWidget()
+        self.seismic_settings_tabs.setObjectName("seismicSettingsTabs")
+        dialog_layout.addWidget(self.seismic_settings_tabs, 1)
+
+        def add_settings_tab(card_widget: QWidget, label: str) -> None:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setAlignment(
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+            )
+            scroll.setWidget(card_widget)
+            self.seismic_settings_tabs.addTab(scroll, label)
 
         card, content = self._load_group_card("기본 설정")
         self.seismic_code_combo = SafeComboBox()
@@ -2742,7 +2767,8 @@ class ModelingInterfacePage(QFrame):
             self._generator_row(self.seismic_case_combo, case_manage_button),
             "지진하중 전용 케이스를 권장합니다.",
         )
-        layout.addWidget(card)
+        content.addStretch(1)
+        add_settings_tab(card, "기본")
 
         ground_card, ground = self._load_group_card("설계 스펙트럼과 지반")
         hint = QLabel(
@@ -2803,7 +2829,8 @@ class ModelingInterfacePage(QFrame):
         self.seismic_spectrum_summary.setObjectName("loadDerivedValue")
         self.seismic_spectrum_summary.setWordWrap(True)
         ground.addWidget(self.seismic_spectrum_summary)
-        layout.addWidget(ground_card)
+        ground.addStretch(1)
+        add_settings_tab(ground_card, "설계 스펙트럼")
 
         structure_card, structure = self._load_group_card("구조 특성")
         self.seismic_system_description = QLineEdit()
@@ -2854,7 +2881,8 @@ class ModelingInterfacePage(QFrame):
         self.seismic_coefficient_summary.setObjectName("loadDerivedValue")
         self.seismic_coefficient_summary.setWordWrap(True)
         structure.addWidget(self.seismic_coefficient_summary)
-        layout.addWidget(structure_card)
+        structure.addStretch(1)
+        add_settings_tab(structure_card, "구조 특성")
 
         application_card, application = self._load_group_card("가력 방향과 우발편심")
         self.seismic_direction_combo = SafeComboBox()
@@ -2900,15 +2928,38 @@ class ModelingInterfacePage(QFrame):
         self.seismic_eccentricity_sign.currentIndexChanged.connect(
             self._refresh_seismic_parameter_summary
         )
-        layout.addWidget(application_card)
+        application.addStretch(1)
+        add_settings_tab(application_card, "가력·편심")
 
         self.canvas.load_state_changed.connect(self._refresh_seismic_case_combo)
         self._refresh_seismic_case_combo()
 
+        dialog_buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        dialog_buttons.accepted.connect(self.seismic_settings_dialog.accept)
+        dialog_buttons.rejected.connect(self.seismic_settings_dialog.reject)
+        dialog_layout.addWidget(dialog_buttons)
+
+        summary_card, summary_layout = self._load_group_card("정적 지진하중")
+        self.seismic_compact_summary = QLabel()
+        self.seismic_compact_summary.setObjectName("seismicCompactSummary")
+        self.seismic_compact_summary.setWordWrap(True)
+        summary_layout.addWidget(self.seismic_compact_summary)
+
+        self.seismic_settings_button = QPushButton("설정 열기...")
+        self.seismic_settings_button.setObjectName("seismicSettingsButton")
+        self.seismic_settings_button.clicked.connect(
+            self._open_seismic_settings_dialog
+        )
+        summary_layout.addWidget(self.seismic_settings_button)
+
         generate_button = QPushButton("지진하중 생성")
         generate_button.setObjectName("loadPrimaryButton")
         generate_button.clicked.connect(self._generate_seismic_load)
-        layout.addWidget(generate_button)
+        summary_layout.addWidget(generate_button)
+        layout.addWidget(summary_card)
 
         self.seismic_result_label = QLabel()
         self.seismic_result_label.setWordWrap(True)
@@ -2927,10 +2978,61 @@ class ModelingInterfacePage(QFrame):
             self.seismic_eccentricity,
         ):
             field.valueChanged.connect(self._refresh_seismic_parameter_summary)
+        for combo in (
+            self.seismic_code_combo,
+            self.seismic_case_combo,
+            self.seismic_site_class,
+            self.seismic_period_method,
+            self.seismic_direction_combo,
+        ):
+            combo.currentIndexChanged.connect(self._refresh_seismic_parameter_summary)
         self._refresh_seismic_parameter_summary()
 
         layout.addStretch(1)
         return page
+
+    def _open_seismic_settings_dialog(self) -> None:
+        """Edit the sidebar's seismic specification without making the
+        sidebar itself carry the full engineering form.
+
+        The dialog owns the live widgets so derived values update while the
+        user types. A rejected dialog restores the exact pre-open state,
+        preserving ordinary OK/Cancel semantics despite that live preview.
+        """
+        self._refresh_seismic_case_combo()
+        snapshot = dict(self._load_generator_settings()["seismic"])
+        if self.seismic_settings_dialog.exec() == QDialog.DialogCode.Accepted:
+            self._refresh_seismic_parameter_summary()
+            return
+        self._restore_load_generator_settings({"seismic": snapshot})
+
+    def _refresh_seismic_compact_summary(self) -> None:
+        if not hasattr(self, "seismic_compact_summary"):
+            return
+        sds, sd1 = design_spectral_accelerations(
+            self.seismic_ss.value(),
+            self.seismic_fa.value(),
+            self.seismic_s1.value(),
+            self.seismic_fv.value(),
+        )
+        try:
+            coefficient = seismic_response_coefficient(
+                sds=sds,
+                sd1=sd1,
+                s1=self.seismic_s1.value(),
+                r=self.seismic_r.value(),
+                ie=self.seismic_ie.value(),
+                period=self.seismic_period.value(),
+            )
+            coefficient_text = f"Cs {coefficient:.4f}"
+        except ValueError:
+            coefficient_text = "Cs 확인 필요"
+        case_name = self.seismic_case_combo.currentText().strip() or "선택 안 함"
+        self.seismic_compact_summary.setText(
+            f"하중케이스 · {case_name}\n"
+            f"가력방향 · {self.seismic_direction_combo.currentText()}\n"
+            f"SDS {sds:.4f} g · SD1 {sd1:.4f} g · {coefficient_text}"
+        )
 
     def _refresh_seismic_parameter_summary(self, _value: object | None = None) -> None:
         if not hasattr(self, "seismic_spectrum_summary"):
@@ -2963,6 +3065,7 @@ class ModelingInterfacePage(QFrame):
         )
         use_eccentricity = float(self.seismic_eccentricity_sign.currentData()) != 0.0
         self.seismic_eccentricity.setEnabled(use_eccentricity)
+        self._refresh_seismic_compact_summary()
 
     def _refresh_seismic_case_combo(self) -> None:
         if not hasattr(self, "seismic_case_combo"):
@@ -2977,6 +3080,7 @@ class ModelingInterfacePage(QFrame):
         if index >= 0:
             combo.setCurrentIndex(index)
         combo.blockSignals(False)
+        self._refresh_seismic_compact_summary()
 
     def _generate_seismic_load(self) -> None:
         case_id = self.seismic_case_combo.currentData()
@@ -3924,6 +4028,30 @@ class ModelingInterfacePage(QFrame):
         widget = QWidget()
         form = QFormLayout(widget)
 
+        # MIDAS-style click-to-place alternative to the ordinary rubber-band/
+        # ctrl-click node selection above: "노드 클릭으로 지정" enters
+        # floor_pick mode (cursor becomes CrossCursor via the existing 3D
+        # picking-mode sync, same as plain select), 완료 commits the
+        # boundary in click order once >= 3 distinct nodes are picked (see
+        # canvas_load_entries.py's begin/add/finish/cancel_floor_picking),
+        # 취소 discards it. The existing "선택된 경계 노드 수" status label
+        # below already updates live for this too, since add_floor_boundary_
+        # node emits selection_changed the same way plain node-picking does.
+        pick_row = QHBoxLayout()
+        self.load3d_floor_pick_start_button = QPushButton("노드 클릭으로 지정")
+        self.load3d_floor_pick_start_button.clicked.connect(self._start_floor_boundary_picking)
+        pick_row.addWidget(self.load3d_floor_pick_start_button)
+        self.load3d_floor_pick_finish_button = QPushButton("완료")
+        self.load3d_floor_pick_finish_button.setEnabled(False)
+        self.load3d_floor_pick_finish_button.clicked.connect(self._finish_floor_boundary_picking)
+        self.load3d_floor_pick_finish_button.hide()
+        pick_row.addWidget(self.load3d_floor_pick_finish_button)
+        self.load3d_floor_pick_cancel_button = QPushButton("취소")
+        self.load3d_floor_pick_cancel_button.clicked.connect(self._cancel_floor_boundary_picking)
+        self.load3d_floor_pick_cancel_button.hide()
+        pick_row.addWidget(self.load3d_floor_pick_cancel_button)
+        form.addRow(pick_row)
+
         type_row = QHBoxLayout()
         self.load3d_floor_type_combo = QComboBox()
         self.load3d_floor_type_combo.addItem("(직접 입력)", None)
@@ -4066,14 +4194,71 @@ class ModelingInterfacePage(QFrame):
         elif kind == "member":
             self.load3d_target_count_label.setText(f"선택된 부재 수: {len(self.canvas.selected_elements)}")
         elif kind == "floor":
-            self.load3d_target_count_label.setText(
-                f"선택된 경계 노드 수: {len(self.canvas.selected_nodes)} (3개 이상 필요)"
-            )
+            if self.canvas.mode == "floor_pick":
+                count = len(self.canvas._floor_chain)
+                self.load3d_target_count_label.setText(
+                    f"선택 {count}개 / 최소 3개" if count < 3 else f"선택 {count}개 / 완료 가능"
+                )
+                self.load3d_floor_pick_finish_button.setEnabled(count >= 3)
+            else:
+                self.load3d_target_count_label.setText(
+                    f"선택된 경계 노드 수: {len(self.canvas.selected_nodes)} (3개 이상 필요)"
+                )
         elif kind == "self_weight":
             if self.load3d_self_weight_apply_all.isChecked():
                 self.load3d_target_count_label.setText("전체 부재에 적용됩니다.")
             else:
                 self.load3d_target_count_label.setText(f"선택된 부재 수: {len(self.canvas.selected_elements)}")
+
+    def _start_floor_boundary_picking(self) -> None:
+        self.canvas.begin_floor_picking()
+        self._set_mode(
+            "floor_pick",
+            "바닥하중 경계 노드를 순서대로 클릭하세요 (3개 이상, 완료로 확정).",
+        )
+        self.load3d_floor_pick_start_button.hide()
+        self.load3d_floor_pick_finish_button.show()
+        self.load3d_floor_pick_cancel_button.show()
+        self._refresh_load3d_target_count()
+
+    def _reset_floor_boundary_picking_ui(self) -> None:
+        """Shared by 완료/취소/Esc - always returns the panel to the same
+        resting state regardless of which of the three ended the pick."""
+        self.load3d_floor_pick_start_button.show()
+        self.load3d_floor_pick_finish_button.hide()
+        self.load3d_floor_pick_finish_button.setEnabled(False)
+        self.load3d_floor_pick_cancel_button.hide()
+        self._set_mode(
+            "select",
+            "선택 · 클릭 또는 드래그로 선택하고 캔버스 위쪽 막대에서 속성을 적용합니다.",
+        )
+        self._refresh_load3d_target_count()
+
+    def _finish_floor_boundary_picking(self) -> None:
+        # Checked before consuming the chain (matches _apply_load3d's own
+        # case_id-first order) - a missing Load Case must not throw away a
+        # boundary the user just clicked out; they can pick a case and press
+        # 완료 again without having to re-click every node.
+        case_id = self.canvas.active_load_case_id
+        if case_id is None:
+            self.load3d_status_label.setText("⚠ 먼저 Load Case를 선택하거나 Definitions에서 만드세요.")
+            return
+        boundary = self.canvas.finish_floor_picking()
+        if boundary is None:
+            return  # fewer than 3 distinct nodes - the button should be disabled anyway
+        self._reset_floor_boundary_picking_ui()
+        payload = FloorLoadEntry(
+            magnitude=self.load3d_floor_magnitude.value(),
+            direction=self.load3d_floor_direction.currentData(),
+            distribution=self.load3d_floor_distribution.currentData(),
+            span_direction=self.load3d_floor_span_direction.currentData(),
+            target_nodes=boundary,
+        )
+        self._commit_load3d_entry(case_id, "floor", boundary, payload)
+
+    def _cancel_floor_boundary_picking(self) -> None:
+        self.canvas.cancel_floor_picking()
+        self._reset_floor_boundary_picking_ui()
 
     def _apply_load3d(self) -> None:
         case_id = self.canvas.active_load_case_id
@@ -4833,6 +5018,42 @@ class ModelingInterfacePage(QFrame):
         form.addRow(dy_label, dy_field)
         return form, dx_field, dy_field
 
+    def _build_offset_line_form(self) -> tuple[QFormLayout, QLineEdit]:
+        """Build the dimension-appropriate offset line for this document."""
+        form = QFormLayout()
+        if self._start_in_3d:
+            offset_field = QLineEdit("0, 0, 0")
+            offset_field.setPlaceholderText("dX, dY, dZ")
+            offset_field.setToolTip(
+                "쉼표 또는 공백으로 구분 — 예: \"3, 5, 2\". dZ는 현재 "
+                "작업평면의 법선(수직) 축입니다."
+            )
+            form.addRow("dX, dY, dZ", offset_field)
+        else:
+            offset_field = QLineEdit("0, 0")
+            offset_field.setPlaceholderText("dX, dY")
+            offset_field.setToolTip("쉼표 또는 공백으로 구분 — 예: \"3, 5\".")
+            form.addRow("dX, dY", offset_field)
+        return form, offset_field
+
+    @staticmethod
+    def _parse_offset_line(
+        text: str, *, include_z: bool = True
+    ) -> tuple[float, float, float]:
+        """Parse an ``_build_offset_line_form`` line into ``(dx, dy, dz)`` -
+        2D callers explicitly discard a third token and always receive dz=0."""
+        tokens = [token for token in re.split(r"[,\s]+", text.strip()) if token]
+        values: list[float] = []
+        component_count = 3 if include_z else 2
+        for token in tokens[:component_count]:
+            try:
+                values.append(float(token))
+            except ValueError:
+                return (0.0, 0.0, 0.0)
+        while len(values) < 3:
+            values.append(0.0)
+        return (values[0], values[1], values[2])
+
     def _build_transform_copy_option_checkboxes(
         self, root: QVBoxLayout
     ) -> tuple[QCheckBox, QCheckBox]:
@@ -4851,17 +5072,18 @@ class ModelingInterfacePage(QFrame):
         section, root = self._section("Element Translate", show_title=False)
         hint = QLabel(
             "부재를 선택하면 양쪽 끝 노드와 함께 이동됩니다. dX/dY는 현재 작업평면의 "
-            "로컬 축 기준입니다."
+            "로컬 축, dZ는 그 평면의 법선(수직) 축 기준입니다."
         )
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
         root.addWidget(hint)
-        form, dx_field, dy_field = self._build_transform_offset_form()
+        form, offset_field = self._build_offset_line_form()
         root.addLayout(form)
         apply_button = QPushButton("선택 항목에 적용")
 
         def _apply() -> None:
-            self.canvas.transform_selected_nodes("move", dx_field.value(), dy_field.value())
+            dx, dy, dz = self._parse_offset_line(offset_field.text())
+            self.canvas.transform_selected_nodes("move", dx, dy, dz=dz)
 
         apply_button.clicked.connect(_apply)
         root.addWidget(apply_button)
@@ -4877,7 +5099,7 @@ class ModelingInterfacePage(QFrame):
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
         root.addWidget(hint)
-        form, dx_field, dy_field = self._build_transform_offset_form()
+        form, offset_field = self._build_offset_line_form()
         repeat_field = SafeSpinBox()
         repeat_field.setRange(1, 1000)
         form.addRow("복사 개수", repeat_field)
@@ -4886,11 +5108,25 @@ class ModelingInterfacePage(QFrame):
         apply_button = QPushButton("선택 항목에 적용")
 
         def _apply() -> None:
+            dx, dy, dz = self._parse_offset_line(
+                offset_field.text(), include_z=self._start_in_3d
+            )
+            if not self._start_in_3d:
+                self.canvas.transform_selected_nodes(
+                    "copy",
+                    dx,
+                    dy,
+                    repeat_field.value(),
+                    copy_node_attributes=copy_node_cb.isChecked(),
+                    copy_element_loads=copy_element_cb.isChecked(),
+                )
+                return
             self.canvas.transform_selected_nodes(
                 "copy",
-                dx_field.value(),
-                dy_field.value(),
+                dx,
+                dy,
                 repeat_field.value(),
+                dz=dz,
                 copy_node_attributes=copy_node_cb.isChecked(),
                 copy_element_loads=copy_element_cb.isChecked(),
             )
@@ -4906,7 +5142,7 @@ class ModelingInterfacePage(QFrame):
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
         root.addWidget(hint)
-        form, dx_field, dy_field = self._build_transform_offset_form()
+        form, offset_field = self._build_offset_line_form()
         repeat_field = SafeSpinBox()
         repeat_field.setRange(1, 1000)
         form.addRow("배열 개수", repeat_field)
@@ -4915,10 +5151,23 @@ class ModelingInterfacePage(QFrame):
         apply_button = QPushButton("선택 항목에 적용")
 
         def _apply() -> None:
+            dx, dy, dz = self._parse_offset_line(
+                offset_field.text(), include_z=self._start_in_3d
+            )
+            if not self._start_in_3d:
+                self.canvas.array_copy_selection(
+                    dx,
+                    dy,
+                    repeat_field.value(),
+                    copy_node_attributes=copy_node_cb.isChecked(),
+                    copy_element_loads=copy_element_cb.isChecked(),
+                )
+                return
             self.canvas.array_copy_selection(
-                dx_field.value(),
-                dy_field.value(),
+                dx,
+                dy,
                 repeat_field.value(),
+                dz=dz,
                 copy_node_attributes=copy_node_cb.isChecked(),
                 copy_element_loads=copy_element_cb.isChecked(),
             )
@@ -4945,16 +5194,35 @@ class ModelingInterfacePage(QFrame):
         repeat_field = SafeSpinBox()
         repeat_field.setRange(1, 1000)
         form.addRow("반복 개수", repeat_field)
+        dz_field: QDoubleSpinBox | None = None
+        if self._start_in_3d:
+            dz_field = self._number(0.0)
+            dz_field.setToolTip(
+                "반복마다 누적되는 법선(수직) 축 이동량 — 나선형 계단처럼 회전하면서 "
+                "동시에 올라가는 복사에 사용합니다. 0이면 순수 평면 회전 복사입니다."
+            )
+            form.addRow("반복당 dZ", dz_field)
         root.addLayout(form)
         copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
         apply_button = QPushButton("선택 항목에 적용")
 
         def _apply() -> None:
+            if dz_field is None:
+                self.canvas.rotate_copy_selection(
+                    center_x_field.value(),
+                    center_y_field.value(),
+                    angle_field.value(),
+                    repeat_field.value(),
+                    copy_node_attributes=copy_node_cb.isChecked(),
+                    copy_element_loads=copy_element_cb.isChecked(),
+                )
+                return
             self.canvas.rotate_copy_selection(
                 center_x_field.value(),
                 center_y_field.value(),
                 angle_field.value(),
                 repeat_field.value(),
+                dz=dz_field.value(),
                 copy_node_attributes=copy_node_cb.isChecked(),
                 copy_element_loads=copy_element_cb.isChecked(),
             )
@@ -5004,15 +5272,26 @@ class ModelingInterfacePage(QFrame):
         tab's Translate is for."""
         section, root = self._section("Node Translate", show_title=False)
         hint = QLabel("선택한 노드를 지정한 만큼 이동합니다.")
+        if self._start_in_3d:
+            hint.setText(
+                "선택한 노드를 지정한 만큼 이동합니다. dZ는 현재 작업평면의 "
+                "법선(수직) 축입니다."
+            )
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
         root.addWidget(hint)
-        form, dx_field, dy_field = self._build_transform_offset_form()
+        form, offset_field = self._build_offset_line_form()
         root.addLayout(form)
         apply_button = QPushButton("선택 항목에 적용")
 
         def _apply() -> None:
-            self.canvas.transform_selected_nodes("move", dx_field.value(), dy_field.value())
+            dx, dy, dz = self._parse_offset_line(
+                offset_field.text(), include_z=self._start_in_3d
+            )
+            if not self._start_in_3d:
+                self.canvas.transform_selected_nodes("move", dx, dy)
+                return
+            self.canvas.transform_selected_nodes("move", dx, dy, dz=dz)
 
         apply_button.clicked.connect(_apply)
         root.addWidget(apply_button)
@@ -5025,7 +5304,7 @@ class ModelingInterfacePage(QFrame):
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
         root.addWidget(hint)
-        form, dx_field, dy_field = self._build_transform_offset_form()
+        form, offset_field = self._build_offset_line_form()
         repeat_field = SafeSpinBox()
         repeat_field.setRange(1, 1000)
         form.addRow("복사 개수", repeat_field)
@@ -5034,11 +5313,25 @@ class ModelingInterfacePage(QFrame):
         apply_button = QPushButton("선택 항목에 적용")
 
         def _apply() -> None:
+            dx, dy, dz = self._parse_offset_line(
+                offset_field.text(), include_z=self._start_in_3d
+            )
+            if not self._start_in_3d:
+                self.canvas.transform_selected_nodes(
+                    "copy",
+                    dx,
+                    dy,
+                    repeat_field.value(),
+                    copy_node_attributes=copy_node_cb.isChecked(),
+                    copy_element_loads=copy_element_cb.isChecked(),
+                )
+                return
             self.canvas.transform_selected_nodes(
                 "copy",
-                dx_field.value(),
-                dy_field.value(),
+                dx,
+                dy,
                 repeat_field.value(),
+                dz=dz,
                 copy_node_attributes=copy_node_cb.isChecked(),
                 copy_element_loads=copy_element_cb.isChecked(),
             )
@@ -5054,7 +5347,7 @@ class ModelingInterfacePage(QFrame):
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
         root.addWidget(hint)
-        form, dx_field, dy_field = self._build_transform_offset_form()
+        form, offset_field = self._build_offset_line_form()
         repeat_field = SafeSpinBox()
         repeat_field.setRange(1, 1000)
         form.addRow("배열 개수", repeat_field)
@@ -5063,10 +5356,23 @@ class ModelingInterfacePage(QFrame):
         apply_button = QPushButton("선택 항목에 적용")
 
         def _apply() -> None:
+            dx, dy, dz = self._parse_offset_line(
+                offset_field.text(), include_z=self._start_in_3d
+            )
+            if not self._start_in_3d:
+                self.canvas.array_copy_selection(
+                    dx,
+                    dy,
+                    repeat_field.value(),
+                    copy_node_attributes=copy_node_cb.isChecked(),
+                    copy_element_loads=copy_element_cb.isChecked(),
+                )
+                return
             self.canvas.array_copy_selection(
-                dx_field.value(),
-                dy_field.value(),
+                dx,
+                dy,
                 repeat_field.value(),
+                dz=dz,
                 copy_node_attributes=copy_node_cb.isChecked(),
                 copy_element_loads=copy_element_cb.isChecked(),
             )
@@ -5093,16 +5399,35 @@ class ModelingInterfacePage(QFrame):
         repeat_field = SafeSpinBox()
         repeat_field.setRange(1, 1000)
         form.addRow("반복 개수", repeat_field)
+        dz_field: QDoubleSpinBox | None = None
+        if self._start_in_3d:
+            dz_field = self._number(0.0)
+            dz_field.setToolTip(
+                "반복마다 누적되는 법선(수직) 축 이동량 — 나선형 계단처럼 회전하면서 "
+                "동시에 올라가는 복사에 사용합니다. 0이면 순수 평면 회전 복사입니다."
+            )
+            form.addRow("반복당 dZ", dz_field)
         root.addLayout(form)
         copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
         apply_button = QPushButton("선택 항목에 적용")
 
         def _apply() -> None:
+            if dz_field is None:
+                self.canvas.rotate_copy_selection(
+                    center_x_field.value(),
+                    center_y_field.value(),
+                    angle_field.value(),
+                    repeat_field.value(),
+                    copy_node_attributes=copy_node_cb.isChecked(),
+                    copy_element_loads=copy_element_cb.isChecked(),
+                )
+                return
             self.canvas.rotate_copy_selection(
                 center_x_field.value(),
                 center_y_field.value(),
                 angle_field.value(),
                 repeat_field.value(),
+                dz=dz_field.value(),
                 copy_node_attributes=copy_node_cb.isChecked(),
                 copy_element_loads=copy_element_cb.isChecked(),
             )
@@ -6142,6 +6467,8 @@ class ModelingInterfacePage(QFrame):
             before = set(self.canvas.elements)
             self.canvas.continue_chain_to_node(tag)
             self._apply_active_element_to_new_members(set(self.canvas.elements) - before)
+        elif self.canvas.mode == "floor_pick":
+            self.canvas.add_floor_boundary_node(tag)
         else:
             self.canvas.selected_nodes = {tag}
             self.canvas.selected_elements.clear()
@@ -6161,7 +6488,15 @@ class ModelingInterfacePage(QFrame):
         self, node_tags: set[int], member_tags: set[int], additive: bool
     ) -> None:
         """Apply the QML viewport's projected rectangle selection to the
-        shared modeling canvas state, including the active selection filter."""
+        shared modeling canvas state, including the active selection filter.
+
+        A no-op while picking a floor boundary - a box has no click order,
+        so honoring it here would silently overwrite selected_nodes out from
+        under the ordered _floor_chain it is supposed to mirror. Only single
+        node clicks (_on_3d_node_picked) build a floor boundary.
+        """
+        if self.canvas.mode == "floor_pick":
+            return
         if not additive:
             self.canvas.selected_nodes.clear()
             self.canvas.selected_elements.clear()
@@ -6220,6 +6555,19 @@ class ModelingInterfacePage(QFrame):
         """
         if self.canvas.ndm != 3:
             return
+        if self.canvas.mode == "floor_pick":
+            # Wants node-picking (existing nodes only, never a new point on
+            # empty plane space - set_plane_picking_mode stays False) but,
+            # unlike plain select mode, WITH the crosshair cursor as a clear
+            # "you are placing a floor boundary" signal (requested: "적용
+            # 버튼을 누르면 마우스 포인터가 바뀌고"). Calling
+            # set_plane_picking_mode(False) first, then set_picking_mode(True)
+            # last, reuses the same two existing setters/cursor-ownership
+            # rule below to land on CrossCursor without turning plane-picking
+            # (new-point placement) on.
+            self.preview_3d.set_plane_picking_mode(False)
+            self.preview_3d.set_picking_mode(True)
+            return
         drawing = self.canvas.mode == "draw"
         # Both setters plant a cursor on the same QQuickWidget, so whichever
         # runs last wins - call the one that should *not* end up owning the
@@ -6258,6 +6606,9 @@ class ModelingInterfacePage(QFrame):
         """
         if self.canvas.mode == "draw":
             self._activate_select_tool()
+            return
+        if self.canvas.mode == "floor_pick":
+            self._cancel_floor_boundary_picking()
             return
         self.canvas.end_chain()
         self.canvas.clear_selection()

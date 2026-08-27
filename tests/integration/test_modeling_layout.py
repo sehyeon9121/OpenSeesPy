@@ -1703,6 +1703,7 @@ def test_truss_results_table_lists_joints_force_and_tension_compression_zero() -
         "절점 (i-j)",
         f"축력 N ({page._unit_system.force})",
         "상태",
+        f"σ ({page._unit_system.stress})",
     ]
 
     def row_for(element_tag: int) -> list[str]:

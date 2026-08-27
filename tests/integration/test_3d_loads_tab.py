@@ -4,6 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from openframe.app.shell.theme import apply_application_theme
@@ -591,3 +592,221 @@ def test_load_case_name_label_tracks_the_active_case() -> None:
     page._activate_load_tool()
 
     assert page.load_case_combo.currentText() == "LL_OFFICE"
+
+
+def _open_floor_form(page: ModelingInterfacePage) -> None:
+    page._activate_load_tool()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("floor"))
+
+
+def test_start_floor_boundary_picking_changes_the_3d_viewport_cursor_and_enables_node_picking() -> None:
+    """Regression test: _sync_picking_mode originally only branched on
+    "draw" vs everything-else, so floor_pick fell into the "everything else"
+    (plain select) case - whose cursor is actually the ordinary arrow, not a
+    crosshair (see _sync_picking_mode's own "whichever setter runs last
+    wins" comment) - silently failing the explicit requirement that the
+    cursor visibly change ("적용 버튼을 누르면 마우스 포인터가 바뀌고")."""
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    _open_floor_form(page)
+
+    page.load3d_floor_pick_start_button.click()
+
+    root = page.preview_3d.quick_widget.rootObject()
+    assert root is not None
+    assert page.preview_3d.quick_widget.cursor().shape() == Qt.CursorShape.CrossCursor
+    assert root.property("pickingEnabled") is True
+    # Must stay off - an empty-space click must never place a new point
+    # while picking a floor boundary (existing nodes only).
+    assert root.property("planePickingEnabled") is False
+
+
+def test_start_floor_boundary_picking_enters_floor_pick_mode_and_swaps_the_buttons() -> None:
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    _open_floor_form(page)
+
+    page.load3d_floor_pick_start_button.click()
+
+    assert page.canvas.mode == "floor_pick"
+    assert not page.load3d_floor_pick_start_button.isVisible()
+    assert page.load3d_floor_pick_finish_button.isVisible()
+    assert not page.load3d_floor_pick_finish_button.isEnabled()  # 0 nodes picked yet
+    assert page.load3d_floor_pick_cancel_button.isVisible()
+
+
+def test_clicking_3d_nodes_while_picking_accumulates_the_boundary_in_click_order() -> None:
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(4.0, 4.0)
+    _open_floor_form(page)
+    page.load3d_floor_pick_start_button.click()
+
+    page._on_3d_node_picked(c, 0, 0)
+    page._on_3d_node_picked(a, 0, 0)
+    assert not page.load3d_floor_pick_finish_button.isEnabled()  # only 2 so far
+    page._on_3d_node_picked(b, 0, 0)
+
+    assert page.canvas._floor_chain == [c, a, b]
+    assert page.load3d_floor_pick_finish_button.isEnabled()
+    assert "3" in page.load3d_target_count_label.text()
+
+
+def test_a_3d_box_select_while_picking_never_corrupts_the_ordered_floor_chain() -> None:
+    """A drag-box selection has no click order, so it must not silently
+    overwrite selected_nodes (and desync it from _floor_chain) while
+    floor_pick is active - only single node clicks build the boundary."""
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    d = page.canvas.add_node(10.0, 10.0)
+    _open_floor_form(page)
+    page.load3d_floor_pick_start_button.click()
+    page._on_3d_node_picked(a, 0, 0)
+    page._on_3d_node_picked(b, 0, 0)
+
+    page._on_3d_box_selected({d}, set(), False)
+
+    assert page.canvas._floor_chain == [a, b]
+    assert page.canvas.selected_nodes == {a, b}
+
+
+def test_finishing_creates_a_floor_load_entry_with_click_order_preserved() -> None:
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(4.0, 4.0)
+    _open_floor_form(page)
+    page.load3d_floor_pick_start_button.click()
+    page._on_3d_node_picked(b, 0, 0)
+    page._on_3d_node_picked(c, 0, 0)
+    page._on_3d_node_picked(a, 0, 0)
+
+    page.load3d_floor_pick_finish_button.click()
+
+    entries = [e for e in page.canvas.load_entries.values() if e.kind == "floor"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.target == (b, c, a)  # click order, never sorted
+    assert entry.payload.target_nodes == (b, c, a)
+    # Back to the normal resting state.
+    assert page.canvas.mode == "select"
+    assert page.load3d_floor_pick_start_button.isVisible()
+    assert not page.load3d_floor_pick_finish_button.isVisible()
+    assert not page.load3d_floor_pick_cancel_button.isVisible()
+
+
+def test_finishing_without_an_active_load_case_keeps_the_boundary_instead_of_discarding_it() -> None:
+    """No Load Case selected must warn (matching _apply_load3d's own
+    case_id-first check) without throwing away the just-clicked boundary -
+    the user can pick a case and press 완료 again, not re-click every node."""
+    page = _page()  # no add_load_case call - active_load_case_id stays None
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(4.0, 4.0)
+    _open_floor_form(page)
+    page.load3d_floor_pick_start_button.click()
+    page._on_3d_node_picked(a, 0, 0)
+    page._on_3d_node_picked(b, 0, 0)
+    page._on_3d_node_picked(c, 0, 0)
+
+    page.load3d_floor_pick_finish_button.click()
+
+    assert [e for e in page.canvas.load_entries.values() if e.kind == "floor"] == []
+    assert "Load Case" in page.load3d_status_label.text()
+    # Still mid-pick - nothing was thrown away.
+    assert page.canvas.mode == "floor_pick"
+    assert page.canvas._floor_chain == [a, b, c]
+
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    page.load3d_floor_pick_finish_button.click()
+
+    entries = [e for e in page.canvas.load_entries.values() if e.kind == "floor"]
+    assert len(entries) == 1
+    assert entries[0].target == (a, b, c)
+
+
+def test_canceling_floor_boundary_picking_discards_it_and_creates_no_entry() -> None:
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(4.0, 4.0)
+    _open_floor_form(page)
+    page.load3d_floor_pick_start_button.click()
+    page._on_3d_node_picked(a, 0, 0)
+    page._on_3d_node_picked(b, 0, 0)
+    page._on_3d_node_picked(c, 0, 0)
+
+    page.load3d_floor_pick_cancel_button.click()
+
+    assert [e for e in page.canvas.load_entries.values() if e.kind == "floor"] == []
+    assert page.canvas.mode == "select"
+    assert page.canvas.selected_nodes == set()
+    assert page.load3d_floor_pick_start_button.isVisible()
+    assert not page.load3d_floor_pick_finish_button.isVisible()
+
+
+def test_escape_cancels_floor_boundary_picking_the_same_way_as_the_cancel_button() -> None:
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(4.0, 4.0)
+    _open_floor_form(page)
+    page.load3d_floor_pick_start_button.click()
+    page._on_3d_node_picked(a, 0, 0)
+    page._on_3d_node_picked(b, 0, 0)
+    page._on_3d_node_picked(c, 0, 0)
+
+    page._handle_escape_shortcut_3d()
+
+    assert page.canvas.mode == "select"
+    assert page.canvas._floor_chain == []
+    assert page.load3d_floor_pick_start_button.isVisible()
+    assert not page.load3d_floor_pick_finish_button.isVisible()
+
+
+def test_ordinary_generic_selection_floor_apply_flow_still_works_unchanged() -> None:
+    """The pre-existing "select nodes generically, then 적용" path must keep
+    working exactly as before - the click-picking tool is an addition, not a
+    replacement."""
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(4.0, 4.0)
+    page.canvas.selected_nodes = {a, b, c}
+    page.canvas.selection_changed.emit()
+    _open_floor_form(page)
+
+    page.load3d_apply_button.click()
+
+    entries = [e for e in page.canvas.load_entries.values() if e.kind == "floor"]
+    assert len(entries) == 1
+    assert entries[0].target == tuple(sorted({a, b, c}))
+
+
+def test_reselecting_an_existing_floor_load_still_uses_plain_selection() -> None:
+    """_reselect_load_entry_target must stay untouched by the new picking
+    tool - editing an existing floor load still re-selects its nodes
+    generically rather than re-entering floor_pick mode."""
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(4.0, 4.0)
+    page.canvas.selected_nodes = {a, b, c}
+    page.canvas.selection_changed.emit()
+    _open_floor_form(page)
+    page.load3d_apply_button.click()
+    entry_id = next(e.id for e in page.canvas.load_entries.values() if e.kind == "floor")
+
+    page._reselect_load_entry_target(entry_id)
+
+    assert page.canvas.mode != "floor_pick"
+    assert page.canvas.selected_nodes == {a, b, c}

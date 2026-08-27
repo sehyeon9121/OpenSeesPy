@@ -6,7 +6,7 @@ import pytest
 from _solve_helpers import solve_and_wait
 from PySide6.QtCore import QObject, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton
 
 from openframe.features.model.drawing import PlaneKind, WorkPlane
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
@@ -786,3 +786,174 @@ def test_array_and_rotate_copy_also_preserve_true_height_off_the_active_plane() 
     rotate_copies = [node for tag, node in canvas2.nodes.items() if tag not in (left2, right2)]
     assert len(rotate_copies) == 2
     assert all(node.z == pytest.approx(3.0) for node in rotate_copies)
+
+
+def test_move_and_copy_can_now_offset_along_the_plane_normal_axis() -> None:
+    """Regression test: dx/dy could only move within the active work plane -
+    there was no way to reach the third (out-of-plane) axis at all, reported
+    as "복사 기능에서 z축으로 복사하는 기능이 없음" / "노드 부분에서도 z축으로
+    복사, 이동, 정렬, 회전 그런 기능도 element에서도 없는걸 확인". The active
+    plane here is the default ground XY plane, so its normal is Z."""
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    node = canvas._add_node_at((1.0, 2.0, 0.0))
+
+    canvas.selected_nodes = {node}
+    canvas.transform_selected_nodes("move", 0.0, 0.0, dz=5.0)
+    assert canvas.nodes[node].z == pytest.approx(5.0)
+    assert canvas.nodes[node].x == pytest.approx(1.0)
+    assert canvas.nodes[node].y == pytest.approx(2.0)
+
+    canvas2 = _canvas()
+    canvas2.enter_3d_mode()
+    left = canvas2._add_node_at((0.0, 0.0, 0.0))
+    right = canvas2._add_node_at((4.0, 0.0, 0.0))
+    member = canvas2.add_member(left, right)
+    canvas2.selected_nodes = {left, right}
+    canvas2.selected_elements = {member}
+    canvas2.transform_selected_nodes("copy", 0.0, 0.0, repeat=1, dz=3.0)
+    copies = [node for tag, node in canvas2.nodes.items() if tag not in (left, right)]
+    assert len(copies) == 2
+    assert {round(node.z, 6) for node in copies} == {3.0}
+    assert len(canvas2.elements) == 2  # original span + the copied one
+
+
+def test_array_and_rotate_copy_can_also_step_along_the_plane_normal_axis() -> None:
+    """Same dz support as move/copy, for array_copy_selection (repeating a
+    whole storey's frame straight up) and rotate_copy_selection (a
+    helical/spiral step, e.g. a spiral stair)."""
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    left = canvas._add_node_at((0.0, 0.0, 0.0))
+    right = canvas._add_node_at((4.0, 0.0, 0.0))
+    member = canvas.add_member(left, right)
+    canvas.selected_nodes = {left, right}
+    canvas.selected_elements = {member}
+    canvas.array_copy_selection(0.0, 0.0, count=2, dz=3.0)
+    heights = sorted(
+        round(node.z, 6) for tag, node in canvas.nodes.items() if tag not in (left, right)
+    )
+    assert heights == [3.0, 3.0, 6.0, 6.0]
+
+    canvas2 = _canvas()
+    canvas2.enter_3d_mode()
+    node = canvas2._add_node_at((10.0, 0.0, 0.0))
+    canvas2.selected_nodes = {node}
+    canvas2.rotate_copy_selection(0.0, 0.0, 90.0, count=2, dz=1.0)
+    steps = sorted(
+        round(n.z, 6) for tag, n in canvas2.nodes.items() if tag != node
+    )
+    assert steps == [1.0, 2.0]
+
+
+def _find_offset_line(section) -> QLineEdit:
+    field = section.findChild(QLineEdit)
+    assert field is not None
+    return field
+
+
+def _find_apply_button(section) -> QPushButton:
+    button = section.findChild(QPushButton)
+    assert button is not None
+    return button
+
+
+def _section_label_texts(section) -> list[str]:
+    return [label.text() for label in section.findChildren(QLabel)]
+
+
+def test_2d_transform_panels_do_not_expose_or_apply_a_z_offset() -> None:
+    page = _page(start_in_3d=False)
+
+    for key in (
+        "translate_node",
+        "duplicate_node",
+        "array_node",
+        "duplicate",
+        "array",
+    ):
+        section = page.category_stack.widget(page.category_pages[key])
+        offset_field = _find_offset_line(section)
+        assert offset_field.text() == "0, 0"
+        assert offset_field.placeholderText() == "dX, dY"
+        assert all("dZ" not in text for text in _section_label_texts(section))
+
+    for key in ("move", "rotate_node", "rotate"):
+        section = page.category_stack.widget(page.category_pages[key])
+        assert all("dZ" not in text for text in _section_label_texts(section))
+
+    node = page.canvas._add_node_at((1.0, 2.0))
+    page.canvas.selected_nodes = {node}
+    section = page.category_stack.widget(page.category_pages["translate_node"])
+    offset_field = _find_offset_line(section)
+    offset_field.setText("3, -1, 99")
+    QTest.mouseClick(_find_apply_button(section), Qt.MouseButton.LeftButton)
+
+    moved = page.canvas.nodes[node]
+    assert moved.x == pytest.approx(4.0)
+    assert moved.y == pytest.approx(1.0)
+    assert moved.z == pytest.approx(0.0)
+
+
+def test_3d_transform_panels_keep_three_axis_inputs() -> None:
+    page = _page(start_in_3d=True)
+
+    for key in (
+        "move",
+        "duplicate",
+        "array",
+        "translate_node",
+        "duplicate_node",
+        "array_node",
+    ):
+        section = page.category_stack.widget(page.category_pages[key])
+        offset_field = _find_offset_line(section)
+        assert offset_field.text() == "0, 0, 0"
+        assert offset_field.placeholderText() == "dX, dY, dZ"
+
+    for key in ("rotate_node", "rotate"):
+        section = page.category_stack.widget(page.category_pages[key])
+        assert "반복당 dZ" in _section_label_texts(section)
+
+
+def test_element_translate_panel_parses_a_single_dx_dy_dz_line() -> None:
+    """End-to-end regression test for the single-line "dX, dY, dZ" input
+    that replaced the old two-spinbox dX/dY form (requested: "dx, dy가
+    따로 되어 있어서 불편하다 ... 0,0,0 0,0,0 이런식으로 입력하게 바꿔줘"),
+    including the new dZ (plane-normal) offset it also unlocked."""
+    page = _page(start_in_3d=True)
+    node = page.canvas._add_node_at((1.0, 2.0, 0.0))
+    page.canvas.selected_nodes = {node}
+
+    section = page.category_stack.widget(page.category_pages["move"])
+    page.category_stack.setCurrentWidget(section)
+    offset_field = _find_offset_line(section)
+    assert offset_field.text() == "0, 0, 0"
+    offset_field.setText("3, -1, 5")
+    QTest.mouseClick(_find_apply_button(section), Qt.MouseButton.LeftButton)
+
+    moved = page.canvas.nodes[node]
+    assert moved.x == pytest.approx(4.0)
+    assert moved.y == pytest.approx(1.0)
+    assert moved.z == pytest.approx(5.0)
+
+
+def test_node_array_copy_panel_accepts_a_dz_offset() -> None:
+    """Same single-line input, for the Node tab's Array Copy page - repeat
+    count together with a dZ offset must step a copy up in Z each time."""
+    page = _page(start_in_3d=True)
+    left = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    right = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    page.canvas.add_member(left, right)
+    page.canvas.selected_nodes = {left, right}
+
+    section = page.category_stack.widget(page.category_pages["array_node"])
+    page.category_stack.setCurrentWidget(section)
+    offset_field = _find_offset_line(section)
+    offset_field.setText("0, 0, 3")
+    QTest.mouseClick(_find_apply_button(section), Qt.MouseButton.LeftButton)
+
+    heights = sorted(
+        round(node.z, 6) for tag, node in page.canvas.nodes.items() if tag not in (left, right)
+    )
+    assert heights == [3.0, 3.0]

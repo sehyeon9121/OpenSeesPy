@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick3D
-import QtQuick3D.Helpers
 
 Item {
     id: root
@@ -306,49 +305,6 @@ Item {
         // ground_y/ground_width/ground_depth properties stay (see
         // quick3d_scene_bridge.py) since support glyphs still position
         // themselves relative to ground_y.
-
-        // Origin coordinate plane - unlike the removed ground plate above,
-        // this is a faint wireframe grid (Qt's own editor-grid helper), not
-        // a filled/opaque surface, plus two thin colored lines through the
-        // structural (0, 0, 0) origin so the user always has a fixed visual
-        // anchor for "where is the origin" (requested: "0,0,0 부분의 좌표계
-        // 평면으로 만들어주면 원점이 어딘지 편할 것 같아", MIDAS's own origin
-        // grid given as a reference). AxisHelper's own built-in axis lines
-        // are disabled (enableAxisLines: false) in favor of the two Models
-        // below, so the colors match the 2D canvas's existing X=red/Y=green
-        // convention (canvas_glyphs.py) exactly - AxisHelper's default
-        // green line runs along view Y (structural +Z, vertical), not
-        // structural Y, which would have been a confusing color clash here.
-        AxisHelper {
-            enableAxisLines: false
-            enableXZGrid: true
-            gridColor: "#c7d2e0"
-            gridOpacity: 0.35
-            scale: {
-                const s = Math.max(sceneBridge.extent * 0.02, 0.05)
-                return Qt.vector3d(s, s, s)
-            }
-        }
-        Model {
-            // Structural +X - red, matching the 2D canvas's X axis line.
-            source: "#Cube"
-            scale: Qt.vector3d(Math.max(sceneBridge.extent * 0.6, 2.0), 0.01, 0.01)
-            materials: DefaultMaterial {
-                lighting: DefaultMaterial.NoLighting
-                diffuseColor: "#dc2626"
-            }
-        }
-        Model {
-            // Structural +Y - green, matching the 2D canvas's Y axis line.
-            // View space maps structural Y to Z (see _view_coordinates), so
-            // this line is scaled along view Z, not view X.
-            source: "#Cube"
-            scale: Qt.vector3d(0.01, 0.01, Math.max(sceneBridge.extent * 0.6, 2.0))
-            materials: DefaultMaterial {
-                lighting: DefaultMaterial.NoLighting
-                diffuseColor: "#16a34a"
-            }
-        }
 
         Repeater3D {
             // MIDAS-style support glyphs: block=fixed, cone=pin, cone+rollers=roller.
@@ -729,6 +685,127 @@ Item {
     }
 
     Canvas {
+        // Global structural axes attached to the model's real (0, 0, 0)
+        // origin. Unlike the corner orientation gizmo below, these axes are
+        // projected from model space and therefore move, orbit and zoom with
+        // the structure. Structural coordinates map to the Quick3D scene as
+        // (x, y, z) -> (x, z, -y).
+        id: worldOriginAxes
+        objectName: "worldOriginAxes"
+        z: 8
+        anchors.fill: parent
+        property real axisLength: Math.max(sceneBridge.extent * 0.18, 0.35)
+        property real trackedYaw: root.cameraYaw
+        property real trackedPitch: root.cameraPitch
+        property real trackedDistance: root.cameraDistance
+        property real trackedPanX: root.panX
+        property real trackedPanY: root.panY
+        property real trackedCenterX: sceneBridge.center_x
+        property real trackedCenterY: sceneBridge.center_y
+        property real trackedCenterZ: sceneBridge.center_z
+
+        function structuralPoint(x, y, z) {
+            return view3d.mapFrom3DScene(Qt.vector3d(x, z, -y))
+        }
+
+        function usablePoint(point) {
+            return isFinite(point.x) && isFinite(point.y)
+        }
+
+        function drawWorldArrow(context, origin, endpoint, color, label) {
+            let dx = endpoint.x - origin.x
+            let dy = endpoint.y - origin.y
+            let screenLength = Math.sqrt(dx * dx + dy * dy)
+            if (screenLength < 2)
+                return
+
+            let angle = Math.atan2(dy, dx)
+            context.lineCap = "round"
+            context.strokeStyle = "rgba(255, 255, 255, 0.92)"
+            context.lineWidth = 5.2
+            context.beginPath()
+            context.moveTo(origin.x, origin.y)
+            context.lineTo(endpoint.x, endpoint.y)
+            context.stroke()
+
+            context.strokeStyle = color
+            context.fillStyle = color
+            context.lineWidth = 2.6
+            context.beginPath()
+            context.moveTo(origin.x, origin.y)
+            context.lineTo(endpoint.x, endpoint.y)
+            context.stroke()
+            context.beginPath()
+            context.moveTo(endpoint.x, endpoint.y)
+            context.lineTo(
+                endpoint.x - 9 * Math.cos(angle - 0.48),
+                endpoint.y - 9 * Math.sin(angle - 0.48)
+            )
+            context.lineTo(
+                endpoint.x - 9 * Math.cos(angle + 0.48),
+                endpoint.y - 9 * Math.sin(angle + 0.48)
+            )
+            context.closePath()
+            context.fill()
+
+            context.font = "700 12px Segoe UI"
+            context.textAlign = "center"
+            context.textBaseline = "middle"
+            context.lineWidth = 3.5
+            let labelX = endpoint.x + 12 * Math.cos(angle)
+            let labelY = endpoint.y + 12 * Math.sin(angle)
+            context.strokeStyle = "rgba(255, 255, 255, 0.96)"
+            context.strokeText(label, labelX, labelY)
+            context.fillText(label, labelX, labelY)
+        }
+
+        onPaint: {
+            let context = getContext("2d")
+            context.clearRect(0, 0, width, height)
+            let origin = structuralPoint(0, 0, 0)
+            let xEnd = structuralPoint(axisLength, 0, 0)
+            let yEnd = structuralPoint(0, axisLength, 0)
+            let zEnd = structuralPoint(0, 0, axisLength)
+            if (!usablePoint(origin) || !usablePoint(xEnd)
+                    || !usablePoint(yEnd) || !usablePoint(zEnd))
+                return
+
+            // Draw the axes farthest from the camera first so overlaps remain
+            // legible around the origin.
+            drawWorldArrow(context, origin, yEnd, "#16a34a", "Y")
+            drawWorldArrow(context, origin, zEnd, "#2563eb", "Z")
+            drawWorldArrow(context, origin, xEnd, "#dc2626", "X")
+
+            context.fillStyle = "#334155"
+            context.strokeStyle = "rgba(255, 255, 255, 0.96)"
+            context.lineWidth = 3
+            context.beginPath()
+            context.arc(origin.x, origin.y, 4.2, 0, Math.PI * 2)
+            context.stroke()
+            context.fill()
+            context.font = "600 10px Segoe UI"
+            context.textAlign = "left"
+            context.textBaseline = "top"
+            context.lineWidth = 3
+            context.strokeText("0,0,0", origin.x + 7, origin.y + 7)
+            context.fillText("0,0,0", origin.x + 7, origin.y + 7)
+        }
+
+        onAxisLengthChanged: requestPaint()
+        onTrackedYawChanged: requestPaint()
+        onTrackedPitchChanged: requestPaint()
+        onTrackedDistanceChanged: requestPaint()
+        onTrackedPanXChanged: requestPaint()
+        onTrackedPanYChanged: requestPaint()
+        onTrackedCenterXChanged: requestPaint()
+        onTrackedCenterYChanged: requestPaint()
+        onTrackedCenterZChanged: requestPaint()
+        onWidthChanged: requestPaint()
+        onHeightChanged: requestPaint()
+        Component.onCompleted: requestPaint()
+    }
+
+    Canvas {
         // CAD-style orientation triad.  It lives in screen space, so zooming,
         // fitting or working far away from the structural origin never makes
         // it dominate the model.  Structural axes are mapped to the Quick3D
@@ -737,14 +814,15 @@ Item {
         id: orientationGizmo
         objectName: "orientationGizmo"
         z: 10
-        width: 104
-        height: 104
+        width: 112
+        height: 118
         anchors.top: parent.top
         anchors.right: parent.right
         anchors.topMargin: 12
         anchors.rightMargin: 12
         property real yaw: root.cameraYaw
         property real pitch: root.cameraPitch
+        property string hoverTarget: ""
 
         function projectedAxis(x, y, z) {
             let yawRadians = yaw * Math.PI / 180
@@ -787,7 +865,57 @@ Item {
             context.font = "700 11px Segoe UI"
             context.textAlign = "center"
             context.textBaseline = "middle"
-            context.fillText(label, endX + 9 * Math.cos(angle), endY + 9 * Math.sin(angle))
+            let labelX = endX + 9 * Math.cos(angle)
+            let labelY = endY + 9 * Math.sin(angle)
+            if (hoverTarget === label) {
+                context.globalAlpha = 0.16
+                context.beginPath()
+                context.arc(labelX, labelY, 11, 0, Math.PI * 2)
+                context.fill()
+                context.globalAlpha = 1.0
+            }
+            context.fillText(label, labelX, labelY)
+        }
+
+        function axisEndpoint(axis) {
+            let length = 31
+            let magnitude = Math.max(Math.sqrt(axis.x * axis.x + axis.y * axis.y), 0.28)
+            return {
+                x: 56 + axis.x / magnitude * length,
+                y: 56 + axis.y / magnitude * length
+            }
+        }
+
+        function targetAt(px, py) {
+            let candidates = [
+                { name: "X", point: axisEndpoint(projectedAxis(1, 0, 0)) },
+                { name: "Y", point: axisEndpoint(projectedAxis(0, 0, -1)) },
+                { name: "Z", point: axisEndpoint(projectedAxis(0, 1, 0)) }
+            ]
+            let best = ""
+            let bestDistance = 18
+            for (let index = 0; index < candidates.length; ++index) {
+                let dx = px - candidates[index].point.x
+                let dy = py - candidates[index].point.y
+                let distance = Math.sqrt(dx * dx + dy * dy)
+                if (distance < bestDistance) {
+                    bestDistance = distance
+                    best = candidates[index].name
+                }
+            }
+            let originDistance = Math.sqrt((px - 56) * (px - 56) + (py - 56) * (py - 56))
+            return originDistance < 13 ? "ISO" : best
+        }
+
+        function activateTarget(target) {
+            if (target === "X")
+                root.setPreset("yz")
+            else if (target === "Y")
+                root.setPreset("xz")
+            else if (target === "Z")
+                root.setPreset("xy")
+            else if (target === "ISO")
+                root.setPreset("iso")
         }
 
         onPaint: {
@@ -797,7 +925,7 @@ Item {
             context.strokeStyle = "rgba(196, 197, 213, 0.95)"
             context.lineWidth = 1
             context.beginPath()
-            context.arc(52, 52, 46, 0, Math.PI * 2)
+            context.arc(56, 56, 46, 0, Math.PI * 2)
             context.fill()
             context.stroke()
 
@@ -808,16 +936,47 @@ Item {
             ]
             axes.sort(function(a, b) { return b.vector.depth - a.vector.depth })
             for (let index = 0; index < axes.length; ++index)
-                drawArrow(context, 52, 58, axes[index].vector, axes[index].color, axes[index].label)
+                drawArrow(context, 56, 56, axes[index].vector, axes[index].color, axes[index].label)
 
             context.fillStyle = "#455568"
             context.beginPath()
-            context.arc(52, 58, 3.2, 0, Math.PI * 2)
+            context.arc(56, 56, hoverTarget === "ISO" ? 5.2 : 3.2, 0, Math.PI * 2)
             context.fill()
+
+            context.fillStyle = "#64748b"
+            context.font = "700 9px Segoe UI"
+            context.textAlign = "center"
+            context.textBaseline = "middle"
+            context.fillText("GLOBAL", 56, 111)
         }
         onYawChanged: requestPaint()
         onPitchChanged: requestPaint()
         Component.onCompleted: requestPaint()
+
+        MouseArea {
+            id: orientationMouseArea
+            objectName: "orientationGizmoMouseArea"
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
+            hoverEnabled: true
+            preventStealing: true
+            cursorShape: parent.hoverTarget === ""
+                ? Qt.ArrowCursor : Qt.PointingHandCursor
+
+            onPositionChanged: function(mouse) {
+                parent.hoverTarget = parent.targetAt(mouse.x, mouse.y)
+                parent.requestPaint()
+            }
+            onExited: {
+                parent.hoverTarget = ""
+                parent.requestPaint()
+            }
+            onClicked: function(mouse) {
+                let target = parent.targetAt(mouse.x, mouse.y)
+                if (target !== "")
+                    parent.activateTarget(target)
+            }
+        }
     }
 
     MouseArea {

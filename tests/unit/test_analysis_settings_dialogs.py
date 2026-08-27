@@ -14,6 +14,7 @@ from openframe.features.model.presentation.analysis_settings_dialogs import (
     NonlinearStaticSettingsDialog,
     TimeHistorySettingsDialog,
 )
+from openframe.infrastructure.ground_motions import BuiltInGroundMotionCatalog
 
 
 def _app() -> None:
@@ -81,9 +82,18 @@ def test_nonlinear_dialog_defaults_to_load_control() -> None:
 
 def test_time_history_dialog_round_trips_one_active_direction() -> None:
     _app()
+    record = BuiltInGroundMotionCatalog().list_records()[0]
     dialog = TimeHistorySettingsDialog(
         {
-            "directions": {"X": {"active": True, "path": "elcentro.txt", "scale_factor": 1.2}},
+            "directions": {
+                "X": {
+                    "active": True,
+                    "source": "built_in",
+                    "record_id": record.record_id,
+                    "path": str(record.path),
+                    "scale_factor": 1.2,
+                }
+            },
             "duration": 20.0,
             "dt": 0.005,
             "damping_ratio": 0.03,
@@ -94,7 +104,15 @@ def test_time_history_dialog_round_trips_one_active_direction() -> None:
 
     options = dialog.result_options()
 
-    assert options["directions"]["X"] == {"active": True, "path": "elcentro.txt", "scale_factor": 1.2}
+    assert options["directions"]["X"]["active"] is True
+    assert options["directions"]["X"]["path"] == str(record.path)
+    assert options["directions"]["X"]["record_id"] == record.record_id
+    assert options["directions"]["X"]["source"] == "built_in"
+    assert options["directions"]["X"]["scale_factor"] == 1.2
+    row = dialog.ground_motion_rows["X"]
+    assert row.active_motion() is not None
+    assert row.preview._values
+    assert row.readout_values["NPTS"].text() == str(record.npts)
     assert options["directions"]["Y"]["active"] is False
     assert options["duration"] == 20.0
     assert options["dt"] == 0.005

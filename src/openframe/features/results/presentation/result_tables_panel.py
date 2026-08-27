@@ -284,6 +284,29 @@ class ResultTablesPanel(QFrame):
                     QTableWidgetItem(str(value) if column == 0 else f"{value:.6g}"),
                 )
 
+    def _axial_stress(self, element_tag: int, axial_force: float) -> str:
+        """σ = N / A for one end of a member - "-" (not 0 or a crash) when the
+        member has no section assigned yet, or an unusable/non-positive A,
+        matching this panel's existing "no data yet" convention elsewhere.
+        Tension/compression sign is whatever ``axial_force`` already carries
+        (this app's own local-force sign convention) - never flipped here.
+        Values already live in the model's current unit system by the time
+        they reach this panel (see ``set_unit_system``/``UnitConversionFactors``),
+        so N/A is already a stress in that same system - no separate
+        conversion is needed, only the ``unit.stress`` label.
+        """
+        model = self._model
+        member = None if model is None else model.elements.get(element_tag)
+        if member is None:
+            return "-"
+        try:
+            area = float(member.properties["A"])
+        except (KeyError, TypeError, ValueError):
+            return "-"
+        if area <= 0.0:
+            return "-"
+        return f"{axial_force / area:.6g}"
+
     def _refresh_member_forces(self) -> None:
         model = self._model
         is_3d = model is not None and model.ndm == 3
@@ -295,6 +318,7 @@ class ResultTablesPanel(QFrame):
 
         unit = self._unit_system
         result = self._result
+        stress_header = f"σ ({unit.stress})"
         if is_3d:
             width = 6
             headers = [
@@ -305,10 +329,17 @@ class ResultTablesPanel(QFrame):
                 f"T ({unit.moment})",
                 f"My ({unit.moment})",
                 f"Mz ({unit.moment})",
+                stress_header,
             ]
         else:
             width = 3
-            headers = ["ELEMENT", f"N ({unit.force})", f"V ({unit.force})", f"M ({unit.moment})"]
+            headers = [
+                "ELEMENT",
+                f"N ({unit.force})",
+                f"V ({unit.force})",
+                f"M ({unit.moment})",
+                stress_header,
+            ]
 
         elements = (
             []
@@ -336,6 +367,15 @@ class ResultTablesPanel(QFrame):
                 self.member_force_j_table.setItem(
                     row, column + 1, QTableWidgetItem(f"{values[width + column]:.6g}")
                 )
+            stress_column = width + 1
+            self.member_force_i_table.setItem(
+                row, stress_column,
+                QTableWidgetItem(self._axial_stress(element.element_tag, values[0])),
+            )
+            self.member_force_j_table.setItem(
+                row, stress_column,
+                QTableWidgetItem(self._axial_stress(element.element_tag, values[width])),
+            )
 
     def _refresh_truss_member_forces(self) -> None:
         """Member / i-j joints / axial force / tension-compression-zero — what a
@@ -345,9 +385,9 @@ class ResultTablesPanel(QFrame):
         result = self._result
         model = self._model
         table = self.member_force_truss_table
-        table.setColumnCount(4)
+        table.setColumnCount(5)
         table.setHorizontalHeaderLabels(
-            ("부재", "절점 (i-j)", f"축력 N ({unit.force})", "상태")
+            ("부재", "절점 (i-j)", f"축력 N ({unit.force})", "상태", f"σ ({unit.stress})")
         )
         elements = (
             []
@@ -370,8 +410,9 @@ class ResultTablesPanel(QFrame):
             value = values.get(element.element_tag, 0.0)
             is_zero = abs(value) <= noise_floor
             status = "0부재" if is_zero else "인장" if value > 0.0 else "압축"
+            stress_text = self._axial_stress(element.element_tag, value)
             for column, text in enumerate(
-                (str(element.element_tag), joints, f"{value:.6g}", status)
+                (str(element.element_tag), joints, f"{value:.6g}", status, stress_text)
             ):
                 table.setItem(row, column, QTableWidgetItem(text))
 

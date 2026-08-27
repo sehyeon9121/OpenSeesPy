@@ -24,21 +24,26 @@ no translation.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
-    QLineEdit,
-    QPushButton,
+    QLabel,
     QRadioButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from openframe.features.analysis.presentation.time_history_direction_row import (
+    TimeHistoryDirectionRow,
+)
 from openframe.features.model.presentation.safe_spinbox import SafeDoubleSpinBox, SafeSpinBox
+from openframe.infrastructure.ground_motions import BuiltInGroundMotionCatalog
 
 
 def _float_field(
@@ -152,7 +157,7 @@ class NonlinearStaticSettingsDialog(QDialog):
         for index, label in enumerate(self._DOF_LABELS, start=1):
             self.control_dof.addItem(label, index)
         dof_index = self.control_dof.findData(int(options.get("control_dof", 1)))
-        self.control_dof.setCurrentIndex(dof_index if dof_index >= 0 else 0)
+        self.control_dof.setCurrentIndex(max(dof_index, 0))
         form.addRow("제어 자유도", self.control_dof)
         layout.addLayout(form)
 
@@ -206,13 +211,13 @@ class NonlinearStaticSettingsDialog(QDialog):
 
 
 class TimeHistorySettingsDialog(QDialog):
-    """Cut down hard from SETUP's own 7-card Time History editor (Ground
-    Motion/Analysis Time/Damping/Time Integration/Solution Strategy/Adaptive
-    Recovery/Pre-check) to the fields that capture the run's actual intent -
-    which directions, what record, how strong, how long, how damped. The
-    rest (integration scheme details, solver strategy, adaptive recovery)
-    stays at that function's own sensible defaults until a real execution
-    bridge exists to justify exposing them here too.
+    """Time History intent plus the same ground-motion workflow as SETUP.
+
+    Each 3D direction reuses :class:`TimeHistoryDirectionRow`, so the compact
+    canvas dialog and the imported-OpenSeesPy workflow share the bundled
+    record library, custom-file parser, PGA/unit readouts, scaling and the
+    acceleration-time preview instead of drifting into two different tools.
+    Integration/solver recovery controls remain on the precision SETUP page.
     """
 
     _DIRECTIONS = ("X", "Y", "Z")
@@ -220,31 +225,51 @@ class TimeHistorySettingsDialog(QDialog):
     def __init__(self, options: dict[str, object] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Time History Analysis Settings")
+        self.resize(980, 780)
         options = options or {}
         directions = options.get("directions", {}) if isinstance(options.get("directions"), dict) else {}
         layout = QVBoxLayout(self)
 
+        note = QLabel(
+            "방향을 활성화한 뒤 Built-in 내장 지진파 또는 Imported File을 선택하세요. "
+            "선택한 기록의 시간 간격, 지속시간, PGA와 실제 적용 파형을 바로 확인할 수 있습니다."
+        )
+        note.setObjectName("secondaryText")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._catalog = BuiltInGroundMotionCatalog()
+        unit_system = getattr(parent, "_unit_system", None)
+        length_unit = getattr(unit_system, "length", "m")
+
+        scroll = QScrollArea()
+        scroll.setObjectName("timeHistoryGroundMotionScroll")
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
+        direction_layout = QVBoxLayout(scroll_content)
+        direction_layout.setContentsMargins(4, 4, 4, 4)
+        direction_layout.setSpacing(8)
+
+        self.ground_motion_rows: dict[str, TimeHistoryDirectionRow] = {}
         self.direction_rows: dict[str, dict[str, QWidget]] = {}
-        for direction in self._DIRECTIONS:
+        for dof, direction in enumerate(self._DIRECTIONS, start=1):
             row_options = directions.get(direction, {}) if isinstance(directions.get(direction), dict) else {}
-            group = QGroupBox(f"{direction} 방향")
-            group.setCheckable(True)
-            group.setChecked(bool(row_options.get("active", False)))
-            form = QFormLayout(group)
-            path_field = QLineEdit(str(row_options.get("path", "")))
-            path_field.setPlaceholderText("지반운동 기록 파일 경로")
-            browse_button = QPushButton("찾아보기...")
-            browse_button.clicked.connect(lambda _checked=False, field=path_field: self._browse(field))
-            path_row = QVBoxLayout()
-            path_row.addWidget(path_field)
-            path_row.addWidget(browse_button)
-            form.addRow("기록 파일", path_row)
-            scale_field = _float_field(float(row_options.get("scale_factor", 1.0)), minimum=0.0)
-            form.addRow("배율", scale_field)
-            layout.addWidget(group)
+            row = TimeHistoryDirectionRow(dof, direction, self._catalog, scroll_content)
+            row.set_length_unit(length_unit)
+            self._restore_direction_row(row, row_options)
+            direction_layout.addWidget(row)
+            self.ground_motion_rows[direction] = row
+            # Keep the old lightweight-dialog handles available for callers
+            # that only checked group/path/scale while exposing the richer row.
             self.direction_rows[direction] = {
-                "group": group, "path": path_field, "scale": scale_field
+                "group": row.enabled_checkbox,
+                "path": row.record_label,
+                "scale": row.scale_factor_spin,
+                "row": row,
             }
+        direction_layout.addStretch(1)
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, 1)
 
         form = QFormLayout()
         self.duration = _float_field(float(options.get("duration", 10.0)), minimum=0.0)
@@ -262,20 +287,58 @@ class TimeHistorySettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _browse(self, field: QLineEdit) -> None:
-        path, _filter = QFileDialog.getOpenFileName(self, "지반운동 기록 파일 선택")
-        if path:
-            field.setText(path)
+    def _restore_direction_row(
+        self, row: TimeHistoryDirectionRow, options: dict[str, object]
+    ) -> None:
+        unit_index = row.unit_combo.findData(str(options.get("unit", "g")))
+        if unit_index >= 0:
+            row.unit_combo.setCurrentIndex(unit_index)
+
+        record_id = str(options.get("record_id", ""))
+        source = str(options.get("source", ""))
+        path_text = str(options.get("path", ""))
+        if record_id:
+            row.set_builtin_record(record_id)
+        elif path_text:
+            saved_path = Path(path_text)
+            built_in = next(
+                (
+                    record
+                    for record in self._catalog.list_records()
+                    if record.path == saved_path
+                    or (source == "built_in" and record.path.name == saved_path.name)
+                ),
+                None,
+            )
+            if built_in is not None:
+                row.set_builtin_record(built_in.record_id)
+            elif saved_path.is_file():
+                row.set_imported_file(saved_path)
+
+        row.scale_factor_spin.setValue(float(options.get("scale_factor", 1.0)))
+        row.target_pga_spin.setValue(float(options.get("target_pga", 0.0)))
+        if options.get("scaling_method") == "target_pga":
+            row.target_pga_radio.setChecked(True)
+        else:
+            row.factor_radio.setChecked(True)
+        row.enabled_checkbox.setChecked(bool(options.get("active", False)))
 
     def result_options(self) -> dict[str, object]:
-        directions = {
-            direction: {
-                "active": widgets["group"].isChecked(),
-                "path": widgets["path"].text(),
-                "scale_factor": widgets["scale"].value(),
+        directions = {}
+        for direction, row in self.ground_motion_rows.items():
+            path = row.active_path()
+            directions[direction] = {
+                "active": row.is_enabled_row(),
+                "path": str(path) if path is not None else "",
+                "scale_factor": row.scale_factor_spin.value(),
+                "source": row.active_source(),
+                "record_id": row.active_record_id(),
+                "unit": row.unit_combo.currentData(),
+                "scaling_method": (
+                    "target_pga" if row.target_pga_radio.isChecked() else "factor"
+                ),
+                "target_pga": row.target_pga_spin.value(),
             }
-            for direction, widgets in self.direction_rows.items()
-        }
         return {
             "directions": directions,
             "duration": self.duration.value(),

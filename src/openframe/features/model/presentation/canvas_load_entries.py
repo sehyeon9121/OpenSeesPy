@@ -507,3 +507,62 @@ class _LoadEntryMixin:
             )
         self.load_state_changed.emit()
         return len(rows)
+
+    # --- floor boundary click-picking ---------------------------------------
+    #
+    # A MIDAS-style "click the boundary nodes in order" alternative to
+    # picking a floor load's target nodes via the ordinary rubber-band/
+    # ctrl-click selection (which stores them tag-sorted, not in the actual
+    # boundary loop order - see apply_load3d's target = tuple(sorted(...))
+    # in modeling_interface_page.py). Mirrors canvas_drawing_mode.py's
+    # ``_chain`` pattern - a separate accumulator (``_floor_chain``) since a
+    # floor boundary is a closed polygon of already-existing nodes, not a
+    # member-drawing path.
+
+    def begin_floor_picking(self) -> None:
+        """Enter floor-boundary click-picking mode. Routed through the
+        ordinary ``set_mode`` so every other mode's cleanup (clearing the
+        member-drawing chain, drag state, etc.) still happens exactly as it
+        would for any other mode switch - this is not a second, parallel
+        mode system."""
+        self.set_mode("floor_pick")
+
+    def add_floor_boundary_node(self, tag: int) -> None:
+        """Append ``tag`` to the in-progress floor boundary, in click order.
+
+        A no-op outside ``floor_pick`` mode, for an unknown node tag, or for
+        a node already in the chain (re-clicking a node must not duplicate
+        it or reorder it) - matches the app-wide policy that only existing
+        nodes are ever pickable this way (empty-space clicks already never
+        reach here). The clicked nodes are shown with the ordinary selection
+        highlight, reusing existing rendering rather than a new glyph.
+        """
+        if self.mode != "floor_pick" or tag not in self.nodes or tag in self._floor_chain:
+            return
+        self._floor_chain.append(tag)
+        # Matches _on_3d_node_picked's own plain-select branch (selected_nodes
+        # + selection_changed, no _redraw()) - _redraw() repaints the 2D
+        # QGraphicsView, which this 3D-only picking flow never shows; the 3D
+        # viewport's own node highlighting listens to selection_changed.
+        self.selected_nodes = set(self._floor_chain)
+        self.selection_changed.emit()
+
+    def finish_floor_picking(self) -> tuple[int, ...] | None:
+        """Complete the boundary, in click order, and return to the normal
+        selection mode - or, with fewer than 3 distinct nodes picked so far,
+        do nothing and return ``None`` (the chain and mode are left exactly
+        as they were, so the user can keep clicking)."""
+        if len(self._floor_chain) < 3:
+            return None
+        boundary = tuple(self._floor_chain)
+        self.selected_nodes = set()
+        self.set_mode("select")
+        self.selection_changed.emit()
+        return boundary
+
+    def cancel_floor_picking(self) -> None:
+        """Discard the in-progress boundary and its temporary selection
+        highlight, returning to the normal selection mode."""
+        self.selected_nodes = set()
+        self.set_mode("select")
+        self.selection_changed.emit()

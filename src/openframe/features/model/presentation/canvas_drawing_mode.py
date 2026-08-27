@@ -20,6 +20,7 @@ class _DrawingModeMixin:
         self._preview_point = None
         self._preview_midpoint = None
         self._chain.clear()
+        self._floor_chain.clear()
         self._snap = None
         self.setDragMode(
             QGraphicsView.DragMode.ScrollHandDrag

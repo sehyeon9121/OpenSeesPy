@@ -51,6 +51,9 @@ from openframe.features.model.presentation.analysis_precheck import (
     run_precheck,
 )
 from openframe.features.model.presentation.current_page_only_stack import _CurrentPageOnlyStack
+from openframe.features.model.presentation.quick_settings.time_history_quick_settings import (
+    TimeHistoryQuickSettings,
+)
 
 #: (Korean status text, chip/QSS state) per CaseStatus - CaseStatus has 5
 #: values but the chip vocabulary only has 4 colors (ok/warn/error/info), so
@@ -243,14 +246,26 @@ class AnalysisSettingsSidebar(QWidget):
             lambda _index: self.quick_settings_stack.updateGeometry()
         )
         self._quick_pages: dict[AnalysisKind, int] = {}
+        self._quick_widgets: dict[AnalysisKind, QWidget] = {}
         for kind, label in ANALYSIS_KIND_LABELS.items():
-            placeholder = QLabel(f"{label}\n설정 항목은 다음 단계에서 추가됩니다.")
-            placeholder.setObjectName("setupSectionHint")
-            placeholder.setWordWrap(True)
-            placeholder.setMaximumWidth(240)
-            self._quick_pages[kind] = self.quick_settings_stack.addWidget(placeholder)
+            page = self._build_quick_settings_page(kind, label)
+            self._quick_widgets[kind] = page
+            self._quick_pages[kind] = self.quick_settings_stack.addWidget(page)
         layout.addWidget(self.quick_settings_stack)
         return section
+
+    def _build_quick_settings_page(self, kind: AnalysisKind, label: str) -> QWidget:
+        if kind is AnalysisKind.TIME_HISTORY:
+            page = TimeHistoryQuickSettings()
+            page.settings_changed.connect(
+                lambda settings, kind=kind: self._on_quick_settings_changed(kind, settings)
+            )
+            return page
+        placeholder = QLabel(f"{label}\n설정 항목은 다음 단계에서 추가됩니다.")
+        placeholder.setObjectName("setupSectionHint")
+        placeholder.setWordWrap(True)
+        placeholder.setMaximumWidth(240)
+        return placeholder
 
     def _refresh_quick_settings_page(self) -> None:
         active_id = self._store.active_case_id()
@@ -261,6 +276,20 @@ class AnalysisSettingsSidebar(QWidget):
         if page_index is not None:
             self.quick_settings_stack.setCurrentIndex(page_index)
             self.quick_settings_stack.updateGeometry()
+        widget = self._quick_widgets.get(case.kind)
+        load_settings = getattr(widget, "load_settings", None)
+        if callable(load_settings):
+            load_settings(case.settings)
+
+    def _on_quick_settings_changed(self, kind: AnalysisKind, settings: dict[str, object]) -> None:
+        active_id = self._store.active_case_id()
+        if active_id is None or not self._store.has_case(active_id):
+            return
+        case = self._store.case(active_id)
+        if case.kind is not kind:
+            return
+        case.settings = settings
+        self.refresh_precheck()
 
     # -- ASSIGNED DATA ------------------------------------------------------
     def _build_assigned_data_section(self) -> QFrame:

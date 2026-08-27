@@ -11,7 +11,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from openframe.core.domain import NodalLoadEntry
 from openframe.core.domain.seismic_load import (
@@ -196,6 +196,48 @@ def test_seismic_setup_uses_full_names_and_shows_derived_spectrum_values() -> No
 
     assert "SDS = 1.0000" in page.seismic_spectrum_summary.text()
     assert "SD1 = 0.6000" in page.seismic_spectrum_summary.text()
+
+
+def test_seismic_setup_is_a_compact_tabbed_dialog_not_a_long_sidebar_form() -> None:
+    page = _page()
+    page.load_command_combo.setCurrentIndex(
+        page.load_command_combo.findData("seismic")
+    )
+
+    assert page.seismic_settings_button.isVisible()
+    assert page.seismic_settings_button.text() == "설정 열기..."
+    assert page.seismic_settings_dialog.objectName() == "seismicSettingsDialog"
+    assert page.seismic_settings_dialog.width() <= 500
+    assert [
+        page.seismic_settings_tabs.tabText(index)
+        for index in range(page.seismic_settings_tabs.count())
+    ] == ["기본", "설계 스펙트럼", "구조 특성", "가력·편심"]
+    assert page.seismic_settings_dialog.isAncestorOf(page.seismic_ss)
+    assert "SDS" in page.seismic_compact_summary.text()
+    assert not page.seismic_ss.isVisible(), "full engineering fields stay out of the sidebar"
+
+
+def test_canceling_seismic_settings_restores_the_pre_open_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _page()
+    page.seismic_ss.setValue(1.25)
+    page.seismic_direction_combo.setCurrentIndex(
+        page.seismic_direction_combo.findData("x")
+    )
+
+    def reject_after_edit() -> QDialog.DialogCode:
+        page.seismic_ss.setValue(2.5)
+        page.seismic_direction_combo.setCurrentIndex(
+            page.seismic_direction_combo.findData("-y")
+        )
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(page.seismic_settings_dialog, "exec", reject_after_edit)
+    page._open_seismic_settings_dialog()
+
+    assert page.seismic_ss.value() == pytest.approx(1.25)
+    assert page.seismic_direction_combo.currentData() == "x"
 
 
 def test_seismic_direction_scale_and_explicit_eccentricity_create_force_and_moment() -> None:

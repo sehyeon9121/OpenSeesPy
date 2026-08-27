@@ -130,3 +130,70 @@ def test_analysis_category_page_stays_within_the_fixed_left_panel_width() -> Non
     current = page.category_stack.currentWidget()
 
     assert current.sizeHint().width() <= page.left_panel_stack.width() - 24
+
+
+def test_analysis_category_page_stays_within_width_with_a_time_history_case_active() -> None:
+    """Time History's Quick Settings page (3 direction groups + summary
+    cards + a common-fields form) is the tallest/most field-heavy page built
+    so far - the one most likely to reproduce the width trap the plain
+    placeholder pages could not."""
+    page = _page()
+    page.analysis_settings_sidebar._create_case(AnalysisKind.TIME_HISTORY)
+
+    current = page.category_stack.currentWidget()
+
+    assert current.sizeHint().width() <= page.left_panel_stack.width() - 24
+
+
+def test_time_history_quick_settings_edits_write_into_the_active_cases_settings() -> None:
+    page = _page()
+    sidebar = page.analysis_settings_sidebar
+    sidebar._create_case(AnalysisKind.TIME_HISTORY)
+    case_id = page.analysis_case_store.active_case_id()
+    quick_settings = sidebar._quick_widgets[AnalysisKind.TIME_HISTORY]
+
+    quick_settings._direction_groups["x"].setChecked(True)
+    quick_settings._scale_fields["x"].setValue(1.5)
+
+    settings = page.analysis_case_store.case(case_id).settings
+    assert settings["active_x"] is True
+    assert settings["scale_factor_x"] == 1.5
+
+
+def test_time_history_precheck_flags_missing_ground_motion_and_reports_not_wired() -> None:
+    page = _page()
+    a = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    b = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    page.canvas.add_member(a, b)
+    sidebar = page.analysis_settings_sidebar
+    sidebar._create_case(AnalysisKind.TIME_HISTORY)
+    quick_settings = sidebar._quick_widgets[AnalysisKind.TIME_HISTORY]
+
+    quick_settings._direction_groups["x"].setChecked(True)
+
+    assert not sidebar.precheck_summary.property("state") == "ok"
+    chip_texts = [
+        sidebar.precheck_chip_row.itemAt(i).widget().text()
+        for i in range(sidebar.precheck_chip_row.count() - 1)
+    ]
+    assert "X 방향 지진파 없음" in chip_texts
+    assert "실행 미지원" in chip_texts
+
+
+def test_switching_away_from_a_time_history_case_and_back_preserves_its_settings() -> None:
+    page = _page()
+    store = page.analysis_case_store
+    sidebar = page.analysis_settings_sidebar
+    sidebar._create_case(AnalysisKind.TIME_HISTORY)
+    th_id = store.active_case_id()
+    quick_settings = sidebar._quick_widgets[AnalysisKind.TIME_HISTORY]
+    quick_settings._direction_groups["z"].setChecked(True)
+    quick_settings.damping_ratio_field.setValue(0.02)
+
+    sidebar._create_case(AnalysisKind.MODAL)
+    store.set_active_case(th_id)
+
+    settings = store.case(th_id).settings
+    assert settings["active_z"] is True
+    assert settings["damping_ratio"] == 0.02
+    assert quick_settings._direction_groups["z"].isChecked() is True

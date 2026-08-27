@@ -14,6 +14,7 @@ from openframe.core.domain import (
     ModeShape,
     NodeResult,
     StructuralModel,
+    UnitSystem,
 )
 from openframe.features.results.presentation.result_tables_panel import ResultTablesPanel
 
@@ -53,14 +54,18 @@ def test_member_force_tables_split_i_and_j_ends_into_separate_stacked_tables() -
     j_table = panel.member_force_j_table
     i_headers = [i_table.horizontalHeaderItem(c).text() for c in range(i_table.columnCount())]
     j_headers = [j_table.horizontalHeaderItem(c).text() for c in range(j_table.columnCount())]
-    assert i_headers == ["ELEMENT", "N (kN)", "V (kN)", "M (kN·m)"]
+    assert i_headers == ["ELEMENT", "N (kN)", "V (kN)", "M (kN·m)", "σ (kN/m²)"]
     assert j_headers == i_headers
 
     i_row = _row_texts(i_table, 0)
     j_row = _row_texts(j_table, 0)
     assert i_row[0] == j_row[0] == "1"
-    assert [float(value) for value in i_row[1:]] == [10.0, 20.0, 30.0]
-    assert [float(value) for value in j_row[1:]] == [-10.0, -20.0, 40.0]
+    assert [float(value) for value in i_row[1:4]] == [10.0, 20.0, 30.0]
+    assert [float(value) for value in j_row[1:4]] == [-10.0, -20.0, 40.0]
+    # No section (no "A") assigned to this element - stress must read "-",
+    # never a crash or a silently wrong 0.
+    assert i_row[4] == "-"
+    assert j_row[4] == "-"
 
 
 def test_modal_tab_is_hidden_without_mode_shapes_and_shown_once_present() -> None:
@@ -190,3 +195,202 @@ def test_displacement_table_lists_every_node_regardless_of_selected_result_type(
     assert table.rowCount() == 2
     node_tags = {table.item(row, 0).text() for row in range(table.rowCount())}
     assert node_tags == {"1", "2"}
+
+
+def test_axial_stress_matches_hand_calculation_and_differs_between_i_and_j_ends() -> None:
+    """σ = N/A, computed independently at each end from that end's own axial
+    force - i and j must not accidentally share one value."""
+    panel = _panel()
+    model = StructuralModel(
+        ndm=2,
+        elements={
+            1: Element(
+                tag=1, node_i=1, node_j=2, element_type="elasticBeamColumn",
+                properties={"A": 0.01},
+            )
+        },
+    )
+    panel.set_model(model)
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            element_results={
+                1: ElementResult(element_tag=1, local_forces=(100.0, 0.0, 0.0, -50.0, 0.0, 0.0))
+            },
+        )
+    )
+
+    i_row = _row_texts(panel.member_force_i_table, 0)
+    j_row = _row_texts(panel.member_force_j_table, 0)
+    assert float(i_row[4]) == pytest.approx(100.0 / 0.01)  # 10,000
+    assert float(j_row[4]) == pytest.approx(-50.0 / 0.01)  # -5,000
+    assert float(i_row[4]) != float(j_row[4])
+
+
+@pytest.mark.parametrize(
+    "properties",
+    [
+        {},  # no "A" assigned at all
+        {"A": 0.0},
+        {"A": -0.005},
+        {"A": "not-a-number"},
+    ],
+    ids=["missing", "zero", "negative", "unparseable"],
+)
+def test_axial_stress_reads_as_a_dash_instead_of_crashing_for_unusable_area(
+    properties: dict,
+) -> None:
+    panel = _panel()
+    model = StructuralModel(
+        ndm=2,
+        elements={
+            1: Element(tag=1, node_i=1, node_j=2, element_type="elasticBeamColumn", properties=properties)
+        },
+    )
+    panel.set_model(model)
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            element_results={
+                1: ElementResult(element_tag=1, local_forces=(100.0, 0.0, 0.0, -100.0, 0.0, 0.0))
+            },
+        )
+    )
+
+    i_row = _row_texts(panel.member_force_i_table, 0)
+    j_row = _row_texts(panel.member_force_j_table, 0)
+    assert i_row[4] == "-"
+    assert j_row[4] == "-"
+
+
+def test_axial_stress_table_handles_a_mix_of_elements_with_and_without_a_section() -> None:
+    panel = _panel()
+    model = StructuralModel(
+        ndm=2,
+        elements={
+            1: Element(
+                tag=1, node_i=1, node_j=2, element_type="elasticBeamColumn",
+                properties={"A": 0.02},
+            ),
+            2: Element(tag=2, node_i=2, node_j=3, element_type="elasticBeamColumn"),
+        },
+    )
+    panel.set_model(model)
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            element_results={
+                1: ElementResult(element_tag=1, local_forces=(40.0, 0.0, 0.0, -40.0, 0.0, 0.0)),
+                2: ElementResult(element_tag=2, local_forces=(10.0, 0.0, 0.0, -10.0, 0.0, 0.0)),
+            },
+        )
+    )
+
+    table = panel.member_force_i_table
+    assert table.rowCount() == 2
+    rows = {table.item(row, 0).text(): _row_texts(table, row) for row in range(table.rowCount())}
+    assert float(rows["1"][4]) == pytest.approx(40.0 / 0.02)
+    assert rows["2"][4] == "-"
+
+
+def test_changing_unit_system_updates_both_stress_header_and_recomputed_values() -> None:
+    """The panel itself owns no conversion factor - it simply relabels with
+    the current UnitSystem.stress and recomputes N/A from whatever model/
+    result it is currently given, so a caller that re-supplies an
+    already-converted model+result under a new unit system sees both the
+    header and the values change together."""
+    panel = _panel()
+    model_kn_m = StructuralModel(
+        ndm=2,
+        elements={
+            1: Element(
+                tag=1, node_i=1, node_j=2, element_type="elasticBeamColumn",
+                properties={"A": 0.01},
+            )
+        },
+    )
+    panel.set_model(model_kn_m)
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            element_results={
+                1: ElementResult(element_tag=1, local_forces=(100.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+            },
+        )
+    )
+    header_before = panel.member_force_i_table.horizontalHeaderItem(4).text()
+    value_before = float(_row_texts(panel.member_force_i_table, 0)[4])
+    assert header_before == "σ (kN/m²)"
+    assert value_before == pytest.approx(10000.0)
+
+    # N -> 100,000 N (same 100 kN) and A -> 10,000 mm^2 (same 0.01 m^2),
+    # as an upstream unit conversion would have already produced.
+    panel.set_unit_system(UnitSystem(force="N", length="mm"))
+    model_n_mm = StructuralModel(
+        ndm=2,
+        elements={
+            1: Element(
+                tag=1, node_i=1, node_j=2, element_type="elasticBeamColumn",
+                properties={"A": 10000.0},
+            )
+        },
+    )
+    panel.set_model(model_n_mm)
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            element_results={
+                1: ElementResult(element_tag=1, local_forces=(100000.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+            },
+        )
+    )
+
+    header_after = panel.member_force_i_table.horizontalHeaderItem(4).text()
+    value_after = float(_row_texts(panel.member_force_i_table, 0)[4])
+    assert header_after == "σ (N/mm²)"
+    assert value_after == pytest.approx(10.0)  # 100,000 N / 10,000 mm^2
+    assert value_after != value_before
+
+
+def test_axial_stress_column_appears_for_a_mixed_truss_and_frame_3d_model() -> None:
+    """A model mixing frame and truss element_type values falls into the
+    general 3D table (never the 2D-only pure-truss table), which must also
+    get the stress column - see _is_truss_model()'s all-elements gate."""
+    panel = _panel()
+    model = StructuralModel(
+        ndm=3,
+        elements={
+            1: Element(
+                tag=1, node_i=1, node_j=2, element_type="elasticBeamColumn",
+                properties={"A": 0.02},
+            ),
+            2: Element(
+                tag=2, node_i=2, node_j=3, element_type="truss",
+                properties={"A": 0.001},
+            ),
+        },
+    )
+    panel.set_model(model)
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            element_results={
+                1: ElementResult(
+                    element_tag=1,
+                    local_forces=(20.0, 0.0, 0.0, 0.0, 0.0, 0.0, -20.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                ),
+                2: ElementResult(
+                    element_tag=2,
+                    local_forces=(-5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                ),
+            },
+        )
+    )
+
+    assert panel.member_force_stack.currentWidget() is panel.member_force_i_table.parentWidget()
+    i_table = panel.member_force_i_table
+    headers = [i_table.horizontalHeaderItem(c).text() for c in range(i_table.columnCount())]
+    assert headers[-1] == "σ (kN/m²)"
+    rows = {i_table.item(row, 0).text(): _row_texts(i_table, row) for row in range(i_table.rowCount())}
+    assert float(rows["1"][-1]) == pytest.approx(20.0 / 0.02)
+    assert float(rows["2"][-1]) == pytest.approx(-5.0 / 0.001)

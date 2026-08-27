@@ -67,6 +67,7 @@ class _TransformMixin:
         dy: float,
         repeat: int = 1,
         *,
+        dz: float = 0.0,
         copy_node_attributes: bool = False,
         copy_element_loads: bool = False,
     ) -> int:
@@ -76,16 +77,18 @@ class _TransformMixin:
 
         ``dx``/``dy`` are offsets along the active work plane's local axes, not
         necessarily global X/Y — on an elevation plane, "dy" moves along Z.
+        ``dz`` is the offset along the plane's own normal (out-of-plane) axis -
+        0.0 (the default) reproduces the old in-plane-only behaviour exactly.
         """
         effective_nodes = self._effective_transform_nodes()
-        if not effective_nodes or (dx == 0.0 and dy == 0.0):
+        if not effective_nodes or (dx == 0.0 and dy == 0.0 and dz == 0.0):
             return 0
         selected = sorted(effective_nodes)
         if operation == "move":
             targets: dict[int, tuple[float, float, float]] = {}
             for tag in selected:
                 u, v = self._uv(self.nodes[tag])
-                targets[tag] = self._replace_uv(self.nodes[tag], u + dx, v + dy)
+                targets[tag] = self._replace_uvw(self.nodes[tag], u + dx, v + dy, dz)
             occupied = {
                 (round(node.x, 12), round(node.y, 12), round(node.z, 12))
                 for tag, node in self.nodes.items()
@@ -129,8 +132,11 @@ class _TransformMixin:
                 for source_tag in selected:
                     source_u, source_v = self._uv(self.nodes[source_tag])
                     before = set(self.nodes)
-                    target_point = self._replace_uv(
-                        self.nodes[source_tag], source_u + dx * step, source_v + dy * step
+                    target_point = self._replace_uvw(
+                        self.nodes[source_tag],
+                        source_u + dx * step,
+                        source_v + dy * step,
+                        dz * step,
                     )
                     tag = self._add_node_at(target_point)
                     mapping[source_tag] = tag
@@ -215,6 +221,7 @@ class _TransformMixin:
         dy: float,
         count: int,
         *,
+        dz: float = 0.0,
         copy_node_attributes: bool = False,
         copy_element_loads: bool = False,
     ) -> int:
@@ -222,6 +229,8 @@ class _TransformMixin:
 
         This is what turning one truss panel into a run of ``count`` panels needs:
         the plain node copy only duplicates points, never the members joining them.
+        ``dz`` (default 0.0) steps along the active plane's normal axis too - e.g.
+        repeating a whole storey's frame upward in Z.
         """
         effective_nodes = self._effective_transform_nodes()
         if not effective_nodes or count < 1:
@@ -235,8 +244,11 @@ class _TransformMixin:
                 for tag in sorted(effective_nodes):
                     source_u, source_v = self._uv(self.nodes[tag])
                     before = set(self.nodes)
-                    target_point = self._replace_uv(
-                        self.nodes[tag], source_u + dx * step, source_v + dy * step
+                    target_point = self._replace_uvw(
+                        self.nodes[tag],
+                        source_u + dx * step,
+                        source_v + dy * step,
+                        dz * step,
                     )
                     mapping[tag] = self._add_node_at(target_point)
                     if tag in self.hinge_nodes:
@@ -268,6 +280,7 @@ class _TransformMixin:
         angle_degrees: float,
         count: int,
         *,
+        dz: float = 0.0,
         copy_node_attributes: bool = False,
         copy_element_loads: bool = False,
     ) -> int:
@@ -277,10 +290,11 @@ class _TransformMixin:
         around a pivot instead of along a straight offset. This is what a
         radial fan of rafters or a segmented arch needs and a straight array
         copy cannot reach without the user pre-computing each copy's offset
-        by hand.
+        by hand. ``dz`` (default 0.0) additionally steps along the active
+        plane's normal axis each repetition, e.g. for a helical/spiral stair.
         """
         effective_nodes = self._effective_transform_nodes()
-        if not effective_nodes or count < 1 or angle_degrees == 0.0:
+        if not effective_nodes or count < 1 or (angle_degrees == 0.0 and dz == 0.0):
             return 0
         self.begin_history_group()
         original_elements = list(self.elements.values())
@@ -296,7 +310,9 @@ class _TransformMixin:
                     rotated_u = center_u + du * cos_t - dv * sin_t
                     rotated_v = center_v + du * sin_t + dv * cos_t
                     before = set(self.nodes)
-                    target_point = self._replace_uv(self.nodes[tag], rotated_u, rotated_v)
+                    target_point = self._replace_uvw(
+                        self.nodes[tag], rotated_u, rotated_v, dz * step
+                    )
                     mapping[tag] = self._add_node_at(target_point)
                     if tag in self.hinge_nodes:
                         self.hinge_nodes.add(mapping[tag])

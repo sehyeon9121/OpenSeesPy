@@ -158,6 +158,11 @@ class StaticsDrawingCanvas(
         self.ortho = False
         self.ortho_increment = 45.0
         self._chain: list[int] = []
+        #: Node tags accumulated, in click order, while ``mode == "floor_pick"``
+        #: (see canvas_load_entries.py's floor-picking methods) - a separate
+        #: accumulator from ``_chain`` since a floor boundary is a closed
+        #: polygon of already-existing nodes, not a member-drawing path.
+        self._floor_chain: list[int] = []
         self._snap = None
         self._undo_stack: list[dict[str, object]] = []
         self._redo_stack: list[dict[str, object]] = []

@@ -240,21 +240,36 @@ class TimeHistoryDirectionRow(QFrame):
             )
             if not path_text:
                 return
-            path = Path(path_text)
-            try:
-                motion = load_ground_motion(path)
-            except (ValueError, OSError) as error:
-                self._imported_path = None
-                self._imported_motion = None
-                self.record_label.setText(f"파일을 읽지 못했습니다: {error}")
-                self._refresh_readouts()
-                self._emit_changed()
-                return
-            self._imported_path = path
-            self._imported_motion = motion
+            self.set_imported_file(path_text)
+            return
         self._update_record_label()
         self._refresh_readouts()
         self._emit_changed()
+
+    def set_imported_file(self, path: str | Path) -> bool:
+        """Load and select an imported record without opening a file dialog.
+
+        This is the restoration counterpart to :meth:`set_builtin_record`:
+        compact analysis dialogs can reuse this row and reopen previously
+        saved custom motions without duplicating the parser/preview logic.
+        """
+        imported_path = Path(path)
+        try:
+            motion = load_ground_motion(imported_path)
+        except (ValueError, OSError) as error:
+            self._imported_path = None
+            self._imported_motion = None
+            self.record_label.setText(f"파일을 읽지 못했습니다: {error}")
+            self._refresh_readouts()
+            self._emit_changed()
+            return False
+        self._imported_path = imported_path
+        self._imported_motion = motion
+        self.imported_radio.setChecked(True)
+        self._update_record_label()
+        self._refresh_readouts()
+        self._emit_changed()
+        return True
 
     def set_builtin_record(self, record_id: str) -> bool:
         """Selects a bundled catalog record by ``record_id`` without opening
@@ -305,6 +320,16 @@ class TimeHistoryDirectionRow(QFrame):
         if self.builtin_radio.isChecked():
             return self._builtin_record.path if self._builtin_record is not None else None
         return self._imported_path
+
+    def active_source(self) -> str:
+        """Stable persistence key for the currently selected source tab."""
+        return "built_in" if self.builtin_radio.isChecked() else "custom"
+
+    def active_record_id(self) -> str:
+        """Built-in catalog id, or an empty string for imported files."""
+        if self.builtin_radio.isChecked() and self._builtin_record is not None:
+            return self._builtin_record.record_id
+        return ""
 
     def _active_motion_label(self) -> str:
         if self.builtin_radio.isChecked():

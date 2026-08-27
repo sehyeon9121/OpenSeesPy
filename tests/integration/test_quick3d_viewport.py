@@ -154,7 +154,7 @@ def test_qml_box_selection_always_includes_fully_enclosed_members() -> None:
     assert selections[1] == ({1, 2}, {3}, False)
 
 
-def test_orientation_is_a_fixed_top_right_gizmo_not_scene_origin_axes() -> None:
+def test_orientation_is_a_fixed_top_right_camera_gizmo() -> None:
     viewport = _viewport()
     root = viewport.quick_widget.rootObject()
     assert root is not None
@@ -162,9 +162,48 @@ def test_orientation_is_a_fixed_top_right_gizmo_not_scene_origin_axes() -> None:
     gizmo = root.findChild(QObject, "orientationGizmo")
     assert gizmo is not None
     assert gizmo.property("visible") is True
-    assert gizmo.property("width") == pytest.approx(104.0)
-    assert gizmo.property("height") == pytest.approx(104.0)
+    assert gizmo.property("width") == pytest.approx(112.0)
+    assert gizmo.property("height") == pytest.approx(118.0)
 
     qml = viewport._qml_path.read_text(encoding="utf-8")
-    assert "property real axisLength" not in qml
     assert 'objectName: "orientationGizmo"' in qml
+    assert 'anchors.top: parent.top' in qml
+    assert 'anchors.right: parent.right' in qml
+    assert 'objectName: "orientationGizmoMouseArea"' in qml
+
+
+def test_world_origin_axes_are_attached_to_structural_zero() -> None:
+    viewport = _viewport()
+    root = viewport.quick_widget.rootObject()
+    assert root is not None
+
+    axes = root.findChild(QObject, "worldOriginAxes")
+    assert axes is not None
+    assert axes.property("visible") is True
+    assert axes.property("axisLength") == pytest.approx(0.35)
+
+    qml = viewport._qml_path.read_text(encoding="utf-8")
+    assert 'objectName: "worldOriginAxes"' in qml
+    assert "return view3d.mapFrom3DScene(Qt.vector3d(x, z, -y))" in qml
+    assert 'context.strokeText("0,0,0"' in qml
+
+
+def test_orientation_axis_actions_change_to_the_matching_orthographic_view() -> None:
+    viewport = _viewport()
+    root = viewport.quick_widget.rootObject()
+    gizmo = root.findChild(QObject, "orientationGizmo")
+
+    gizmo.activateTarget("X")
+    assert root.property("cameraYaw") == pytest.approx(90.0)
+    assert root.property("cameraPitch") == pytest.approx(0.0)
+
+    gizmo.activateTarget("Y")
+    assert root.property("cameraYaw") == pytest.approx(0.0)
+    assert root.property("cameraPitch") == pytest.approx(0.0)
+
+    gizmo.activateTarget("Z")
+    assert root.property("cameraPitch") == pytest.approx(-89.0)
+
+    gizmo.activateTarget("ISO")
+    assert root.property("cameraYaw") == pytest.approx(45.0)
+    assert root.property("cameraPitch") == pytest.approx(-25.0)

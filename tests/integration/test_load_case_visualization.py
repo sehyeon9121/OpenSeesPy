@@ -1,8 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from openframe.core.domain import Element, LoadCaseKind, Node, NodalLoad, StructuralModel
 from openframe.core.domain.load_case import LoadCase
-from openframe.core.domain.load_entry import LoadEntry, NodalLoadEntry
+from openframe.core.domain.load_entry import FloorLoadEntry, LoadEntry, NodalLoadEntry
 from openframe.features.viewport.presentation.quick3d_scene_bridge import (
     Quick3DSceneBridge,
 )
@@ -106,3 +108,44 @@ def test_a_moment_only_nodal_load_entry_gets_a_bowtie_glyph_via_load_entry_glyph
     assert len(moment_parts) == 2
     assert all(part["shape"] == "#Cone" for part in moment_parts)
     assert all(part["magnitude"] == 25.0 for part in moment_parts)
+
+
+def test_floor_boundary_renders_as_a_closed_non_self_intersecting_loop_in_target_order() -> None:
+    """Regression guard for the click-picking feature: entry.target must be
+    connected in ITS OWN stored order (never re-sorted by tag) - a rectangle
+    whose node tags are numbered "diagonally" (so sorting by tag would draw
+    a self-crossing bowtie) must still render as the correct closed
+    rectangle when target preserves the real click/boundary order.
+
+    Distinguished by total edge length: a proper rectangle's perimeter (14,
+    for a 4x3 rectangle) is strictly shorter than the same 4 points connected
+    in the "wrong" (tag-sorted, diagonal-first) order (16) - the geometric
+    signature of a crossing vs. non-crossing Hamiltonian cycle through the
+    same 4 points.
+    """
+    model = StructuralModel(
+        ndm=3, ndf=6,
+        nodes={
+            # Tags deliberately NOT in boundary-walk order: tag-sorted this
+            # visits (0,0) -> (4,3) -> (4,0) -> (0,3), the crossing diagonal
+            # order _floor_entry_parts must NOT produce.
+            1: Node(1, 0.0, 0.0, 0.0),
+            2: Node(2, 4.0, 3.0, 0.0),
+            3: Node(3, 4.0, 0.0, 0.0),
+            4: Node(4, 0.0, 3.0, 0.0),
+        },
+    )
+    bridge = Quick3DSceneBridge()
+    bridge.set_model(model)
+    load_case = LoadCase(id="DL", name="DL", kind=LoadCaseKind.DEAD)
+    # Real click/boundary order: (0,0) -> (4,0) -> (4,3) -> (0,3) -> close.
+    entry = LoadEntry(
+        id=1, case_id="DL", kind="floor", target=(1, 3, 2, 4),
+        payload=FloorLoadEntry(magnitude=0.0, target_nodes=(1, 3, 2, 4)),
+    )
+    bridge.set_load_entries({1: entry}, {"DL": load_case}, {}, mode="case", active_case_id="DL")
+
+    segments = [part for part in bridge.loadEntryGlyphs if part.get("role") == "distribution_line"]
+    assert len(segments) == 4  # a closed quadrilateral has 4 edges
+    total_length = sum(part["length"] for part in segments)
+    assert total_length == pytest.approx(14.0)  # the true rectangle perimeter, not 16 (bowtie)

@@ -79,6 +79,20 @@ class _WorkPlaneMixin:
             return (u, node.y, v)
         return (node.x, u, v)
 
+    def _replace_uvw(self, node: Node, u: float, v: float, dw: float) -> tuple[float, float, float]:
+        """Same as ``_replace_uv``, but also shifts the out-of-plane
+        coordinate by ``dw`` instead of preserving it unchanged - this is
+        what lets move/copy/array/rotate step *across* work planes (e.g.
+        copying a whole storey's frame straight up in Z) instead of being
+        confined to translating within the single active plane, which had
+        no way to reach the third axis at all (reported: "복사 기능에서
+        z축으로 복사하는 기능이 없음")."""
+        if self.work_plane.kind == PlaneKind.XY:
+            return (u, v, node.z + dw)
+        if self.work_plane.kind == PlaneKind.XZ:
+            return (u, node.y + dw, v)
+        return (node.x + dw, u, v)
+
     def _on_plane(self, node: Node) -> bool:
         return self.work_plane.contains((node.x, node.y, node.z))
 
