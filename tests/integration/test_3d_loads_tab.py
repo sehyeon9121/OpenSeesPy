@@ -474,7 +474,7 @@ def test_load_inspector_context_menu_edit_lands_on_direct_loads_category() -> No
     assert page.load_category_stack.currentIndex() == page.load_category_pages["direct"]
 
 
-def test_generators_category_only_shows_placeholders() -> None:
+def test_generators_category_switches_between_functional_wind_and_seismic_pages() -> None:
     page = _page()
     page._activate_load_tool()
 
@@ -490,6 +490,8 @@ def test_generators_category_only_shows_placeholders() -> None:
         page.load_generators_subnav_combo.findData("seismic")
     )
     assert page.canvas.load_entries == entries_before
+    assert page.wind_code_combo.currentText().startswith("KDS 41 12 00")
+    assert page.seismic_code_combo.currentText().startswith("KDS 41 17 00")
 
 
 def test_definitions_and_combinations_categories_reach_existing_pages() -> None:

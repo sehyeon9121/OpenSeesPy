@@ -1054,7 +1054,12 @@ class Quick3DSceneBridge(QObject):
         uses), so shaft and head always meet exactly with no parent/child offset math.
         """
         magnitudes = [
-            math.sqrt(sum(value * value for value in (*load.values[:3], 0.0, 0.0)[:3]))
+            max(
+                math.sqrt(sum(value * value for value in (*load.values[:3], 0.0, 0.0)[:3])),
+                math.sqrt(
+                    sum(value * value for value in (*load.values[3:6], 0.0, 0.0, 0.0)[:3])
+                ),
+            )
             for load in model.nodal_loads
         ]
         maximum_magnitude = max(magnitudes, default=0.0)
@@ -1135,6 +1140,38 @@ class Quick3DSceneBridge(QObject):
                     **rotation,
                     **case_data,
                 }
+            )
+
+        # mx/my/mz used to have no glyph at all here, same gap as
+        # _nodal_entry_parts above (reported: "절점 하중에서 모멘트 하중의
+        # 캔버스 상의 표현 아이콘이나 화살표가 없음") - reuse the same bowtie
+        # "moment_head" cone pair shape, which this Repeater3D's delegate
+        # already renders identically to a force arrow's shaft/head (both
+        # just read shape/position/rotation/thickness/length/color).
+        for load in model.nodal_loads:
+            anchor = points.get(load.node_tag)
+            if anchor is None:
+                continue
+            padded = (*load.values, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            mx, my, mz = padded[3], padded[4], padded[5]
+            moment_magnitude = math.sqrt(mx * mx + my * my + mz * mz)
+            if moment_magnitude <= 1.0e-12:
+                continue
+            moment_direction = self._view_coordinates(
+                mx / moment_magnitude, my / moment_magnitude, mz / moment_magnitude
+            )
+            common = {
+                "tag": load.node_tag,
+                "kind": "nodal",
+                "load_type": "nodal_moment",
+                "color": _LOAD_CASE_COLORS[load.case_type],
+                "case_type": load.case_type.value,
+                "pattern_tag": load.pattern_tag if load.pattern_tag is not None else -1,
+            }
+            parts.extend(
+                self._moment_glyph_parts(
+                    anchor, moment_direction, moment_magnitude, maximum_magnitude, 1.0, common
+                )
             )
         return parts
 
@@ -1404,7 +1441,16 @@ class Quick3DSceneBridge(QObject):
     def _load_entry_magnitude(entry: LoadEntry) -> float:
         payload = entry.payload
         if isinstance(payload, NodalLoadEntry):
-            return math.sqrt(payload.fx**2 + payload.fy**2 + payload.fz**2)
+            # Force and moment are different units, but this auto-scale pool
+            # already mixes them at face value for member_point/member_moment
+            # (both share MemberPointLoadEntry.value) - matching that here
+            # means a moment-only nodal load (fx=fy=fz=0) still contributes
+            # its own size to the shared scale instead of reading as 0 and
+            # always rendering at the smallest glyph size regardless of how
+            # large the moment actually is.
+            force_magnitude = math.sqrt(payload.fx**2 + payload.fy**2 + payload.fz**2)
+            moment_magnitude = math.sqrt(payload.mx**2 + payload.my**2 + payload.mz**2)
+            return max(force_magnitude, moment_magnitude)
         if isinstance(payload, MemberPointLoadEntry):
             return abs(payload.value)
         if isinstance(payload, MemberDistributedLoadEntry):
@@ -1452,25 +1498,47 @@ class Quick3DSceneBridge(QObject):
         maximum_magnitude: float,
         scale: float,
     ) -> list[dict[str, float | int | str]]:
-        """Only fx/fy/fz become an arrow - mx/my/mz stay unvisualized here,
-        matching set_model()'s own nodal_loads arrows (_build_load_arrows),
-        which never draw the moment components of a NodalLoad either."""
-        fx, fy, fz = payload.fx * factor, payload.fy * factor, payload.fz * factor
-        magnitude = math.sqrt(fx * fx + fy * fy + fz * fz)
-        if magnitude <= 1.0e-12:
-            return []
-        direction = self._view_coordinates(fx / magnitude, fy / magnitude, fz / magnitude)
-        arrow_length = (
-            max(self._extent * 0.17, 0.06) * self._load_scale(magnitude, maximum_magnitude) * scale
-        )
-        shaft_thickness = max(self._default_thickness * 0.55, 0.009)
+        """fx/fy/fz become an arrow; mx/my/mz become the same bowtie moment
+        glyph a member_moment load already uses (_moment_glyph_parts) - a
+        nodal moment used to have no glyph at all here (reported: "절점
+        하중에서 모멘트 하중의 캔버스 상의 표현 아이콘이나 화살표가 없음")."""
         parts: list[dict[str, float | int | str]] = []
-        for node_tag in entry.target:
-            anchor = points.get(node_tag)
-            if anchor is None:
-                continue
-            tip = tuple(anchor[index] - direction[index] * self._node_radius for index in range(3))
-            parts.extend(self._arrow_pair(tip, direction, arrow_length, shaft_thickness, common, magnitude))
+        fx, fy, fz = payload.fx * factor, payload.fy * factor, payload.fz * factor
+        force_magnitude = math.sqrt(fx * fx + fy * fy + fz * fz)
+        if force_magnitude > 1.0e-12:
+            direction = self._view_coordinates(
+                fx / force_magnitude, fy / force_magnitude, fz / force_magnitude
+            )
+            arrow_length = (
+                max(self._extent * 0.17, 0.06)
+                * self._load_scale(force_magnitude, maximum_magnitude)
+                * scale
+            )
+            shaft_thickness = max(self._default_thickness * 0.55, 0.009)
+            for node_tag in entry.target:
+                anchor = points.get(node_tag)
+                if anchor is None:
+                    continue
+                tip = tuple(anchor[index] - direction[index] * self._node_radius for index in range(3))
+                parts.extend(
+                    self._arrow_pair(tip, direction, arrow_length, shaft_thickness, common, force_magnitude)
+                )
+
+        mx, my, mz = payload.mx * factor, payload.my * factor, payload.mz * factor
+        moment_magnitude = math.sqrt(mx * mx + my * my + mz * mz)
+        if moment_magnitude > 1.0e-12:
+            moment_direction = self._view_coordinates(
+                mx / moment_magnitude, my / moment_magnitude, mz / moment_magnitude
+            )
+            for node_tag in entry.target:
+                anchor = points.get(node_tag)
+                if anchor is None:
+                    continue
+                parts.extend(
+                    self._moment_glyph_parts(
+                        anchor, moment_direction, moment_magnitude, maximum_magnitude, scale, common
+                    )
+                )
         return parts
 
     def _member_local_axes(

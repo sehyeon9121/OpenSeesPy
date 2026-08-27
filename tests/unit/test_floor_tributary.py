@@ -201,7 +201,14 @@ def test_pentagon_two_way_approximation_conserves_total_load() -> None:
     assert total_reaction == pytest.approx(-1.5 * area, rel=1e-2)
 
 
-def test_activating_a_combination_converts_a_floor_entry_into_element_loads() -> None:
+def test_activating_a_combination_case_makes_build_model_reflect_its_floor_entry() -> None:
+    """A generated case's floor entry no longer gets baked into
+    ``canvas.element_loads`` by the combination-activation bridge itself
+    (that would double it up now that ``build_model()`` reads every active
+    case's floor entries live - see canvas_model_build.py) - it reaches
+    analysis once ``create_load_case_from_combination(..., activate_for_
+    analysis=True)`` makes the generated case active, purely through that
+    live read."""
     canvas = _canvas()
     canvas.ndm = 3
     n1 = canvas.add_node(0.0, 0.0)
@@ -230,7 +237,10 @@ def test_activating_a_combination_converts_a_floor_entry_into_element_loads() ->
 
     canvas.create_load_case_from_combination("ULS", "ULS_APPLIED", activate_for_analysis=True)
 
-    assert e_short in canvas.element_loads
+    assert canvas.active_load_case_id == "ULS_APPLIED"
+    model = canvas.build_model()
+    element_loads = {load.element_tag: load for load in model.element_loads}
+    assert e_short in element_loads
     short_edge_udl = -2.0 * 4.0 / 4.0  # same closed-form short-edge value as above
-    assert canvas.element_loads[e_short].wz == pytest.approx(short_edge_udl)
-    assert canvas.element_loads[e_short].wz_j == pytest.approx(short_edge_udl)
+    assert element_loads[e_short].wz == pytest.approx(short_edge_udl)
+    assert element_loads[e_short].wz_j == pytest.approx(short_edge_udl)

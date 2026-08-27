@@ -31,7 +31,6 @@ from openframe.core.domain import (
     UniformElementLoad,
 )
 from openframe.core.domain.load_entry import LoadEntryPayload
-from openframe.features.model.presentation.floor_tributary import convert_floor_entry
 
 
 class _LoadEntryMixin:
@@ -162,6 +161,33 @@ class _LoadEntryMixin:
         self.load_entries[entry_id] = replace(entry, case_id=case_id)
         self.load_state_changed.emit()
         return True
+
+    def replace_load_entries_for_case(
+        self, case_id: str, entries: list[tuple[str, tuple[int, ...], LoadEntryPayload]]
+    ) -> int:
+        """Drop every existing entry under ``case_id`` and add ``entries`` in
+        its place, as one undo step - for a generator (equivalent static
+        seismic/wind load, or anything similar) whose whole point is that
+        re-running it with new parameters should replace its own previous
+        output, not pile duplicates on top of it. Returns ``0`` (no-op) if
+        ``case_id`` does not exist; otherwise the number of entries added.
+        """
+        if case_id not in self.load_cases:
+            return 0
+        self._record_history()
+        self.load_entries = {
+            entry_id: entry for entry_id, entry in self.load_entries.items() if entry.case_id != case_id
+        }
+        added = 0
+        for kind, target, payload in entries:
+            entry_id = self._next_load_entry_id
+            self._next_load_entry_id += 1
+            self.load_entries[entry_id] = LoadEntry(
+                id=entry_id, case_id=case_id, kind=kind, target=tuple(target), payload=payload
+            )
+            added += 1
+        self.load_state_changed.emit()
+        return added
 
     # -- load combinations -------------------------------------------------
     def add_load_combination(self, name: str) -> str | None:
@@ -324,11 +350,14 @@ class _LoadEntryMixin:
         """Project solver-supported generated entries into the analysis store.
 
         The current material-free solver supports nodal loads and full-span
-        uniform/linearly-varying member loads, plus floor loads (converted to
-        boundary-beam member loads via ``floor_tributary.convert_floor_entry``
-        - see that module for the tributary-area math and its limits). Point,
-        partial and arbitrary self-weight-factor entries remain in the named
-        case store until their own dedicated conversion paths exist.
+        uniform/linearly-varying member loads. Point, partial-span, moment,
+        self-weight-factor, and floor entries no longer need a dedicated
+        conversion path *here* - ``build_model()`` now reads all of those
+        directly off the active load case's ``load_entries`` every solve
+        (see its own docstring), which is exactly what this generated case
+        becomes the moment ``create_load_case_from_combination`` activates
+        it (``self.active_load_case_id = case_name``). Handling floor here
+        too would double it up with that live read.
         """
         nodal_totals: dict[int, list[float]] = {}
         member_totals: dict[int, list[float]] = {}
@@ -350,11 +379,6 @@ class _LoadEntryMixin:
                     total = member_totals.setdefault(element_tag, [0.0] * 6)
                     total[axis] += payload.start_value
                     total[axis + 3] += payload.end_value
-            elif entry.kind == "floor" and isinstance(payload, FloorLoadEntry):
-                for element_tag, values in convert_floor_entry(entry, self.nodes, self.elements).items():
-                    total = member_totals.setdefault(element_tag, [0.0] * 6)
-                    for index, value in enumerate(values):
-                        total[index] += value
 
         self.nodal_loads = {
             node_tag: NodalLoad(

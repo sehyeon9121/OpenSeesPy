@@ -81,6 +81,7 @@ class _SerializationMixin:
                     "local_axis_angle": element.local_axis_angle,
                     "offset_i": list(element.offset_i),
                     "offset_j": list(element.offset_j),
+                    "prestress": element.prestress,
                 }
                 for tag, element in self.elements.items()
             ],
@@ -200,6 +201,7 @@ class _SerializationMixin:
                 local_axis_angle=float(e.get("local_axis_angle", 0.0)),
                 offset_i=tuple(e.get("offset_i", (0.0, 0.0, 0.0))),
                 offset_j=tuple(e.get("offset_j", (0.0, 0.0, 0.0))),
+                prestress=float(e.get("prestress", 0.0)),
             )
             for e in data.get("elements", [])
         }

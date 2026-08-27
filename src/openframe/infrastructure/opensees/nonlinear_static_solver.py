@@ -101,9 +101,20 @@ def _current_load_factor() -> float:
 
 
 def _local_forces(element_tag: int) -> list[float]:
-    """Return end forces along the member's own axes (see linear_static_solver)."""
+    """Return end forces along the member's own axes (see linear_static_solver).
+
+    A ``truss``/``corotTruss`` element reports an empty ``"localForce"``
+    response - fall back to ``"axialForce"``, padded into the same
+    (Fxi, Fyi, Fxj, Fyj) shape a 2D frame element's local force already has.
+    """
     response = ops.eleResponse(element_tag, "localForce")
-    return [float(value) for value in response]
+    if response:
+        return [float(value) for value in response]
+    axial = ops.eleResponse(element_tag, "axialForce")
+    if not axial:
+        return []
+    force = float(axial[0])
+    return [-force, 0.0, force, 0.0]
 
 
 def _element_length(element_tag: int) -> float:

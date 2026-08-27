@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick3D
+import QtQuick3D.Helpers
 
 Item {
     id: root
@@ -305,6 +306,49 @@ Item {
         // ground_y/ground_width/ground_depth properties stay (see
         // quick3d_scene_bridge.py) since support glyphs still position
         // themselves relative to ground_y.
+
+        // Origin coordinate plane - unlike the removed ground plate above,
+        // this is a faint wireframe grid (Qt's own editor-grid helper), not
+        // a filled/opaque surface, plus two thin colored lines through the
+        // structural (0, 0, 0) origin so the user always has a fixed visual
+        // anchor for "where is the origin" (requested: "0,0,0 부분의 좌표계
+        // 평면으로 만들어주면 원점이 어딘지 편할 것 같아", MIDAS's own origin
+        // grid given as a reference). AxisHelper's own built-in axis lines
+        // are disabled (enableAxisLines: false) in favor of the two Models
+        // below, so the colors match the 2D canvas's existing X=red/Y=green
+        // convention (canvas_glyphs.py) exactly - AxisHelper's default
+        // green line runs along view Y (structural +Z, vertical), not
+        // structural Y, which would have been a confusing color clash here.
+        AxisHelper {
+            enableAxisLines: false
+            enableXZGrid: true
+            gridColor: "#c7d2e0"
+            gridOpacity: 0.35
+            scale: {
+                const s = Math.max(sceneBridge.extent * 0.02, 0.05)
+                return Qt.vector3d(s, s, s)
+            }
+        }
+        Model {
+            // Structural +X - red, matching the 2D canvas's X axis line.
+            source: "#Cube"
+            scale: Qt.vector3d(Math.max(sceneBridge.extent * 0.6, 2.0), 0.01, 0.01)
+            materials: DefaultMaterial {
+                lighting: DefaultMaterial.NoLighting
+                diffuseColor: "#dc2626"
+            }
+        }
+        Model {
+            // Structural +Y - green, matching the 2D canvas's Y axis line.
+            // View space maps structural Y to Z (see _view_coordinates), so
+            // this line is scaled along view Z, not view X.
+            source: "#Cube"
+            scale: Qt.vector3d(0.01, 0.01, Math.max(sceneBridge.extent * 0.6, 2.0))
+            materials: DefaultMaterial {
+                lighting: DefaultMaterial.NoLighting
+                diffuseColor: "#16a34a"
+            }
+        }
 
         Repeater3D {
             // MIDAS-style support glyphs: block=fixed, cone=pin, cone+rollers=roller.

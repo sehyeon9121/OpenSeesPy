@@ -18,9 +18,23 @@ def _local_forces(element_tag: int) -> list[float]:
     member that is not horizontal, so the local-axis response is used instead.
     Elements that do not implement it report no end forces rather than global ones
     being silently misread as local.
+
+    A 2-node axial-only element (``truss``/``corotTruss``) reports an EMPTY
+    ``"localForce"`` response (confirmed against a live OpenSeesPy run) even
+    though it is perfectly well-defined - it only implements ``"axialForce"``.
+    Falling back to that and padding into the same (Fxi, Fyi, Fxj, Fyj) shape
+    a 2D frame element's local force already has mirrors the equivalent
+    special-case in ``MaterialFreeStaticsSolver._collect``
+    (``features/analysis/statics/solver.py``).
     """
     response = ops.eleResponse(element_tag, "localForce")
-    return [float(value) for value in response]
+    if response:
+        return [float(value) for value in response]
+    axial = ops.eleResponse(element_tag, "axialForce")
+    if not axial:
+        return []
+    force = float(axial[0])
+    return [-force, 0.0, force, 0.0]
 
 
 def _element_length(element_tag: int) -> float:

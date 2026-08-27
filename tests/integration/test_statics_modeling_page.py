@@ -225,6 +225,40 @@ def test_drag_direction_and_filter_control_window_or_crossing_selection() -> Non
     assert canvas.selected_nodes == {left}
 
 
+def test_window_drag_with_default_filter_grabs_only_nodes_even_when_a_member_is_fully_enclosed() -> None:
+    """Regression test: dragging a window (downward, non-crossing) over a
+    whole building to grab many nodes at once used to also sweep in any
+    member that happened to be fully enclosed by the box - reported as
+    "여러 노드를 한번에 잡기 위해 부재랑 같이 드래그하는 경우가 있는데 그때 부재도
+    같이 잡혀버림". With the default "all" filter, a window drag must select
+    only nodes; an explicit "부재만" filter, or an upward (crossing) drag,
+    still reaches members as before."""
+    application = QApplication.instance() or QApplication([])
+    page = ModelingInterfacePage()
+    canvas = page.canvas
+
+    assert application is QApplication.instance()
+    left = canvas.add_node(0.0, 0.0)
+    right = canvas.add_node(1.0, 0.0)
+    member = canvas.add_member(left, right)
+    scale = canvas._DRAW_SCALE
+    enclosing_window = QRectF(-5.0 * scale, -5.0 * scale, 10.0 * scale, 10.0 * scale)
+
+    assert canvas.selection_filter == "all"
+    canvas._select_in_rect(enclosing_window, crossing=False)
+    assert canvas.selected_nodes == {left, right}
+    assert canvas.selected_elements == set()
+
+    canvas.clear_selection()
+    canvas._select_in_rect(enclosing_window, crossing=True)
+    assert canvas.selected_elements == {member}
+
+    canvas.clear_selection()
+    canvas.selection_filter = "elements"
+    canvas._select_in_rect(enclosing_window, crossing=False)
+    assert canvas.selected_elements == {member}
+
+
 def test_a_slight_upward_jitter_during_a_mostly_horizontal_drag_stays_in_window_mode() -> None:
     """Regression test: the window/crossing decision used to compare raw
     scene-space y coordinates with no tolerance, so a drag meant to go

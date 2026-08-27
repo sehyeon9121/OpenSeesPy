@@ -49,6 +49,7 @@ _TRAPEZOID_NODE_TAG_OFFSET = 7_000_000
 _TRAPEZOID_ELEMENT_TAG_OFFSET = 7_500_000
 _TRAPEZOID_SEGMENTS = 40
 _TRUSS_MATERIAL_TAG_OFFSET = 9_100_000
+_TRUSS_INIT_STRAIN_TAG_OFFSET = 9_200_000
 
 
 def export_opensees_script(
@@ -200,12 +201,29 @@ def _write_elements(lines: list[str], model: StructuralModel) -> None:
 
     for element in sorted(truss_elements, key=lambda item: item.tag):
         elastic, area = _element_properties(element)
-        material_tag = _TRUSS_MATERIAL_TAG_OFFSET + element.tag
-        lines.append(f"ops.uniaxialMaterial('Elastic', {material_tag}, {_num(elastic)})")
-        lines.append(
-            f"ops.element('Truss', {element.tag}, {element.node_i}, {element.node_j}, "
-            f"{_num(area)}, {material_tag})"
-        )
+        base_tag = _TRUSS_MATERIAL_TAG_OFFSET + element.tag
+        lines.append(f"ops.uniaxialMaterial('Elastic', {base_tag}, {_num(elastic)})")
+        if element.prestress != 0.0 and area > 0.0:
+            # Only a prestressed member needs corotTruss's geometrically
+            # nonlinear formulation + InitStrainMaterial's initial-strain
+            # wrapping - a plain (unprestressed) truss keeps emitting the
+            # exact same 'Truss'/'Elastic' text as before this feature
+            # existed, so no existing model's exported script changes.
+            wrapper_tag = _TRUSS_INIT_STRAIN_TAG_OFFSET + element.tag
+            init_strain = element.prestress / (elastic * area)
+            lines.append(
+                f"ops.uniaxialMaterial('InitStrainMaterial', {wrapper_tag}, {base_tag}, "
+                f"{_num(init_strain)})"
+            )
+            lines.append(
+                f"ops.element('corotTruss', {element.tag}, {element.node_i}, {element.node_j}, "
+                f"{_num(area)}, {wrapper_tag})"
+            )
+        else:
+            lines.append(
+                f"ops.element('Truss', {element.tag}, {element.node_i}, {element.node_j}, "
+                f"{_num(area)}, {base_tag})"
+            )
     if truss_elements:
         lines.append("")
 
@@ -307,7 +325,7 @@ def _write_mass(lines: list[str], model: StructuralModel, length_unit: str) -> N
 
 
 def _write_loads(lines: list[str], model: StructuralModel) -> None:
-    if not model.nodal_loads and not model.element_loads:
+    if not model.nodal_loads and not model.element_loads and not model.point_loads:
         return
     lines.append("ops.timeSeries('Linear', 1)")
     lines.append("ops.pattern('Plain', 1, 1)")
@@ -321,10 +339,21 @@ def _write_loads(lines: list[str], model: StructuralModel) -> None:
         if load.element_tag in trapezoid_tags and not load.is_uniform:
             _write_trapezoid_eleload(lines, load)
         else:
+            # A partial-span constant load (xL1/xL2 not the (0.0, 1.0)
+            # default) passes those on as -beamUniform's own native trailing
+            # arguments - see solver.py's identical handling for why this is
+            # safe (confirmed against the installed openseespy).
+            span_args = "" if load.is_full_span else f", {_num(load.xL1)}, {_num(load.xL2)}"
             lines.append(
                 f"ops.eleLoad('-ele', {load.element_tag}, '-type', '-beamUniform', "
-                f"{_num(load.wy)}, {_num(load.wx)})"
+                f"{_num(load.wy)}, {_num(load.wx)}{span_args})"
             )
+    for point_load in model.point_loads:
+        # 2D only (this exporter rejects ndm != 2 above) - no pz component.
+        lines.append(
+            f"ops.eleLoad('-ele', {point_load.element_tag}, '-type', '-beamPoint', "
+            f"{_num(point_load.py)}, {_num(point_load.position)}, {_num(point_load.n)})"
+        )
     lines.append("")
 
 

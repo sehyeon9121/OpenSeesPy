@@ -339,7 +339,18 @@ class _RenderingMixin:
                 u, v = self._uv(self.nodes[tag])
                 if rectangle.contains(QPointF(u * scale, -v * scale)):
                     self.selected_nodes.add(tag)
-        if self.selection_filter in {"all", "elements"}:
+        # With the default "all" filter, a downward ("window") drag grabs
+        # only nodes, never members - even one fully enclosed by the box.
+        # The common gesture this protects is dragging over an entire
+        # building to grab many nodes at once (reported: "여러 노드를 한번에
+        # 잡기 위해 드래그했는데 부재도 같이 잡힘"); an explicit "부재만" filter
+        # still selects members regardless of direction, and an upward
+        # ("crossing") drag still selects members it touches or encloses,
+        # same as before - only the "all"-filter window-drag default changes.
+        select_elements = self.selection_filter == "elements" or (
+            self.selection_filter == "all" and crossing
+        )
+        if select_elements:
             for tag in self._plane_element_tags(plane_nodes):
                 element = self.elements[tag]
                 a, b = self.nodes[element.node_i], self.nodes[element.node_j]

@@ -45,6 +45,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -62,9 +64,18 @@ from openframe.core.domain import (
     MemberDistributedLoadEntry,
     MemberPointLoadEntry,
     NodalLoadEntry,
+    SeismicLoadParameters,
     SelfWeightEntry,
+    StoryWeight,
     UnitSystem,
+    WindLoadParameters,
+    design_spectral_accelerations,
+    equivalent_lateral_force,
+    lumped_node_weights,
+    mpa_to_stress_unit,
+    seismic_response_coefficient,
     unit_conversion_factors,
+    wind_force_by_story,
 )
 from openframe.features.analysis.statics import (
     MaterialFreeSolveThread,
@@ -75,12 +86,14 @@ from openframe.features.analysis.statics import (
 )
 from openframe.features.model.drawing import PlaneKind
 from openframe.features.model.drawing.coordinates import direction_degrees
+from openframe.features.model.presentation.analysis_case_store import AnalysisCaseStore
 from openframe.features.model.presentation.analysis_settings_dialogs import (
     BucklingSettingsDialog,
     ModalSettingsDialog,
     NonlinearStaticSettingsDialog,
     TimeHistorySettingsDialog,
 )
+from openframe.features.model.presentation.analysis_settings_sidebar import AnalysisSettingsSidebar
 from openframe.features.model.presentation.canvas_glyphs import (
     _LOAD_TARGET_OPTIONS,
     _SUPPORT_OPTIONS,
@@ -94,6 +107,7 @@ from openframe.features.model.presentation.canvas_glyphs import (
     _render_glyph_icon,
     _render_load_diagram,
 )
+from openframe.features.model.presentation.current_page_only_stack import _CurrentPageOnlyStack
 from openframe.features.model.presentation.floor_load_type_manager_dialog import (
     FloorLoadTypeManagerDialog,
 )
@@ -104,6 +118,7 @@ from openframe.features.model.presentation.load_combination_manager_dialog impor
 from openframe.features.model.presentation.model_sidebar import LOAD_CASE_PRESENTATION
 from openframe.features.model.presentation.safe_spinbox import (
     DownwardComboBox,
+    SafeComboBox,
     SafeDoubleSpinBox,
     SafeSpinBox,
 )
@@ -113,43 +128,6 @@ from openframe.features.model.presentation.statics_modeling_page import StaticsD
 from openframe.features.model.presentation.story_manager_dialog import StoryManagerDialog
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
-
-
-class _CurrentPageOnlyStack(QStackedWidget):
-    """A ``QStackedWidget`` whose size hint comes only from the page actually
-    showing, not the widest of all seven — the plain version reports
-    ``max(sizeHint() for every page)`` even though six of them are hidden,
-    so the 300px-wide category editor column (``_build_2d_editor_panel``)
-    had to make room for whichever category page happened to be widest
-    (부재's 단면 미리보기 + form, in practice) no matter which one was
-    actually open, forcing a horizontal scrollbar even on the narrow 노드
-    분할 page. Switching pages needs an explicit ``updateGeometry()`` since
-    Qt does not know a widget's size hint changed on its own.
-    """
-
-    def sizeHint(self):
-        current = self.currentWidget()
-        return current.sizeHint() if current is not None else super().sizeHint()
-
-    def minimumSizeHint(self):
-        current = self.currentWidget()
-        return current.minimumSizeHint() if current is not None else super().minimumSizeHint()
-
-    def hasHeightForWidth(self) -> bool:
-        # Deliberately always False, even though the current page's own
-        # hasHeightForWidth() (from its word-wrapped QLabels - 노드 추가/이동·
-        # 복사/아치/부재 all have one) would say True. sizeHint() above already
-        # gives the parent layout a perfectly good static height for
-        # whichever page is current, computed at that page's own natural
-        # width. Letting hasHeightForWidth()/heightForWidth() propagate up
-        # instead put the outer QVBoxLayout (_build_editor_scroll's ``root``)
-        # into Qt's dynamic heightForWidth codepath for this item, which
-        # computed a wildly inflated height (~1000px panels for ~450px of
-        # actual content) and then centered this stack inside that oversized
-        # cell - the fields visibly sank toward the middle of the panel
-        # instead of staying pinned at the top. Reporting a plain, static
-        # size (no heightForWidth) avoids that codepath entirely.
-        return False
 
 
 class _LoadTreeBinding(NamedTuple):
@@ -1205,7 +1183,15 @@ class ModelingInterfacePage(QFrame):
         self.canvas_stack.addWidget(self.preview_3d_panel)
         layout.addWidget(self.canvas_stack, 1)
 
-        layout.addWidget(self._build_entry_bar())
+        self.entry_bar = self._build_entry_bar()
+        # In 3D these controls duplicate the contextual Node/Element tabs and
+        # the work-plane bar above the viewport. Keep the objects alive for
+        # shortcuts and internal selection-filter routing, but do not spend a
+        # permanent row on Grid/Snap/Ortho/typed 2D-style entry. The compact
+        # precision strip remains visible in the 2D workspace where it is the
+        # primary drawing aid.
+        self.entry_bar.setVisible(not self._start_in_3d)
+        layout.addWidget(self.entry_bar)
         return panel
 
     def _build_3d_preview_panel(self) -> QFrame:
@@ -1750,6 +1736,21 @@ class ModelingInterfacePage(QFrame):
         """
         self._analysis_settings: dict[str, dict] = {}
         section, root = self._section("Analysis", show_title=False)
+
+        # Analysis Case skeleton (Case create/duplicate/rename/delete,
+        # per-case PRE-CHECK) - added alongside the existing method
+        # combo/dialog flow below, not replacing it yet. Nothing here is
+        # read by solve()/_solve_nonlinear_static() in this pass; those
+        # still run entirely off self.analysis_method_selector/
+        # self._analysis_settings, unchanged. See
+        # analysis_settings_sidebar.py's own module docstring for the
+        # target design this is the first slice of.
+        self.analysis_case_store = AnalysisCaseStore(self)
+        self.analysis_settings_sidebar = AnalysisSettingsSidebar(
+            self.analysis_case_store, self.canvas.build_model
+        )
+        root.addWidget(self.analysis_settings_sidebar)
+
         hint = QLabel(
             "이 화면에서 바로 실행되는 해석은 선형탄성과 비선형 정적(Pushover, 강재 "
             "집중소성힌지)입니다 — 부정정 구조를 정확히 풀려면 모든 부재에 실제 "
@@ -1757,15 +1758,35 @@ class ModelingInterfacePage(QFrame):
         )
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
+        # A wrapped QLabel's sizeHint() ignores any width a later layout
+        # would constrain it to - this 2-sentence hint reported ~480px
+        # unwrapped, well past this panel's fixed-320px budget, the same
+        # trap the Loads tab's seismic/wind generators hit earlier this
+        # session. Pre-existing, just never asserted by a test until the
+        # new Analysis Case sidebar below made the whole page's sizeHint
+        # visibly wrong; fixed alongside it rather than left half-broken.
+        hint.setMaximumWidth(272)
         root.addWidget(hint)
 
-        method_form = QFormLayout()
+        # Label above the combo, not a QFormLayout row beside it - "해석
+        # 방법" + this combo's own longest item ("비선형 정적 (Pushover)")
+        # together were already past this panel's fixed-320px budget
+        # (QFormLayout adds the label's width to the field's, not just the
+        # field's own), same trap as the hint labels above.
+        method_label = QLabel("해석 방법")
+        root.addWidget(method_label)
         self.analysis_method_selector = QComboBox()
         for label, kind, _dialog_cls in self._ANALYSIS_METHOD_OPTIONS:
             self.analysis_method_selector.addItem(label, kind.value)
         self.analysis_method_selector.currentIndexChanged.connect(self._on_analysis_method_changed)
-        method_form.addRow("해석 방법", self.analysis_method_selector)
-        root.addLayout(method_form)
+        # Its own longest item ("비선형 정적 (Pushover)") wants 282px, which
+        # combined with this section's own 20px margins clears the 296px
+        # budget by only 6px - capped rather than left to round-trip through
+        # every width-safety check on a hair's-width margin. The closed
+        # combo's displayed text still shows in full at this width; only a
+        # much longer future label would ever actually elide.
+        self.analysis_method_selector.setMaximumWidth(272)
+        root.addWidget(self.analysis_method_selector)
 
         self.analysis_settings_button = QPushButton("설정...")
         self.analysis_settings_button.clicked.connect(self._open_analysis_settings_dialog)
@@ -1792,6 +1813,7 @@ class ModelingInterfacePage(QFrame):
         )
         advanced_hint.setWordWrap(True)
         advanced_hint.setObjectName("setupSectionHint")
+        advanced_hint.setMaximumWidth(272)
         root.addWidget(advanced_hint)
         export_button = QPushButton("정밀해석으로 내보내기…")
         export_button.setObjectName("direct2DSecondaryButton")
@@ -2607,17 +2629,9 @@ class ModelingInterfacePage(QFrame):
 
         self.load_generators_stack = _CurrentPageOnlyStack()
         self.load_generators_pages = {
-            "wind": self.load_generators_stack.addWidget(
-                self._build_load_generator_placeholder(
-                    "Wind Load",
-                    "풍하중 자동 생성은 아직 지원하지 않습니다 — 추후 지원 예정입니다.",
-                )
-            ),
+            "wind": self.load_generators_stack.addWidget(self._build_wind_load_generator_page()),
             "seismic": self.load_generators_stack.addWidget(
-                self._build_load_generator_placeholder(
-                    "Static Seismic Load",
-                    "등가정적 지진하중 자동 생성은 아직 지원하지 않습니다 — 추후 지원 예정입니다.",
-                )
+                self._build_seismic_load_generator_page()
             ),
         }
         root.addWidget(self.load_generators_stack)
@@ -2646,6 +2660,959 @@ class ModelingInterfacePage(QFrame):
         layout.addWidget(card)
         layout.addStretch(1)
         return page
+
+    @staticmethod
+    def _add_generator_field(
+        layout: QVBoxLayout,
+        label: str,
+        field: QWidget,
+        help_text: str = "",
+    ) -> QLabel:
+        """Stack a full-name load parameter above its control.
+
+        The Loads dock is intentionally only 320 px wide. A conventional
+        QFormLayout forces a long engineering name and its input into one
+        narrow row, which is why the old UI fell back to unexplained symbols
+        such as Ss/Fa/R. Stacking keeps the complete name readable and still
+        leaves the input at a comfortable width.
+        """
+        title = QLabel(label)
+        title.setObjectName("loadParameterLabel")
+        title.setWordWrap(True)
+        title.setMaximumWidth(272)
+        layout.addWidget(title)
+        field.setMaximumWidth(272)
+        field.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            field.sizePolicy().verticalPolicy(),
+        )
+        layout.addWidget(field)
+        if help_text:
+            hint = QLabel(help_text)
+            hint.setObjectName("loadParameterHelp")
+            hint.setWordWrap(True)
+            hint.setMaximumWidth(272)
+            layout.addWidget(hint)
+        return title
+
+    @staticmethod
+    def _generator_row(*widgets: QWidget) -> QWidget:
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        for index, widget in enumerate(widgets):
+            row_layout.addWidget(widget, 1 if index == 0 else 0)
+        return row
+
+    def _build_seismic_load_generator_page(self) -> QWidget:
+        """A readable KDS-style Equivalent Lateral Force setup.
+
+        Formula results are automatic, but edition/site/system lookup-table
+        values remain explicit engineer inputs. This prevents a stale table
+        from silently choosing Fa/Fv/R while giving first-time users the full
+        meaning of every symbol and an immediate SDS/SD1/Cs preview.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(8)
+
+        card, content = self._load_group_card("기본 설정")
+        self.seismic_code_combo = SafeComboBox()
+        self.seismic_code_combo.addItem(
+            "KDS 41 17 00:2019 — 건축물 내진설계기준",
+            "KDS 41 17 00:2019",
+        )
+        self.seismic_code_combo.addItem("사용자 지정 설계기준", "custom")
+        self._add_generator_field(content, "설계기준 (Seismic Load Code)", self.seismic_code_combo)
+        self.seismic_description = QLineEdit()
+        self.seismic_description.setPlaceholderText("예: X방향 등가정적 지진하중")
+        self._add_generator_field(content, "설명 (Description)", self.seismic_description)
+
+        self.seismic_case_combo = SafeComboBox()
+        self.seismic_case_combo.setToolTip(
+            "이 케이스에 이미 있는 하중은 생성할 때마다 계산된 값으로 대체됩니다."
+        )
+        case_manage_button = QPushButton("관리...")
+        case_manage_button.clicked.connect(self._open_load_case_manager)
+        self._add_generator_field(
+            content,
+            "적용할 하중케이스 (Load Case)",
+            self._generator_row(self.seismic_case_combo, case_manage_button),
+            "지진하중 전용 케이스를 권장합니다.",
+        )
+        layout.addWidget(card)
+
+        ground_card, ground = self._load_group_card("설계 스펙트럼과 지반")
+        hint = QLabel(
+            "지반종류는 검토 기록용이며, Fa·Fv는 선택한 규준판의 표에서 확인해 "
+            "직접 입력합니다. SDS와 SD1은 입력과 동시에 계산됩니다."
+        )
+        hint.setObjectName("loadModeHint")
+        hint.setWordWrap(True)
+        hint.setMaximumWidth(272)
+        ground.addWidget(hint)
+        self.seismic_site_class = SafeComboBox()
+        for site_class in ("S1", "S2", "S3", "S4", "S5", "S6"):
+            self.seismic_site_class.addItem(f"지반종류 {site_class}", site_class)
+        self.seismic_site_class.setCurrentIndex(1)
+        self._add_generator_field(
+            ground,
+            "지반종류 (Site Class)",
+            self.seismic_site_class,
+            "선택만으로 Fa·Fv를 자동 결정하지 않습니다.",
+        )
+        self.seismic_ss = SafeDoubleSpinBox()
+        self.seismic_ss.setRange(0.0, 3.0)
+        self.seismic_ss.setDecimals(3)
+        self._add_generator_field(
+            ground,
+            "단주기 응답스펙트럼 가속도 Ss (g)",
+            self.seismic_ss,
+        )
+        self.seismic_s1 = SafeDoubleSpinBox()
+        self.seismic_s1.setRange(0.0, 2.0)
+        self.seismic_s1.setDecimals(3)
+        self._add_generator_field(
+            ground,
+            "1초주기 응답스펙트럼 가속도 S1 (g)",
+            self.seismic_s1,
+        )
+        self.seismic_fa = SafeDoubleSpinBox()
+        self.seismic_fa.setRange(0.1, 5.0)
+        self.seismic_fa.setDecimals(3)
+        self.seismic_fa.setValue(1.0)
+        self._add_generator_field(
+            ground,
+            "단주기 지반증폭계수 Fa",
+            self.seismic_fa,
+            "선택한 지반종류와 Ss에 맞는 규준 표 값을 입력하세요.",
+        )
+        self.seismic_fv = SafeDoubleSpinBox()
+        self.seismic_fv.setRange(0.1, 5.0)
+        self.seismic_fv.setDecimals(3)
+        self.seismic_fv.setValue(1.0)
+        self._add_generator_field(
+            ground,
+            "1초주기 지반증폭계수 Fv",
+            self.seismic_fv,
+            "선택한 지반종류와 S1에 맞는 규준 표 값을 입력하세요.",
+        )
+        self.seismic_spectrum_summary = QLabel()
+        self.seismic_spectrum_summary.setObjectName("loadDerivedValue")
+        self.seismic_spectrum_summary.setWordWrap(True)
+        ground.addWidget(self.seismic_spectrum_summary)
+        layout.addWidget(ground_card)
+
+        structure_card, structure = self._load_group_card("구조 특성")
+        self.seismic_system_description = QLineEdit()
+        self.seismic_system_description.setPlaceholderText("예: 철골 보통모멘트골조")
+        self._add_generator_field(
+            structure,
+            "지진력저항시스템 (Seismic Force-Resisting System)",
+            self.seismic_system_description,
+        )
+        self.seismic_r = SafeDoubleSpinBox()
+        self.seismic_r.setRange(0.1, 10.0)
+        self.seismic_r.setDecimals(2)
+        self.seismic_r.setValue(1.0)
+        self._add_generator_field(
+            structure,
+            "반응수정계수 R (Response Modification Coefficient)",
+            self.seismic_r,
+            "지진력저항시스템별 규준 표 값을 입력하세요.",
+        )
+        self.seismic_ie = SafeDoubleSpinBox()
+        self.seismic_ie.setRange(0.1, 2.0)
+        self.seismic_ie.setDecimals(2)
+        self.seismic_ie.setValue(1.0)
+        self._add_generator_field(
+            structure,
+            "내진 중요도계수 Ie (Seismic Importance Factor)",
+            self.seismic_ie,
+        )
+        self.seismic_period_method = SafeComboBox()
+        self.seismic_period_method.addItem("직접 입력", "manual")
+        self.seismic_period_method.addItem("고유치해석 결과 입력", "modal")
+        self._add_generator_field(
+            structure,
+            "기본진동주기 입력방법 (Fundamental Period Method)",
+            self.seismic_period_method,
+        )
+        self.seismic_period = SafeDoubleSpinBox()
+        self.seismic_period.setRange(0.0, 20.0)
+        self.seismic_period.setDecimals(3)
+        self.seismic_period.setValue(0.5)
+        self._add_generator_field(
+            structure,
+            "기본진동주기 T (s)",
+            self.seismic_period,
+            "고유치해석의 1차 주기 또는 규준의 근사주기를 입력하세요.",
+        )
+        self.seismic_coefficient_summary = QLabel()
+        self.seismic_coefficient_summary.setObjectName("loadDerivedValue")
+        self.seismic_coefficient_summary.setWordWrap(True)
+        structure.addWidget(self.seismic_coefficient_summary)
+        layout.addWidget(structure_card)
+
+        application_card, application = self._load_group_card("가력 방향과 우발편심")
+        self.seismic_direction_combo = SafeComboBox()
+        for label, key in (
+            ("전역 +X 방향", "x"),
+            ("전역 -X 방향", "-x"),
+            ("전역 +Y 방향", "y"),
+            ("전역 -Y 방향", "-y"),
+        ):
+            self.seismic_direction_combo.addItem(label, key)
+        self._add_generator_field(
+            application,
+            "수평 지진하중 방향 (Loading Direction)",
+            self.seismic_direction_combo,
+        )
+        self.seismic_scale_factor = SafeDoubleSpinBox()
+        self.seismic_scale_factor.setRange(0.0, 100.0)
+        self.seismic_scale_factor.setDecimals(3)
+        self.seismic_scale_factor.setValue(1.0)
+        self._add_generator_field(
+            application,
+            "방향 배율 (Direction Scale Factor)",
+            self.seismic_scale_factor,
+        )
+        self.seismic_eccentricity_sign = SafeComboBox()
+        self.seismic_eccentricity_sign.addItem("적용 안 함", 0.0)
+        self.seismic_eccentricity_sign.addItem("양(+)의 편심", 1.0)
+        self.seismic_eccentricity_sign.addItem("음(-)의 편심", -1.0)
+        self._add_generator_field(
+            application,
+            "우발편심 방향 (Accidental Eccentricity)",
+            self.seismic_eccentricity_sign,
+        )
+        self.seismic_eccentricity = SafeDoubleSpinBox()
+        self.seismic_eccentricity.setRange(0.0, 1.0e6)
+        self.seismic_eccentricity.setDecimals(4)
+        self.seismic_eccentricity_label = self._add_generator_field(
+            application,
+            f"편심거리 e ({self._unit_system.length})",
+            self.seismic_eccentricity,
+            "평면치수의 비율이 아니라 실제 모델 길이입니다. 생성 하중에 Mz = F×e로 반영됩니다.",
+        )
+        self.seismic_eccentricity_sign.currentIndexChanged.connect(
+            self._refresh_seismic_parameter_summary
+        )
+        layout.addWidget(application_card)
+
+        self.canvas.load_state_changed.connect(self._refresh_seismic_case_combo)
+        self._refresh_seismic_case_combo()
+
+        generate_button = QPushButton("지진하중 생성")
+        generate_button.setObjectName("loadPrimaryButton")
+        generate_button.clicked.connect(self._generate_seismic_load)
+        layout.addWidget(generate_button)
+
+        self.seismic_result_label = QLabel()
+        self.seismic_result_label.setWordWrap(True)
+        self.seismic_result_label.setObjectName("loadModeHint")
+        layout.addWidget(self.seismic_result_label)
+
+        for field in (
+            self.seismic_ss,
+            self.seismic_s1,
+            self.seismic_fa,
+            self.seismic_fv,
+            self.seismic_r,
+            self.seismic_ie,
+            self.seismic_period,
+            self.seismic_scale_factor,
+            self.seismic_eccentricity,
+        ):
+            field.valueChanged.connect(self._refresh_seismic_parameter_summary)
+        self._refresh_seismic_parameter_summary()
+
+        layout.addStretch(1)
+        return page
+
+    def _refresh_seismic_parameter_summary(self, _value: object | None = None) -> None:
+        if not hasattr(self, "seismic_spectrum_summary"):
+            return
+        sds, sd1 = design_spectral_accelerations(
+            self.seismic_ss.value(),
+            self.seismic_fa.value(),
+            self.seismic_s1.value(),
+            self.seismic_fv.value(),
+        )
+        self.seismic_spectrum_summary.setText(
+            f"자동 계산 · 단주기 설계스펙트럼 SDS = {sds:.4f} g\n"
+            f"1초주기 설계스펙트럼 SD1 = {sd1:.4f} g"
+        )
+        try:
+            coefficient = seismic_response_coefficient(
+                sds=sds,
+                sd1=sd1,
+                s1=self.seismic_s1.value(),
+                r=self.seismic_r.value(),
+                ie=self.seismic_ie.value(),
+                period=self.seismic_period.value(),
+            )
+            coefficient_text = f"Cs = {coefficient:.4f}"
+        except ValueError as error:
+            coefficient_text = str(error)
+        reduction = self.seismic_r.value() / self.seismic_ie.value()
+        self.seismic_coefficient_summary.setText(
+            f"자동 계산 · R/Ie = {reduction:.3f} · {coefficient_text}"
+        )
+        use_eccentricity = float(self.seismic_eccentricity_sign.currentData()) != 0.0
+        self.seismic_eccentricity.setEnabled(use_eccentricity)
+
+    def _refresh_seismic_case_combo(self) -> None:
+        if not hasattr(self, "seismic_case_combo"):
+            return
+        combo = self.seismic_case_combo
+        previous = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        for case in self.canvas.load_cases.values():
+            combo.addItem(case.name, case.id)
+        index = combo.findData(previous)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def _generate_seismic_load(self) -> None:
+        case_id = self.seismic_case_combo.currentData()
+        if not case_id:
+            self.seismic_result_label.setText(
+                "먼저 '케이스 관리...'에서 지진하중을 담을 하중케이스를 만드세요."
+            )
+            return
+        if not self.canvas.stories:
+            self.seismic_result_label.setText(
+                "Story Manager에서 층을 먼저 정의해야 층별로 힘을 분배할 수 있습니다."
+            )
+            return
+        model = self.canvas.build_model()
+        node_weights = lumped_node_weights(model)
+        if sum(node_weights.values()) <= 0.0:
+            self.seismic_result_label.setText(
+                "부재에 밀도(단위중량)와 단면적(A)이 입력되지 않아 중량을 계산할 수 "
+                "없습니다 - 부재 속성에서 재료를 입력하세요."
+            )
+            return
+
+        # The base is the model's own lowest node (the foundation level a
+        # real building's supports sit at), not the lowest *Story* - a
+        # building's first defined story is usually well above its
+        # foundation, and treating that as height-zero would wrongly zero
+        # out its own share of the seismic force (see
+        # ``distribute_seismic_force_by_height``'s height<=0 rule).
+        base_elevation = min(node.z for node in model.nodes.values())
+        story_weights: dict[str, StoryWeight] = {}
+        story_nodes: dict[str, tuple[int, ...]] = {}
+        assigned_nodes: set[int] = set()
+        for story_id, story in self.canvas.stories.items():
+            nodes_here = self.canvas.nodes_at_story(story_id)
+            weight_here = sum(node_weights.get(tag, 0.0) for tag in nodes_here)
+            story_weights[story_id] = StoryWeight(
+                height=story.elevation - base_elevation, weight=weight_here
+            )
+            story_nodes[story_id] = nodes_here
+            assigned_nodes.update(nodes_here)
+
+        # W (total seismic weight) is the sum of every *story's* own weight,
+        # not every node's - a node the Story Manager hasn't assigned to any
+        # story (or one sitting exactly at the base) could never receive its
+        # own share of the distributed force either way, so counting its
+        # weight into W here would inflate the base shear V past what
+        # sum(Fx) can actually equal (an equilibrium violation).
+        total_weight = sum(story_weight.weight for story_weight in story_weights.values())
+        if total_weight <= 0.0:
+            self.seismic_result_label.setText(
+                "정의된 층에 해당하는 절점에 중량이 없습니다 - Story Manager의 표고가 "
+                "실제 절점 위치와 맞는지 확인하세요."
+            )
+            return
+        unassigned_weight = sum(
+            weight for tag, weight in node_weights.items() if tag not in assigned_nodes
+        )
+        unassigned_note = (
+            f" (참고: 어느 층에도 속하지 않은 절점의 중량 {unassigned_weight:,.3f}은(는) "
+            "W 계산에서 제외되었습니다 - 기초 레벨이거나 Story Manager에 층을 빠뜨렸을 "
+            "수 있습니다.)"
+            if unassigned_weight > total_weight * 1.0e-6
+            else ""
+        )
+
+        parameters = SeismicLoadParameters(
+            ss=self.seismic_ss.value(),
+            s1=self.seismic_s1.value(),
+            fa=self.seismic_fa.value(),
+            fv=self.seismic_fv.value(),
+            r=self.seismic_r.value(),
+            ie=self.seismic_ie.value(),
+            period=self.seismic_period.value(),
+        )
+        try:
+            cs, base_shear, story_forces = equivalent_lateral_force(
+                parameters, total_weight, story_weights
+            )
+        except ValueError as error:
+            self.seismic_result_label.setText(str(error))
+            return
+
+        direction_key = str(self.seismic_direction_combo.currentData())
+        direction_index = {"x": 0, "y": 1}[direction_key[-1]]
+        direction_sign = -1.0 if direction_key.startswith("-") else 1.0
+        load_scale = direction_sign * self.seismic_scale_factor.value()
+        eccentricity_sign = float(self.seismic_eccentricity_sign.currentData())
+        eccentricity = eccentricity_sign * self.seismic_eccentricity.value()
+        entries: list[tuple[str, tuple[int, ...], NodalLoadEntry]] = []
+        for story_id, force in story_forces.items():
+            weight_here = story_weights[story_id].weight
+            if weight_here <= 0.0 or force == 0.0:
+                continue
+            for node_tag in story_nodes[story_id]:
+                share = node_weights.get(node_tag, 0.0) / weight_here
+                if share <= 0.0:
+                    continue
+                values = [0.0] * 6
+                node_force = force * share * load_scale
+                values[direction_index] = node_force
+                values[5] = node_force * eccentricity
+                payload = NodalLoadEntry(
+                    fx=values[0], fy=values[1], fz=values[2], mx=values[3], my=values[4], mz=values[5]
+                )
+                entries.append(("nodal", (node_tag,), payload))
+
+        applied_count = self.canvas.replace_load_entries_for_case(case_id, entries)
+        self.seismic_result_label.setText(
+            f"Cs = {cs:.4f}, 밑면전단력 V = {base_shear * load_scale:,.3f} — "
+            f"{applied_count}개 절점에 "
+            f"'{self.seismic_case_combo.currentText()}' 케이스로 하중을 생성했습니다."
+            f"{' 우발편심 Mz를 함께 적용했습니다.' if eccentricity else ''}"
+            f"{unassigned_note}"
+        )
+
+    def _build_wind_load_generator_page(self) -> QWidget:
+        """Readable wind-load specification plus real story-load generation.
+
+        Kz/Gf/Cp remain visible engineer inputs. A separate velocity mode can
+        convert 1/2*rho*V0^2 and user-entered modifiers to the model stress
+        unit, but is clearly labelled as a reference-pressure conversion,
+        not an embedded replacement for the selected KDS edition's tables.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(8)
+
+        card, content = self._load_group_card("기본 설정")
+        self.wind_code_combo = SafeComboBox()
+        self.wind_code_combo.addItem(
+            "KDS 41 12 00:2022 — 건축물 설계하중",
+            "KDS 41 12 00:2022",
+        )
+        self.wind_code_combo.addItem("사용자 지정 설계기준", "custom")
+        self._add_generator_field(content, "설계기준 (Wind Load Code)", self.wind_code_combo)
+        self.wind_description = QLineEdit()
+        self.wind_description.setPlaceholderText("예: +X방향 주골조 풍하중")
+        self._add_generator_field(content, "설명 (Description)", self.wind_description)
+        self.wind_case_combo = SafeComboBox()
+        self.wind_case_combo.setToolTip(
+            "이 케이스에 이미 있는 하중은 생성할 때마다 계산된 값으로 대체됩니다."
+        )
+        wind_case_manage_button = QPushButton("관리...")
+        wind_case_manage_button.clicked.connect(self._open_load_case_manager)
+        self._add_generator_field(
+            content,
+            "적용할 하중케이스 (Load Case)",
+            self._generator_row(self.wind_case_combo, wind_case_manage_button),
+            "풍하중 전용 케이스를 권장합니다.",
+        )
+        layout.addWidget(card)
+
+        pressure_card, pressure = self._load_group_card("기준 속도압")
+        hint = QLabel(
+            "규준의 지역·지표면조도·지형 조건을 확인한 뒤 직접 설계풍압을 입력하거나, "
+            "기본풍속에서 참고 기준속도압을 환산할 수 있습니다."
+        )
+        hint.setObjectName("loadModeHint")
+        hint.setWordWrap(True)
+        hint.setMaximumWidth(272)
+        pressure.addWidget(hint)
+        self.wind_calculation_method = SafeComboBox()
+        self.wind_calculation_method.addItem("기준 설계풍압 직접 입력", "direct")
+        self.wind_calculation_method.addItem("기본풍속으로 기준속도압 환산", "velocity")
+        self._add_generator_field(
+            pressure,
+            "계산 방식 (Calculation Method)",
+            self.wind_calculation_method,
+        )
+        self.wind_exposure_category = SafeComboBox()
+        for category in ("A", "B", "C", "D"):
+            self.wind_exposure_category.addItem(f"지표면조도구분 {category}", category)
+        self.wind_exposure_category.setCurrentIndex(1)
+        self._add_generator_field(
+            pressure,
+            "지표면조도구분 (Exposure Category)",
+            self.wind_exposure_category,
+            "층별 노출계수 Kz는 아래 표에 직접 입력합니다.",
+        )
+        self.wind_q0 = SafeDoubleSpinBox()
+        self.wind_q0.setRange(0.0, 1.0e6)
+        self.wind_q0.setDecimals(6)
+        self.wind_q0.setValue(1.0)
+        self.wind_q0_label = self._add_generator_field(
+            pressure,
+            f"기준 설계풍압 q0 ({self._unit_system.stress})",
+            self.wind_q0,
+            "층별 설계풍압은 pz = q0 × Kz × Gf × Cp로 계산합니다.",
+        )
+
+        self.wind_velocity_inputs = QWidget()
+        velocity_layout = QVBoxLayout(self.wind_velocity_inputs)
+        velocity_layout.setContentsMargins(0, 0, 0, 0)
+        velocity_layout.setSpacing(6)
+        self.wind_basic_speed = SafeDoubleSpinBox()
+        self.wind_basic_speed.setRange(0.0, 150.0)
+        self.wind_basic_speed.setDecimals(2)
+        self.wind_basic_speed.setValue(26.0)
+        self._add_generator_field(
+            velocity_layout,
+            "기본풍속 V0 (m/s)",
+            self.wind_basic_speed,
+        )
+        self.wind_air_density = SafeDoubleSpinBox()
+        self.wind_air_density.setRange(0.5, 2.0)
+        self.wind_air_density.setDecimals(4)
+        self.wind_air_density.setValue(1.225)
+        self._add_generator_field(
+            velocity_layout,
+            "공기밀도 ρ (kg/m³)",
+            self.wind_air_density,
+        )
+        self.wind_directionality_factor = SafeDoubleSpinBox()
+        self.wind_directionality_factor.setRange(0.0, 3.0)
+        self.wind_directionality_factor.setDecimals(3)
+        self.wind_directionality_factor.setValue(1.0)
+        self._add_generator_field(
+            velocity_layout,
+            "풍향계수 Kd (Directionality Factor)",
+            self.wind_directionality_factor,
+        )
+        self.wind_topographic_factor = SafeDoubleSpinBox()
+        self.wind_topographic_factor.setRange(0.0, 5.0)
+        self.wind_topographic_factor.setDecimals(3)
+        self.wind_topographic_factor.setValue(1.0)
+        self._add_generator_field(
+            velocity_layout,
+            "지형계수 Kzt (Topographic Factor)",
+            self.wind_topographic_factor,
+        )
+        self.wind_importance_factor = SafeDoubleSpinBox()
+        self.wind_importance_factor.setRange(0.0, 3.0)
+        self.wind_importance_factor.setDecimals(3)
+        self.wind_importance_factor.setValue(1.0)
+        self._add_generator_field(
+            velocity_layout,
+            "풍하중 중요도계수 Iw (Wind Importance Factor)",
+            self.wind_importance_factor,
+            "환산식 1/2ρV0²에 사용자가 확인한 계수를 곱합니다.",
+        )
+        pressure.addWidget(self.wind_velocity_inputs)
+        self.wind_pressure_summary = QLabel()
+        self.wind_pressure_summary.setObjectName("loadDerivedValue")
+        self.wind_pressure_summary.setWordWrap(True)
+        pressure.addWidget(self.wind_pressure_summary)
+        layout.addWidget(pressure_card)
+
+        response_card, response = self._load_group_card("풍하중 계수와 수풍면")
+        self.wind_structure_type = SafeComboBox()
+        self.wind_structure_type.addItem("강체 구조 (Rigid Structure)", "rigid")
+        self.wind_structure_type.addItem("유연 구조 (Flexible Structure)", "flexible")
+        self._add_generator_field(
+            response,
+            "구조물 동적 분류 (Structural Response)",
+            self.wind_structure_type,
+            "현재 생성기는 입력한 가스트영향계수를 사용합니다.",
+        )
+        self.wind_gust_factor = SafeDoubleSpinBox()
+        self.wind_gust_factor.setRange(0.1, 3.0)
+        self.wind_gust_factor.setDecimals(3)
+        self.wind_gust_factor.setValue(0.85)
+        self._add_generator_field(
+            response,
+            "가스트영향계수 Gf (Gust Effect Factor)",
+            self.wind_gust_factor,
+        )
+        self.wind_pressure_coefficient = SafeDoubleSpinBox()
+        self.wind_pressure_coefficient.setRange(0.0, 5.0)
+        self.wind_pressure_coefficient.setDecimals(3)
+        self.wind_pressure_coefficient.setValue(1.3)
+        self._add_generator_field(
+            response,
+            "순풍압계수 Cp (Net Pressure Coefficient)",
+            self.wind_pressure_coefficient,
+            "풍상면과 풍하면 효과를 합성한 값입니다.",
+        )
+        self.wind_exposed_width = SafeDoubleSpinBox()
+        self.wind_exposed_width.setRange(0.0, 1.0e6)
+        self.wind_exposed_width.setDecimals(3)
+        self.wind_exposed_width_label = self._add_generator_field(
+            response,
+            f"가력방향 직각 노출 폭 B ({self._unit_system.length})",
+            self.wind_exposed_width,
+            "층 수풍면적 = B × 층 분담높이로 계산합니다.",
+        )
+        layout.addWidget(response_card)
+
+        direction_card, direction = self._load_group_card("가력 방향과 층별 노출계수")
+        self.wind_direction_combo = SafeComboBox()
+        for label, key in (
+            ("전역 +X 방향", "x"),
+            ("전역 -X 방향", "-x"),
+            ("전역 +Y 방향", "y"),
+            ("전역 -Y 방향", "-y"),
+        ):
+            self.wind_direction_combo.addItem(label, key)
+        self._add_generator_field(
+            direction,
+            "풍하중 방향 (Loading Direction)",
+            self.wind_direction_combo,
+        )
+        self.wind_scale_factor = SafeDoubleSpinBox()
+        self.wind_scale_factor.setRange(0.0, 100.0)
+        self.wind_scale_factor.setDecimals(3)
+        self.wind_scale_factor.setValue(1.0)
+        self._add_generator_field(
+            direction,
+            "방향 배율 (Direction Scale Factor)",
+            self.wind_scale_factor,
+        )
+        kz_label = QLabel("층별 노출계수 Kz (Exposure Coefficient by Story)")
+        kz_label.setObjectName("loadParameterLabel")
+        kz_label.setWordWrap(True)
+        direction.addWidget(kz_label)
+        self.wind_kz_table = QTableWidget(0, 2)
+        self.wind_kz_table.setHorizontalHeaderLabels(["층", "노출계수 Kz"])
+        self.wind_kz_table.verticalHeader().setVisible(False)
+        self.wind_kz_table.horizontalHeader().setStretchLastSection(True)
+        self.wind_kz_table.setMaximumWidth(272)
+        self.wind_kz_table.setMaximumHeight(140)
+        direction.addWidget(self.wind_kz_table)
+        self.canvas.story_state_changed.connect(self._refresh_wind_kz_table)
+        self._refresh_wind_kz_table()
+        layout.addWidget(direction_card)
+
+        self.canvas.load_state_changed.connect(self._refresh_wind_case_combo)
+        self._refresh_wind_case_combo()
+
+        generate_button = QPushButton("풍하중 생성")
+        generate_button.setObjectName("loadPrimaryButton")
+        generate_button.clicked.connect(self._generate_wind_load)
+        layout.addWidget(generate_button)
+
+        self.wind_result_label = QLabel()
+        self.wind_result_label.setWordWrap(True)
+        self.wind_result_label.setObjectName("loadModeHint")
+        layout.addWidget(self.wind_result_label)
+
+        self.wind_calculation_method.currentIndexChanged.connect(
+            self._on_wind_calculation_method_changed
+        )
+        for field in (
+            self.wind_q0,
+            self.wind_basic_speed,
+            self.wind_air_density,
+            self.wind_directionality_factor,
+            self.wind_topographic_factor,
+            self.wind_importance_factor,
+            self.wind_gust_factor,
+            self.wind_pressure_coefficient,
+            self.wind_scale_factor,
+        ):
+            field.valueChanged.connect(self._refresh_wind_parameter_summary)
+        self._on_wind_calculation_method_changed()
+
+        layout.addStretch(1)
+        return page
+
+    def _on_wind_calculation_method_changed(self, _index: int | None = None) -> None:
+        velocity_mode = self.wind_calculation_method.currentData() == "velocity"
+        self.wind_velocity_inputs.setVisible(velocity_mode)
+        self.wind_q0.setReadOnly(velocity_mode)
+        self._refresh_wind_parameter_summary()
+
+    def _refresh_wind_parameter_summary(self, _value: object | None = None) -> None:
+        if not hasattr(self, "wind_pressure_summary"):
+            return
+        if self.wind_calculation_method.currentData() == "velocity":
+            pressure_pa = (
+                0.5
+                * self.wind_air_density.value()
+                * self.wind_basic_speed.value() ** 2
+                * self.wind_directionality_factor.value()
+                * self.wind_topographic_factor.value()
+                * self.wind_importance_factor.value()
+            )
+            pressure_model = mpa_to_stress_unit(
+                pressure_pa / 1.0e6,
+                self._unit_system.force,
+                self._unit_system.length,
+            )
+            self.wind_q0.blockSignals(True)
+            self.wind_q0.setValue(pressure_model)
+            self.wind_q0.blockSignals(False)
+        design_pressure = (
+            self.wind_q0.value()
+            * self.wind_gust_factor.value()
+            * self.wind_pressure_coefficient.value()
+        )
+        self.wind_pressure_summary.setText(
+            f"자동 계산 · Kz=1.0 기준 풍압 p = {design_pressure:.4f} "
+            f"{self._unit_system.stress}\n"
+            "실제 층별 값은 이 풍압에 각 층 Kz를 곱합니다."
+        )
+
+    def _load_generator_settings(self) -> dict[str, object]:
+        """Persist generator specifications, not only their generated loads."""
+        story_kz: dict[str, float] = {}
+        for row in range(self.wind_kz_table.rowCount()):
+            name_item = self.wind_kz_table.item(row, 0)
+            kz_item = self.wind_kz_table.item(row, 1)
+            if name_item is None or kz_item is None:
+                continue
+            try:
+                story_kz[str(name_item.data(Qt.ItemDataRole.UserRole))] = float(
+                    kz_item.text()
+                )
+            except ValueError:
+                continue
+        return {
+            "wind": {
+                "code": self.wind_code_combo.currentData(),
+                "description": self.wind_description.text(),
+                "case_id": self.wind_case_combo.currentData(),
+                "method": self.wind_calculation_method.currentData(),
+                "exposure_category": self.wind_exposure_category.currentData(),
+                "reference_pressure": self.wind_q0.value(),
+                "basic_speed": self.wind_basic_speed.value(),
+                "air_density": self.wind_air_density.value(),
+                "directionality_factor": self.wind_directionality_factor.value(),
+                "topographic_factor": self.wind_topographic_factor.value(),
+                "importance_factor": self.wind_importance_factor.value(),
+                "structure_type": self.wind_structure_type.currentData(),
+                "gust_factor": self.wind_gust_factor.value(),
+                "pressure_coefficient": self.wind_pressure_coefficient.value(),
+                "exposed_width": self.wind_exposed_width.value(),
+                "direction": self.wind_direction_combo.currentData(),
+                "scale_factor": self.wind_scale_factor.value(),
+                "story_kz": story_kz,
+            },
+            "seismic": {
+                "code": self.seismic_code_combo.currentData(),
+                "description": self.seismic_description.text(),
+                "case_id": self.seismic_case_combo.currentData(),
+                "site_class": self.seismic_site_class.currentData(),
+                "ss": self.seismic_ss.value(),
+                "s1": self.seismic_s1.value(),
+                "fa": self.seismic_fa.value(),
+                "fv": self.seismic_fv.value(),
+                "system_description": self.seismic_system_description.text(),
+                "r": self.seismic_r.value(),
+                "ie": self.seismic_ie.value(),
+                "period_method": self.seismic_period_method.currentData(),
+                "period": self.seismic_period.value(),
+                "direction": self.seismic_direction_combo.currentData(),
+                "scale_factor": self.seismic_scale_factor.value(),
+                "eccentricity_sign": self.seismic_eccentricity_sign.currentData(),
+                "eccentricity": self.seismic_eccentricity.value(),
+            },
+        }
+
+    @staticmethod
+    def _restore_combo_data(combo: QComboBox, value: object) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def _restore_load_generator_settings(self, raw: object) -> None:
+        if not isinstance(raw, dict):
+            return
+        wind = raw.get("wind")
+        if isinstance(wind, dict):
+            for combo, key in (
+                (self.wind_code_combo, "code"),
+                (self.wind_exposure_category, "exposure_category"),
+                (self.wind_structure_type, "structure_type"),
+                (self.wind_direction_combo, "direction"),
+            ):
+                self._restore_combo_data(combo, wind.get(key))
+            self.wind_description.setText(str(wind.get("description", "")))
+            for field, key in (
+                (self.wind_q0, "reference_pressure"),
+                (self.wind_basic_speed, "basic_speed"),
+                (self.wind_air_density, "air_density"),
+                (self.wind_directionality_factor, "directionality_factor"),
+                (self.wind_topographic_factor, "topographic_factor"),
+                (self.wind_importance_factor, "importance_factor"),
+                (self.wind_gust_factor, "gust_factor"),
+                (self.wind_pressure_coefficient, "pressure_coefficient"),
+                (self.wind_exposed_width, "exposed_width"),
+                (self.wind_scale_factor, "scale_factor"),
+            ):
+                if key in wind:
+                    field.setValue(float(wind[key]))
+            self._restore_combo_data(
+                self.wind_calculation_method, wind.get("method", "direct")
+            )
+            self._refresh_wind_kz_table()
+            story_kz = wind.get("story_kz")
+            if isinstance(story_kz, dict):
+                for row in range(self.wind_kz_table.rowCount()):
+                    name_item = self.wind_kz_table.item(row, 0)
+                    if name_item is None:
+                        continue
+                    story_id = str(name_item.data(Qt.ItemDataRole.UserRole))
+                    if story_id in story_kz:
+                        self.wind_kz_table.item(row, 1).setText(str(story_kz[story_id]))
+            self._refresh_wind_case_combo()
+            self._restore_combo_data(self.wind_case_combo, wind.get("case_id"))
+            self._on_wind_calculation_method_changed()
+
+        seismic = raw.get("seismic")
+        if isinstance(seismic, dict):
+            for combo, key in (
+                (self.seismic_code_combo, "code"),
+                (self.seismic_site_class, "site_class"),
+                (self.seismic_period_method, "period_method"),
+                (self.seismic_direction_combo, "direction"),
+                (self.seismic_eccentricity_sign, "eccentricity_sign"),
+            ):
+                self._restore_combo_data(combo, seismic.get(key))
+            self.seismic_description.setText(str(seismic.get("description", "")))
+            self.seismic_system_description.setText(
+                str(seismic.get("system_description", ""))
+            )
+            for field, key in (
+                (self.seismic_ss, "ss"),
+                (self.seismic_s1, "s1"),
+                (self.seismic_fa, "fa"),
+                (self.seismic_fv, "fv"),
+                (self.seismic_r, "r"),
+                (self.seismic_ie, "ie"),
+                (self.seismic_period, "period"),
+                (self.seismic_scale_factor, "scale_factor"),
+                (self.seismic_eccentricity, "eccentricity"),
+            ):
+                if key in seismic:
+                    field.setValue(float(seismic[key]))
+            self._refresh_seismic_case_combo()
+            self._restore_combo_data(self.seismic_case_combo, seismic.get("case_id"))
+            self._refresh_seismic_parameter_summary()
+
+    def _refresh_wind_kz_table(self) -> None:
+        if not hasattr(self, "wind_kz_table"):
+            return
+        previous_kz: dict[str, str] = {}
+        for row in range(self.wind_kz_table.rowCount()):
+            name_item = self.wind_kz_table.item(row, 0)
+            kz_item = self.wind_kz_table.item(row, 1)
+            if name_item is not None and kz_item is not None:
+                previous_kz[name_item.data(Qt.ItemDataRole.UserRole)] = kz_item.text()
+        stories = sorted(
+            self.canvas.stories.values(), key=lambda story: story.elevation, reverse=True
+        )
+        self.wind_kz_table.setRowCount(len(stories))
+        for row, story in enumerate(stories):
+            name_item = QTableWidgetItem(story.name)
+            name_item.setData(Qt.ItemDataRole.UserRole, story.id)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.wind_kz_table.setItem(row, 0, name_item)
+            kz_item = QTableWidgetItem(previous_kz.get(story.id, "1.0"))
+            self.wind_kz_table.setItem(row, 1, kz_item)
+
+    def _refresh_wind_case_combo(self) -> None:
+        if not hasattr(self, "wind_case_combo"):
+            return
+        combo = self.wind_case_combo
+        previous = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        for case in self.canvas.load_cases.values():
+            combo.addItem(case.name, case.id)
+        index = combo.findData(previous)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def _generate_wind_load(self) -> None:
+        case_id = self.wind_case_combo.currentData()
+        if not case_id:
+            self.wind_result_label.setText(
+                "먼저 '케이스 관리...'에서 풍하중을 담을 하중케이스를 만드세요."
+            )
+            return
+        if not self.canvas.stories:
+            self.wind_result_label.setText(
+                "Story Manager에서 층을 먼저 정의해야 층별로 힘을 분배할 수 있습니다."
+            )
+            return
+        if self.wind_exposed_width.value() <= 0.0:
+            self.wind_result_label.setText("노출 폭(B)을 0보다 크게 입력하세요.")
+            return
+
+        story_kz: dict[str, float] = {}
+        for row in range(self.wind_kz_table.rowCount()):
+            name_item = self.wind_kz_table.item(row, 0)
+            kz_item = self.wind_kz_table.item(row, 1)
+            if name_item is None or kz_item is None:
+                continue
+            try:
+                story_kz[name_item.data(Qt.ItemDataRole.UserRole)] = float(kz_item.text())
+            except ValueError:
+                self.wind_result_label.setText(
+                    f"'{name_item.text()}' 층의 Kz 값이 숫자가 아닙니다."
+                )
+                return
+        story_elevations = {
+            story_id: story.elevation for story_id, story in self.canvas.stories.items()
+        }
+
+        parameters = WindLoadParameters(
+            reference_pressure=self.wind_q0.value(),
+            gust_factor=self.wind_gust_factor.value(),
+            pressure_coefficient=self.wind_pressure_coefficient.value(),
+            exposed_width=self.wind_exposed_width.value(),
+        )
+        story_forces = wind_force_by_story(parameters, story_kz, story_elevations)
+
+        direction_key = str(self.wind_direction_combo.currentData())
+        direction_index = {"x": 0, "y": 1}[direction_key[-1]]
+        direction_sign = -1.0 if direction_key.startswith("-") else 1.0
+        load_scale = direction_sign * self.wind_scale_factor.value()
+        entries: list[tuple[str, tuple[int, ...], NodalLoadEntry]] = []
+        for story_id, force in story_forces.items():
+            if force == 0.0:
+                continue
+            nodes_here = self.canvas.nodes_at_story(story_id)
+            if not nodes_here:
+                continue
+            share = force * load_scale / len(nodes_here)
+            for node_tag in nodes_here:
+                values = [0.0] * 6
+                values[direction_index] = share
+                payload = NodalLoadEntry(
+                    fx=values[0], fy=values[1], fz=values[2], mx=values[3], my=values[4], mz=values[5]
+                )
+                entries.append(("nodal", (node_tag,), payload))
+
+        applied_count = self.canvas.replace_load_entries_for_case(case_id, entries)
+        total_force = sum(story_forces.values()) * load_scale
+        self.wind_result_label.setText(
+            f"총 풍하중 = {total_force:,.3f} — {applied_count}개 절점에 "
+            f"'{self.wind_case_combo.currentText()}' 케이스로 하중을 생성했습니다 "
+            "(같은 층의 절점에 균등 분배)."
+        )
 
     def _build_load_case_command_page(self) -> QWidget:
         page = QWidget()
@@ -3072,6 +4039,17 @@ class ModelingInterfacePage(QFrame):
         self.load3d_member_start_value_label.setText(f"시작값 ({member_unit})")
         self.load3d_member_end_value_label.setText(f"끝값 ({member_unit})")
         self.load3d_floor_magnitude_label.setText(f"크기 ({self._unit_system.stress})")
+        if hasattr(self, "wind_q0_label"):
+            self.wind_q0_label.setText(
+                f"기준 설계풍압 q0 ({self._unit_system.stress})"
+            )
+            self.wind_exposed_width_label.setText(
+                f"가력방향 직각 노출 폭 B ({self._unit_system.length})"
+            )
+            self.seismic_eccentricity_label.setText(
+                f"편심거리 e ({self._unit_system.length})"
+            )
+            self._refresh_wind_parameter_summary()
 
     def _current_load3d_top_kind(self) -> str:
         return str(self.load3d_type_combo.currentData())
@@ -4789,7 +5767,17 @@ class ModelingInterfacePage(QFrame):
         against a mismatched "from" would double-convert everything the
         instant a project file is opened).
         """
-        self.canvas.convert_units(unit_conversion_factors(self._unit_system, unit_system))
+        factors = unit_conversion_factors(self._unit_system, unit_system)
+        if hasattr(self, "wind_q0"):
+            if self.wind_calculation_method.currentData() == "direct":
+                self.wind_q0.setValue(self.wind_q0.value() * factors.stress)
+            self.wind_exposed_width.setValue(
+                self.wind_exposed_width.value() * factors.length
+            )
+            self.seismic_eccentricity.setValue(
+                self.seismic_eccentricity.value() * factors.length
+            )
+        self.canvas.convert_units(factors)
         self._unit_system = unit_system
         self._refresh_unit_system_ui(unit_system)
 
@@ -4832,6 +5820,7 @@ class ModelingInterfacePage(QFrame):
             data["gravity_acceleration"] = self._gravity_acceleration
             data["user_materials"] = [dict(material) for material in self._user_materials]
             data["user_sections"] = [dict(section) for section in self._user_sections]
+            data["load_generator_settings"] = self._load_generator_settings()
         return data
 
     def load_project_dict(self, data: dict[str, object]) -> None:
@@ -4891,6 +5880,7 @@ class ModelingInterfacePage(QFrame):
         self._refresh_model_settings_summary()
         if self._start_in_3d:
             self._refresh_work_tree()
+            self._restore_load_generator_settings(data.get("load_generator_settings"))
 
     def save_to_file(self, path: Path) -> None:
         path.write_text(json.dumps(self.to_project_dict(), indent=2, ensure_ascii=False), encoding="utf-8")

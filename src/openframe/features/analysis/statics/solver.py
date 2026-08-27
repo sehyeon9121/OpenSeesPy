@@ -907,7 +907,7 @@ class MaterialFreeStaticsSolver:
         for load in model.nodal_loads:
             values = tuple(load.values[:ndf]) + (0.0,) * max(0, ndf - len(load.values))
             ops.load(load.node_tag, *values)
-        if system == "truss" and model.element_loads:
+        if system == "truss" and (model.element_loads or model.point_loads):
             raise ValueError("트러스 부재의 등분포하중은 절점하중으로 변환해 입력하세요.")
         if ndm == 3 and any(not load.is_uniform for load in model.element_loads):
             # A linearly-varying (trapezoidal) load needs _build's discretized-
@@ -923,6 +923,15 @@ class MaterialFreeStaticsSolver:
             )
         for load in model.element_loads:
             if load.is_uniform:
+                # A partial-span constant load (member_partial, confined to
+                # xL1..xL2 rather than the whole member) maps directly onto
+                # OpenSeesPy's own native -beamUniform trailing xL1/xL2
+                # arguments (confirmed against the installed openseespy, both
+                # 2D and 3D) - full-span loads (the overwhelming majority,
+                # xL1/xL2 left at their (0.0, 1.0) default) omit them
+                # entirely so this call is unchanged from before these two
+                # fields existed.
+                span_args = () if load.is_full_span else (load.xL1, load.xL2)
                 if ndm == 3:
                     # wy/wz are the member's own local transverse axes (the
                     # same ones _reference_vector already fixed when the
@@ -931,11 +940,12 @@ class MaterialFreeStaticsSolver:
                     # -beamUniform argument order.
                     ops.eleLoad(
                         "-ele", load.element_tag, "-type", "-beamUniform",
-                        load.wy, load.wz, load.wx,
+                        load.wy, load.wz, load.wx, *span_args,
                     )
                 else:
                     ops.eleLoad(
-                        "-ele", load.element_tag, "-type", "-beamUniform", load.wy, load.wx
+                        "-ele", load.element_tag, "-type", "-beamUniform",
+                        load.wy, load.wx, *span_args,
                     )
                 continue
             # No native linearly-varying eleLoad exists (see _TRAPEZOID_SEGMENTS) -
@@ -951,6 +961,24 @@ class MaterialFreeStaticsSolver:
                 wx_mid = load.wx + (load.wx_j - load.wx) * midpoint
                 wy_mid = load.wy + (load.wy_j - load.wy) * midpoint
                 ops.eleLoad("-ele", sub_tag, "-type", "-beamUniform", wy_mid, wx_mid)
+        for point_load in model.point_loads:
+            # Concentrated (member_point) force, native OpenSeesPy -beamPoint
+            # (confirmed against the installed openseespy) - py/pz are the
+            # member's own local transverse axes (same convention as the
+            # -beamUniform call above), n is local axial, position is the
+            # xL fraction (0..1) along whichever element/segment actually
+            # carries this load (build_model() already resolved which one).
+            # 2D has no out-of-plane pz component to pass.
+            if ndm == 3:
+                ops.eleLoad(
+                    "-ele", point_load.element_tag, "-type", "-beamPoint",
+                    point_load.py, point_load.position, point_load.pz, point_load.n,
+                )
+            else:
+                ops.eleLoad(
+                    "-ele", point_load.element_tag, "-type", "-beamPoint",
+                    point_load.py, point_load.position, point_load.n,
+                )
 
     @staticmethod
     def _analyze(

@@ -20,7 +20,6 @@ from openframe.core.domain import (
     StructuralModel,
     UniformElementLoad,
 )
-from openframe.features.model.presentation.floor_tributary import convert_floor_entry
 
 # The exact same vecxz-picking rule solver.py's _build uses to orient every 3D
 # element's geomTransf - self-weight's local y/z projection below MUST use
@@ -242,6 +241,30 @@ class _ModelBuildMixin:
                 )
         return total_wx, total_wy, total_wz
 
+    def _apply_moment_nodal_load(
+        self,
+        moment_entry,
+        node_tag: int,
+        axes: tuple[
+            tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
+        ],
+        nodal_loads: list,
+    ) -> None:
+        """Project a ``member_moment`` LoadEntry's local (or global) single-
+        axis moment onto the model's global Mx/My/Mz and append it as a real
+        ``NodalLoad`` at ``node_tag`` - the only way to apply a concentrated
+        moment at all, since OpenSeesPy's ``eleLoad`` has no moment type."""
+        payload = moment_entry.payload
+        n, py, pz = _resolve_local_load_components(
+            payload.direction, payload.coordinate_system, payload.value, *axes
+        )
+        local_x, local_y, local_z = axes
+        mx = n * local_x[0] + py * local_y[0] + pz * local_z[0]
+        my = n * local_x[1] + py * local_y[1] + pz * local_z[1]
+        mz = n * local_x[2] + py * local_y[2] + pz * local_z[2]
+        values = (0.0, 0.0, mz) if self.ndm == 2 else (0.0, 0.0, 0.0, mx, my, mz)
+        nodal_loads.append(NodalLoad(node_tag, values, case_type=LoadCaseKind.OTHER))
+
     def build_model(self) -> StructuralModel:
         analysis_elements: dict[int, Element] = {}
         analysis_loads: list[UniformElementLoad] = []
@@ -444,23 +467,6 @@ class _ModelBuildMixin:
                     moment_entry, _split_position_fraction = split_moment
                     self._apply_moment_nodal_load(moment_entry, mid_tag, axes, analysis_nodal_loads)
 
-            # The chain's very last node (element.node_j) can never be a
-            # segment's own start_fraction, so a moment landing there never
-            # matches the boundary check inside the loop above - handle it
-            # once here instead of splitting a zero-length sliver off the
-            # last segment.
-            if axes is not None:
-                for moment_entry in element_moments:
-                    payload = moment_entry.payload
-                    position_fraction = _position_fraction(
-                        payload.position, payload.position_unit, member_length
-                    )
-                    if abs(position_fraction - 1.0) <= 1e-9:
-                        self._apply_moment_nodal_load(moment_entry, chain[-1], axes, analysis_nodal_loads)
-                    # Any other un-applied moment (axes is None case, or a
-                    # position outside 0..1) is silently dropped - should not
-                    # happen given _position_fraction already clamps to 0..1.
-
                 if axes is None or segment_span <= 0.0:
                     continue
 
@@ -542,6 +548,21 @@ class _ModelBuildMixin:
                             )
                         )
 
+            # The chain's very last node (element.node_j) can never be a
+            # segment's own start_fraction, so a moment landing there never
+            # matched the boundary check inside the loop above - handle it
+            # once here instead of splitting a zero-length sliver off the
+            # last segment. Any entry still left after this (axes is None,
+            # i.e. a zero-length member) is silently dropped.
+            if axes is not None:
+                for moment_entry in element_moments:
+                    payload = moment_entry.payload
+                    position_fraction = _position_fraction(
+                        payload.position, payload.position_unit, member_length
+                    )
+                    if abs(position_fraction - 1.0) <= 1e-9:
+                        self._apply_moment_nodal_load(moment_entry, chain[-1], axes, analysis_nodal_loads)
+
         # Floor loads are a per-*original*-member (wx0,wy0,wz0,wx1,wy1,wz1)
         # contribution, keyed by the same element tags convert_floor_entry
         # always used (self.elements, never a segment tag) - applied onto
@@ -549,6 +570,11 @@ class _ModelBuildMixin:
         # further interpolation across embedded-node segments, matching the
         # exact precedent this replaces (the old combination-bridge's floor
         # branch in _activate_generated_case_for_analysis did the same).
+        # Imported lazily (not at module top) - floor_tributary.py itself
+        # imports _local_axes from this module, so a top-level import here
+        # would be circular.
+        from openframe.features.model.presentation.floor_tributary import convert_floor_entry
+
         for floor_entry in floor_entries:
             for target_tag, values in convert_floor_entry(floor_entry, self.nodes, self.elements).items():
                 if target_tag not in analysis_elements:

@@ -1111,6 +1111,26 @@ QLabel#loadGroupTitle {
     padding-bottom: 5px;
     border-bottom: 1px solid #e1e6ec;
 }
+QLabel#loadParameterLabel {
+    color: #334b67;
+    font-size: 8pt;
+    font-weight: 600;
+    padding-top: 2px;
+}
+QLabel#loadParameterHelp {
+    color: #7a899b;
+    font-size: 7pt;
+    padding-bottom: 2px;
+}
+QLabel#loadDerivedValue {
+    color: #174ea6;
+    background: #eef4ff;
+    border: 1px solid #cad9ef;
+    border-radius: 3px;
+    padding: 7px 8px;
+    font-size: 8pt;
+    font-weight: 600;
+}
 QPushButton#loadEllipsisButton {
     min-width: 28px; max-width: 28px;
     min-height: 27px; max-height: 27px;
@@ -1416,6 +1436,7 @@ QLabel#precheckChip {
 QLabel#precheckChip[state="ok"] { color: #2e7048; background: #e4f4ea; }
 QLabel#precheckChip[state="warn"] { color: #926117; background: #fff1cf; }
 QLabel#precheckChip[state="error"] { color: #a42f36; background: #fde7e8; }
+QLabel#precheckChip[state="info"] { color: #174ea6; background: #e9f0fb; }
 QLabel#precheckSummary { color: #7b899a; font-size: 8pt; }
 QLabel#precheckSummary[state="warn"] { color: #926117; font-weight: 600; }
 QLabel#precheckSummary[state="error"] { color: #a42f36; font-weight: 600; }

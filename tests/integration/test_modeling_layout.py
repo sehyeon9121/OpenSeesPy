@@ -72,6 +72,7 @@ def test_2d_uses_the_same_workbench_navigation_as_3d() -> None:
     page = _page()
     assert page.findChild(QFrame, "direct2DCanvasToolbar") is None
     assert page.findChild(QFrame, "modelingWorkbenchBar") is not None
+    assert page.entry_bar.isVisible()
     assert list(page.workbench_buttons) == [
         "model",
         "node",
@@ -132,6 +133,7 @@ def test_3d_workspace_hides_the_context_dock_until_a_tool_needs_it() -> None:
     assert page.workbench_buttons["model"].isChecked()
     assert page.findChild(QFrame, "direct2DToolRail") is None
     assert page.findChild(QFrame, "direct2DCanvasToolbar") is None
+    assert page.entry_bar.isHidden()
     assert not hasattr(page, "model_explorer_tree")
     assert not hasattr(page, "model_settings_summary_button")
     assert page.selection_status_panel is not None

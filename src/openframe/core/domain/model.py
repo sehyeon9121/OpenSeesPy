@@ -86,6 +86,24 @@ class Element:
     #: ``-jntOffset`` support; a 2D or truss element ignores this.
     offset_i: tuple[float, float, float] = (0.0, 0.0, 0.0)
     offset_j: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    #: Installed tension (force, in this model's own force unit) applied to
+    #: a truss-family element before any external load - e.g. the prestress
+    #: force in a beam-string structure's tension chord. Only meaningful for
+    #: a truss-family element (see ``_element_family`` in
+    #: ``features.analysis.statics.solver``); a frame-family element with a
+    #: nonzero value here is never read by any builder. ``0.0`` (the
+    #: default) reproduces every existing element exactly - no prestress,
+    #: same as before this field existed. Positive = tension (see
+    #: ``opensees_script_export.py``'s ``_write_elements`` for the sign
+    #: convention test). As of this field's introduction, only wired through
+    #: to Linear Static and Nonlinear Static analysis (via
+    #: ``export_opensees_script``'s conditional corotTruss +
+    #: InitStrainMaterial emission, only when this is nonzero) - Modal,
+    #: Buckling, Response Spectrum and Time History have not been verified
+    #: against a prestressed truss element and must not be assumed to
+    #: handle it correctly just because they happen to execute the same
+    #: exported script text.
+    prestress: float = 0.0
 
     @property
     def release_count(self) -> int:

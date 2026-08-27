@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from openframe.core.domain import LoadCaseKind
+from openframe.core.domain import Element, LoadCaseKind, Node, NodalLoad, StructuralModel
+from openframe.core.domain.load_case import LoadCase
+from openframe.core.domain.load_entry import LoadEntry, NodalLoadEntry
 from openframe.features.viewport.presentation.quick3d_scene_bridge import (
     Quick3DSceneBridge,
 )
@@ -63,3 +65,44 @@ ops.eleLoad("-ele", 1, "-type", "-beamUniform", 0.0, -1.0, 0.0)
     bridge.set_load_case_filter("LIVE")
     assert {part["case_type"] for part in bridge.loadArrows} == {"LIVE"}
     assert {part["color"] for part in bridge.loadArrows} == {"#16a34a"}
+
+
+def test_a_moment_only_nodal_load_gets_a_bowtie_glyph_via_load_arrows() -> None:
+    """Regression test: a nodal load's mx/my/mz used to render nothing at
+    all - only fx/fy/fz became an arrow - reported as "절점 하중에서 모멘트
+    하중의 캔버스 상의 표현 아이콘이나 화살표가 없음". Covers the raw
+    ``model.nodal_loads`` path (``loadArrows``/``_build_load_arrows``)."""
+    model = StructuralModel(
+        ndm=3, ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 0.0, 0.0, 3.0)},
+        elements={1: Element(1, 1, 2, "elasticBeamColumn")},
+        nodal_loads=[NodalLoad(2, (0.0, 0.0, 0.0, 0.0, 0.0, 25.0))],
+    )
+    bridge = Quick3DSceneBridge()
+    bridge.set_model(model)
+
+    moment_parts = [part for part in bridge.loadArrows if part.get("role") == "moment_head"]
+    assert len(moment_parts) == 2  # the bowtie is two opposing cones
+    assert all(part["shape"] == "#Cone" for part in moment_parts)
+    assert all(part["magnitude"] == 25.0 for part in moment_parts)
+
+
+def test_a_moment_only_nodal_load_entry_gets_a_bowtie_glyph_via_load_entry_glyphs() -> None:
+    """Same regression as above, for the newer case-based Loads tab store
+    (``loadEntryGlyphs``/``_nodal_entry_parts``), which is entirely separate
+    from ``loadArrows`` (see ``Quick3DSceneBridge.set_load_entries``)."""
+    model = StructuralModel(
+        ndm=3, ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 0.0, 0.0, 3.0)},
+        elements={1: Element(1, 1, 2, "elasticBeamColumn")},
+    )
+    bridge = Quick3DSceneBridge()
+    bridge.set_model(model)
+    load_case = LoadCase(id="DL", name="DL", kind=LoadCaseKind.DEAD)
+    entry = LoadEntry(id=1, case_id="DL", kind="nodal", target=(2,), payload=NodalLoadEntry(mz=25.0))
+    bridge.set_load_entries({1: entry}, {"DL": load_case}, {}, mode="case", active_case_id="DL")
+
+    moment_parts = [part for part in bridge.loadEntryGlyphs if part.get("role") == "moment_head"]
+    assert len(moment_parts) == 2
+    assert all(part["shape"] == "#Cone" for part in moment_parts)
+    assert all(part["magnitude"] == 25.0 for part in moment_parts)
