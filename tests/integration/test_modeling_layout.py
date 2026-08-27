@@ -43,6 +43,7 @@ def test_direct_2d_workspace_uses_the_compact_modeling_and_result_shell() -> Non
         "axial",
         "shear",
         "moment",
+        "stress",
         "pushover",
         "tables",
         "mode_shapes",
@@ -67,6 +68,18 @@ def test_direct_2d_workspace_uses_the_compact_modeling_and_result_shell() -> Non
     assert page.header_controls_stack.currentIndex() == 0
 
 
+def test_3d_results_tab_opens_before_analysis_and_shows_waiting_workspace() -> None:
+    page = _page(start_in_3d=True)
+
+    assert not page.view_results_button.isEnabled()
+
+    page.workbench_buttons["results"].click()
+
+    assert page.workspace_stack.currentIndex() == 1
+    assert page.results.isVisible()
+    assert page.results.summary.status_badge.text() == "WAITING"
+
+
 def test_2d_uses_the_same_workbench_navigation_as_3d() -> None:
     """2D shares the 3D shell while each tab keeps its own 2D page."""
     page = _page()
@@ -79,6 +92,7 @@ def test_2d_uses_the_same_workbench_navigation_as_3d() -> None:
         "properties",
         "element",
         "boundary",
+        "story",
         "loads",
         "analysis",
         "results",
@@ -101,6 +115,10 @@ def test_2d_uses_the_same_workbench_navigation_as_3d() -> None:
     assert page.category_stack.currentIndex() == page.category_pages["support"]
     assert page.selection_filter.currentData() == "nodes"
 
+    page._activate_workbench_tab("story", show_settings=False)
+    assert page.category_stack.currentIndex() == page.category_pages["story"]
+    assert page.left_panel_stack.isVisible()
+
     page.workbench_buttons["loads"].click()
     assert page.category_stack.currentIndex() == page.category_pages["load"]
     assert hasattr(page, "load_target_group")
@@ -119,13 +137,15 @@ def test_3d_workspace_hides_the_context_dock_until_a_tool_needs_it() -> None:
 
     assert page.findChild(QFrame, "modelingWorkbenchBar") is not None
     # Tab order mirrors the actual modeling workflow: geometry, then
-    # material/section, then supports, then loads, then analysis/results.
+    # material/section, then supports, then stories/diaphragms, then loads,
+    # then analysis/results.
     assert list(page.workbench_buttons) == [
         "model",
         "node",
         "properties",
         "element",
         "boundary",
+        "story",
         "loads",
         "analysis",
         "results",
@@ -223,6 +243,55 @@ def test_node_and_element_tabs_separate_node_tools_from_element_translation() ->
     )
     assert page.category_stack.currentIndex() == page.category_pages["move"]
     assert page.selection_filter.currentData() == "elements"
+
+
+def test_create_element_type_picker_precedes_properties_and_controls_new_member_family(
+) -> None:
+    """Create Element exposes the MIDAS-style member behavior before properties."""
+    page = _page(start_in_3d=True)
+    page.workbench_buttons["element"].click()
+
+    assert page.element_type_card is not page.element_properties_card
+    assert page.element_type_selector.parentWidget() is page.element_type_card
+    assert page.element_material_selector.parentWidget() is page.element_properties_card
+    assert page.element_property_form.getWidgetPosition(page.element_material_selector)[0] == 0
+    assert page.element_property_form.getWidgetPosition(page.element_section_selector)[0] == 1
+    assert [
+        page.element_type_selector.itemData(index)
+        for index in range(page.element_type_selector.count())
+    ] == [
+        "general_beam",
+        "truss",
+        "tension_only",
+        "compression_only",
+        "cable",
+    ]
+    assert page.element_type_selector.currentData() == "general_beam"
+    assert page.canvas.element_family == "frame"
+
+    page.element_type_selector.setCurrentIndex(
+        page.element_type_selector.findData("tension_only")
+    )
+    assert page.canvas.element_family == "truss"
+    assert page.element_type_selector.currentText() == "Tension-only"
+    node_a = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    node_b = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    axial_member = page.canvas.add_member(node_a, node_b)
+    assert page.canvas.elements[axial_member].element_type == "truss"
+    saved = page.to_project_dict()
+    assert saved["element_behavior"] == "tension_only"
+    restored = _page(start_in_3d=True)
+    restored.load_project_dict(saved)
+    assert restored.element_type_selector.currentData() == "tension_only"
+    assert restored.canvas.element_family == "truss"
+
+    page.element_type_selector.setCurrentIndex(
+        page.element_type_selector.findData("general_beam")
+    )
+    assert page.canvas.element_family == "frame"
+    node_c = page.canvas._add_node_at((4.0, 3.0, 0.0))
+    beam_member = page.canvas.add_member(node_b, node_c)
+    assert page.canvas.elements[beam_member].element_type == "frame"
 
 
 def test_element_tab_applied_section_is_picked_up_by_the_next_drawn_member() -> None:

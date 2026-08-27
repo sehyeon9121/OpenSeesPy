@@ -50,6 +50,7 @@ def test_main_window_can_be_constructed() -> None:
         "axial",
         "shear",
         "moment",
+        "stress",
         "pushover",
         "tables",
         "mode_shapes",

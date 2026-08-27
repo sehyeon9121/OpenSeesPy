@@ -2,10 +2,11 @@
 
 import math
 
-from PySide6.QtCore import QPoint, QRectF, Qt
+from PySide6.QtCore import QPoint, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
+    QButtonGroup,
     QComboBox,
     QFrame,
     QGraphicsItem,
@@ -71,6 +72,7 @@ RESULT_TYPE_NAMES = {
     "axial": "AXIAL FORCE (N)",
     "shear": "SHEAR FORCE (V)",
     "moment": "BENDING MOMENT (M)",
+    "stress": "NORMAL STRESS (σ)",
     "pushover": "PUSHOVER CURVE",
     "tables": "RESULT TABLES",
     "mode_shapes": "MODE SHAPES",
@@ -88,6 +90,8 @@ _MODE_SELECTOR_RESULT_TYPES = frozenset({"mode_shapes", "buckling_modes"})
 
 
 class ResultViewport(QFrame):
+    result_type_requested = Signal(str)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("resultViewport")
@@ -108,6 +112,33 @@ class ResultViewport(QFrame):
         self.mode_badge = QLabel(RESULT_TYPE_NAMES[self._result_type])
         self.mode_badge.setObjectName("resultModeBadge")
         header_layout.addWidget(self.mode_badge)
+
+        self.force_selector = QFrame()
+        self.force_selector.setObjectName("resultForceSelector")
+        force_layout = QHBoxLayout(self.force_selector)
+        force_layout.setContentsMargins(0, 0, 0, 0)
+        force_layout.setSpacing(0)
+        self.force_button_group = QButtonGroup(self)
+        self.force_button_group.setExclusive(True)
+        self.force_buttons: dict[str, QPushButton] = {}
+        for key, label in (
+            ("axial", "N  Axial"),
+            ("shear", "V  Shear"),
+            ("moment", "M  Bending"),
+        ):
+            button = QPushButton(label)
+            button.setObjectName("resultForceButton")
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda checked=False, result_type=key: (
+                    self.result_type_requested.emit(result_type)
+                )
+            )
+            self.force_button_group.addButton(button)
+            self.force_buttons[key] = button
+            force_layout.addWidget(button)
+        self.force_selector.hide()
+        header_layout.addWidget(self.force_selector)
         header_layout.addStretch(1)
         self.view_selector = QComboBox()
         self.view_selector.addItem("ISO", "iso")
@@ -261,6 +292,13 @@ class ResultViewport(QFrame):
     def set_result_type(self, result_type: str) -> None:
         self._result_type = result_type
         self.mode_badge.setText(RESULT_TYPE_NAMES.get(result_type, result_type.upper()))
+        is_force_diagram = result_type in self.force_buttons
+        self.force_selector.setVisible(is_force_diagram)
+        if is_force_diagram:
+            button = self.force_buttons[result_type]
+            button.blockSignals(True)
+            button.setChecked(True)
+            button.blockSignals(False)
         is_mode_selector = result_type in _MODE_SELECTOR_RESULT_TYPES
         self.mode_shape_label.setVisible(is_mode_selector)
         self.mode_shape_selector.setVisible(is_mode_selector)
@@ -469,12 +507,18 @@ class ResultViewport(QFrame):
             self.view_selector.setVisible(self._model.ndm == 3)
 
         force_diagram = self._result_type in {"axial", "shear", "moment"}
-        self.scale_caption.setText("DIAGRAM SCALE" if force_diagram else "DEFORMATION SCALE")
+        stress_map = self._result_type == "stress"
+        hide_deform_controls = force_diagram or stress_map
+        self.scale_caption.setText("DIAGRAM SCALE" if force_diagram else "DEFORM SCALE")
         self.scale_value.setText(self._scale_value_text(force_diagram))
         # REAL DEFORM/AUTO only mean anything for an actual displacement multiplier -
         # a force-diagram's "scale" is just visual amplitude, not a physical quantity.
-        self.real_deform.setVisible(not force_diagram)
-        self.auto_scale_button.setVisible(not force_diagram)
+        # Stress is a colour-map view: keep deform chrome off so the legend dominates.
+        self.real_deform.setVisible(not hide_deform_controls)
+        self.auto_scale_button.setVisible(not hide_deform_controls)
+        self.scale_caption.setVisible(not stress_map)
+        self.scale_value.setVisible(not stress_map)
+        self.deformation_scale.setVisible(not stress_map)
         if self._model is None:
             self.scene.clear()
             self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))
@@ -541,11 +585,15 @@ class ResultViewport(QFrame):
         if self._model is None:
             return
         if self._result is not None:
+            member_colors = (
+                self._member_magnitudes() if self._result_type == "stress" else None
+            )
             self.quick3d_view.show_result(
                 self._model,
                 self._result,
                 self._deformation_multiplier(),
                 self.show_undeformed.isChecked(),
+                member_magnitudes=member_colors,
             )
         else:
             self.quick3d_view.clear_result()
@@ -674,6 +722,8 @@ class ResultViewport(QFrame):
     def _member_magnitudes(self) -> dict[int, float]:
         if self._model is None or self._result is None:
             return {}
+        # 3D N/V/M still have no diagram overlay here; Stress is the member
+        # colour-map view for both 2D and 3D.
         if self._model.ndm == 3 and self._result_type in {"axial", "shear", "moment"}:
             return {}
         return member_magnitudes(self._model, self._result, self._result_type)

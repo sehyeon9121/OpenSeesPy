@@ -17,12 +17,24 @@ from openframe.features.viewport.presentation.quick3d_viewport import Quick3DVie
 def _viewport() -> Quick3DViewport:
     QApplication.instance() or QApplication([])
     viewport = Quick3DViewport()
-    # QML loading (setSource(), which is what makes rootObject() non-None) is
-    # deferred to the widget's first showEvent - see quick3d_viewport.py's own
-    # comment on why - so tests that need the QML root loaded must show() it
-    # first, same as a real page becoming visible would.
+    # QQuickWidget construction and setSource() are both deferred to the first
+    # visible showEvent - see quick3d_viewport.py - so tests that need the QML
+    # root loaded must show() first, same as a real page becoming visible.
     viewport.show()
     return viewport
+
+
+def test_quick_widget_is_not_created_until_first_visible_show() -> None:
+    """Startup used to construct four QQuickWidgets before MainWindow appeared;
+    each flashed a blank native window on Windows. Construction must wait."""
+    QApplication.instance() or QApplication([])
+    viewport = Quick3DViewport()
+    assert viewport._quick_widget is None
+    assert viewport.quick_widget.rootObject() is None
+
+    viewport.show()
+    assert viewport._quick_widget is not None
+    assert viewport.quick_widget.rootObject() is not None
 
 
 def test_plane_picked_inverts_the_view_coordinate_mapping() -> None:
@@ -118,12 +130,13 @@ def test_member_pick_is_forwarded_with_global_screen_coordinates() -> None:
     assert picks == [(8, expected.x(), expected.y())]
 
 
-def test_qml_box_selection_always_includes_fully_enclosed_members() -> None:
-    """A member whose both endpoints are inside the drag box must be
-    selected regardless of drag direction - same as the 2D canvas's
-    _select_in_rect. Only a member the box merely *touches* (one or neither
-    endpoint inside) depends on direction: included when dragging upward
-    ("crossing"), excluded when dragging downward ("window")."""
+def test_qml_window_drag_selects_only_nodes_even_when_members_are_fully_enclosed() -> None:
+    """Regression test: a downward ("window") drag used to still grab any
+    member whose both endpoints fell inside the box, so boxing a whole
+    building to pick many nodes also swept those members in - reported as
+    "전체나 혹은 부재가 일부 이상 포함되면 부재도 같이 잡혀버림". Match the
+    2D canvas's default-"all" filter: window = nodes only; upward
+    ("crossing") still takes enclosed/touched members."""
     viewport = _viewport()
     viewport.resize(640, 480)
     viewport.set_model(
@@ -140,17 +153,19 @@ def test_qml_box_selection_always_includes_fully_enclosed_members() -> None:
         lambda nodes, members, additive: selections.append((nodes, members, additive))
     )
 
+    # Downward window drag: start at top of the view, end at bottom.
     root.setProperty("selectionStartX", 0.0)
     root.setProperty("selectionCurrentX", float(root.property("width")))
     root.setProperty("selectionStartY", 0.0)
     root.setProperty("selectionCurrentY", float(root.property("height")))
     root.finishSelectionBox(False)
 
+    # Upward crossing drag: start at bottom, end at top.
     root.setProperty("selectionStartY", float(root.property("height")))
     root.setProperty("selectionCurrentY", 0.0)
     root.finishSelectionBox(False)
 
-    assert selections[0] == ({1, 2}, {3}, False)
+    assert selections[0] == ({1, 2}, set(), False)
     assert selections[1] == ({1, 2}, {3}, False)
 
 

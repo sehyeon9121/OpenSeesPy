@@ -2,12 +2,13 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QCheckBox
+from PySide6.QtWidgets import QApplication, QComboBox
 
 from openframe.core.domain import UnitSystem
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 from openframe.features.model.presentation.story_manager_dialog import (
     _DIAPHRAGM_COLUMN,
+    _DIAPHRAGM_ON,
     _ELEVATION_COLUMN,
     _NAME_COLUMN,
     _NODE_COUNT_COLUMN,
@@ -82,13 +83,14 @@ def test_renaming_the_name_cell_updates_the_canvas() -> None:
     assert "지상1층" in canvas.stories
 
 
-def test_diaphragm_checkbox_in_the_table_toggles_the_canvas_story() -> None:
+def test_diaphragm_combo_in_the_table_toggles_the_canvas_story() -> None:
     canvas = _canvas()
     canvas.add_story("1층", 0.0)
     dialog = StoryManagerDialog(canvas)
-    checkbox = dialog.table.cellWidget(0, _DIAPHRAGM_COLUMN).findChild(QCheckBox)
+    combo = dialog.table.cellWidget(0, _DIAPHRAGM_COLUMN)
+    assert isinstance(combo, QComboBox)
 
-    checkbox.setChecked(True)
+    combo.setCurrentText(_DIAPHRAGM_ON)
 
     assert canvas.stories["1층"].rigid_diaphragm is True
 
@@ -127,9 +129,14 @@ def test_auto_detect_button_reports_when_nothing_new_is_found() -> None:
 
 def test_elevation_labels_default_to_meters() -> None:
     dialog = StoryManagerDialog(_canvas())
-    assert dialog.table.horizontalHeaderItem(_ELEVATION_COLUMN).text() == "표고 Z (m)"
+    assert dialog.table.horizontalHeaderItem(_ELEVATION_COLUMN).text() == "노드 높이 Z (m)"
 
 
 def test_elevation_labels_reflect_the_pages_own_unit_system() -> None:
     dialog = StoryManagerDialog(_canvas(), unit_system=UnitSystem(force="kN", length="mm"))
-    assert dialog.table.horizontalHeaderItem(_ELEVATION_COLUMN).text() == "표고 Z (mm)"
+    assert dialog.table.horizontalHeaderItem(_ELEVATION_COLUMN).text() == "노드 높이 Z (mm)"
+
+
+def test_auto_button_label_is_beginner_friendly() -> None:
+    dialog = StoryManagerDialog(_canvas())
+    assert dialog.auto_detect_button.text().startswith("Auto")

@@ -149,3 +149,36 @@ def test_floor_boundary_renders_as_a_closed_non_self_intersecting_loop_in_target
     assert len(segments) == 4  # a closed quadrilateral has 4 edges
     total_length = sum(part["length"] for part in segments)
     assert total_length == pytest.approx(14.0)  # the true rectangle perimeter, not 16 (bowtie)
+
+
+def test_floor_boundary_outline_draws_an_open_polyline_between_picked_points() -> None:
+    """set_floor_boundary_outline (the yellow "next node" trace shown while
+    floor-boundary click-picking is in progress) replaced an opaque
+    fan-triangulated ghost face that was rebuilt on every mouse-move and made
+    the viewport lag. It must draw one thin edge per consecutive pair of
+    points, left OPEN (no edge from the last point back to the first) -
+    closing only happens once picking actually finishes, via the committed
+    entry's own boundary loop (see the closed-loop test above)."""
+    model = StructuralModel(
+        ndm=3, ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0),
+            2: Node(2, 4.0, 0.0, 0.0),
+            3: Node(3, 4.0, 3.0, 0.0),
+        },
+    )
+    bridge = Quick3DSceneBridge()
+    bridge.set_model(model)
+
+    bridge.set_floor_boundary_outline([(0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (4.0, 3.0, 0.0)])
+
+    segments = bridge.floorBoundaryOutline
+    assert len(segments) == 2  # two points picked so far -> two edges, not a closed triangle
+    assert sum(part["length"] for part in segments) == pytest.approx(7.0)  # 4 + 3, not +5 closing
+
+
+def test_floor_boundary_outline_clears_below_two_points() -> None:
+    bridge = Quick3DSceneBridge()
+    bridge.set_floor_boundary_outline([(0.0, 0.0, 0.0)])
+
+    assert bridge.floorBoundaryOutline == []

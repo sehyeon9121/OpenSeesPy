@@ -130,10 +130,13 @@ Item {
         const right = Math.max(selectionStartX, selectionCurrentX)
         const top = Math.min(selectionStartY, selectionCurrentY)
         const bottom = Math.max(selectionStartY, selectionCurrentY)
-        // Same vertical gesture used by the 2D canvas: a member with both
-        // endpoints inside the box is always selected ("window"); dragging
-        // upward ("crossing") additionally grabs members the box merely
-        // touches, same as canvas_rendering.py's _select_in_rect.
+        // Same vertical gesture as canvas_rendering.py's _select_in_rect under
+        // the default "all" filter: downward ("window") grabs only nodes -
+        // never members, even ones fully enclosed - so boxing a whole
+        // building to pick many nodes at once does not silently sweep the
+        // members in too. Upward ("crossing") still takes members the box
+        // encloses or merely touches. The rubber-band label ("노드 선택" /
+        // "노드 + 부재 선택") follows this same rule.
         const crossing = selectionCurrentY < selectionStartY - 4
         let nodeTags = []
         let memberTags = []
@@ -143,19 +146,21 @@ Item {
             if (pointInSelection(point, left, top, right, bottom))
                 nodeTags.push(node.tag)
         }
-        for (let index = 0; index < sceneBridge.members.length; ++index) {
-            const member = sceneBridge.members[index]
-            const start = view3d.mapFrom3DScene(
-                Qt.vector3d(member.start_x, member.start_y, member.start_z)
-            )
-            const end = view3d.mapFrom3DScene(
-                Qt.vector3d(member.end_x, member.end_y, member.end_z)
-            )
-            const fullyInside = pointInSelection(start, left, top, right, bottom)
-                && pointInSelection(end, left, top, right, bottom)
-            if (fullyInside
-                    || (crossing && memberTouchesSelection(start, end, left, top, right, bottom)))
-                memberTags.push(member.tag)
+        if (crossing) {
+            for (let index = 0; index < sceneBridge.members.length; ++index) {
+                const member = sceneBridge.members[index]
+                const start = view3d.mapFrom3DScene(
+                    Qt.vector3d(member.start_x, member.start_y, member.start_z)
+                )
+                const end = view3d.mapFrom3DScene(
+                    Qt.vector3d(member.end_x, member.end_y, member.end_z)
+                )
+                const fullyInside = pointInSelection(start, left, top, right, bottom)
+                    && pointInSelection(end, left, top, right, bottom)
+                if (fullyInside
+                        || memberTouchesSelection(start, end, left, top, right, bottom))
+                    memberTags.push(member.tag)
+            }
         }
         selectionBoxFinished(nodeTags.join(","), memberTags.join(","), additive)
     }
@@ -413,6 +418,45 @@ Item {
                 ]
                 castsShadows: false
                 receivesShadows: false
+            }
+        }
+
+        Repeater3D {
+            // Floor-boundary click-picking's live yellow outline - one edge
+            // per picked pair of boundary nodes plus a trailing edge that
+            // follows the cursor, see Quick3DSceneBridge.
+            // set_floor_boundary_outline. This replaced a single Model bound
+            // to a custom filled-face geometry: that was a real mesh
+            // (vertex buffer rebuilt and re-uploaded to the GPU on every
+            // mouse-move) for what is really just a handful of line
+            // segments, which made the whole viewport lag. A Repeater3D over
+            // plain #Cylinder parts - the same pattern every other glyph
+            // list here already uses - is far cheaper to rebuild every move.
+            // Never pickable, so it can never shadow the nodes it connects.
+            model: sceneBridge.floorBoundaryOutline
+            delegate: Model {
+                source: modelData.shape
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                rotation: Qt.quaternion(
+                    modelData.qscalar,
+                    modelData.qx,
+                    modelData.qy,
+                    modelData.qz
+                )
+                scale: Qt.vector3d(
+                    modelData.thickness / 100,
+                    modelData.length / 100,
+                    modelData.thickness / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        lighting: PrincipledMaterial.NoLighting
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                pickable: false
             }
         }
 

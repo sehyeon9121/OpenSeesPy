@@ -7,11 +7,14 @@ import math
 
 from openframe.core.domain import AnalysisResult, StructuralModel
 from openframe.features.results.diagrams import member_diagrams
+from openframe.features.results.stress import member_stress_magnitudes
 
 #: Result types that colour members by a member force.
 FORCE_INDEX = {"axial": 0, "shear": 1, "moment": 2}
 #: Result types that colour members by how far their nodes moved.
 DISPLACEMENT_TYPES = frozenset({"overview", "deformation", "displacement"})
+#: Peak elastic fibre stress |σ| = |N/A| + |M|c/I (see ``stress.py``).
+STRESS_TYPE = "stress"
 
 #: Magnitudes this far below the largest one are solver noise. Reporting them verbatim
 #: would put values like 4e-14 on the legend, which reads as a defect rather than zero.
@@ -25,6 +28,9 @@ def member_magnitudes(
 
     An empty mapping means the active result type has nothing to colour by.
     """
+    if result_type == STRESS_TYPE:
+        return _denoise(member_stress_magnitudes(model, result.element_results))
+
     if result_type in FORCE_INDEX:
         if model.ndm == 3:
             magnitudes_3d: dict[int, float] = {}

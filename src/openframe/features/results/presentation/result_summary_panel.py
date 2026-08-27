@@ -44,8 +44,11 @@ class ResultSummaryPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("resultSummaryPanel")
         self.setProperty("compact2d", compact_2d)
-        self.setMinimumWidth(275 if compact_2d else 245)
-        self.setMaximumWidth(320 if compact_2d else 310)
+        # Context inspector: narrow enough to leave the viewport dominant, wide
+        # enough for a max-value + end-force table without wrapping into toy-sized
+        # chips. Same band whether or not compact_2d is set.
+        self.setMinimumWidth(220)
+        self.setMaximumWidth(280)
         self._compact_2d = compact_2d
         self._model: StructuralModel | None = None
         self._result: AnalysisResult | None = None
@@ -53,11 +56,11 @@ class ResultSummaryPanel(QFrame):
         self._unit_system = DEFAULT_UNIT_SYSTEM
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
 
         header = QHBoxLayout()
-        title = QLabel("RESULT INSPECTOR" if compact_2d else "RESULT SUMMARY")
+        title = QLabel("Inspector")
         title.setObjectName("resultSectionTitle")
         self.status_badge = QLabel("WAITING")
         self.status_badge.setObjectName("waitingBadge")
@@ -70,17 +73,18 @@ class ResultSummaryPanel(QFrame):
         self.metric_rows: dict[str, QFrame] = {}
         for key, title_text in (
             ("displacement", "MAX DISPLACEMENT"),
-            ("rotation", "MAX ROTATION (처짐각)"),
-            ("reaction", "MAX SUPPORT REACTION"),
-            ("moment", "MAX BENDING MOMENT"),
-            ("shear", "MAX SHEAR FORCE"),
-            ("axial", "MAX AXIAL FORCE"),
+            ("rotation", "MAX ROTATION"),
+            ("reaction", "MAX REACTION"),
+            ("moment", "MAX MOMENT"),
+            ("shear", "MAX SHEAR"),
+            ("axial", "MAX AXIAL"),
+            ("stress", "MAX STRESS"),
         ):
             row = self._metric_row(key, title_text)
             self.metric_rows[key] = row
             layout.addWidget(row)
 
-        self.legend_title = QLabel("RESULT LEGEND")
+        self.legend_title = QLabel("LEGEND")
         self.legend_title.setObjectName("resultGroupLabel")
         layout.addWidget(self.legend_title)
         self.legend = QProgressBar()
@@ -96,12 +100,12 @@ class ResultSummaryPanel(QFrame):
         legend_labels.addStretch(1)
         legend_labels.addWidget(self.legend_maximum)
         layout.addLayout(legend_labels)
-        self.legend_caption = QLabel("Run an analysis to colour the members.")
+        self.legend_caption = QLabel("Run analysis to populate the scale.")
         self.legend_caption.setObjectName("resultDetailsText")
         self.legend_caption.setWordWrap(True)
         layout.addWidget(self.legend_caption)
 
-        self.selected_title = QLabel("SELECTED ELEMENT")
+        self.selected_title = QLabel("ELEMENT")
         self.selected_title.setObjectName("resultGroupLabel")
         layout.addWidget(self.selected_title)
         self.member_selector = QComboBox()
@@ -126,7 +130,9 @@ class ResultSummaryPanel(QFrame):
         self.data_value = QLabel("END FORCES")
         details.addWidget(self.data_value, 1, 1)
         layout.addWidget(self.details_panel)
-        self.learning_title = QLabel("WHAT THIS MEANS")
+        # Soft "learning card" copy is kept only for the unused compact_2d shell.
+        # Default Results must read as a professional post-processor, not a tutorial.
+        self.learning_title = QLabel("NOTE")
         self.learning_title.setObjectName("resultGroupLabel")
         layout.addWidget(self.learning_title)
         self.learning_hint = QLabel()
@@ -134,7 +140,7 @@ class ResultSummaryPanel(QFrame):
         self.learning_hint.setWordWrap(True)
         layout.addWidget(self.learning_hint)
         layout.addStretch(1)
-        self._apply_compact_visibility()
+        self._apply_context_visibility()
         self._refresh()
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
@@ -148,26 +154,33 @@ class ResultSummaryPanel(QFrame):
 
     def set_result_type(self, result_type: str) -> None:
         self._result_type = result_type
-        self._apply_compact_visibility()
+        self._apply_context_visibility()
         self._refresh()
 
-    def _apply_compact_visibility(self) -> None:
-        if not self._compact_2d:
-            self.metric_rows["reaction"].hide()
-            self.learning_title.hide()
-            self.learning_hint.hide()
-            return
+    def _apply_context_visibility(self) -> None:
+        """Show only inspector blocks that belong to the active result type.
+
+        Always on (not only compact_2d): dumping every max metric + legend +
+        end-force table at once is what made Results feel sprawling. Filtering
+        by type keeps the panel professional and scannable while beginners
+        still see the numbers that matter for the view they just picked.
+        """
         visible_metrics = {
-            "overview": set(self.metric_rows),
+            "overview": {"displacement", "rotation", "reaction", "moment", "shear", "axial", "stress"},
             "deformation": {"displacement", "rotation"},
             "displacement": {"displacement", "rotation"},
             "reaction": {"reaction"},
             "axial": {"axial"},
             "shear": {"shear"},
             "moment": {"moment"},
+            "stress": {"stress"},
+            "mode_shapes": {"displacement", "rotation"},
+            "buckling_modes": {"displacement", "rotation"},
+            "pushover": set(),
         }.get(self._result_type, set())
         for key, row in self.metric_rows.items():
             row.setVisible(key in visible_metrics)
+
         legend_visible = self._result_type in {
             "overview",
             "deformation",
@@ -175,27 +188,45 @@ class ResultSummaryPanel(QFrame):
             "axial",
             "shear",
             "moment",
+            "stress",
+            "mode_shapes",
+            "buckling_modes",
         }
         self.legend_title.setVisible(legend_visible)
         self.legend.setVisible(legend_visible)
         self.legend_minimum.setVisible(legend_visible)
         self.legend_maximum.setVisible(legend_visible)
         self.legend_caption.setVisible(legend_visible)
+
         member_result = self._result_type in {"axial", "shear", "moment"}
         self.selected_title.setVisible(member_result)
         self.member_selector.setVisible(member_result)
         self.end_force_table.setVisible(member_result)
         self.details_panel.setVisible(member_result)
-        hints = {
-            "overview": "Review the governing response, then choose one result to inspect it clearly.",
-            "deformation": "Displayed deformation may be magnified so structural movement is visible.",
-            "displacement": "Compare the movement of individual nodes and their displacement components.",
-            "reaction": "Reaction arrows show how the supports balance the applied structural loads.",
-            "axial": "Positive and negative axial forces distinguish tension from compression.",
-            "shear": "Larger shear values identify members carrying greater transverse demand.",
-            "moment": "Larger moment values identify regions with greater bending demand.",
+
+        # Tutorial copy stays off in the default professional shell.
+        show_note = self._compact_2d and self._result_type in {
+            "overview",
+            "deformation",
+            "displacement",
+            "reaction",
+            "axial",
+            "shear",
+            "moment",
         }
-        self.learning_hint.setText(hints.get(self._result_type, ""))
+        self.learning_title.setVisible(show_note)
+        self.learning_hint.setVisible(show_note)
+        if show_note:
+            hints = {
+                "overview": "Governing maxima for the active result case.",
+                "deformation": "Display scale may magnify deformation for visibility.",
+                "displacement": "Nodal translation and rotation components.",
+                "reaction": "Support forces balancing applied loads.",
+                "axial": "Tension / compression along the member axis.",
+                "shear": "Transverse shear demand along the member.",
+                "moment": "Bending demand along the member.",
+            }
+            self.learning_hint.setText(hints.get(self._result_type, ""))
 
     def show_result(self, result: AnalysisResult) -> None:
         self._result = result
@@ -271,6 +302,7 @@ class ResultSummaryPanel(QFrame):
             self.metric_values["moment"].setText(f"—  {unit.moment}")
             self.metric_values["shear"].setText(f"—  {unit.force}")
             self.metric_values["axial"].setText(f"—  {unit.force}")
+            self.metric_values["stress"].setText(f"—  {unit.stress}")
             self._refresh_legend()
             self._refresh_end_forces()
             return
@@ -349,6 +381,13 @@ class ResultSummaryPanel(QFrame):
             self.metric_values["axial"].setText(
                 f"{max_abs_value(axial):.6g}  {unit.force}"
             )
+        stress_values = (
+            member_magnitudes(self._model, result, "stress")
+            if self._model is not None
+            else {}
+        )
+        max_stress = max(stress_values.values(), default=0.0)
+        self.metric_values["stress"].setText(f"{max_stress:.6g}  {unit.stress}")
         self._refresh_legend()
         self._refresh_end_forces()
 
@@ -357,6 +396,7 @@ class ResultSummaryPanel(QFrame):
         "axial": "Members coloured by peak axial force.",
         "shear": "Members coloured by peak shear force.",
         "moment": "Members coloured by peak bending moment.",
+        "stress": "Members coloured by peak normal stress |sigma|.",
         "overview": "Members coloured by nodal displacement.",
         "deformation": "Members coloured by nodal displacement.",
         "displacement": "Members coloured by nodal displacement.",
@@ -382,6 +422,8 @@ class ResultSummaryPanel(QFrame):
         lowest, highest = magnitude_range(magnitudes)
         if self._result_type in FORCE_INDEX:
             symbol = unit.moment if self._result_type == "moment" else unit.force
+        elif self._result_type == "stress":
+            symbol = unit.stress
         elif self._result_type in DISPLACEMENT_TYPES:
             symbol = unit.length
         else:

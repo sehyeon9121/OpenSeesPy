@@ -1,11 +1,11 @@
 """Story Manager - building floor levels, each optionally tied together as a
 rigid diaphragm. Two ways in on purpose: type a new story by hand (name +
-elevation), or click "자동 감지" to group every drawn node by its Z
-coordinate and let Korean-building-convention names (1층/2층/지하1층) get
-picked automatically (see ``canvas_stories.py``'s own docstring).
+elevation), or click Auto to group every drawn node by its Z coordinate and
+let Korean-building-convention names (1층/2층/지하1층) get picked
+automatically (see ``canvas_stories.py``'s own docstring).
 
-The diaphragm toggle lives directly in the table as a checkbox per row
-(``setCellWidget``, not a separate form + Apply) - it is the one field a
+The diaphragm choice lives directly in the table as a 사용/미사용 combo per
+row (``setCellWidget``, not a separate form + Apply) - it is the one field a
 student is expected to flip constantly while exploring "what if this floor
 were rigid", so it has to be a single click, not select-row-then-edit-form.
 Same live-apply-per-click style as ``LoadCaseManagerDialog`` (see its own
@@ -19,6 +19,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -42,6 +43,9 @@ _NODE_COUNT_COLUMN = 2
 _DIAPHRAGM_COLUMN = 3
 _DELETE_COLUMN = 4
 
+_DIAPHRAGM_OFF = "미사용"
+_DIAPHRAGM_ON = "사용"
+
 
 def _elevation_field() -> SafeDoubleSpinBox:
     field = SafeDoubleSpinBox()
@@ -61,25 +65,39 @@ class StoryManagerDialog(QDialog):
         self._canvas = canvas
         self._unit_system = unit_system or DEFAULT_UNIT_SYSTEM
         self.setWindowTitle("Story Manager")
-        self.resize(560, 520)
+        self.setObjectName("storyManagerDialog")
+        self.resize(580, 520)
 
         layout = QVBoxLayout(self)
 
         hint = QLabel(
-            "건물의 층을 정의합니다. 같은 표고(Z)의 절점들을 묶어 강체 다이아프램으로 "
-            "지정하면 그 층의 절점들이 수평 방향으로 한 몸처럼 움직입니다 (횡력 해석에 필요)."
+            "Auto로 절점 Z좌표를 층으로 인식합니다. 각 층의 노드 높이를 확인하고 "
+            "강체 다이아프램을 사용/미사용으로 지정하면, 그 층 절점들이 수평 방향으로 "
+            "한 몸처럼 움직입니다 (횡력 해석에 필요)."
         )
         hint.setObjectName("setupSectionHint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        auto_detect_button = QPushButton("자동 감지 (절점 Z좌표 기준)")
-        auto_detect_button.clicked.connect(self._auto_detect)
-        layout.addWidget(auto_detect_button)
+        self.auto_detect_button = QPushButton("Auto (자동 층 감지)")
+        self.auto_detect_button.setObjectName("storyAutoDetectButton")
+        self.auto_detect_button.setToolTip(
+            "모델의 모든 절점 Z좌표를 모아 층으로 인식합니다 (1층, 2층, 지하1층…)."
+        )
+        self.auto_detect_button.clicked.connect(self._auto_detect)
+        layout.addWidget(self.auto_detect_button)
 
+        length = self._unit_system.length
         self.table = QTableWidget(0, 5)
+        self.table.setObjectName("storyManagerTable")
         self.table.setHorizontalHeaderLabels(
-            ["층 이름", f"표고 Z ({self._unit_system.length})", "절점 수", "강체 다이아프램", ""]
+            [
+                "층 이름",
+                f"노드 높이 Z ({length})",
+                "절점 수",
+                "강체 다이아프램",
+                "",
+            ]
         )
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(_NAME_COLUMN, QHeaderView.ResizeMode.Stretch)
@@ -101,8 +119,8 @@ class StoryManagerDialog(QDialog):
         self.name_input.setPlaceholderText("예: 1층")
         form.addRow("새 층 이름", self.name_input)
         self.elevation_input = _elevation_field()
-        form.addRow(f"표고 Z ({self._unit_system.length})", self.elevation_input)
-        self.diaphragm_input = QCheckBox("강체 다이아프램으로 지정")
+        form.addRow(f"노드 높이 Z ({length})", self.elevation_input)
+        self.diaphragm_input = QCheckBox("강체 다이아프램 사용")
         form.addRow(self.diaphragm_input)
         layout.addLayout(form)
 
@@ -132,6 +150,20 @@ class StoryManagerDialog(QDialog):
         # building.
         return sorted(self._canvas.stories.values(), key=lambda story: -story.elevation)
 
+    def _diaphragm_combo(self, story_id: str, enabled: bool) -> QComboBox:
+        combo = QComboBox()
+        combo.addItem(_DIAPHRAGM_OFF, False)
+        combo.addItem(_DIAPHRAGM_ON, True)
+        combo.blockSignals(True)
+        combo.setCurrentIndex(1 if enabled else 0)
+        combo.blockSignals(False)
+        combo.currentIndexChanged.connect(
+            lambda _index, sid=story_id, box=combo: self._toggle_diaphragm(
+                sid, bool(box.currentData())
+            )
+        )
+        return combo
+
     def _refresh_table(self) -> None:
         self.table.blockSignals(True)
         self.table.setRowCount(0)
@@ -145,6 +177,7 @@ class StoryManagerDialog(QDialog):
 
             elevation_item = QTableWidgetItem(f"{story.elevation:g}")
             elevation_item.setFlags(elevation_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            elevation_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, _ELEVATION_COLUMN, elevation_item)
 
             node_count = len(self._canvas.nodes_at_story(story.id))
@@ -153,20 +186,14 @@ class StoryManagerDialog(QDialog):
             count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, _NODE_COUNT_COLUMN, count_item)
 
-            diaphragm_cell = QWidget()
-            diaphragm_layout = QHBoxLayout(diaphragm_cell)
-            diaphragm_layout.setContentsMargins(0, 0, 0, 0)
-            diaphragm_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            diaphragm_checkbox = QCheckBox()
-            diaphragm_checkbox.setChecked(story.rigid_diaphragm)
-            diaphragm_checkbox.toggled.connect(
-                lambda checked, story_id=story.id: self._toggle_diaphragm(story_id, checked)
+            self.table.setCellWidget(
+                row, _DIAPHRAGM_COLUMN, self._diaphragm_combo(story.id, story.rigid_diaphragm)
             )
-            diaphragm_layout.addWidget(diaphragm_checkbox)
-            self.table.setCellWidget(row, _DIAPHRAGM_COLUMN, diaphragm_cell)
 
             delete_button = QPushButton("삭제")
-            delete_button.clicked.connect(lambda _checked=False, story_id=story.id: self._delete_story(story_id))
+            delete_button.clicked.connect(
+                lambda _checked=False, story_id=story.id: self._delete_story(story_id)
+            )
             self.table.setCellWidget(row, _DELETE_COLUMN, delete_button)
         self.table.blockSignals(False)
         self.status_label.clear()
@@ -180,7 +207,9 @@ class StoryManagerDialog(QDialog):
             self._refresh_table()
             return
         if not self._canvas.update_story(story_id, name=new_name):
-            self.status_label.setText(f"⚠ 이름을 바꿀 수 없습니다: '{new_name}' (이미 사용 중이거나 비어 있음)")
+            self.status_label.setText(
+                f"⚠ 이름을 바꿀 수 없습니다: '{new_name}' (이미 사용 중이거나 비어 있음)"
+            )
             self._refresh_table()
             return
         self._refresh_table()
@@ -208,7 +237,9 @@ class StoryManagerDialog(QDialog):
     def _auto_detect(self) -> None:
         created = self._canvas.auto_detect_stories()
         if not created:
-            self.status_label.setText("⚠ 새로 추가할 층이 없습니다 (모델이 비어 있거나 모든 표고에 이미 층이 있음).")
+            self.status_label.setText(
+                "⚠ 새로 추가할 층이 없습니다 (모델이 비어 있거나 모든 표고에 이미 층이 있음)."
+            )
             return
         self._refresh_table()
         self.status_label.setText(f"✓ {len(created)}개 층을 자동으로 만들었습니다: {', '.join(created)}")

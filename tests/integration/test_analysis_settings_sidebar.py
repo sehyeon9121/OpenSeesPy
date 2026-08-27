@@ -10,7 +10,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from openframe.core.domain import AnalysisKind
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
@@ -33,6 +33,17 @@ def test_sidebar_starts_with_exactly_one_default_case() -> None:
     assert len(cases) == 1
     assert cases[0].kind == AnalysisKind.LINEAR_STATIC
     assert page.analysis_case_store.active_case_id() == cases[0].case_id
+    assert page.analysis_settings_sidebar.quick_settings_section.isHidden()
+
+
+def test_empty_quick_settings_and_assigned_data_cards_are_not_shown() -> None:
+    page = _page()
+    sidebar = page.analysis_settings_sidebar
+
+    assert sidebar.quick_settings_section.isHidden()
+    assert "ASSIGNED DATA" not in [
+        label.text() for label in sidebar.findChildren(QLabel)
+    ]
 
 
 def test_creating_a_case_makes_it_active_and_swaps_the_quick_settings_page() -> None:
@@ -143,6 +154,7 @@ def test_analysis_category_page_stays_within_width_with_a_time_history_case_acti
     current = page.category_stack.currentWidget()
 
     assert current.sizeHint().width() <= page.left_panel_stack.width() - 24
+    assert not page.analysis_settings_sidebar.quick_settings_section.isHidden()
 
 
 def test_time_history_quick_settings_edits_write_into_the_active_cases_settings() -> None:

@@ -616,9 +616,42 @@ def test_start_floor_boundary_picking_changes_the_3d_viewport_cursor_and_enables
     assert root is not None
     assert page.preview_3d.quick_widget.cursor().shape() == Qt.CursorShape.CrossCursor
     assert root.property("pickingEnabled") is True
-    # Must stay off - an empty-space click must never place a new point
-    # while picking a floor boundary (existing nodes only).
-    assert root.property("planePickingEnabled") is False
+    # On (not off, despite picking only ever landing on nodes): this is what
+    # drives the continuous nodeHovered/planeHovered/hoverCleared signals the
+    # live boundary outline needs (_update_3d_floor_outline). An
+    # empty-space click still never places a new point while picking a floor
+    # boundary - see test_stray_plane_click_during_floor_picking_is_a_no_op -
+    # because _on_3d_plane_picked stays a deliberate no-op regardless of this
+    # property.
+    assert root.property("planePickingEnabled") is True
+
+
+def test_stray_plane_click_during_floor_picking_is_a_no_op() -> None:
+    """A click that lands on empty space (not an existing node) while picking
+    a floor boundary must never create a node, and must leave the in-progress
+    chain and its selection highlight untouched - matching plain node-picking
+    everywhere else. Also guards against a latent bug the planePickingEnabled
+    flip above could otherwise reintroduce: with planePickingEnabled True, a
+    stray click now reaches _on_3d_plane_picked instead of
+    empty_space_clicked, which used to clear_selection() the highlight
+    without clearing _floor_chain, desyncing the two."""
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    tags = [page.canvas._add_node_at((0, 0, 0)), page.canvas._add_node_at((4, 0, 0))]
+    _open_floor_form(page)
+    page.load3d_floor_pick_start_button.click()
+
+    page._on_3d_node_picked(tags[0], 0, 0)
+    page._on_3d_node_picked(tags[1], 0, 0)
+    before_chain = list(page.canvas._floor_chain)
+    before_selection = set(page.canvas.selected_nodes)
+
+    page._on_3d_plane_picked(2.0, 2.0, 0.0)
+
+    assert list(page.canvas.nodes.keys()) == [tags[0], tags[1]]
+    assert page.canvas._floor_chain == before_chain
+    assert page.canvas.selected_nodes == before_selection
+    assert page.canvas.mode == "floor_pick"
 
 
 def test_start_floor_boundary_picking_enters_floor_pick_mode_and_swaps_the_buttons() -> None:
@@ -698,6 +731,53 @@ def test_finishing_creates_a_floor_load_entry_with_click_order_preserved() -> No
     assert page.load3d_floor_pick_start_button.isVisible()
     assert not page.load3d_floor_pick_finish_button.isVisible()
     assert not page.load3d_floor_pick_cancel_button.isVisible()
+
+
+def test_reclicking_the_start_node_closes_the_loop_and_applies_the_load_automatically() -> None:
+    """MIDAS-style auto-close: once >= 3 distinct nodes are picked, clicking
+    back on the very first one ends picking and commits the load entry
+    immediately - no separate 완료 click needed (requested: "다시 시작점
+    노드로 오면 자동으로 종료 및 하중 적용으로 이어지게")."""
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(4.0, 4.0)
+    _open_floor_form(page)
+    page.load3d_floor_pick_start_button.click()
+    page._on_3d_node_picked(a, 0, 0)
+    page._on_3d_node_picked(b, 0, 0)
+    page._on_3d_node_picked(c, 0, 0)
+
+    page._on_3d_node_picked(a, 0, 0)  # back to the start node - closes the loop
+
+    entries = [e for e in page.canvas.load_entries.values() if e.kind == "floor"]
+    assert len(entries) == 1
+    assert entries[0].target == (a, b, c)
+    assert page.canvas.mode == "select"
+    assert page.canvas._floor_chain == []
+    assert page.load3d_floor_pick_start_button.isVisible()
+    assert not page.load3d_floor_pick_finish_button.isVisible()
+
+
+def test_reclicking_the_start_node_before_three_nodes_is_still_ignored() -> None:
+    """Below three distinct nodes there is no loop to close yet - re-clicking
+    the first node must fall back to the ordinary already-in-chain no-op
+    rather than trying to finish early."""
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    _open_floor_form(page)
+    page.load3d_floor_pick_start_button.click()
+    page._on_3d_node_picked(a, 0, 0)
+    page._on_3d_node_picked(b, 0, 0)
+
+    page._on_3d_node_picked(a, 0, 0)
+
+    assert page.canvas._floor_chain == [a, b]
+    assert page.canvas.mode == "floor_pick"
+    assert [e for e in page.canvas.load_entries.values() if e.kind == "floor"] == []
 
 
 def test_finishing_without_an_active_load_case_keeps_the_boundary_instead_of_discarding_it() -> None:

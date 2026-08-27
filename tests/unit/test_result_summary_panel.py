@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from openframe.core.domain import AnalysisResult, AnalysisStatus, NodeResult, StructuralModel
 from openframe.features.results.presentation.result_summary_panel import ResultSummaryPanel
+from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 
 
 def _panel() -> ResultSummaryPanel:
@@ -69,3 +70,26 @@ def test_partial_nonlinear_result_remains_visible_and_is_not_labeled_completed()
 def test_max_rotation_placeholder_before_any_result() -> None:
     panel = _panel()
     assert panel.metric_values["rotation"].text() == "—  °"
+
+
+def test_inspector_shows_only_metrics_for_the_active_result_type() -> None:
+    panel = _panel()
+    panel.set_result_type("moment")
+
+    assert not panel.metric_rows["moment"].isHidden()
+    assert panel.metric_rows["displacement"].isHidden()
+    assert panel.metric_rows["reaction"].isHidden()
+    assert not panel.member_selector.isHidden()
+    assert panel.learning_hint.isHidden()
+
+
+def test_results_workspace_uses_a_narrow_context_inspector_shell() -> None:
+    QApplication.instance() or QApplication([])
+    workspace = ResultsWorkspace()
+
+    assert workspace.result_types.minimumWidth() >= 200
+    assert workspace.result_types.maximumWidth() <= 232
+    assert workspace.summary.maximumWidth() <= 280
+    workspace.set_result_type("reaction")
+    assert not workspace.summary.metric_rows["reaction"].isHidden()
+    assert workspace.summary.metric_rows["moment"].isHidden()

@@ -20,13 +20,13 @@ class ResultToolbar(QFrame):
         super().__init__(parent)
         self.setObjectName("resultToolbar")
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 8, 14, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(16)
 
         self.result_case_field, self.result_case = self._add_display(layout, "RESULT CASE")
         self.result_case.setText("Linear Static 01")
         self.view_mode_field, self.view_mode = self._add_display(layout, "VIEW")
-        self.view_mode.setText("2D Front")
+        self.view_mode.setText("3D")
 
         layout.addStretch(1)
 

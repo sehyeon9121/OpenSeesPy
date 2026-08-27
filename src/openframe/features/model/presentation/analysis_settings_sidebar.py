@@ -1,17 +1,11 @@
-"""Common Analysis Case sidebar - the first-pass skeleton of the
-ANALYSIS CASE / QUICK SETTINGS / ASSIGNED DATA / PRE-CHECK sections shared by
-every analysis method (see the approved plan at
-``analysis_settings_sidebar``'s own commit for the full target design).
+"""Common Analysis Case and pre-check sidebar shared by every analysis method.
 
 This pass only builds the *shell*: creating/renaming/duplicating/deleting
 Analysis Cases, switching between them without one clobbering another's
 settings, and a real (if currently two-rule) PRE-CHECK. Each method's actual
-Quick Settings content is a placeholder page - it does not yet replace this
-canvas's existing execution path (``ModelingInterfacePage.solve()``/
-``_solve_nonlinear_static()``, still driven by ``self.analysis_method_
-selector``/``self._analysis_settings`` exactly as before). This widget is
-added *alongside* that existing UI, not instead of it, so nothing about how
-Linear Static/Nonlinear Static actually run today changes in this pass.
+Quick Settings appears only when a method has a real inline editor. Empty
+placeholder cards and Assigned Data are omitted; missing assignments already
+belong to PRE-CHECK, where they are actionable.
 
 The PRE-CHECK chip row/summary label styling is ported from
 ``app.shell.setup_workspace.SetupWorkspace``'s own ``precheck_chip_row``/
@@ -82,6 +76,7 @@ def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
     lives on the class this sidebar is embedded inside)."""
     section = QFrame()
     section.setObjectName("propertySectionCard")
+    section.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
     layout = QVBoxLayout(section)
     layout.setContentsMargins(10, 9, 10, 9)
     layout.setSpacing(6)
@@ -125,8 +120,8 @@ class AnalysisSettingsSidebar(QWidget):
         root.setSpacing(8)
 
         root.addWidget(self._build_case_section())
-        root.addWidget(self._build_quick_settings_section())
-        root.addWidget(self._build_assigned_data_section())
+        self.quick_settings_section = self._build_quick_settings_section()
+        root.addWidget(self.quick_settings_section)
         root.addWidget(self._build_precheck_section())
 
         self._store.case_added.connect(self._refresh_case_selector)
@@ -270,8 +265,13 @@ class AnalysisSettingsSidebar(QWidget):
     def _refresh_quick_settings_page(self) -> None:
         active_id = self._store.active_case_id()
         if active_id is None or not self._store.has_case(active_id):
+            self.quick_settings_section.hide()
             return
         case = self._store.case(active_id)
+        # Time History currently owns the only real inline Quick Settings
+        # editor. Other methods use the dedicated Settings dialog below this
+        # sidebar, so showing an empty card here only adds visual noise.
+        self.quick_settings_section.setVisible(case.kind is AnalysisKind.TIME_HISTORY)
         page_index = self._quick_pages.get(case.kind)
         if page_index is not None:
             self.quick_settings_stack.setCurrentIndex(page_index)
@@ -337,6 +337,10 @@ class AnalysisSettingsSidebar(QWidget):
             item = self.precheck_chip_row.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                # deleteLater() leaves the old chip alive until the event loop
+                # handles deferred deletes. Hide it immediately so a refreshed
+                # pre-check cannot briefly expand over the section heading.
+                widget.hide()
                 widget.deleteLater()
 
         for issue in report.issues:

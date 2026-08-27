@@ -1,8 +1,8 @@
 """3D-only UI wiring for the three "building" features added this session:
-Story Manager (+ its launch button), elastic spring supports (the custom
+Story Manager (+ its Story workbench tab), elastic spring supports (the custom
 support row's new stiffness fields), and rigid end offsets (the member
-panel's new offset-length fields). All three must stay entirely invisible in
-2D - see feedback_3d_workspace_only_dont_touch_2d.md.
+panel's new offset-length fields). Spring/offset fields must stay entirely
+invisible in 2D - see feedback_3d_workspace_only_dont_touch_2d.md.
 """
 
 import os
@@ -10,7 +10,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from openframe.core.domain import UnitSystem
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
@@ -24,17 +24,25 @@ def _page(*, start_in_3d: bool = False) -> ModelingInterfacePage:
     return page
 
 
-def test_story_manager_button_only_exists_in_3d() -> None:
+def test_story_tab_exists_on_both_2d_and_3d_workbench() -> None:
     page_2d = _page()
-    page_2d._show_category("support")
-    assert not hasattr(page_2d, "support_spring_fields")
-
     page_3d = _page(start_in_3d=True)
-    page_3d._show_category("support")
-    assert hasattr(page_3d, "support_spring_fields")
+    assert "story" in page_2d.workbench_buttons
+    assert "story" in page_3d.workbench_buttons
 
 
-def test_story_manager_button_opens_a_dialog_that_edits_the_canvas() -> None:
+def test_story_tab_left_dock_launches_story_manager_in_3d() -> None:
+    page = _page(start_in_3d=True)
+    page._activate_workbench_tab("story", show_settings=False)
+
+    assert page.category_stack.currentIndex() == page.category_pages["story"]
+    assert page.left_panel_stack.isVisible()
+    button = page.findChild(QPushButton, "storyManagerButton")
+    assert button is not None
+    assert "Story Manager" in button.text()
+
+
+def test_story_manager_dialog_edits_the_canvas() -> None:
     from openframe.features.model.presentation.story_manager_dialog import StoryManagerDialog
 
     page = _page(start_in_3d=True)
@@ -43,6 +51,20 @@ def test_story_manager_button_opens_a_dialog_that_edits_the_canvas() -> None:
     dialog._add_story()
 
     assert "1층" in page.canvas.stories
+
+
+def test_spring_fields_only_exist_in_3d_support_panel() -> None:
+    page_2d = _page()
+    page_2d._show_category("support")
+    assert not hasattr(page_2d, "support_spring_fields")
+
+    page_3d = _page(start_in_3d=True)
+    page_3d._show_category("support")
+    assert hasattr(page_3d, "support_spring_fields")
+    # Story Manager moved off Supports into its own workbench tab.
+    assert page_3d.category_stack.currentIndex() == page_3d.category_pages["support"]
+    page_3d._activate_workbench_tab("story", show_settings=False)
+    assert page_3d.findChild(QPushButton, "storyManagerButton") is not None
 
 
 def test_spring_stiffness_field_applies_only_to_an_unrestrained_dof() -> None:

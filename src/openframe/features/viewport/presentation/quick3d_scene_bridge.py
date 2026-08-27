@@ -34,12 +34,33 @@ _COLOR_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
 
 _DEFAULT_NODE_COLOR = "#2877b7"
 _DEFAULT_MEMBER_COLOR = "#647789"
+#: Categorical palette (Tableau10-derived, red dropped since it's reserved for
+#: the selection highlight) used to color-code members by assigned section in
+#: the default (non-results) view, so a W24x100 column and a W8x10 brace read
+#: as visibly different members even where their box-extrusion sizes alone
+#: are hard to tell apart at a glance. Assigned in ``_assign_section_colors``.
+_SECTION_COLOR_PALETTE: tuple[str, ...] = (
+    "#4c78a8",  # blue
+    "#f58518",  # orange
+    "#54a24b",  # green
+    "#b279a2",  # purple
+    "#eeca3b",  # yellow
+    "#72b7b2",  # teal
+    "#9d755d",  # brown
+)
 #: Free-form 3D draw mode's live rubber-band preview - a thin, translucent
 #: cube from the open chain's last node to wherever the cursor (or a node it
 #: has snapped onto) currently is, cleared the instant the segment commits.
 _PREVIEW_MEMBER_COLOR = "#2563eb"
 _PREVIEW_MEMBER_OPACITY = 0.55
 _PREVIEW_MEMBER_THICKNESS_SCALE = 0.4
+#: Floor-boundary click-picking's live outline - a yellow edge drawn from
+#: each picked boundary node to the next, replacing the filled ghost face
+#: this used to render (a custom mesh rebuilt on every mouse-move, which made
+#: the whole viewport crawl). Yellow rather than the preview blue above so it
+#: reads as "boundary being traced", distinct from both the draw-mode
+#: rubber-band and the blue committed-load glyphs it is drawn on top of.
+_FLOOR_OUTLINE_COLOR = "#facc15"
 _GHOST_COLOR = "#c9cfd6"
 _GHOST_OPACITY = 0.35
 _NODAL_FORCE_COLOR = "#e5484d"
@@ -139,6 +160,7 @@ class Quick3DSceneBridge(QObject):
         self._ground_depth = 1.0
         self._points: dict[int, tuple[float, float, float]] = {}
         self._preview_member: dict[str, float | int | str] | None = None
+        self._floor_outline_parts: list[dict[str, float | int | str]] = []
         self._default_thickness = 0.025
         self._node_radius = 0.018
         self._last_model: StructuralModel | None = None
@@ -220,6 +242,7 @@ class Quick3DSceneBridge(QObject):
         result: AnalysisResult,
         scale: float,
         show_undeformed: bool,
+        member_magnitudes: dict[int, float] | None = None,
     ) -> None:
         """Overlay analysis displacements: deformed + colour-mapped geometry, an
         optional translucent undeformed ghost, and arrows at loaded nodes."""
@@ -259,9 +282,21 @@ class Quick3DSceneBridge(QObject):
             for tag, point in sorted(deformed_points.items())
         ]
 
+        if member_magnitudes:
+            member_peak = max(member_magnitudes.values(), default=0.0)
+            member_ratios = {
+                tag: 0.0 if member_peak <= 1.0e-12 else value / member_peak
+                for tag, value in member_magnitudes.items()
+            }
+        else:
+            member_ratios = None
+
         members: list[dict[str, float | int | str]] = []
         for element in sorted(model.elements.values(), key=lambda item: item.tag):
-            ratio = 0.5 * (ratios.get(element.node_i, 0.0) + ratios.get(element.node_j, 0.0))
+            if member_ratios is not None:
+                ratio = member_ratios.get(element.tag, 0.0)
+            else:
+                ratio = 0.5 * (ratios.get(element.node_i, 0.0) + ratios.get(element.node_j, 0.0))
             members.extend(
                 self._member_parts(
                     element,
@@ -421,6 +456,40 @@ class Quick3DSceneBridge(QObject):
         }
         self.scene_changed.emit()
 
+    def set_floor_boundary_outline(self, points: list[tuple[float, float, float]]) -> None:
+        """Trace the in-progress floor boundary as a yellow outline: one edge
+        per already-picked pair of boundary nodes, in click order, plus a
+        trailing edge to the cursor if it is included as the last point.
+
+        ``points`` are structural x/y/z - the already-picked chain nodes' own
+        coordinates plus, while the mouse is moving, the current cursor
+        position as a trailing point (see
+        ``modeling_interface_page._update_3d_floor_outline`` for the caller
+        side). Closing the loop (clicking back on the boundary's first node)
+        ends picking outright rather than appending a point, so this never
+        needs to draw a closing edge itself - fewer than 2 points has no edge
+        to draw at all, so the outline is simply emptied.
+
+        Rebuilding these thin edge segments on every mouse-move is cheap -
+        unlike the filled ghost face this replaced, a custom triangle-fan
+        mesh whose GPU buffer got re-uploaded on every single move and made
+        the whole viewport lag.
+        """
+        view_points = [self._view_coordinates(*point) for point in points]
+        parts: list[dict[str, float | int | str]] = []
+        if len(view_points) >= 2:
+            # Thicker than the committed floor glyph's own boundary loop
+            # (_floor_entry_parts uses 0.3) so the outline being traced stays
+            # readable when it runs along an already-applied floor's edge.
+            thickness = max(self._default_thickness * 0.45, 0.008)
+            parts = self._connector_segments(
+                view_points, thickness, {"color": _FLOOR_OUTLINE_COLOR}
+            )
+        if parts == self._floor_outline_parts:
+            return
+        self._floor_outline_parts = parts
+        self.scene_changed.emit()
+
     @Property("QVariantList", notify=scene_changed)
     def nodes(self) -> list[dict[str, float | int | str]]:
         if not self._selected_node_tags:
@@ -468,6 +537,12 @@ class Quick3DSceneBridge(QObject):
     @Property("QVariantList", notify=scene_changed)
     def previewMembers(self) -> list[dict[str, float | int | str]]:
         return [] if self._preview_member is None else [self._preview_member]
+
+    @Property("QVariantList", notify=scene_changed)
+    def floorBoundaryOutline(self) -> list[dict[str, float | int | str]]:
+        """Edges of the floor boundary currently being click-picked - see
+        ``set_floor_boundary_outline``."""
+        return self._floor_outline_parts
 
     @Property("QVariantList", notify=scene_changed)
     def loadArrows(self) -> list[dict[str, float | int | str]]:
@@ -538,14 +613,60 @@ class Quick3DSceneBridge(QObject):
             }
             for tag, point in sorted(self._points.items())
         ]
+        section_colors = self._assign_section_colors(model)
         members: list[dict[str, float | int | str]] = []
         for element in sorted(model.elements.values(), key=lambda item: item.tag):
+            key = self._section_color_key(element.properties)
+            color = _DEFAULT_MEMBER_COLOR if key is None else section_colors[key]
             members.extend(
-                self._member_parts(
-                    element, self._points, self._default_thickness, color=_DEFAULT_MEMBER_COLOR,
-                )
+                self._member_parts(element, self._points, self._default_thickness, color=color)
             )
         self._members = members
+
+    @staticmethod
+    def _section_color_key(properties: dict[str, float | str]) -> str | None:
+        """A hashable identity for "this member's section", for color-coding
+        the default view - ``None`` for a member with no section assigned
+        yet (predates the section feature, or only ever got A/Iy/Iz/J), which
+        keeps the old uniform ``_DEFAULT_MEMBER_COLOR`` rather than picking up
+        an arbitrary palette entry. A Database section carries a stable
+        ``section_id`` (e.g. two W8x10 columns picked from the Master DB
+        share one), while a Custom section has none, so its own shape plus
+        every ``dim_*``/``width``/``height`` value stands in for identity -
+        two members with identical dimensions still read as "the same
+        section" even though neither has a ``section_id``.
+        """
+        shape = properties.get("section_shape")
+        if not shape:
+            return None
+        section_id = properties.get("section_id")
+        if section_id:
+            return f"id:{section_id}"
+        dims = sorted(
+            (key, value)
+            for key, value in properties.items()
+            if key.startswith("dim_") or key in ("width", "height")
+        )
+        return f"{shape}:{dims}"
+
+    def _assign_section_colors(self, model: StructuralModel) -> dict[str, str]:
+        """Stable section-key -> palette-color mapping for one rebuild, so
+        every member sharing a section gets the same color. Sorted rather
+        than insertion-ordered so the mapping doesn't shuffle between
+        rebuilds just because members were added/reordered - only adding or
+        removing a distinct section changes anyone's color.
+        """
+        keys = sorted(
+            {
+                key
+                for element in model.elements.values()
+                if (key := self._section_color_key(element.properties)) is not None
+            }
+        )
+        return {
+            key: _SECTION_COLOR_PALETTE[index % len(_SECTION_COLOR_PALETTE)]
+            for index, key in enumerate(keys)
+        }
 
     def _build_support_parts(
         self,

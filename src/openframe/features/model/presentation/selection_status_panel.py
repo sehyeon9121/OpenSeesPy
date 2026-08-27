@@ -130,6 +130,24 @@ class SelectionStatusPanel(QWidget):
 
         self._show_empty()
 
+    def hasHeightForWidth(self) -> bool:
+        """Deliberately False, even though this panel's word-wrapped QLabels
+        make Qt's own answer True - the same trade-off, for the same reason,
+        as ``_CurrentPageOnlyStack.hasHeightForWidth``.
+
+        Reporting True propagates up into the *parent* layout, switching it to
+        Qt's dynamic height-for-width path where per-item stretch factors stop
+        being honoured: the Work Tree panel handed this widget's siblings
+        their size hints and then scattered the several hundred leftover
+        pixels evenly as inter-item gaps, so the tree that was explicitly
+        marked as the stretchy one never grew and the panel looked half
+        empty. ``sizeHint()`` already reports this widget's correct height at
+        its natural width, which is all the parent needs; the wrapping of the
+        labels *inside* it is unaffected, since that is resolved by this
+        widget's own layout.
+        """
+        return False
+
     # -- public API -----------------------------------------------------
     def refresh(
         self,

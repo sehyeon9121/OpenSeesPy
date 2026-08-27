@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QUrl, Signal
-from PySide6.QtGui import QShowEvent
+from PySide6.QtCore import QObject, QPoint, Qt, QUrl, Signal
+from PySide6.QtGui import QCursor, QShowEvent
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
@@ -11,6 +11,52 @@ from openframe.core.domain import AnalysisResult, StructuralModel
 from openframe.features.viewport.presentation.quick3d_scene_bridge import (
     Quick3DSceneBridge,
 )
+
+
+class _UnloadedQuickSurface(QObject):
+    """Stand-in for ``QQuickWidget`` until the first real show.
+
+    Callers (and tests) touch ``preview_3d.quick_widget`` during construction —
+    notably ``installEventFilter`` on the modeling page — long before any 3D
+    page is on screen. Returning a real ``QQuickWidget`` that early is what
+    flashes blank native title-bar windows on Windows at app startup (several
+    viewports are built eagerly). This proxy accepts those early calls without
+    touching the GPU; ``rootObject()`` stays ``None`` so "not loaded yet"
+    checks keep working.
+    """
+
+    def __init__(self, owner: "Quick3DViewport") -> None:
+        super().__init__(owner)
+        self._owner = owner
+
+    def installEventFilter(self, obj: QObject) -> None:
+        self._owner._pending_event_filters.append(obj)
+
+    def rootObject(self) -> None:
+        return None
+
+    def status(self) -> QQuickWidget.Status:
+        return QQuickWidget.Status.Null
+
+    def cursor(self) -> QCursor:
+        # Picking cursors only exist on a real surface; an unloaded viewport
+        # must not report CrossCursor or 2D-path tests falsely look "armed".
+        return QCursor()
+
+    def setCursor(self, _cursor: QCursor) -> None:
+        return
+
+    def unsetCursor(self) -> None:
+        return
+
+    def mapToGlobal(self, pos: QPoint) -> QPoint:
+        return self._owner.mapToGlobal(pos)
+
+    def focusPolicy(self) -> Qt.FocusPolicy:
+        return Qt.FocusPolicy.StrongFocus
+
+    def setFocus(self, *_args: object) -> None:
+        return
 
 
 class Quick3DViewport(QFrame):
@@ -34,46 +80,67 @@ class Quick3DViewport(QFrame):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
         self.bridge = Quick3DSceneBridge(self)
-        self.quick_widget = QQuickWidget(self)
-        self.quick_widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self.quick_widget.setClearColor(Qt.GlobalColor.transparent)
+
+        # Both constructing QQuickWidget and calling setSource() stand up an
+        # RHI/OpenGL surface. Four of these viewports are built at app startup
+        # (import ModelViewport, results, 2D authoring preview, 3D authoring
+        # preview); creating them in __init__ flashed a blank native window
+        # per instance before MainWindow appeared. Construction + setSource
+        # are deferred to the first showEvent where this widget is actually
+        # visible inside an already-shown top-level window.
+        self._quick_widget: QQuickWidget | None = None
+        self._unloaded_surface = _UnloadedQuickSurface(self)
+        self._loaded = False
+        self._pending_camera_preset: str | None = None
+        self._pending_plane: tuple[str, float] | None = None
+        self._pending_picking: bool | None = None
+        self._pending_plane_picking: bool | None = None
+        self._pending_event_filters: list[QObject] = []
+        self._qml_path = Path(__file__).with_name("qml") / "structural_view.qml"
+
+    @property
+    def quick_widget(self) -> QQuickWidget | _UnloadedQuickSurface:
+        if self._quick_widget is not None:
+            return self._quick_widget
+        return self._unloaded_surface
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        # QStackedWidget can mark a page "shown" while an ancestor is still
+        # hidden (e.g. geometry_page_3d enabling its 3D stack during __init__).
+        # isVisible() is False until the whole chain is on screen — only then
+        # is it safe to create the native QQuickWidget without a flash.
+        if self.isVisible():
+            self._ensure_loaded()
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+
+        quick_widget = QQuickWidget(self)
+        quick_widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        quick_widget.setClearColor(Qt.GlobalColor.transparent)
         # Needed for the modeling page's Space-bar draw-tool shortcut (scoped
         # to this viewport in 3D mode) to fire at all: a QShortcut with
         # WidgetWithChildrenShortcut context only dispatches while its widget
         # (or a child) actually holds keyboard focus, and QWidget's default
         # focus policy is NoFocus. StrongFocus makes a click in the viewport
         # (already the natural first step of drawing) grab focus for it.
-        self.quick_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.quick_widget.rootContext().setContextProperty("sceneBridge", self.bridge)
-        layout.addWidget(self.quick_widget)
+        quick_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        quick_widget.rootContext().setContextProperty("sceneBridge", self.bridge)
+        self._layout.addWidget(quick_widget)
+        self._quick_widget = quick_widget
 
-        # setSource() itself (not just becoming visible) is what makes
-        # QQuickWidget stand up its scene graph/RHI context - three of these
-        # get constructed eagerly at app startup (main viewport, modeling
-        # page preview, result viewport), and doing that immediately in
-        # __init__ made all three flash a blank native surface before the
-        # app's own window ever appears. Deferred to this widget's first real
-        # showEvent instead, so a viewport nobody has scrolled to yet never
-        # touches the GPU at all. _pending_camera_preset lets a caller that
-        # sets a model/camera before the first show (e.g. set_model() while
-        # this page isn't the visible one) still take effect once loaded.
-        self._loaded = False
-        self._pending_camera_preset: str | None = None
-        self._qml_path = Path(__file__).with_name("qml") / "structural_view.qml"
+        for watcher in self._pending_event_filters:
+            quick_widget.installEventFilter(watcher)
+        self._pending_event_filters.clear()
 
-    def showEvent(self, event: QShowEvent) -> None:
-        super().showEvent(event)
-        self._ensure_loaded()
-
-    def _ensure_loaded(self) -> None:
-        if self._loaded:
-            return
-        self._loaded = True
-        self.quick_widget.setSource(QUrl.fromLocalFile(str(self._qml_path)))
-        root = self.quick_widget.rootObject()
+        quick_widget.setSource(QUrl.fromLocalFile(str(self._qml_path)))
+        root = quick_widget.rootObject()
         if root is not None:
             root.cameraModeChanged.connect(self.camera_mode_changed.emit)
             root.nodePicked.connect(self._on_node_picked)
@@ -86,6 +153,19 @@ class Quick3DViewport(QFrame):
             root.emptySpaceClicked.connect(self.empty_space_clicked.emit)
             if self._pending_camera_preset is not None:
                 root.setPreset(self._pending_camera_preset)
+            if self._pending_plane is not None:
+                kind, offset = self._pending_plane
+                root.setProperty("planeKind", kind)
+                root.setProperty("planeOffset", offset)
+            if self._pending_picking is not None:
+                root.setProperty("pickingEnabled", self._pending_picking)
+            if self._pending_plane_picking is not None:
+                root.setProperty("planePickingEnabled", self._pending_plane_picking)
+
+        if self._pending_picking:
+            quick_widget.setCursor(Qt.CursorShape.CrossCursor)
+        if self._pending_plane_picking:
+            quick_widget.setCursor(Qt.CursorShape.CrossCursor)
 
     def _on_node_picked(self, tag: int, x: float, y: float) -> None:
         global_pos = self.quick_widget.mapToGlobal(QPoint(int(x), int(y)))
@@ -121,12 +201,20 @@ class Quick3DViewport(QFrame):
         (both structural x/y/z), or clear it if either is ``None``."""
         self.bridge.set_preview_segment(start, end)
 
+    def set_floor_boundary_outline(self, points: list[tuple[float, float, float]]) -> None:
+        """Trace the in-progress floor boundary's yellow outline - see
+        ``Quick3DSceneBridge.set_floor_boundary_outline``."""
+        self.bridge.set_floor_boundary_outline(points)
+
     def set_picking_mode(self, enabled: bool) -> None:
+        self._pending_picking = enabled
+        if self._quick_widget is None:
+            return
         if enabled:
-            self.quick_widget.setCursor(Qt.CursorShape.CrossCursor)
+            self._quick_widget.setCursor(Qt.CursorShape.CrossCursor)
         else:
-            self.quick_widget.unsetCursor()
-        root = self.quick_widget.rootObject()
+            self._quick_widget.unsetCursor()
+        root = self._quick_widget.rootObject()
         if root is not None:
             root.setProperty("pickingEnabled", enabled)
 
@@ -137,16 +225,22 @@ class Quick3DViewport(QFrame):
         viewport to inspect a node's displacement) so turning one on never
         changes the other's behaviour.
         """
+        self._pending_plane_picking = enabled
+        if self._quick_widget is None:
+            return
         if enabled:
-            self.quick_widget.setCursor(Qt.CursorShape.CrossCursor)
+            self._quick_widget.setCursor(Qt.CursorShape.CrossCursor)
         else:
-            self.quick_widget.unsetCursor()
-        root = self.quick_widget.rootObject()
+            self._quick_widget.unsetCursor()
+        root = self._quick_widget.rootObject()
         if root is not None:
             root.setProperty("planePickingEnabled", enabled)
 
     def set_active_plane(self, kind: str, offset: float) -> None:
-        root = self.quick_widget.rootObject()
+        self._pending_plane = (kind, offset)
+        if self._quick_widget is None:
+            return
+        root = self._quick_widget.rootObject()
         if root is not None:
             root.setProperty("planeKind", kind)
             root.setProperty("planeOffset", offset)
@@ -169,8 +263,11 @@ class Quick3DViewport(QFrame):
         result: AnalysisResult,
         scale: float,
         show_undeformed: bool = True,
+        member_magnitudes: dict[int, float] | None = None,
     ) -> None:
-        self.bridge.set_result(model, result, scale, show_undeformed)
+        self.bridge.set_result(
+            model, result, scale, show_undeformed, member_magnitudes=member_magnitudes
+        )
 
     def clear_result(self) -> None:
         self.bridge.clear_result()
@@ -221,7 +318,9 @@ class Quick3DViewport(QFrame):
         if preset not in {"iso", "xy", "xz", "yz"}:
             return
         self._pending_camera_preset = preset
-        root = self.quick_widget.rootObject()
+        if self._quick_widget is None:
+            return
+        root = self._quick_widget.rootObject()
         if root is not None:
             # QMetaObject.invokeMethod(root, "setPreset", Q_ARG(str, preset)) silently
             # fails (returns False) for this plain, untyped QML JS function - calling
@@ -229,6 +328,8 @@ class Quick3DViewport(QFrame):
             root.setPreset(preset)
 
     def zoom(self, factor: float) -> None:
-        root = self.quick_widget.rootObject()
+        if self._quick_widget is None:
+            return
+        root = self._quick_widget.rootObject()
         if root is not None:
             root.zoomBy(factor)

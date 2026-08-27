@@ -572,9 +572,18 @@ QFrame#resultTypeSidebar {
 }
 QLabel#resultSectionTitle {
     color: #17273f;
-    font-size: 13pt;
+    font-size: 11pt;
     font-weight: 700;
-    padding: 4px 2px 0 2px;
+    padding: 2px 2px 0 2px;
+}
+QLabel#resultContextLabel {
+    color: #174ea6;
+    background: #e7effb;
+    border: 1px solid #cad9ef;
+    border-radius: 3px;
+    padding: 4px 7px;
+    font-size: 7pt;
+    font-weight: 700;
 }
 QLabel#resultTypeDescription {
     color: #6c7c92;
@@ -589,17 +598,17 @@ QFrame#resultTypeGroup {
     border-bottom: 1px solid #dce4ee;
     border-radius: 0;
 }
-QWidget#resultTypeGroupHeader { background: transparent; border-radius: 6px; }
-QWidget#resultTypeGroupHeader:hover { background: #edf3fb; }
+QWidget#resultTypeGroupHeader { background: transparent; border-radius: 0; }
+QWidget#resultTypeGroupHeader:hover { background: #eef1f5; }
 QLabel#resultTypeGroupArrow {
-    color: #7c8ca1;
+    color: #8b93a0;
     font-size: 8pt;
     min-width: 11px;
     max-width: 11px;
 }
 QLabel#resultTypeGroupTitle {
-    color: #1f3452;
-    font-size: 9pt;
+    color: #1f2937;
+    font-size: 8pt;
     font-weight: 700;
 }
 QLabel#resultTypeGroupHint {
@@ -608,13 +617,14 @@ QLabel#resultTypeGroupHint {
     padding: 0 2px 4px 2px;
 }
 QLabel#resultTypeGroupCount {
-    min-width: 42px;
-    min-height: 18px;
+    min-width: 16px;
+    max-width: 16px;
+    min-height: 16px;
     background: transparent;
-    color: #7b899a;
-    font-size: 7.5pt;
+    color: #9aa1ab;
+    font-size: 7pt;
     font-weight: 500;
-    qproperty-alignment: AlignRight;
+    qproperty-alignment: AlignCenter;
 }
 QLabel#resultTypeGroupIcon {
     min-width: 22px;
@@ -623,26 +633,26 @@ QLabel#resultTypeGroupIcon {
     max-height: 22px;
 }
 QToolButton#resultTypeButton {
-    min-height: 34px;
-    padding: 0 10px;
+    min-height: 28px;
+    max-height: 28px;
+    padding: 0 8px;
     border: 0;
-    border-left: 3px solid transparent;
-    border-radius: 5px;
+    border-left: 2px solid transparent;
+    border-radius: 0;
     background: transparent;
-    color: #33475f;
+    color: #4b5563;
     text-align: left;
-    font-size: 9.5pt;
+    font-size: 8pt;
     font-weight: 400;
 }
 QToolButton#resultTypeButton:hover {
-    background: #eef4fc;
-    color: #174ea6;
-    border-left-color: #b7cdec;
+    background: #eef1f5;
+    color: #111827;
 }
 QToolButton#resultTypeButton:checked {
-    background: #e4eefc;
+    background: #e7effb;
     border-left-color: #174ea6;
-    color: #123f89;
+    color: #174ea6;
     font-weight: 600;
 }
 QFrame#resultViewport { background: #ffffff; }
@@ -657,6 +667,31 @@ QLabel#resultModeBadge {
     border-radius: 3px;
     padding: 3px 7px;
     font-size: 7pt;
+    font-weight: 700;
+}
+QFrame#resultForceSelector {
+    background: #ffffff;
+    border: 1px solid #c7d2df;
+    border-radius: 3px;
+}
+QPushButton#resultForceButton {
+    min-height: 23px;
+    padding: 0 10px;
+    color: #52657d;
+    background: transparent;
+    border: 0;
+    border-right: 1px solid #dbe3ec;
+    border-radius: 0;
+    font-size: 7pt;
+    font-weight: 600;
+}
+QPushButton#resultForceButton:hover {
+    background: #f3f6fb;
+    color: #174ea6;
+}
+QPushButton#resultForceButton:checked {
+    background: #174ea6;
+    color: #ffffff;
     font-weight: 700;
 }
 QPushButton#resultCanvasButton {
@@ -2053,9 +2088,9 @@ QFrame#resultTypeSidebar[compact2d="true"] QToolButton#resultTypeButton {
     font-size: 8pt;
 }
 QFrame#resultTypeSidebar[compact2d="true"] QToolButton#resultTypeButton:checked {
-    color: #00288e;
-    background: #eef0ff;
-    border-left-color: #00288e;
+    color: #174ea6;
+    background: #e7effb;
+    border-left-color: #174ea6;
 }
 QFrame#resultSummaryPanel[compact2d="true"] {
     background: #f8f9fa;

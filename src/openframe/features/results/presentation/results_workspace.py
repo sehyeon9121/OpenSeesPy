@@ -58,7 +58,7 @@ class ResultsWorkspace(QFrame):
         normal_page.addWidget(self.summary)
         normal_page.setStretchFactor(0, 1)
         normal_page.setStretchFactor(1, 0)
-        normal_page.setSizes((875, 300 if compact_2d else 275))
+        normal_page.setSizes((900, 250))
 
         self.content_stack = QStackedWidget()
         self.content_stack.addWidget(normal_page)
@@ -72,11 +72,13 @@ class ResultsWorkspace(QFrame):
         body.addWidget(self.content_stack)
         body.setStretchFactor(0, 0)
         body.setStretchFactor(1, 1)
-        body.setHandleWidth(1 if compact_2d else 7)
-        body.setSizes((190 if compact_2d else 320, 1190 if compact_2d else 1060))
+        body.setHandleWidth(1)
+        # Context-inspector defaults: narrow Results list, viewport-dominant.
+        body.setSizes((176, 1204))
         layout.addWidget(body, 1)
 
         self.result_types.result_type_changed.connect(self._set_result_type)
+        self.viewport.result_type_requested.connect(self.set_result_type)
         self.set_unit_system(DEFAULT_UNIT_SYSTEM)
         self._set_result_type("overview")
 
@@ -110,13 +112,11 @@ class ResultsWorkspace(QFrame):
 
     def set_analysis_kind(self, kind: AnalysisKind) -> None:
         self.toolbar.set_analysis_kind(kind)
+        self.result_types.set_analysis_kind(kind)
 
     def set_result_type(self, result_type: str) -> None:
         """Select a result type as if the user had clicked it in the sidebar."""
-        button = self.result_types.buttons.get(result_type)
-        if button is not None:
-            button.setChecked(True)
-        self._set_result_type(result_type)
+        self.result_types.select_result_type(result_type)
 
     def _set_result_type(self, result_type: str) -> None:
         # Leaving Time History (to any other result type) must stop the

@@ -131,6 +131,13 @@ from openframe.features.model.presentation.statics_modeling_page import StaticsD
 from openframe.features.model.presentation.story_manager_dialog import StoryManagerDialog
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
+from openframe.features.viewport.items.support_item import SUPPORT_NAMES
+
+#: Item-data role carrying a Work Tree geometry row's ``(kind, tag)`` pair.
+#: Deliberately not ``UserRole``, which the load-entry rows in the same tree
+#: already claim for their entry id - keeping them apart lets one click
+#: handler serve both without having to guess which kind of row it got.
+_TREE_ENTITY_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class _LoadTreeBinding(NamedTuple):
@@ -429,9 +436,8 @@ class ModelingInterfacePage(QFrame):
         layout = QHBoxLayout(controls)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        case_label = QLabel("RESULT CASE\nLinear Static 01")
-        case_label.setObjectName("direct2DResultCase")
-        layout.addWidget(case_label)
+        # RESULT CASE lives once in ResultsWorkspace.toolbar - duplicating it
+        # here made the results chrome feel padded and toy-like.
         back = QPushButton("BACK TO MODEL")
         back.setObjectName("direct2DSecondaryButton")
         back.clicked.connect(lambda: self.workspace_stack.setCurrentIndex(0))
@@ -452,6 +458,7 @@ class ModelingInterfacePage(QFrame):
         ("properties", "Properties"),
         ("element", "Element"),
         ("boundary", "Supports"),
+        ("story", "Story"),
         ("loads", "Loads"),
         ("analysis", "Analysis"),
         ("results", "Results"),
@@ -472,6 +479,7 @@ class ModelingInterfacePage(QFrame):
         "properties": ("member",),
         "element": ("element_picker", "move", "duplicate", "array", "rotate", "mirror"),
         "boundary": ("support",),
+        "story": ("story",),
         "loads": ("load",),
         "analysis": ("analysis",),
         "results": (),
@@ -479,15 +487,12 @@ class ModelingInterfacePage(QFrame):
 
     def _build_3d_workbench_bar(self) -> QFrame:
         """The shared 2D/3D row of document-work tabs directly under the
-        application header — Model/Node/Properties/Supports/Loads/Analysis/
-        Results, in the actual order a model gets built: place geometry, give it material/
-        section, support it, load it, analyze, read results. A tab click
-        both picks which form the left dock shows (``_activate_workbench_
-        tab``) and switches the canvas to whichever tool that step needs —
-        earlier this bar also
-        carried a second row of icon tools (Node/Arch/복사/삭제/층·그리드/3D
-        뷰) duplicating what the tabs and existing shortcuts already covered,
-        so it was dropped.
+        application header — Model/Node/Properties/Element/Supports/Story/
+        Loads/Analysis/Results. Order follows how a building model is built:
+        geometry → material/section → supports → stories/diaphragms → loads →
+        analyze → results. A tab click both picks which form the left dock
+        shows (``_activate_workbench_tab``) and switches the canvas tool that
+        step needs.
         """
         bar = QFrame()
         bar.setObjectName("modelingWorkbenchBar")
@@ -648,30 +653,83 @@ class ModelingInterfacePage(QFrame):
         root.setSpacing(10)
         self.work_tree_title = QLabel("워크트리")
         self.work_tree_title.setObjectName("direct2DInspectorTitle")
+        # Every widget in this panel except the tree is capped at its size
+        # hint (Maximum). Marking only the tree as the stretchy one is not
+        # enough on its own: with a mix of default Preferred policies the
+        # spare height kept landing on whichever sibling came first - first
+        # the status panel, then this one-line title, which ballooned to
+        # ~500px - instead of on the tree. Capping the fixed-size siblings
+        # leaves the tree as the only place the free height can go.
+        self.work_tree_title.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
         root.addWidget(self.work_tree_title)
 
         self.work_tree = self._new_load_tree("modelingWorkTree")
+        # Geometry groups come first: until these existed the Work Tree listed
+        # only 물성/섹션/하중조합, so a model with hundreds of nodes and members
+        # showed "0 / 0 / 0" and the tree said nothing about what had actually
+        # been drawn. Children are built lazily (see _refresh_structure_tree)
+        # because _refresh_work_tree runs on every model_changed - i.e. once
+        # per node added - and eagerly rebuilding thousands of rows there
+        # would make drawing progressively slower.
+        self.work_tree_nodes = QTreeWidgetItem(["절점", "0"])
+        self.work_tree_members = QTreeWidgetItem(["부재", "0"])
+        self.work_tree_supports = QTreeWidgetItem(["지점", "0"])
         self.work_tree_materials = QTreeWidgetItem(["물성", "0"])
         self.work_tree_sections = QTreeWidgetItem(["섹션", "0"])
         self.work_tree_load_combinations = QTreeWidgetItem(["하중조합", "0"])
+        self.work_tree.addTopLevelItem(self.work_tree_nodes)
+        self.work_tree.addTopLevelItem(self.work_tree_members)
+        self.work_tree.addTopLevelItem(self.work_tree_supports)
         self.work_tree.addTopLevelItem(self.work_tree_materials)
         self.work_tree.addTopLevelItem(self.work_tree_sections)
         self.work_tree.addTopLevelItem(self.work_tree_load_combinations)
+        # Populate a geometry group the moment it is opened - _refresh_
+        # structure_tree only fills groups that are already expanded.
+        self.work_tree.itemExpanded.connect(self._on_work_tree_item_expanded)
         # Load Case top-level items (one per canvas.load_cases entry) live in
         # this same tree, added/removed by _refresh_load_tree - see
         # canvas_load_entries.py.
         self._work_tree_case_items: dict[str, QTreeWidgetItem] = {}
         self._selected_load_id: int | None = None
-        root.addWidget(self.work_tree)
+        # Stretch factor, and no trailing addStretch: the panel is 330px wide
+        # and as tall as the window, but every widget here used to be given
+        # only its size hint while a trailing stretch swallowed the rest - so
+        # the tree sat in a ~180px box, scrolling internally, above several
+        # hundred pixels of empty panel. The tree is the part that grows with
+        # the model, so it is the part that should absorb the free height;
+        # the status cards below keep their natural size.
+        root.addWidget(self.work_tree, 1)
         self.member_info_card = self._build_member_info_card()
         self.member_info_card.setVisible(False)
+        self.member_info_card.setSizePolicy(  # content-sized, same as the title above
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
         root.addWidget(self.member_info_card)
         self.selection_status_panel = SelectionStatusPanel()
         self.selection_status_panel.load_edit_requested.connect(self._edit_load_entry)
         self.selection_status_panel.load_reselect_requested.connect(self._reselect_load_entry_target)
         self.selection_status_panel.load_delete_requested.connect(self._delete_load_entry_from_status)
+        # Sized to its cards, never beyond: SelectionStatusPanel ends its own
+        # layout with an addStretch(1) (to keep its cards pinned to the top of
+        # whatever height it is given), which also made it happily swallow the
+        # panel's entire spare height - ~580px for ~100px of content, starving
+        # the tree above it. Maximum caps it at its size hint so the free
+        # height goes to the tree's stretch instead.
+        self.selection_status_panel.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
         root.addWidget(self.selection_status_panel)
-        root.addStretch(1)
+        # Keeps the cards packed at the top. Needed only because the tree
+        # cannot currently absorb the panel's spare height on its own: the
+        # theme caps QTreeWidget#modelingWorkTree at max-height 270px, from
+        # when this tree held three fixed rows rather than the whole model.
+        # Without a spare-space sink here Qt scatters the leftover evenly as
+        # ~130px gaps between the title, tree and status cards. Once that cap
+        # is lifted the tree's own stretch takes over and this just goes to
+        # zero height.
+        root.addStretch(0)
 
         inspector = QFrame()
         inspector.setObjectName("modelingInspectorPanel")
@@ -691,7 +749,7 @@ class ModelingInterfacePage(QFrame):
         self.load_inspector_combinations_item = QTreeWidgetItem(["하중조합", "0"])
         self.load_inspector_tree.addTopLevelItem(self.load_inspector_combinations_item)
         self._load_inspector_case_items: dict[str, QTreeWidgetItem] = {}
-        inspector_root.addWidget(self.load_inspector_tree)
+        inspector_root.addWidget(self.load_inspector_tree, 1)  # same reason as the Work Tree above
         self.load_inspector_status_panel = SelectionStatusPanel()
         self.load_inspector_status_panel.load_edit_requested.connect(self._edit_load_entry)
         self.load_inspector_status_panel.load_reselect_requested.connect(
@@ -700,8 +758,10 @@ class ModelingInterfacePage(QFrame):
         self.load_inspector_status_panel.load_delete_requested.connect(
             self._delete_load_entry_from_status
         )
+        self.load_inspector_status_panel.setSizePolicy(  # same reason as the Work Tree panel
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
         inspector_root.addWidget(self.load_inspector_status_panel)
-        inspector_root.addStretch(1)
 
         self._load_tree_bindings: tuple[_LoadTreeBinding, ...] = (
             _LoadTreeBinding(self.work_tree, self.work_tree_load_combinations, self._work_tree_case_items),
@@ -795,7 +855,121 @@ class ModelingInterfacePage(QFrame):
         self.work_tree_sections.setText(1, str(len(self._user_sections)))
         self.work_tree_materials.setExpanded(True)
         self.work_tree_sections.setExpanded(True)
+        self._refresh_structure_tree()
         self._refresh_element_property_selectors()
+
+    #: Most rows a single Work Tree geometry group lists before it stops and
+    #: shows a "…외 N개" summary row instead. A real building model runs to
+    #: thousands of nodes; past a few hundred rows the tree stops being a
+    #: navigation aid and just costs time to build and scroll.
+    _WORK_TREE_CHILD_LIMIT = 300
+
+    def _refresh_structure_tree(self) -> None:
+        """Update the 절점/부재/지점 group counts, rebuilding the rows of
+        whichever groups happen to be expanded.
+
+        Counts are always current (they are just a label), but children are
+        only materialised for an open group - a closed one keeps nothing but
+        its expand arrow, so the common case (all collapsed, user is drawing)
+        costs three ``setText`` calls per model change.
+        """
+        if not hasattr(self, "work_tree_nodes"):
+            return
+        groups = (
+            (self.work_tree_nodes, len(self.canvas.nodes), self._fill_node_tree_group),
+            (self.work_tree_members, len(self.canvas.elements), self._fill_member_tree_group),
+            (self.work_tree_supports, len(self.canvas.boundaries), self._fill_support_tree_group),
+        )
+        for item, count, fill in groups:
+            item.setText(1, str(count))
+            item.takeChildren()
+            if count and item.isExpanded():
+                fill(item)
+            else:
+                # takeChildren() above also removes the expand arrow, so put it
+                # back by hand for a group that *can* be opened but is closed.
+                item.setChildIndicatorPolicy(
+                    QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+                    if count
+                    else QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator
+                )
+
+    def _on_work_tree_item_expanded(self, item: QTreeWidgetItem) -> None:
+        fill = {
+            id(self.work_tree_nodes): self._fill_node_tree_group,
+            id(self.work_tree_members): self._fill_member_tree_group,
+            id(self.work_tree_supports): self._fill_support_tree_group,
+        }.get(id(item))
+        if fill is not None and item.childCount() == 0:
+            fill(item)
+
+    def _add_entity_tree_row(
+        self, parent: QTreeWidgetItem, kind: str, tag: int, label: str, detail: str, tooltip: str
+    ) -> None:
+        """One clickable geometry row. The (kind, tag) pair goes in its own
+        item-data role rather than ``UserRole``, which the load-entry rows
+        sharing this tree already use for their entry id - see
+        ``_on_work_tree_item_clicked``, which reads whichever one is set."""
+        row = QTreeWidgetItem([label, detail])
+        row.setData(0, _TREE_ENTITY_ROLE, (kind, tag))
+        row.setToolTip(0, tooltip)
+        parent.addChild(row)
+
+    def _note_truncated_tree_group(self, parent: QTreeWidgetItem, total: int) -> None:
+        if total > self._WORK_TREE_CHILD_LIMIT:
+            parent.addChild(
+                QTreeWidgetItem([f"…외 {total - self._WORK_TREE_CHILD_LIMIT}개", ""])
+            )
+
+    def _fill_node_tree_group(self, parent: QTreeWidgetItem) -> None:
+        for tag in sorted(self.canvas.nodes)[: self._WORK_TREE_CHILD_LIMIT]:
+            node = self.canvas.nodes[tag]
+            hinge = " · 활절점" if tag in self.canvas.hinge_nodes else ""
+            self._add_entity_tree_row(
+                parent,
+                "node",
+                tag,
+                f"절점 {tag}",
+                f"{node.x:g}, {node.y:g}, {node.z:g}",
+                f"({node.x:g}, {node.y:g}, {node.z:g}){hinge}",
+            )
+        self._note_truncated_tree_group(parent, len(self.canvas.nodes))
+
+    def _fill_member_tree_group(self, parent: QTreeWidgetItem) -> None:
+        for tag in sorted(self.canvas.elements)[: self._WORK_TREE_CHILD_LIMIT]:
+            element = self.canvas.elements[tag]
+            self._add_entity_tree_row(
+                parent,
+                "element",
+                tag,
+                f"부재 {tag}",
+                f"{element.node_i}→{element.node_j}",
+                f"{element.element_type} · 절점 {element.node_i} → {element.node_j}",
+            )
+        self._note_truncated_tree_group(parent, len(self.canvas.elements))
+
+    def _fill_support_tree_group(self, parent: QTreeWidgetItem) -> None:
+        for tag in sorted(self.canvas.boundaries)[: self._WORK_TREE_CHILD_LIMIT]:
+            condition = self.canvas.boundaries[tag]
+            name = SUPPORT_NAMES.get(condition.support_kind, "사용자 구속")
+            self._add_entity_tree_row(
+                parent, "node", tag, f"절점 {tag}", name, name
+            )
+        self._note_truncated_tree_group(parent, len(self.canvas.boundaries))
+
+    def _select_entity_from_tree(self, kind: str, tag: int) -> None:
+        """Clicking a Work Tree row selects that entity on the canvas, so the
+        tree works as a way to *find* something in a crowded model rather than
+        just listing it."""
+        if kind == "node" and tag in self.canvas.nodes:
+            self.canvas.selected_nodes = {tag}
+            self.canvas.selected_elements = set()
+        elif kind == "element" and tag in self.canvas.elements:
+            self.canvas.selected_elements = {tag}
+            self.canvas.selected_nodes = set()
+        else:
+            return  # a row left over from a deleted entity - ignore, don't crash
+        self.canvas.selection_changed.emit()
 
     def _refresh_element_property_selectors(self) -> None:
         if not hasattr(self, "element_material_selector"):
@@ -1066,6 +1240,11 @@ class ModelingInterfacePage(QFrame):
             self._activate_load_tool()
         elif key == "element":
             self._element_subcategory_clicked(self._active_element_subcategory)
+        elif key == "story":
+            self._activate_select_tool()
+            self._show_category("story", sync_workbench=False)
+            if self._start_in_3d and show_settings:
+                self._open_story_manager()
         else:
             self._activate_select_tool()
             categories = self._WORKBENCH_CATEGORIES[key]
@@ -1075,7 +1254,12 @@ class ModelingInterfacePage(QFrame):
                 self.category_stack.setCurrentIndex(self.category_pages["empty"])
                 self.left_panel_stack.hide()
 
-        if key == "results" and self.view_results_button.isEnabled():
+        # Results is a real workspace, not merely a post-solve action.  Let the
+        # user open it before running analysis so the available result families
+        # and WAITING inspector state are visible while the model is being set
+        # up.  The footer's "View results" shortcut can remain disabled until
+        # computed values exist.
+        if key == "results":
             self.workspace_stack.setCurrentIndex(1)
         elif key != "results" and self.workspace_stack.currentIndex() != 0:
             self.workspace_stack.setCurrentIndex(0)
@@ -1279,7 +1463,11 @@ class ModelingInterfacePage(QFrame):
         self.new_plane_kind.addItem("측면도 (YZ)", PlaneKind.YZ)
         layout.addWidget(self.new_plane_kind)
         self.new_plane_offset = self._number(3.0)
-        self.new_plane_offset.setToolTip("평면도는 Z 높이, 정면도는 Y, 측면도는 X 위치입니다.")
+        self.new_plane_offset_label = QLabel(f"위치 ({self._unit_system.length})")
+        self.new_plane_offset.setToolTip(
+            f"평면도는 Z 높이, 정면도는 Y, 측면도는 X 위치입니다. 단위: {self._unit_system.length}"
+        )
+        layout.addWidget(self.new_plane_offset_label)
         layout.addWidget(self.new_plane_offset)
         self.new_plane_label = QLineEdit()
         self.new_plane_label.setPlaceholderText("이름 (예: 2F)")
@@ -1308,9 +1496,7 @@ class ModelingInterfacePage(QFrame):
         layout.setSpacing(6)
         layout.addWidget(QLabel("그리드"))
         self.snap = QComboBox()
-        for value in (0.1, 0.25, 0.5, 1.0):
-            self.snap.addItem(f"{value:g} m", value)
-        self.snap.setCurrentIndex(3)
+        self._rebuild_grid_snap_options()
         self.snap.currentIndexChanged.connect(
             lambda: setattr(self.canvas, "grid", float(self.snap.currentData()))
         )
@@ -1499,6 +1685,7 @@ class ModelingInterfacePage(QFrame):
                 "load": "Loads",
                 "element_picker": "Element",
                 "analysis": "Analysis",
+                "story": "Story",
         }
         self.editor_title.setText(title_by_category.get(key, "Tool Settings"))
         # The category bar (this method) is the one place every category
@@ -1541,6 +1728,18 @@ class ModelingInterfacePage(QFrame):
         ("array", "Array Copy Element"),
         ("rotate", "Rotate Copy Element"),
         ("mirror", "Mirror Copy Element"),
+    )
+
+    #: MIDAS-style structural intent for members drawn from Create Element.
+    #: The current solver distinguishes frame members from axial-only members;
+    #: tension/compression/cable refinements are exposed now as drawing choices
+    #: and use the axial-only family until their nonlinear formulations land.
+    _ELEMENT_TYPE_OPTIONS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("general_beam", "General Beam"),
+        ("truss", "Truss"),
+        ("tension_only", "Tension-only"),
+        ("compression_only", "Compression-only"),
+        ("cable", "Cable"),
     )
 
     #: Only "add" (클릭으로 새 노드/부재를 그림) needs draw mode - the other
@@ -1658,19 +1857,46 @@ class ModelingInterfacePage(QFrame):
 
     def _build_element_category(self) -> QWidget:
         """Create/translate actions only; property authoring lives in Properties."""
-        section, root = self._section("Element", show_title=False)
-        hint = QLabel(
-            "Properties에서 저장한 Material과 Section을 선택하면 새 부재에 "
-            "적용됩니다. 2D에서는 선택하지 않아도 기본 부재를 그릴 수 있습니다."
-            if not self._start_in_3d
-            else "Properties에서 저장한 Material과 Section을 선택하세요. 선택한 값은 "
-            "새로 생성하는 부재에 적용됩니다."
+        section = QWidget()
+        section.setObjectName("elementCreatePanel")
+        root = QVBoxLayout(section)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+
+        type_card, type_root = self._section("Element Type")
+        self.element_type_card = type_card
+        type_hint = QLabel("다음에 그릴 부재의 구조 거동을 선택합니다.")
+        type_hint.setWordWrap(True)
+        type_hint.setObjectName("setupSectionHint")
+        type_root.addWidget(type_hint)
+        self.element_type_selector = QComboBox()
+        self.element_type_selector.setObjectName("elementTypeSelector")
+        for key, label in self._ELEMENT_TYPE_OPTIONS:
+            self.element_type_selector.addItem(label, key)
+        self.element_type_selector.setToolTip(
+            "다음에 그릴 부재의 구조 형식을 선택합니다. 현재 Tension-only, "
+            "Compression-only, Cable은 축력 전용 부재로 생성됩니다."
         )
-        hint.setWordWrap(True)
-        hint.setObjectName("setupSectionHint")
-        root.addWidget(hint)
+        self.element_type_selector.currentIndexChanged.connect(
+            self._element_type_selection_changed
+        )
+        type_root.addWidget(self.element_type_selector)
+        root.addWidget(type_card)
+
+        properties_card, properties_root = self._section("Material & Section")
+        self.element_properties_card = properties_card
+        property_hint = QLabel(
+            "Properties에서 저장한 Material과 Section을 선택하면 새 부재에 적용됩니다. "
+            "2D에서는 선택하지 않아도 기본 물성으로 그릴 수 있습니다."
+            if not self._start_in_3d
+            else "Properties에서 저장한 Material과 Section을 모두 선택하세요."
+        )
+        property_hint.setWordWrap(True)
+        property_hint.setObjectName("setupSectionHint")
+        properties_root.addWidget(property_hint)
 
         property_form = QFormLayout()
+        self.element_property_form = property_form
         self.element_material_selector = QComboBox()
         self.element_material_selector.setObjectName("elementMaterialSelector")
         self.element_material_selector.currentIndexChanged.connect(
@@ -1683,14 +1909,16 @@ class ModelingInterfacePage(QFrame):
             self._element_property_selection_changed
         )
         property_form.addRow("Section", self.element_section_selector)
-        root.addLayout(property_form)
+        properties_root.addLayout(property_form)
 
         self.active_element_status = QLabel(
-            "현재 생성 속성이 없습니다. Material과 Section을 선택하세요."
+            "Element Type을 고르고 Material과 Section을 선택하세요."
         )
         self.active_element_status.setWordWrap(True)
         self.active_element_status.setObjectName("setupSectionHint")
-        root.addWidget(self.active_element_status)
+        properties_root.addWidget(self.active_element_status)
+        root.addWidget(properties_card)
+
         self.start_element_drawing_button = QPushButton("Create Element 시작")
         self.start_element_drawing_button.setEnabled(not self._start_in_3d)
         self.start_element_drawing_button.clicked.connect(self._activate_draw_tool)
@@ -1698,6 +1926,27 @@ class ModelingInterfacePage(QFrame):
         root.addStretch(1)
         self._refresh_element_property_selectors()
         return section
+
+    def _element_type_selection_changed(self, _index: int | None = None) -> None:
+        """Make the Create Element type the pen used for subsequent members."""
+        behavior = self.element_type_selector.currentData()
+        axial_only = behavior != "general_beam"
+        self.canvas.element_family = "truss" if axial_only else "frame"
+
+        # Keep the older model-level controls consistent without letting their
+        # signals collapse a refined axial choice (e.g. Cable) back to Truss.
+        self.truss_mode_toggle.blockSignals(True)
+        self.truss_mode_toggle.setChecked(axial_only)
+        self.truss_mode_toggle.blockSignals(False)
+        if not self._start_in_3d:
+            model_family = "truss" if axial_only else "frame"
+            model_index = self.model_type_selector.findData(model_family)
+            if model_index >= 0:
+                self.model_type_selector.blockSignals(True)
+                self.model_type_selector.setCurrentIndex(model_index)
+                self.model_type_selector.blockSignals(False)
+
+        self._element_property_selection_changed()
 
     #: Label + the dialog class that captures "what kind of run this is
     #: meant to be" for every AnalysisKind this canvas cannot execute
@@ -1875,12 +2124,13 @@ class ModelingInterfacePage(QFrame):
         if material is None or section is None:
             self._active_element_kwargs = None
             self.start_element_drawing_button.setEnabled(not self._start_in_3d)
-            self.active_element_status.setText(
+            property_hint = (
                 "기본 속성으로 부재를 생성합니다. 저장한 Material과 Section을 "
                 "선택하면 새 부재에 함께 적용됩니다."
                 if not self._start_in_3d
                 else "Properties에서 저장한 Material과 Section을 모두 선택하세요."
             )
+            self.active_element_status.setText(property_hint)
             return
         self._set_active_element_properties(
             {
@@ -2045,6 +2295,9 @@ class ModelingInterfacePage(QFrame):
         self.category_pages["analysis"] = self.category_stack.addWidget(
             self._build_analysis_category()
         )
+        self.category_pages["story"] = self.category_stack.addWidget(
+            self._build_story_category()
+        )
         # Node's move/copy/array/rotate/mirror set is dimension-independent;
         # only coordinate/DOF fields inside each page differ.
         self.category_pages["translate_node"] = self.category_stack.addWidget(
@@ -2178,12 +2431,42 @@ class ModelingInterfacePage(QFrame):
         self.support_custom_row.setVisible(False)
         root.addWidget(self.support_custom_row)
 
-        if self._start_in_3d:
-            story_button = QPushButton("Story Manager (층 관리)...")
-            story_button.setToolTip("건물의 층을 정의하고, 층별로 강체 다이아프램을 지정합니다.")
-            story_button.clicked.connect(self._open_story_manager)
-            root.addWidget(story_button)
+        root.addStretch(1)
+        return section
 
+    def _build_story_category(self) -> QWidget:
+        """Story tab left dock: short guidance + launcher for the dedicated
+        Story Manager dialog (auto-detect floors, per-story elevation, rigid
+        diaphragm on/off). The real editing UI stays in that small window so
+        the modeling viewport is not crowded with a floor table.
+        """
+        section, root = self._section("Story", show_title=False)
+        if not self._start_in_3d:
+            hint = QLabel(
+                "Story(층)와 강체 다이아프램은 3D 건물 모델에서만 사용합니다."
+            )
+            hint.setObjectName("setupSectionHint")
+            hint.setWordWrap(True)
+            root.addWidget(hint)
+            root.addStretch(1)
+            return section
+
+        hint = QLabel(
+            "절점 Z좌표로 층을 자동 인식하고, 층마다 노드 높이와 강체 다이아프램 "
+            "사용/미사용을 설정합니다. Auto로 층을 만든 뒤 횡력(지진·풍) 해석에 "
+            "필요한 다이아프램만 켜면 됩니다."
+        )
+        hint.setObjectName("setupSectionHint")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        story_button = QPushButton("Story Manager (층 관리)...")
+        story_button.setObjectName("storyManagerButton")
+        story_button.setToolTip(
+            "별도 창에서 층 자동 감지, 노드 높이, 강체 다이아프램 사용/미사용을 설정합니다."
+        )
+        story_button.clicked.connect(self._open_story_manager)
+        root.addWidget(story_button)
         root.addStretch(1)
         return section
 
@@ -4235,6 +4518,10 @@ class ModelingInterfacePage(QFrame):
         self._refresh_load3d_target_count()
 
     def _finish_floor_boundary_picking(self) -> None:
+        # Shared by the 완료 button and _on_3d_node_picked's own auto-close
+        # (re-clicking the boundary's first node once >= 3 are picked) - both
+        # paths mean "the boundary is done, commit it".
+        #
         # Checked before consuming the chain (matches _apply_load3d's own
         # case_id-first order) - a missing Load Case must not throw away a
         # boundary the user just clicked out; they can pick a case and press
@@ -4551,6 +4838,10 @@ class ModelingInterfacePage(QFrame):
         entry_id = item.data(0, Qt.ItemDataRole.UserRole)
         if entry_id is not None:
             self._show_selected_load(int(entry_id))
+            return
+        entity = item.data(0, _TREE_ENTITY_ROLE)
+        if entity is not None:
+            self._select_entity_from_tree(*entity)
 
     def _show_load_tree_context_menu(self, tree: QTreeWidget, position) -> None:
         item = tree.itemAt(position)
@@ -4686,18 +4977,22 @@ class ModelingInterfacePage(QFrame):
         self.node_xyz = self.node_xy
         self.node_xy.setPlaceholderText(default_coordinate)
         self.node_xy.setToolTip(
-            "좌표를 한 번에 입력합니다 — 쉼표, 공백, 괄호 형식을 모두 사용할 수 있습니다."
+            "현재 길이 단위로 좌표를 입력합니다 — 쉼표, 공백, 괄호 형식을 모두 사용할 수 있습니다."
         )
         self.node_dx = self._number(1.0)
         self.node_dy = self._number(0.0)
         self.node_repeat = SafeSpinBox()
         self.node_repeat.setRange(1, 1000)
-        form.addRow("좌표 (X, Y, Z)" if self._start_in_3d else "좌표 (X, Y)", self.node_xy)
-        form.addRow("증분 dX", self.node_dx)
-        form.addRow("증분 dY", self.node_dy)
+        self.node_coordinate_label = QLabel()
+        self.node_dx_label = QLabel()
+        self.node_dy_label = QLabel()
+        form.addRow(self.node_coordinate_label, self.node_xy)
+        form.addRow(self.node_dx_label, self.node_dx)
+        form.addRow(self.node_dy_label, self.node_dy)
         if self._start_in_3d:
             self.node_dz = self._number(0.0)
-            form.addRow("증분 dZ", self.node_dz)
+            self.node_dz_label = QLabel()
+            form.addRow(self.node_dz_label, self.node_dz)
         form.addRow("생성 개수", self.node_repeat)
         root.addLayout(form)
         add = QPushButton("노드 추가")
@@ -4707,8 +5002,22 @@ class ModelingInterfacePage(QFrame):
         self.create_section_hint.setWordWrap(True)
         self.create_section_hint.setObjectName("setupSectionHint")
         root.addWidget(self.create_section_hint)
+        self._refresh_create_section_unit_labels()
         self._refresh_create_section_hint()
         return section
+
+    def _refresh_create_section_unit_labels(self) -> None:
+        if not hasattr(self, "node_coordinate_label"):
+            return
+        length = self._unit_system.length
+        if self._start_in_3d:
+            self.node_coordinate_label.setText(f"좌표 (X, Y, Z) [{length}]")
+        else:
+            self.node_coordinate_label.setText(f"좌표 (X, Y) [{length}]")
+        self.node_dx_label.setText(f"증분 dX ({length})")
+        self.node_dy_label.setText(f"증분 dY ({length})")
+        if hasattr(self, "node_dz_label"):
+            self.node_dz_label.setText(f"증분 dZ ({length})")
 
     def _refresh_create_section_hint(self) -> None:
         if not self.node_relative.isChecked():
@@ -5999,12 +6308,11 @@ class ModelingInterfacePage(QFrame):
         """The unit selector lives here, not just in the setup wizard's first
         step, because the 2D free-modeling path (``start_2d_model``) skips
         that wizard entirely and jumps straight to the canvas — without this,
-        a 2D session had no way to ever leave the kN/m default. Picking a
-        unit here only changes what label is printed next to a value (E's
-        unit hint, load field tooltips, results) — it does not rescale any
-        number already typed in, the same way choosing a unit in the wizard
-        never rescaled anything either. It is meant to be set once before
-        typing values in a particular unit, not swapped mid-model."""
+        a 2D session had no way to ever leave the kN/m default. Changing a
+        unit here rescales every already-entered model value (via
+        ``set_unit_system`` → ``canvas.convert_units``) and refreshes labels
+        so typed coordinates keep meaning the current length unit.
+        """
         bar = QFrame()
         bar.setObjectName("directModelCommandBar")
         layout = QHBoxLayout(bar)
@@ -6020,8 +6328,8 @@ class ModelingInterfacePage(QFrame):
         self.unit_force.addItems(FORCE_UNITS)
         self.unit_force.setCurrentText(self._unit_system.force)
         self.unit_force.setToolTip(
-            "힘의 단위. 라벨만 바뀝니다 — 이미 입력한 숫자는 자동 환산되지 않으니, "
-            "모델을 새로 그리기 전에 정해두는 것을 권장합니다."
+            "힘/길이 단위를 바꿉니다. 이미 입력한 좌표·하중·단면 값은 같은 물리량이 "
+            "되도록 자동 환산되고, 이후에 입력하는 숫자는 새 단위로 해석됩니다."
         )
         self.unit_force.currentTextChanged.connect(self._unit_selector_changed)
         layout.addWidget(self.unit_force)
@@ -6044,8 +6352,6 @@ class ModelingInterfacePage(QFrame):
         self.result_model_status = QLabel("0 NODES  |  0 MEMBERS  |  0 SUPPORTS  |  0 LOADS")
         layout.addWidget(self.result_model_status)
         layout.addStretch(1)
-        layout.addWidget(QLabel("RESULT CASE: LINEAR STATIC 01"))
-        layout.addSpacing(14)
         self.result_unit_status = QLabel()
         layout.addWidget(self.result_unit_status)
         return bar
@@ -6103,8 +6409,43 @@ class ModelingInterfacePage(QFrame):
                 self.seismic_eccentricity.value() * factors.length
             )
         self.canvas.convert_units(factors)
+        self._scale_length_authoring_fields(factors.length)
         self._unit_system = unit_system
         self._refresh_unit_system_ui(unit_system)
+        if factors.length != 1.0 and self._start_in_3d and hasattr(self, "preview_3d"):
+            # convert_units rebuilds levels as new WorkPlane objects; the
+            # plane combo still held the pre-conversion identities, and the
+            # 3D camera was still framed around the old (much smaller or
+            # larger) extents - both made a unit change look like "nothing
+            # moved" while new (0,0,5) clicks landed on the old visual spot.
+            self._refresh_plane_selectors()
+            self.preview_3d.set_active_plane(
+                str(self.canvas.work_plane.kind), self.canvas.work_plane.offset
+            )
+            self.preview_3d.set_model(self.canvas.build_model(), reset_camera=True)
+
+    def _scale_length_authoring_fields(self, length_factor: float) -> None:
+        """Keep typed length defaults (node increments, new work-plane
+        offset, rigid-end lengths) in the same physical size when the
+        length unit changes - otherwise a leftover "1" still shows while
+        suddenly meaning 1 mm instead of 1 m.
+        """
+        if length_factor == 1.0:
+            return
+        for name in (
+            "node_dx",
+            "node_dy",
+            "node_dz",
+            "new_plane_offset",
+            "member_offset_i",
+            "member_offset_j",
+        ):
+            field = getattr(self, name, None)
+            if field is None:
+                continue
+            field.blockSignals(True)
+            field.setValue(field.value() * length_factor)
+            field.blockSignals(False)
 
     def _refresh_unit_system_ui(self, unit_system: UnitSystem) -> None:
         self.results.set_unit_system(unit_system)
@@ -6124,8 +6465,42 @@ class ModelingInterfacePage(QFrame):
         self._refresh_load3d_unit_labels()
         self._refresh_support_spring_unit_labels()
         self._refresh_member_offset_unit_labels()
+        self._refresh_create_section_unit_labels()
+        self._rebuild_grid_snap_options()
+        if hasattr(self, "new_plane_offset_label"):
+            self.new_plane_offset_label.setText(f"위치 ({unit_system.length})")
+            self.new_plane_offset.setToolTip(
+                f"평면도는 Z 높이, 정면도는 Y, 측면도는 X 위치입니다. 단위: {unit_system.length}"
+            )
         self._sync_selection_status()
         self._refresh_model_settings_summary()
+
+    def _rebuild_grid_snap_options(self) -> None:
+        """Grid spacings are authored in the current length unit. Options are
+        derived from a fixed meter palette so m/mm/ft/in all get the same
+        physical choices, then the live ``canvas.grid`` value is re-selected.
+        """
+        if not hasattr(self, "snap"):
+            return
+        length = self._unit_system.length
+        from_m = unit_conversion_factors(
+            UnitSystem(force=self._unit_system.force, length="m"), self._unit_system
+        )
+        current = float(self.canvas.grid)
+        self.snap.blockSignals(True)
+        self.snap.clear()
+        best_index = 0
+        best_delta = float("inf")
+        for index, value_m in enumerate((0.1, 0.25, 0.5, 1.0)):
+            value = value_m * from_m.length
+            self.snap.addItem(f"{value:g} {length}", value)
+            delta = abs(value - current)
+            if delta < best_delta:
+                best_delta = delta
+                best_index = index
+        self.snap.setCurrentIndex(best_index)
+        self.snap.blockSignals(False)
+        self.canvas.grid = float(self.snap.currentData())
 
     def to_project_dict(self) -> dict[str, object]:
         """The canvas's own raw state plus the bits of UI chrome that a
@@ -6138,6 +6513,7 @@ class ModelingInterfacePage(QFrame):
         data = self.canvas.to_dict()
         data["unit_force"] = self._unit_system.force
         data["unit_length"] = self._unit_system.length
+        data["element_behavior"] = self.element_type_selector.currentData()
         if self._start_in_3d:
             data["model_name"] = self._model_name
             data["vertical_axis"] = self._vertical_axis
@@ -6182,6 +6558,21 @@ class ModelingInterfacePage(QFrame):
                 else []
             )
         self._refresh_unit_system_ui(self._unit_system)
+        fallback_behavior = (
+            "truss" if self.canvas.element_family == "truss" else "general_beam"
+        )
+        element_behavior = str(data.get("element_behavior", fallback_behavior))
+        behavior_index = self.element_type_selector.findData(element_behavior)
+        if behavior_index < 0:
+            element_behavior = fallback_behavior
+            behavior_index = self.element_type_selector.findData(element_behavior)
+        self.element_type_selector.blockSignals(True)
+        self.element_type_selector.setCurrentIndex(behavior_index)
+        self.element_type_selector.blockSignals(False)
+        self.canvas.element_family = (
+            "frame" if element_behavior == "general_beam" else "truss"
+        )
+        self._element_property_selection_changed()
         self.truss_mode_toggle.blockSignals(True)
         self.truss_mode_toggle.setChecked(self.canvas.element_family == "truss")
         self.truss_mode_toggle.blockSignals(False)
@@ -6247,6 +6638,7 @@ class ModelingInterfacePage(QFrame):
         self.determinacy_status.setText(f"정정성: {check.message}")
         self.solve_button.setEnabled(False)
         self.analysis_progress.show_running("정정성 해석")
+        self.results.set_analysis_kind(AnalysisKind.LINEAR_STATIC)
         thread = MaterialFreeSolveThread(self._solver, model)
         thread.completed.connect(lambda result: self._solve_completed(model, check, result))
         thread.finished.connect(self._solve_thread_finished)
@@ -6281,6 +6673,7 @@ class ModelingInterfacePage(QFrame):
         self.determinacy_status.setText(f"정정성: {check.message}")
         self.analysis_run_button.setEnabled(False)
         self.analysis_progress.show_running("비선형 정적(Pushover) 해석")
+        self.results.set_analysis_kind(AnalysisKind.NONLINEAR_STATIC)
         thread = NonlinearStaticSolveThread(self._solver, model, **options)
         thread.completed.connect(lambda result: self._solve_completed(model, check, result))
         thread.finished.connect(self._solve_thread_finished)
@@ -6356,6 +6749,14 @@ class ModelingInterfacePage(QFrame):
         drawing-time choice (pinned both ends vs moment-connected), not a
         property that can be flipped retroactively without redrawing it."""
         self.canvas.element_family = "truss" if checked else "frame"
+        if hasattr(self, "element_type_selector"):
+            target_behavior = "truss" if checked else "general_beam"
+            behavior_index = self.element_type_selector.findData(target_behavior)
+            if behavior_index >= 0:
+                self.element_type_selector.blockSignals(True)
+                self.element_type_selector.setCurrentIndex(behavior_index)
+                self.element_type_selector.blockSignals(False)
+                self._element_property_selection_changed()
         if not self._start_in_3d:
             target = "truss" if checked else "frame"
             index = self.model_type_selector.findData(target)
@@ -6398,11 +6799,15 @@ class ModelingInterfacePage(QFrame):
         self._sync_picking_mode()
 
     def _refresh_plane_selectors(self) -> None:
+        length = self._unit_system.length
         for combo in (self.plane_selector, self.column_target):
             combo.blockSignals(True)
             combo.clear()
             for plane in self.canvas.levels:
-                combo.addItem(f"{plane.label} ({plane.kind})", plane)
+                combo.addItem(
+                    f"{plane.label} ({plane.kind} @ {plane.offset:g} {length})",
+                    plane,
+                )
             combo.blockSignals(False)
         # QComboBox.findData() compares composite Python objects (a WorkPlane, here)
         # by identity under the hood, not by value — a freshly-built-but-equal
@@ -6468,7 +6873,16 @@ class ModelingInterfacePage(QFrame):
             self.canvas.continue_chain_to_node(tag)
             self._apply_active_element_to_new_members(set(self.canvas.elements) - before)
         elif self.canvas.mode == "floor_pick":
-            self.canvas.add_floor_boundary_node(tag)
+            # Clicking back on the boundary's own first node closes the loop
+            # (MIDAS-style) - requested: "다시 시작점 노드로 오면 자동으로
+            # 종료 및 하중 적용으로 이어지게" - so that click finishes and
+            # applies the load immediately, the same as pressing 완료, rather
+            # than being swallowed as an ordinary already-in-chain no-op.
+            chain = self.canvas._floor_chain
+            if chain and tag == chain[0] and len(chain) >= 3:
+                self._finish_floor_boundary_picking()
+            else:
+                self.canvas.add_floor_boundary_node(tag)
         else:
             self.canvas.selected_nodes = {tag}
             self.canvas.selected_elements.clear()
@@ -6507,18 +6921,23 @@ class ModelingInterfacePage(QFrame):
         self.canvas.selection_changed.emit()
 
     def _on_3d_node_hovered(self, tag: int) -> None:
-        """Cursor is over an existing node while drawing — snap the rubber-band
-        preview's free end onto its exact coordinates."""
+        """Cursor is over an existing node while drawing or floor-picking —
+        snap whichever live preview is active onto its exact coordinates."""
         node = self.canvas.nodes.get(tag)
-        self._update_3d_draw_preview(None if node is None else (node.x, node.y, node.z))
+        point = None if node is None else (node.x, node.y, node.z)
+        self._update_3d_draw_preview(point)
+        self._update_3d_floor_outline(point)
 
     def _on_3d_plane_hovered(self, x: float, y: float, z: float) -> None:
         """Cursor is over the active plane (not snapped to a node) while
-        drawing — follow it with the rubber-band preview's free end."""
+        drawing or floor-picking — follow it with whichever live preview is
+        active."""
         self._update_3d_draw_preview((x, y, z))
+        self._update_3d_floor_outline((x, y, z))
 
     def _on_3d_hover_cleared(self) -> None:
         self.preview_3d.set_preview_segment(None, None)
+        self._update_3d_floor_outline(None)
 
     def _update_3d_draw_preview(self, end: tuple[float, float, float] | None) -> None:
         tag = self.canvas.chain_last_node
@@ -6527,6 +6946,33 @@ class ModelingInterfacePage(QFrame):
             self.preview_3d.set_preview_segment(None, None)
             return
         self.preview_3d.set_preview_segment((start_node.x, start_node.y, start_node.z), end)
+
+    def _update_3d_floor_outline(self, hover_point: tuple[float, float, float] | None) -> None:
+        """Trace the in-progress floor boundary's yellow outline - an edge
+        between each already-clicked chain node plus a trailing edge to the
+        cursor, so the outline visibly grows and follows the mouse with each
+        click (MIDAS-style), replacing the opaque ghost face this used to
+        render. A no-op outside floor_pick mode; _sync_picking_mode clears
+        the outline itself once floor_pick is left, covering 완료/취소/Esc in
+        one place."""
+        if self.canvas.mode != "floor_pick":
+            return
+        chain_points = [
+            (node.x, node.y, node.z)
+            for tag in self.canvas._floor_chain
+            if (node := self.canvas.nodes.get(tag)) is not None
+        ]
+        if hover_point is not None and chain_points:
+            # Floor-picking never points set_active_plane at the boundary's
+            # own elevation (unlike draw mode), so a raw plane-hover point can
+            # sit at a stale leftover height. Pin it to the chain's own
+            # height instead, so the trailing vertex looks like it's moving
+            # across the same flat floor as the nodes already picked, rather
+            # than warping toward whatever plane happens to be active.
+            hover_x, hover_y, _ = hover_point
+            hover_point = (hover_x, hover_y, chain_points[0][2])
+        points = chain_points + ([hover_point] if hover_point is not None else [])
+        self.preview_3d.set_floor_boundary_outline(points)
 
     def _on_3d_draw_state_changed(self) -> None:
         """Drop the rubber-band preview whenever the chain itself changes -
@@ -6555,17 +7001,27 @@ class ModelingInterfacePage(QFrame):
         """
         if self.canvas.ndm != 3:
             return
+        if self.canvas.mode != "floor_pick":
+            self.preview_3d.set_floor_boundary_outline([])
         if self.canvas.mode == "floor_pick":
-            # Wants node-picking (existing nodes only, never a new point on
-            # empty plane space - set_plane_picking_mode stays False) but,
-            # unlike plain select mode, WITH the crosshair cursor as a clear
-            # "you are placing a floor boundary" signal (requested: "적용
-            # 버튼을 누르면 마우스 포인터가 바뀌고"). Calling
-            # set_plane_picking_mode(False) first, then set_picking_mode(True)
-            # last, reuses the same two existing setters/cursor-ownership
-            # rule below to land on CrossCursor without turning plane-picking
-            # (new-point placement) on.
-            self.preview_3d.set_plane_picking_mode(False)
+            # Wants node-picking (existing nodes only - a plane click stays a
+            # no-op, see _on_3d_plane_picked) WITH the crosshair cursor as a
+            # clear "you are placing a floor boundary" signal (requested: "적용
+            # 버튼을 누르면 마우스 포인터가 바뀌고"). Both setters plant
+            # CrossCursor when enabled, so the order between them doesn't
+            # matter here (unlike the drawing branch below).
+            #
+            # set_plane_picking_mode(True) - not False, despite picking only
+            # ever landing on nodes - because it's also what drives the
+            # continuous nodeHovered/planeHovered/hoverCleared signals (see
+            # structural_view.qml's onPositionChanged), which
+            # _update_3d_floor_outline needs to trace the in-progress
+            # boundary's outline as the cursor moves. A stray click on empty
+            # space now reaches _on_3d_plane_picked instead of
+            # empty_space_clicked - also fixing a latent bug where that used
+            # to clear_selection() the visual highlight without clearing the
+            # underlying _floor_chain, desyncing the two until the next click.
+            self.preview_3d.set_plane_picking_mode(True)
             self.preview_3d.set_picking_mode(True)
             return
         drawing = self.canvas.mode == "draw"
