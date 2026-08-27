@@ -17,23 +17,27 @@ from openframe.features.viewport.presentation.quick3d_viewport import Quick3DVie
 def _viewport() -> Quick3DViewport:
     QApplication.instance() or QApplication([])
     viewport = Quick3DViewport()
-    # QQuickWidget construction and setSource() are both deferred to the first
-    # visible showEvent - see quick3d_viewport.py - so tests that need the QML
-    # root loaded must show() first, same as a real page becoming visible.
+    # QML loading (setSource()) is deferred to the first visible showEvent -
+    # see quick3d_viewport.py - so tests that need the QML root must show()
+    # first, same as a real page becoming visible.
     viewport.show()
     return viewport
 
 
-def test_quick_widget_is_not_created_until_first_visible_show() -> None:
-    """Startup used to construct four QQuickWidgets before MainWindow appeared;
-    each flashed a blank native window on Windows. Construction must wait."""
+def test_qml_is_not_loaded_until_first_visible_show() -> None:
+    """Startup builds several QQuickWidgets before MainWindow appears; mapping
+    their native surfaces early flashes blank title-bar windows on Windows.
+    Construction is allowed (focus/shortcuts need the child), but setSource
+    and clearing WA_DontShowOnScreen must wait for a real visible show."""
+    from PySide6.QtCore import Qt
+
     QApplication.instance() or QApplication([])
     viewport = Quick3DViewport()
-    assert viewport._quick_widget is None
     assert viewport.quick_widget.rootObject() is None
+    assert viewport.quick_widget.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
 
     viewport.show()
-    assert viewport._quick_widget is not None
+    assert not viewport.quick_widget.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     assert viewport.quick_widget.rootObject() is not None
 
 

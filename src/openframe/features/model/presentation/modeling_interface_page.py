@@ -80,6 +80,7 @@ from openframe.core.domain import (
     unit_conversion_factors,
     wind_force_by_story,
 )
+from openframe.features.analysis.presentation.analysis_settings_panel import AnalysisSettingsPanel
 from openframe.features.analysis.statics import (
     MaterialFreeSolveThread,
     MaterialFreeStaticsSolver,
@@ -90,12 +91,7 @@ from openframe.features.analysis.statics import (
 from openframe.features.model.drawing import PlaneKind
 from openframe.features.model.drawing.coordinates import direction_degrees
 from openframe.features.model.presentation.analysis_case_store import AnalysisCaseStore
-from openframe.features.model.presentation.analysis_settings_dialogs import (
-    BucklingSettingsDialog,
-    ModalSettingsDialog,
-    NonlinearStaticSettingsDialog,
-    TimeHistorySettingsDialog,
-)
+from openframe.features.model.presentation.analysis_settings_dialogs import AnalysisSettingsDialog
 from openframe.features.model.presentation.analysis_settings_sidebar import AnalysisSettingsSidebar
 from openframe.features.model.presentation.canvas_glyphs import (
     _LOAD_TARGET_OPTIONS,
@@ -130,8 +126,8 @@ from openframe.features.model.presentation.selection_status_panel import Selecti
 from openframe.features.model.presentation.statics_modeling_page import StaticsDrawingCanvas
 from openframe.features.model.presentation.story_manager_dialog import StoryManagerDialog
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
-from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
 from openframe.features.viewport.items.support_item import SUPPORT_NAMES
+from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
 
 #: Item-data role carrying a Work Tree geometry row's ``(kind, tag)`` pair.
 #: Deliberately not ``UserRole``, which the load-entry rows in the same tree
@@ -1950,15 +1946,25 @@ class ModelingInterfacePage(QFrame):
 
     #: Label + the dialog class that captures "what kind of run this is
     #: meant to be" for every AnalysisKind this canvas cannot execute
-    #: directly yet - see analysis_settings_dialogs.py's own module
-    #: docstring for why each is deliberately narrower than SETUP's own
-    #: per-kind panel.
+    #: directly yet - all four now share the same wide settings dialog (see
+    #: analysis_settings_dialogs.py's own module docstring); ``dialog_cls``
+    #: stays per-row (rather than a plain bool) so ``_open_analysis_settings_
+    #: dialog`` and the ``is_linear = dialog_cls is None`` check below stay
+    #: unchanged in shape even though every non-None entry is now literally
+    #: the same class.
+    # Every AnalysisKind AnalysisSettingsPanel's own ANALYSIS TYPE combo
+    # offers, one-for-one - Response Spectrum used to be reachable only by
+    # picking it from *inside* the settings dialog, invisible from this list,
+    # which is exactly the two-controls-for-one-choice confusion that combo
+    # is now hidden for (see AnalysisSettingsDialog). Keep the two lists in
+    # sync if AnalysisSettingsPanel's own combo ever grows another kind.
     _ANALYSIS_METHOD_OPTIONS: ClassVar[tuple[tuple[str, AnalysisKind, type | None], ...]] = (
         ("선형탄성 (Linear Elastic)", AnalysisKind.LINEAR_STATIC, None),
-        ("비선형 정적 (Pushover)", AnalysisKind.NONLINEAR_STATIC, NonlinearStaticSettingsDialog),
-        ("모드/고유치 (Modal)", AnalysisKind.MODAL, ModalSettingsDialog),
-        ("좌굴 (Buckling)", AnalysisKind.BUCKLING, BucklingSettingsDialog),
-        ("시간이력 (Time History)", AnalysisKind.TIME_HISTORY, TimeHistorySettingsDialog),
+        ("비선형 정적 (Pushover)", AnalysisKind.NONLINEAR_STATIC, AnalysisSettingsDialog),
+        ("모드/고유치 (Modal)", AnalysisKind.MODAL, AnalysisSettingsDialog),
+        ("좌굴 (Buckling)", AnalysisKind.BUCKLING, AnalysisSettingsDialog),
+        ("시간이력 (Time History)", AnalysisKind.TIME_HISTORY, AnalysisSettingsDialog),
+        ("응답스펙트럼 (Response Spectrum)", AnalysisKind.RESPONSE_SPECTRUM, AnalysisSettingsDialog),
     )
 
     def _build_analysis_category(self) -> QWidget:
@@ -1971,20 +1977,27 @@ class ModelingInterfacePage(QFrame):
 
         Linear Static and Nonlinear Static (Pushover) actually run from here.
         Picking any other method swaps 해석하기 for a 설정... button that
-        opens that kind's own small dialog (analysis_settings_dialogs.py)
-        instead of trying to cram a time-history-sized settings form into
-        this panel's fixed 320px width. Nothing those remaining dialogs
-        (Modal/Buckling/Time History) collect is wired to execution yet (see
-        their own module docstring) - it is staged in
-        ``self._analysis_settings`` purely so a student does not have to
-        re-enter it if they switch methods and back, ready for whichever
-        future step actually bridges it into a real solve. Nonlinear Static
-        also stages its settings there, but its 해석하기 click reads them
-        straight out of ``self._analysis_settings`` and runs
-        ``MaterialFreeStaticsSolver.solve_nonlinear_static`` (see
-        ``_solve_nonlinear_static``) - a lumped-plasticity pushover for
-        steel members carrying a yield strength, not full material
-        nonlinearity (see that method's own scoping note).
+        opens the same wide ``AnalysisSettingsPanel``-hosting dialog SETUP
+        uses (``analysis_settings_dialogs.AnalysisSettingsDialog`` -
+        see its own module docstring for why this used to be four separate,
+        much narrower dialogs and no longer is), rather than cramming a
+        time-history-sized settings form into this panel's fixed 320px
+        width. This canvas's own solver has not grown to run Modal/Buckling/
+        Time History in-process yet, so what that dialog collects for those
+        kinds is only staged in ``self._analysis_settings`` - so a student
+        does not have to re-enter it if they switch methods and back -
+        ready for whichever future step bridges it into a real solve
+        (exporting the 3D model to a script and running it through
+        SETUP's engine, once ``export_opensees_script`` grows a 3D case;
+        it is 2D-only today). Nonlinear Static also stages its settings
+        there, but its 해석하기 click reads the handful of keys
+        ``MaterialFreeStaticsSolver.solve_nonlinear_static`` actually takes
+        back out of ``self._analysis_settings`` (see ``_solve_nonlinear_
+        static``'s own ``_NONLINEAR_STATIC_SOLVER_KEYS`` filter - the panel
+        now stages several more advanced keys than this in-canvas solver
+        understands) and runs that lumped-plasticity pushover for steel
+        members carrying a yield strength, not full material nonlinearity
+        (see that method's own scoping note).
         """
         self._analysis_settings: dict[str, dict] = {}
         section, root = self._section("Analysis", show_title=False)
@@ -2101,14 +2114,38 @@ class ModelingInterfacePage(QFrame):
                 "✓ 설정을 저장했습니다." if has_settings else "아직 설정하지 않았습니다."
             )
 
+    def _shared_analysis_settings_panel(self) -> AnalysisSettingsPanel:
+        """One ``AnalysisSettingsPanel`` reused across every 설정... click,
+        so a value entered for one analysis kind is still there if the
+        student switches methods and comes back - the panel's own widgets
+        hold their state across an ``analysis_type`` combo change; a fresh
+        panel per dialog open would silently discard that every time.
+        """
+        if not hasattr(self, "_analysis_settings_panel"):
+            self._analysis_settings_panel = AnalysisSettingsPanel()
+        return self._analysis_settings_panel
+
     def _open_analysis_settings_dialog(self) -> None:
         _label, kind, dialog_cls = self._current_analysis_method_option()
         if dialog_cls is None:
             return
-        dialog = dialog_cls(self._analysis_settings.get(kind.value), self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._analysis_settings[kind.value] = dialog.result_options()
-            self._on_analysis_method_changed()
+        panel = self._shared_analysis_settings_panel()
+        panel.set_model(self.canvas.build_model())
+        panel.set_unit_system(self._unit_system)
+        # This tab's own 해석 방법 combo is the one place the kind gets
+        # picked - the dialog hides the panel's own ANALYSIS TYPE row (see
+        # AnalysisSettingsDialog) precisely so there is nowhere inside it to
+        # quietly land on a different kind than what is shown here.
+        kind_index = panel.analysis_type.findData(kind)
+        if kind_index >= 0:
+            panel.analysis_type.setCurrentIndex(kind_index)
+        dialog = dialog_cls(panel, self)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        dialog.detach()  # reclaim the panel before `dialog` is garbage-collected
+        if not accepted:
+            return
+        self._analysis_settings[kind.value] = panel.build_options()
+        self._on_analysis_method_changed()
 
     def _element_property_selection_changed(self, _index: int | None = None) -> None:
         material_id = self.element_material_selector.currentData()
@@ -6645,15 +6682,28 @@ class ModelingInterfacePage(QFrame):
         self._solve_thread = thread
         thread.start()
 
+    #: The only keys NonlinearStaticSolveThread's constructor (and, past it,
+    #: MaterialFreeStaticsSolver.solve_nonlinear_static) actually accepts.
+    #: AnalysisSettingsPanel.build_options() now stages 17 keys for this kind
+    #: (algorithm/constraints/numberer/system/... - the same wider set SETUP
+    #: exposes) since Phase 1 pointed this tab's 설정... button at that same
+    #: panel instead of a dialog with only these 6 fields; this canvas's own
+    #: solver has not grown to match yet (that is Phase 2 - see the
+    #: engine-side work described where AnalysisSettingsDialog is used), so
+    #: everything else staged is silently unused here, not an error.
+    _NONLINEAR_STATIC_SOLVER_KEYS = frozenset(
+        {"control_node", "control_dof", "num_steps", "tolerance", "max_iterations", "integrator_type"}
+    )
+
     def _solve_nonlinear_static(self) -> None:
-        """Nonlinear Static's own ``해석하기`` path - reads the settings
-        staged by ``NonlinearStaticSettingsDialog`` (``_open_analysis_
-        settings_dialog``) and runs ``MaterialFreeStaticsSolver.
-        solve_nonlinear_static`` (a lumped-plasticity pushover - see that
-        method's own docstring for what it does and does not model)
-        instead of the plain elastic ``solve()``. Everything past this - the
-        background thread, the completion/failure handling, the results
-        view - is exactly ``solve()``'s own machinery, reused unchanged via
+        """Nonlinear Static's own 해석하기 path - reads the settings staged
+        by the shared ``AnalysisSettingsDialog`` (``_open_analysis_settings_
+        dialog``) and runs ``MaterialFreeStaticsSolver.solve_nonlinear_
+        static`` (a lumped-plasticity pushover - see that method's own
+        docstring for what it does and does not model) instead of the plain
+        elastic ``solve()``. Everything past this - the background thread,
+        the completion/failure handling, the results view - is exactly
+        ``solve()``'s own machinery, reused unchanged via
         ``_solve_completed``/``_solve_thread_finished``.
         """
         options = self._analysis_settings.get(AnalysisKind.NONLINEAR_STATIC.value)
@@ -6669,12 +6719,15 @@ class ModelingInterfacePage(QFrame):
                 "절점 번호를 입력하세요."
             )
             return
+        solver_options = {
+            key: value for key, value in options.items() if key in self._NONLINEAR_STATIC_SOLVER_KEYS
+        }
         check = check_determinacy(model)
         self.determinacy_status.setText(f"정정성: {check.message}")
         self.analysis_run_button.setEnabled(False)
         self.analysis_progress.show_running("비선형 정적(Pushover) 해석")
         self.results.set_analysis_kind(AnalysisKind.NONLINEAR_STATIC)
-        thread = NonlinearStaticSolveThread(self._solver, model, **options)
+        thread = NonlinearStaticSolveThread(self._solver, model, **solver_options)
         thread.completed.connect(lambda result: self._solve_completed(model, check, result))
         thread.finished.connect(self._solve_thread_finished)
         self._solve_thread = thread

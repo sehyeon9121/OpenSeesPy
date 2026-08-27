@@ -149,7 +149,12 @@ class AnalysisSettingsPanel(QFrame):
         settings_layout.setContentsMargins(24, 20, 24, 24)
         settings_layout.setSpacing(16)
 
-        kind_row = QFrame()
+        # Exposed as an attribute (not just a local) so a caller that already
+        # decides the kind some other way - the 3D canvas's Analysis tab
+        # opens this panel from its own 해석 방법 combo, see
+        # AnalysisSettingsDialog - can hide this row rather than show the
+        # student two different controls for the same choice.
+        self.analysis_type_row = kind_row = QFrame()
         kind_row.setObjectName("setupConfigBar")
         kind_layout = QHBoxLayout(kind_row)
         kind_layout.setContentsMargins(12, 7, 12, 7)

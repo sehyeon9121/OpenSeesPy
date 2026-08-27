@@ -1,6 +1,7 @@
 """3D canvas's Analysis tab - picking a method other than Linear Static
-swaps the run button for a 설정... button that opens that kind's own small
-dialog (see analysis_settings_dialogs.py), instead of trying to fit a
+swaps the run button for a 설정... button that opens the same wide,
+``AnalysisSettingsPanel``-hosting dialog SETUP's OpenSeesPy-import flow uses
+(see analysis_settings_dialogs.py), instead of trying to fit a
 nonlinear/time-history-sized settings form into the fixed 320px left panel.
 """
 
@@ -56,17 +57,19 @@ def test_picking_nonlinear_static_keeps_run_enabled_since_it_actually_solves() -
 
 
 def test_saving_settings_updates_the_summary_and_persists_across_method_switches() -> None:
-    from openframe.features.model.presentation.analysis_settings_dialogs import (
-        ModalSettingsDialog,
-    )
-
+    """Same flow a real 설정... click drives, minus the modal ``exec()`` loop:
+    stage a value through the shared panel exactly the way
+    ``_open_analysis_settings_dialog`` does, and confirm it is still there
+    after the tab's own method combo is switched away and back."""
     page = _page()
     index = page.analysis_method_selector.findData(AnalysisKind.MODAL.value)
     page.analysis_method_selector.setCurrentIndex(index)
 
-    dialog = ModalSettingsDialog(page._analysis_settings.get(AnalysisKind.MODAL.value), page)
-    dialog.num_modes.setValue(12)
-    page._analysis_settings[AnalysisKind.MODAL.value] = dialog.result_options()
+    panel = page._shared_analysis_settings_panel()
+    panel.set_model(page.canvas.build_model())
+    panel.analysis_type.setCurrentIndex(panel.analysis_type.findData(AnalysisKind.MODAL))
+    panel.num_modes.setValue(12)
+    page._analysis_settings[AnalysisKind.MODAL.value] = panel.build_options()
     page._on_analysis_method_changed()
 
     assert "저장했습니다" in page.analysis_settings_summary.text()
@@ -77,6 +80,44 @@ def test_saving_settings_updates_the_summary_and_persists_across_method_switches
 
     assert page._analysis_settings[AnalysisKind.MODAL.value]["num_modes"] == 12
     assert "저장했습니다" in page.analysis_settings_summary.text()
+
+
+def test_response_spectrum_is_reachable_from_the_tabs_own_method_combo() -> None:
+    """Regression test: AnalysisSettingsPanel's own ANALYSIS TYPE combo has
+    always offered Response Spectrum, but the 3D tab's ``해석 방법`` combo
+    (``_ANALYSIS_METHOD_OPTIONS``) did not - so it was reachable only by
+    picking it from *inside* the settings dialog, which is exactly the
+    two-controls-for-one-choice confusion that combo is now hidden for (see
+    ``test_hides_the_panels_own_kind_selector_and_restores_it_on_detach`` in
+    the unit tests). Every kind the panel offers must have a matching row
+    here or it becomes unreachable outright."""
+    page = _page()
+
+    index = page.analysis_method_selector.findData(AnalysisKind.RESPONSE_SPECTRUM.value)
+
+    assert index >= 0
+    page.analysis_method_selector.setCurrentIndex(index)
+    assert page.analysis_settings_button.isVisible() is True
+    assert page.analysis_run_button.isEnabled() is False  # not wired to execution yet
+
+
+def test_settings_dialog_hosts_the_same_wide_panel_setup_uses() -> None:
+    """Regression test: the 3D tab used to open one of four small dialogs
+    (7 controls total) instead of the ~86-control panel SETUP's own
+    OpenSeesPy-import flow shows for the same analysis kinds - see
+    analysis_settings_dialogs.py's module docstring."""
+    from openframe.features.analysis.presentation.analysis_settings_panel import (
+        AnalysisSettingsPanel,
+    )
+
+    page = _page()
+    index = page.analysis_method_selector.findData(AnalysisKind.MODAL.value)
+    page.analysis_method_selector.setCurrentIndex(index)
+
+    panel = page._shared_analysis_settings_panel()
+    assert isinstance(panel, AnalysisSettingsPanel)
+    # Reused, not rebuilt, on a second 설정... click - see its own docstring.
+    assert page._shared_analysis_settings_panel() is panel
 
 
 def test_every_non_linear_method_has_a_settings_dialog_class() -> None:
