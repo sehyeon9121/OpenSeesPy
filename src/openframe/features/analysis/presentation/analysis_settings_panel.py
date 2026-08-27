@@ -2593,6 +2593,16 @@ class AnalysisSettingsPanel(QFrame):
             item = self._direction_rows_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                # hide() first: takeAt() only stops the layout from
+                # positioning this row - the widget itself stays visible at
+                # its last geometry until deleteLater()'s deferred delete
+                # actually runs on the next event-loop pass. Without this,
+                # the outgoing row floats at its old position overlapping
+                # the freshly laid-out new row for the rest of that one
+                # frame - e.g. loading a 3D model rebuilds X/Y into X/Y/Z and
+                # the old row's checkbox+Unit header briefly ghosts on top of
+                # the new first row's header.
+                widget.hide()
                 widget.deleteLater()
         self.time_history_direction_rows = []
         axis_labels = ("X", "Y") if ndm == 2 else ("X", "Y", "Z")
