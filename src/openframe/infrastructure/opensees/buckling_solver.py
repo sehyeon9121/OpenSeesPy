@@ -85,6 +85,11 @@ def _all_pattern_tags(property_collector: ModelCommandCollector) -> set[int]:
         for pattern_tag, _element_tag in property_collector.element_loads.uniform_load_cases
         if pattern_tag is not None
     }
+    tags |= {
+        int(item["pattern_tag"])
+        for item in property_collector.element_loads.point_load_cases
+        if item.get("pattern_tag") is not None
+    }
     return tags
 
 
@@ -139,10 +144,11 @@ def _reject_non_static_patterns(
 def _reference_load_magnitude(
     property_collector: ModelCommandCollector, pattern_tags: set[int]
 ) -> float:
-    """Sum of absolute nodal + uniform element load values across the selected
-    pattern(s) - a coarse but honest "is there anything here at all" measure,
-    not a physical resultant (mixed force/moment components are not
-    physically summable, and that is not what this checks for)."""
+    """Sum of absolute nodal + uniform element + concentrated element load
+    values across the selected pattern(s) - a coarse but honest "is there
+    anything here at all" measure, not a physical resultant (mixed
+    force/moment components are not physically summable, and that is not
+    what this checks for)."""
     total = 0.0
     for item in property_collector.loads:
         if item.get("pattern_tag") in pattern_tags:
@@ -150,6 +156,9 @@ def _reference_load_magnitude(
     for (pattern_tag, _element_tag), values in property_collector.element_loads.uniform_load_cases.items():
         if pattern_tag in pattern_tags:
             total += sum(abs(float(value)) for value in values)
+    for item in property_collector.element_loads.point_load_cases:
+        if item.get("pattern_tag") in pattern_tags:
+            total += abs(item["py"]) + abs(item["pz"]) + abs(item["n"])
     return total
 
 
@@ -159,9 +168,10 @@ def _apply_reference_load(
     scale: float,
     ndm: int,
 ) -> None:
-    """Re-issue every nodal/uniform-element load in ``pattern_tags`` under one
-    fresh Constant-TimeSeries Plain pattern, scaled by ``scale`` - this is the
-    "단위 reference load pattern" the generalized eigenproblem is solved
+    """Re-issue every nodal/uniform-element/concentrated-element load in
+    ``pattern_tags`` under one fresh Constant-TimeSeries Plain pattern, scaled
+    by ``scale`` - this is the "단위 reference load pattern" the generalized
+    eigenproblem is solved
     against. A Constant series (not Linear) is used deliberately: this single
     ``ops.analyze(1)`` step must apply the *full* reference-load-scale
     magnitude in one shot, and a Constant series does exactly that regardless
@@ -182,6 +192,19 @@ def _apply_reference_load(
             ops.eleLoad("-ele", element_tag, "-type", "-beamUniform", wy, wz, wx)
         else:
             ops.eleLoad("-ele", element_tag, "-type", "-beamUniform", wy, wx)
+    for item in property_collector.element_loads.point_load_cases:
+        if item.get("pattern_tag") not in pattern_tags:
+            continue
+        py, pz, position, n = (
+            item["py"] * scale,
+            item["pz"] * scale,
+            item["position"],
+            item["n"] * scale,
+        )
+        if ndm == 3:
+            ops.eleLoad("-ele", item["element_tag"], "-type", "-beamPoint", py, pz, position, n)
+        else:
+            ops.eleLoad("-ele", item["element_tag"], "-type", "-beamPoint", py, position, n)
 
 
 def _extract_stiffness_matrix(size: int) -> np.ndarray:

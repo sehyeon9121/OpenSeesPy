@@ -11,6 +11,7 @@ from typing import Any
 import openseespy.opensees as ops
 
 _UNIFORM = "-beamUniform"
+_POINT = "-beamPoint"
 
 
 class ElementLoadCollector:
@@ -25,6 +26,17 @@ class ElementLoadCollector:
         self.uniform_load_cases: dict[
             tuple[int | None, int], tuple[float, float, float]
         ] = {}
+        #: Every ``-beamPoint`` call, one entry per call (not summed the way
+        #: uniform loads are - a member can carry several point loads at
+        #: different stations, which cannot be collapsed into one tuple the
+        #: way "one w(x) per element" can). Local axes, in OpenSeesPy's own
+        #: ``(Py, Pz, xL, N)``/``(Py, xL, N)`` argument order regardless of
+        #: source - added for buckling_solver.py's reference-load support
+        #: (see its own module docstring); no other consumer reads this yet.
+        #: Still added to ``unsupported`` below unchanged - a point load is
+        #: still not reconstructed into a member-force diagram, only usable
+        #: as a reference-load magnitude/reapplication source.
+        self.point_load_cases: list[dict[str, Any]] = []
         # Elements carrying a load pattern this reconstruction cannot represent.
         self.unsupported: set[int] = set()
         self._original: Callable[..., Any] | None = None
@@ -60,6 +72,23 @@ class ElementLoadCollector:
             return
 
         load_type, values = _load_type_and_values(args)
+        if load_type == _POINT:
+            self.unsupported.update(tags)
+            parsed = _parse_point_load(values, ndm)
+            if parsed is not None:
+                py, pz, position, n = parsed
+                for tag in tags:
+                    self.point_load_cases.append(
+                        {
+                            "element_tag": tag,
+                            "pattern_tag": pattern_tag,
+                            "py": py,
+                            "pz": pz,
+                            "position": position,
+                            "n": n,
+                        }
+                    )
+            return
         if load_type != _UNIFORM:
             self.unsupported.update(tags)
             return
@@ -115,6 +144,27 @@ def _load_type_and_values(args: tuple[Any, ...]) -> tuple[str, list[float]]:
     load_type = str(args[index])
     values = [float(value) for value in args[index + 1 :] if isinstance(value, (int, float))]
     return load_type, values
+
+
+def _parse_point_load(
+    values: list[float], ndm: int
+) -> tuple[float, float, float, float] | None:
+    """``(Py, Pz, xL, N)`` from a raw ``-beamPoint`` value list, in
+    OpenSeesPy's own real argument order - ``(Py, Pz, xL, N)`` for 3D,
+    ``(Py, xL, N)`` for 2D (no out-of-plane ``Pz`` component; reported as
+    0.0). ``N`` defaults to 0.0 when omitted (OpenSeesPy's own optional
+    trailing argument)."""
+    if ndm == 3:
+        if len(values) < 3:
+            return None
+        py, pz, position = values[0], values[1], values[2]
+        n = values[3] if len(values) > 3 else 0.0
+        return py, pz, position, n
+    if len(values) < 2:
+        return None
+    py, position = values[0], values[1]
+    n = values[2] if len(values) > 2 else 0.0
+    return py, 0.0, position, n
 
 
 def _values_after(args: tuple[Any, ...], flag: str) -> list[float]:

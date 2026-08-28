@@ -75,6 +75,22 @@ def _build_mass_cantilever(page: ModelingInterfacePage) -> tuple[int, int, int]:
     return base, tip, member
 
 
+def _build_axially_loaded_cantilever(page: ModelingInterfacePage) -> tuple[int, int, int]:
+    """Same cantilever as ``_build_mass_cantilever``, plus a compressive
+    nodal load along the member's own axis (global X here) at the tip - the
+    "하단 고정, 상단 압축축력" scenario Buckling needs a real reference load
+    for (see buckling_solver.py's own module docstring: unlike Modal/Time
+    History/Response Spectrum, which only need mass, Buckling's geometric
+    stiffness comes from a genuine static reference load pattern applied to
+    the model - Modal/Time History/Response Spectrum's own tests reuse
+    ``_build_mass_cantilever`` unchanged precisely because they never needed
+    one)."""
+    base, tip, member = _build_mass_cantilever(page)
+    page.canvas.selected_nodes = {tip}
+    page.canvas.apply_nodal_load_to_selection((-1000.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    return base, tip, member
+
+
 def _write_half_sine_motion(path: Path) -> Path:
     lines = [f"NPTS= {_NUM_POINTS}, DT= {_DT} SEC"]
     for index in range(_NUM_POINTS):
@@ -412,12 +428,26 @@ def test_response_spectrum_smoke_on_exported_3d_model(tmp_path: Path) -> None:
     assert result.response_spectrum_settings.num_modes == 2
 
 
-def test_buckling_on_exported_3d_script_fails_without_pdelta_reference_load(
+def test_buckling_on_exported_3d_script_fails_without_a_reference_load(
     tmp_path: Path,
 ) -> None:
-    """Exported 3D scripts emit ``geomTransf('Linear', ...)`` and may not expose
-    a buckling reference static pattern yet - the engine rejects that honestly
-  rather than returning a bogus mode (see buckling_solver.py)."""
+    """``_build_mass_cantilever`` never applies a load (only Modal/Time
+    History/Response Spectrum need mass, so its other callers never needed
+    one either) - Buckling specifically needs a genuine static reference load
+    pattern to build its geometric stiffness from (see buckling_solver.py's
+    own module docstring), so a model built with only that helper correctly
+    fails here.
+
+    This is NOT about ``geomTransf('Linear', ...)`` - the exporter always
+    emits ``Linear`` for every analysis kind, and ``run_buckling_analysis``
+    already transparently overrides every geomTransf call to 'PDelta' at
+    execution time (``ModelCommandCollector.install(geom_transf_override=
+    ...)``, confirmed independently while investigating this - see the
+    Phase 2-D session report) - so no exporter change was needed for
+    Buckling to run. The only missing piece was ever the reference load, as
+    ``test_3d_canvas_buckling_full_pipeline_succeeds_with_a_reference_load``
+    right below (same canvas, plus one nodal load) proves by actually
+    succeeding."""
     page = _page()
     _build_mass_cantilever(page)
 
@@ -442,3 +472,39 @@ def test_buckling_on_exported_3d_script_fails_without_pdelta_reference_load(
 
     assert result.status == AnalysisStatus.FAILED
     assert result.messages
+
+
+def test_3d_canvas_buckling_full_pipeline_succeeds_with_a_reference_load(
+    tmp_path: Path,
+) -> None:
+    """Verification 5 (Phase 2-D): the real gap was only ever the missing
+    reference load - the exact same cantilever as the FAILED test above,
+    plus one compressive nodal load at the tip, exported and run through
+    ``RunAnalysisService.execute()`` exactly as the canvas's own
+    ``_run_full_analysis(AnalysisKind.BUCKLING)`` does, now COMPLETES with a
+    real positive buckling load factor and a non-empty mode."""
+    page = _page()
+    _build_axially_loaded_cantilever(page)
+
+    model = page.canvas.build_model()
+    script = export_opensees_script(
+        model, include_mass=True, length_unit=page._unit_system.length
+    )
+    source = tmp_path / "buckling_model_loaded.py"
+    source.write_text(script, encoding="utf-8")
+
+    service = _analysis_service()
+    request = AnalysisRequest(
+        source_path=source,
+        kind=AnalysisKind.BUCKLING,
+        options={
+            "reference_load_scale": 1.0,
+            "num_modes": 1,
+            "geometric_transform_type": "PDelta",
+        },
+    )
+    result = service.execute(request)
+
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+    assert result.buckling_modes
+    assert result.buckling_modes[0].buckling_load_factor > 0.0
