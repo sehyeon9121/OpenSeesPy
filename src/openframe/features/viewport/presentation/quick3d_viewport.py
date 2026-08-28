@@ -238,6 +238,15 @@ class Quick3DViewport(QFrame):
     def end_time_history_deformation(self) -> None:
         self.bridge.end_time_history_deformation()
 
+    def begin_torsion_marker_mode(self, model: StructuralModel, marker_count: int = 5) -> None:
+        self.bridge.begin_torsion_marker_mode(model, marker_count=marker_count)
+
+    def update_torsion_markers(self, arms: tuple[object, ...], *, visible: bool) -> None:
+        self.bridge.update_torsion_markers(arms, visible=visible)
+
+    def end_torsion_marker_mode(self) -> None:
+        self.bridge.end_torsion_marker_mode()
+
     def clear_result(self) -> None:
         self.bridge.clear_result()
 

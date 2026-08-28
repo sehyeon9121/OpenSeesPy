@@ -2,7 +2,8 @@
 
 Incremental deformation updates go through
 ``Quick3DViewport.update_deformed_node_positions`` so step playback never
-rebuilds the whole scene via ``set_result()``.
+rebuilds the whole scene via ``set_result()``. Torsion markers use the
+parallel incremental API on ``Quick3DSceneBridge``.
 """
 
 from __future__ import annotations
@@ -11,8 +12,15 @@ import math
 
 from openframe.core.domain import AnalysisResult, StructuralModel
 from openframe.features.results.deformation.deformed_3d_state import build_deformed_3d_state
+from openframe.features.results.deformation.member_torsion_state import (
+    build_member_torsion_state,
+)
 from openframe.features.viewport.presentation.quick3d_scene_bridge import Quick3DSceneBridge
 from openframe.features.viewport.presentation.quick3d_viewport import Quick3DViewport
+
+DEFAULT_MARKER_COUNT = 5
+_TRUSS_TYPES = frozenset({"truss", "corottruss"})
+_MAX_TORSION_STATIONS = 500
 
 
 class TimeHistory3DAnimationAdapter:
@@ -24,9 +32,13 @@ class TimeHistory3DAnimationAdapter:
         self._result: AnalysisResult | None = None
         self._step_index = 0
         self._translation_scale = 1.0
+        self._rotation_scale = 1.0
+        self._marker_count = DEFAULT_MARKER_COUNT
         self._show_original = True
         self._show_deformed = True
+        self._show_torsion_markers = False
         self._deformation_active = False
+        self._torsion_active = False
 
     @property
     def viewport(self) -> Quick3DViewport:
@@ -36,12 +48,14 @@ class TimeHistory3DAnimationAdapter:
         self._viewport.end_time_history_deformation()
         self._model = model
         self._deformation_active = False
+        self._torsion_active = False
         self._viewport.set_model(model, reset_camera=True)
 
     def set_result(self, result: AnalysisResult) -> None:
         self._result = result
         self._step_index = 0
         self._deformation_active = False
+        self._torsion_active = False
 
     def set_step(self, index: int) -> None:
         if self._result is None or not self._result.time_history:
@@ -51,20 +65,37 @@ class TimeHistory3DAnimationAdapter:
 
     def set_translation_scale(self, scale: float) -> None:
         self._translation_scale = scale
-        self._refresh()
+
+    def set_rotation_scale(self, scale: float) -> None:
+        self._rotation_scale = scale
+
+    def set_marker_count(self, count: int) -> None:
+        count = max(1, count)
+        if count == self._marker_count:
+            return
+        self._marker_count = count
+        self._torsion_active = False
 
     def set_show_original(self, enabled: bool) -> None:
         self._show_original = enabled
-        self._refresh()
+        if self._deformation_active:
+            self._refresh()
 
     def set_show_deformed(self, enabled: bool) -> None:
         self._show_deformed = enabled
-        self._refresh()
+        if self._deformation_active:
+            self._refresh()
+
+    def set_show_torsion_markers(self, enabled: bool) -> None:
+        self._show_torsion_markers = enabled
+        if self._deformation_active:
+            self._refresh()
 
     def clear(self) -> None:
         self._result = None
         self._step_index = 0
         self._deformation_active = False
+        self._torsion_active = False
         self._viewport.end_time_history_deformation()
 
     def current_step_index(self) -> int:
@@ -80,6 +111,31 @@ class TimeHistory3DAnimationAdapter:
                 show_deformed=self._show_deformed,
             )
             self._deformation_active = True
+            self._torsion_active = False
+
+    def _effective_marker_count(self) -> int:
+        requested = self._marker_count
+        if self._model is None:
+            return requested
+        beam_count = sum(
+            1
+            for element in self._model.elements.values()
+            if element.element_type.lower() not in _TRUSS_TYPES
+        )
+        if beam_count <= 0:
+            return requested
+        station_cap = max(1, _MAX_TORSION_STATIONS // beam_count)
+        return max(1, min(requested, station_cap))
+
+    def _ensure_torsion_mode(self) -> None:
+        if self._model is None:
+            return
+        if not self._torsion_active:
+            self._viewport.begin_torsion_marker_mode(
+                self._model,
+                self._effective_marker_count(),
+            )
+            self._torsion_active = True
 
     def _refresh(self) -> None:
         if self._model is None or self._result is None or not self._result.time_history:
@@ -88,6 +144,7 @@ class TimeHistory3DAnimationAdapter:
             if self._deformation_active:
                 self._viewport.end_time_history_deformation()
                 self._deformation_active = False
+                self._torsion_active = False
             return
         if not self._show_deformed:
             self._ensure_deformation_mode()
@@ -96,6 +153,7 @@ class TimeHistory3DAnimationAdapter:
                 show_original=self._show_original,
                 show_deformed=False,
             )
+            self._viewport.update_torsion_markers((), visible=False)
             return
 
         state = build_deformed_3d_state(
@@ -146,3 +204,22 @@ class TimeHistory3DAnimationAdapter:
             show_deformed=self._show_deformed,
             node_ratios=node_ratios,
         )
+
+        torsion_state = build_member_torsion_state(
+            self._model,
+            self._result,
+            state,
+            self._step_index,
+            self._rotation_scale,
+            marker_count=self._effective_marker_count(),
+        )
+        show_markers = (
+            self._show_torsion_markers
+            and torsion_state is not None
+            and torsion_state.has_torsion
+        )
+        if show_markers:
+            self._ensure_torsion_mode()
+            self._viewport.update_torsion_markers(torsion_state.markers, visible=True)
+        elif self._torsion_active:
+            self._viewport.update_torsion_markers((), visible=False)

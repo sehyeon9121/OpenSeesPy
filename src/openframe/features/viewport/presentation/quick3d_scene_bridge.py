@@ -138,6 +138,8 @@ class Quick3DSceneBridge(QObject):
     #: Emitted when time-history deformation updates node/member coordinates
     #: in place - without rebuilding the whole scene (see deformationRevision).
     deformed_positions_changed = Signal()
+    #: Emitted when time-history torsion marker orientations move in place.
+    torsion_markers_changed = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -195,8 +197,14 @@ class Quick3DSceneBridge(QObject):
         self._deformation_member_records: list[
             tuple[Element, list[dict[str, float | int | str]]]
         ] = []
+        self._torsion_marker_active = False
+        self._torsion_markers_visible = False
+        self._torsion_marker_count = 5
+        self._torsion_revision = 0
+        self._torsion_markers: list[dict[str, float | int | str | bool]] = []
 
     def set_model(self, model: StructuralModel) -> None:
+        self._end_torsion_marker_mode(notify=False)
         self._end_time_history_deformation(notify=False)
         self._last_model = model
         self._selected_node_tags.clear()
@@ -261,6 +269,7 @@ class Quick3DSceneBridge(QObject):
         """Overlay analysis displacements: deformed + colour-mapped geometry, an
         optional translucent undeformed ghost, and arrows at loaded nodes."""
         self._end_time_history_deformation(notify=False)
+        self._end_torsion_marker_mode(notify=False)
         if not self._points:
             return
         self._last_model = model
@@ -357,6 +366,7 @@ class Quick3DSceneBridge(QObject):
     def clear_result(self) -> None:
         """Drop the result overlay and go back to the plain undeformed model."""
         self._end_time_history_deformation(notify=False)
+        self._end_torsion_marker_mode(notify=False)
         self._ghost_nodes = []
         self._ghost_members = []
         if self._last_model is not None and self._points:
@@ -473,12 +483,112 @@ class Quick3DSceneBridge(QObject):
             node_ratios=node_ratios,
         )
 
+    def begin_torsion_marker_mode(self, model: StructuralModel, marker_count: int = 5) -> None:
+        """One-time torsion-marker shell for time-history playback."""
+        if not self._points or model.ndm != 3:
+            return
+        self._end_torsion_marker_mode(notify=False)
+        self._torsion_marker_active = True
+        self._torsion_markers_visible = False
+        self._torsion_marker_count = max(1, marker_count)
+        self._torsion_revision = 0
+        arm_length = max(self._extent * 0.06, 0.035)
+        thickness = max(self._default_thickness * 0.35, 0.006)
+        markers: list[dict[str, float | int | str | bool]] = []
+        for element in sorted(model.elements.values(), key=lambda item: item.tag):
+            if element.element_type.lower() in _TRUSS_ELEMENT_TYPES:
+                continue
+            for marker_index in range(self._torsion_marker_count):
+                markers.append(
+                    {
+                        "element_tag": element.tag,
+                        "marker_index": marker_index,
+                        "x": 0.0,
+                        "y": 0.0,
+                        "z": 0.0,
+                        "length": arm_length,
+                        "thickness": thickness,
+                        "y_qscalar": 1.0,
+                        "y_qx": 0.0,
+                        "y_qy": 0.0,
+                        "y_qz": 0.0,
+                        "z_qscalar": 1.0,
+                        "z_qx": 0.0,
+                        "z_qy": 0.0,
+                        "z_qz": 0.0,
+                        "visible": False,
+                    }
+                )
+        self._torsion_markers = markers
+        self.scene_changed.emit()
+
+    def update_torsion_markers(
+        self,
+        arms: tuple[object, ...],
+        *,
+        visible: bool,
+    ) -> None:
+        """Update marker position/orientation in place - order must match begin."""
+        if not self._torsion_marker_active:
+            return
+        self._torsion_markers_visible = visible and bool(arms)
+        expected = len(self._torsion_markers) * 2
+        if len(arms) != expected:
+            return
+        rotation_from_y = Quick3DSceneBridge._rotation_from_y_axis
+        markers = self._torsion_markers
+        for station_index in range(len(markers)):
+            y_arm = arms[station_index * 2]
+            z_arm = arms[station_index * 2 + 1]
+            entry = markers[station_index]
+            show = visible and getattr(y_arm, "valid", False) and getattr(z_arm, "valid", False)
+            entry["visible"] = show
+            if not show:
+                continue
+            view_pos = self._view_coordinates(
+                float(getattr(y_arm, "position_x")),
+                float(getattr(y_arm, "position_y")),
+                float(getattr(y_arm, "position_z")),
+            )
+            entry["x"] = view_pos[0]
+            entry["y"] = view_pos[1]
+            entry["z"] = view_pos[2]
+            for prefix, arm in (("y_", y_arm), ("z_", z_arm)):
+                view_dir = self._view_coordinates(
+                    float(getattr(arm, "direction_x")),
+                    float(getattr(arm, "direction_y")),
+                    float(getattr(arm, "direction_z")),
+                )
+                dir_length = math.sqrt(sum(value * value for value in view_dir)) or 1.0
+                unit_dir = tuple(value / dir_length for value in view_dir)
+                scalar, qx, qy, qz = rotation_from_y(unit_dir)
+                entry[f"{prefix}qscalar"] = scalar
+                entry[f"{prefix}qx"] = qx
+                entry[f"{prefix}qy"] = qy
+                entry[f"{prefix}qz"] = qz
+        self._torsion_revision += 1
+        self.torsion_markers_changed.emit()
+
+    def end_torsion_marker_mode(self) -> None:
+        self._end_torsion_marker_mode(notify=True)
+
+    def _end_torsion_marker_mode(self, *, notify: bool) -> None:
+        if not self._torsion_marker_active and not self._torsion_markers:
+            return
+        self._torsion_marker_active = False
+        self._torsion_markers_visible = False
+        self._torsion_markers = []
+        self._torsion_revision = 0
+        if notify:
+            self.scene_changed.emit()
+
     def end_time_history_deformation(self) -> None:
         self._end_time_history_deformation(notify=True)
 
     def _end_time_history_deformation(self, *, notify: bool) -> None:
         if not self._time_history_deformation_active:
             return
+        self._end_torsion_marker_mode(notify=False)
         self._time_history_deformation_active = False
         self._deformed_node_by_tag = {}
         self._deformation_member_records = []
@@ -801,6 +911,18 @@ class Quick3DSceneBridge(QObject):
         if not self._time_history_deformation_active:
             return True
         return self._deformation_show_original
+
+    @Property("QVariantList", notify=scene_changed)
+    def torsionMarkers(self) -> list[dict[str, float | int | str | bool]]:
+        return self._torsion_markers
+
+    @Property(int, notify=torsion_markers_changed)
+    def torsionRevision(self) -> int:
+        return self._torsion_revision
+
+    @Property(bool, notify=torsion_markers_changed)
+    def torsionMarkersVisible(self) -> bool:
+        return self._torsion_marker_active and self._torsion_markers_visible
 
     def _rebuild_default_geometry(self, model: StructuralModel) -> None:
         self._local_axis_gizmos = self._local_axis_gizmo_parts(model, self._points)
@@ -2219,6 +2341,9 @@ class Quick3DSceneBridge(QObject):
         self._deformed_node_by_tag = {}
         self._deformation_member_records = []
         self._deformation_revision = 0
+        self._torsion_marker_active = False
+        self._torsion_markers = []
+        self._torsion_revision = 0
         self._nodes = []
         self._members = []
         self._ghost_nodes = []

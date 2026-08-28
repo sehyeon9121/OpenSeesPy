@@ -620,6 +620,76 @@ Item {
         }
 
         Repeater3D {
+            // Time-history torsion markers: short local y/z arms that twist about
+            // the member axis - see Quick3DSceneBridge.begin_torsion_marker_mode.
+            model: bridgeReady ? sceneBridge.torsionMarkers : []
+            delegate: Node {
+                visible: bridgeReady
+                    && sceneBridge.torsionMarkersVisible
+                    && modelData.visible === true
+                position: {
+                    if (bridgeReady)
+                        sceneBridge.torsionRevision
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
+                property real _armLength: modelData.length / 100
+                property real _armThickness: modelData.thickness / 100
+
+                Model {
+                    source: "#Cylinder"
+                    rotation: {
+                        if (bridgeReady)
+                            sceneBridge.torsionRevision
+                        return Qt.quaternion(
+                            modelData.y_qscalar,
+                            modelData.y_qx,
+                            modelData.y_qy,
+                            modelData.y_qz
+                        )
+                    }
+                    scale: Qt.vector3d(_armThickness, _armLength, _armThickness)
+                    materials: [
+                        PrincipledMaterial {
+                            baseColor: "#2ecc71"
+                            opacity: 0.95
+                            metalness: 0.0
+                            roughness: 0.45
+                        }
+                    ]
+                    castsShadows: false
+                    receivesShadows: false
+                    pickable: false
+                }
+
+                Model {
+                    source: "#Cylinder"
+                    rotation: {
+                        if (bridgeReady)
+                            sceneBridge.torsionRevision
+                        return Qt.quaternion(
+                            modelData.z_qscalar,
+                            modelData.z_qx,
+                            modelData.z_qy,
+                            modelData.z_qz
+                        )
+                    }
+                    scale: Qt.vector3d(_armThickness, _armLength, _armThickness)
+                    materials: [
+                        PrincipledMaterial {
+                            baseColor: "#3498db"
+                            opacity: 0.95
+                            metalness: 0.0
+                            roughness: 0.45
+                        }
+                    ]
+                    castsShadows: false
+                    receivesShadows: false
+                    pickable: false
+                }
+            }
+        }
+
+        Repeater3D {
             // Each load contributes two flat entries (shaft + head), positioned and
             // rotated independently by the bridge - the same scheme members already
             // use - so there is no parent/child offset math that could leave a gap.

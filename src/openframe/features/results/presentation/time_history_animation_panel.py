@@ -86,6 +86,21 @@ _SCALE_OPTIONS: tuple[tuple[str, float | None], ...] = (
     ("100×", 100.0),
 )
 
+_ROTATION_SCALE_OPTIONS: tuple[tuple[str, float], ...] = (
+    ("1×", 1.0),
+    ("2×", 2.0),
+    ("5×", 5.0),
+    ("10×", 10.0),
+    ("20×", 20.0),
+    ("50×", 50.0),
+)
+
+_MARKER_DENSITY_OPTIONS: tuple[tuple[str, int], ...] = (
+    ("3", 3),
+    ("5", 5),
+    ("7", 7),
+)
+
 _AUTO_SCALE_TARGET_FRACTION = 0.08
 _MAX_AUTO_SCALE = 10_000.0
 
@@ -210,6 +225,35 @@ class TimeHistoryAnimationPanel(QFrame):
         options_row.addStretch(1)
         controls_layout.addLayout(options_row)
 
+        torsion_row = QHBoxLayout()
+        self.torsion_markers_checkbox = QCheckBox("Torsion Markers")
+        self.torsion_markers_checkbox.setToolTip(
+            "비틀림 마커는 절점 회전벡터를 부재 로컬축에 투영한 표시 결과입니다."
+        )
+        self.torsion_markers_checkbox.setVisible(False)
+        torsion_row.addWidget(self.torsion_markers_checkbox)
+        torsion_row.addSpacing(14)
+        self.rotation_scale_label = QLabel("Rotation Scale")
+        self.rotation_scale_label.setVisible(False)
+        torsion_row.addWidget(self.rotation_scale_label)
+        self.rotation_scale_selector = QComboBox()
+        for label, value in _ROTATION_SCALE_OPTIONS:
+            self.rotation_scale_selector.addItem(label, value)
+        self.rotation_scale_selector.setVisible(False)
+        torsion_row.addWidget(self.rotation_scale_selector)
+        torsion_row.addSpacing(14)
+        self.marker_density_label = QLabel("Marker Density")
+        self.marker_density_label.setVisible(False)
+        torsion_row.addWidget(self.marker_density_label)
+        self.marker_density_selector = QComboBox()
+        for label, value in _MARKER_DENSITY_OPTIONS:
+            self.marker_density_selector.addItem(label, value)
+        self.marker_density_selector.setCurrentIndex(1)
+        self.marker_density_selector.setVisible(False)
+        torsion_row.addWidget(self.marker_density_selector)
+        torsion_row.addStretch(1)
+        controls_layout.addLayout(torsion_row)
+
         layout.addWidget(controls)
 
         self._timer = QTimer(self)
@@ -225,6 +269,9 @@ class TimeHistoryAnimationPanel(QFrame):
         self.scale_selector.currentIndexChanged.connect(self._on_scale_changed)
         self.show_undeformed_checkbox.toggled.connect(self._on_show_undeformed_toggled)
         self.show_deformed_checkbox.toggled.connect(self._on_show_deformed_toggled)
+        self.torsion_markers_checkbox.toggled.connect(self._on_torsion_markers_toggled)
+        self.rotation_scale_selector.currentIndexChanged.connect(self._on_rotation_scale_changed)
+        self.marker_density_selector.currentIndexChanged.connect(self._on_marker_density_changed)
 
         self._show_empty_state()
 
@@ -244,6 +291,14 @@ class TimeHistoryAnimationPanel(QFrame):
         self._node_items = {}
         is_3d = model.ndm == 3
         self.show_deformed_checkbox.setVisible(is_3d)
+        for widget in (
+            self.torsion_markers_checkbox,
+            self.rotation_scale_label,
+            self.rotation_scale_selector,
+            self.marker_density_label,
+            self.marker_density_selector,
+        ):
+            widget.setVisible(is_3d)
         if is_3d:
             self._canvas_stack.setCurrentWidget(self._3d_view)
             self._3d_adapter.set_model(model)
@@ -457,10 +512,21 @@ class TimeHistoryAnimationPanel(QFrame):
         state = build_deformed_3d_state(self._model, self._result, index, scale)
         max_magnitude = state.max_translation_magnitude if state is not None else 0.0
         self._3d_adapter.set_translation_scale(scale)
+        self._3d_adapter.set_rotation_scale(self._active_rotation_multiplier())
+        self._3d_adapter.set_marker_count(self._marker_density())
         self._3d_adapter.set_show_original(self.show_undeformed_checkbox.isChecked())
         self._3d_adapter.set_show_deformed(self.show_deformed_checkbox.isChecked())
+        self._3d_adapter.set_show_torsion_markers(self.torsion_markers_checkbox.isChecked())
         self._3d_adapter.set_step(index)
         return max_magnitude
+
+    def _active_rotation_multiplier(self) -> float:
+        value = self.rotation_scale_selector.currentData()
+        return float(value) if value is not None else 1.0
+
+    def _marker_density(self) -> int:
+        value = self.marker_density_selector.currentData()
+        return int(value) if value is not None else 5
 
     def _emit_step_changed(self, index: int) -> None:
         if self._suppress_step_signal:
@@ -593,6 +659,19 @@ class TimeHistoryAnimationPanel(QFrame):
         if self._has_playable_result() and self._model is not None and self._model.ndm == 3:
             self._3d_adapter.set_show_deformed(self.show_deformed_checkbox.isChecked())
             self._3d_adapter.set_step(self._current_step_index)
+
+    def _on_torsion_markers_toggled(self) -> None:
+        if self._has_playable_result() and self._model is not None and self._model.ndm == 3:
+            self._apply_step(self._current_step_index)
+
+    def _on_rotation_scale_changed(self) -> None:
+        if self._has_playable_result() and self._model is not None and self._model.ndm == 3:
+            self._apply_step(self._current_step_index)
+
+    def _on_marker_density_changed(self) -> None:
+        if self._has_playable_result() and self._model is not None and self._model.ndm == 3:
+            self._3d_adapter.set_marker_count(self._marker_density())
+            self._apply_step(self._current_step_index)
 
     @staticmethod
     def _tool_button(text: str) -> QPushButton:

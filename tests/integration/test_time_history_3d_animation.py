@@ -142,6 +142,64 @@ def test_3d_animation_with_real_geometry_and_synthetic_history() -> None:
     panel.close()
 
 
+def test_3d_animation_torsion_markers_sync_with_slider() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=30).load(_FRAME_3D)
+    node_tags = sorted(model.nodes)
+    steps = tuple(
+        TimeHistoryStep(
+            time=index * 0.01,
+            node_results={
+                tag: NodeResult(
+                    tag,
+                    displacement=(
+                        0.0,
+                        0.0,
+                        0.0,
+                        math.sin(index * 0.3 + tag) * 0.01,
+                        math.cos(index * 0.2) * 0.005,
+                        index * 0.0002,
+                    ),
+                )
+                for tag in node_tags
+            },
+        )
+        for index in range(1, 51)
+    )
+    result = AnalysisResult(status=AnalysisStatus.COMPLETED, time_history=steps)
+
+    panel = TimeHistoryResultsPanel()
+    panel.show()
+    panel.set_model(model)
+    panel.show_result(result)
+    application.processEvents()
+
+    animation = panel.animation_panel
+    animation.torsion_markers_checkbox.setChecked(True)
+    animation.rotation_scale_selector.setCurrentIndex(1)
+    animation._apply_step(10)
+    application.processEvents()
+
+    bridge = animation._3d_adapter.viewport.bridge
+    assert bridge.torsionMarkersVisible
+    revision10 = bridge.torsionRevision
+    marker_ref = bridge.torsionMarkers
+
+    animation.slider.setValue(25)
+    application.processEvents()
+    assert bridge.torsionMarkers is marker_ref
+    assert bridge.torsionRevision > revision10
+
+    nodes_before = [(node["x"], node["y"], node["z"]) for node in bridge.nodes]
+    animation.rotation_scale_selector.setCurrentIndex(3)
+    animation._apply_step(25)
+    application.processEvents()
+    nodes_after = [(node["x"], node["y"], node["z"]) for node in bridge.nodes]
+    assert nodes_before == pytest.approx(nodes_after)
+
+    panel.close()
+
+
 def test_3d_time_history_solver_result_feeds_animation(tmp_path: Path) -> None:
     application = QApplication.instance() or QApplication([])
     script = _write_mass_cantilever_script(tmp_path / "mass_cantilever_3d.py")
