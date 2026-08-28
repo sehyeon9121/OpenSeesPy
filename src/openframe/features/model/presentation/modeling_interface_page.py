@@ -6811,6 +6811,31 @@ class ModelingInterfacePage(QFrame):
             self.task_results_button.setEnabled(True)
         self.workspace_stack.setCurrentIndex(1)
 
+    @staticmethod
+    def _normalize_full_analysis_options(
+        kind: AnalysisKind,
+        options: dict[str, float | int | str | bool],
+    ) -> dict[str, float | int | str | bool]:
+        """Resolve time-history ground-motion paths before the worker subprocess
+        starts - ``OpenSeesProcessRunner`` sets ``cwd`` to the temp script's
+        parent, so relative paths from the settings dialog would otherwise miss
+        files stored elsewhere on disk."""
+        if kind != AnalysisKind.TIME_HISTORY:
+            return options
+        directions = options.get("directions")
+        if not isinstance(directions, list):
+            return options
+        normalized_directions: list[dict[str, object]] = []
+        for entry in directions:
+            if not isinstance(entry, dict):
+                continue
+            item = dict(entry)
+            path_value = item.get("path")
+            if path_value:
+                item["path"] = str(Path(str(path_value)).expanduser().resolve())
+            normalized_directions.append(item)
+        return {**options, "directions": normalized_directions}
+
     def _run_full_analysis(self, kind: AnalysisKind) -> None:
         """Export the 3D canvas to a temp OpenSeesPy script and run it through
         the same ``RunAnalysisService`` pipeline SETUP uses - deliberately no
@@ -6853,7 +6878,11 @@ class ModelingInterfacePage(QFrame):
         except OSError as error:
             self.determinacy_status.setText(f"임시 스크립트 생성 실패: {error}")
             return
-        request = AnalysisRequest(source_path=source_path, kind=kind, options=dict(options))
+        request = AnalysisRequest(
+            source_path=source_path,
+            kind=kind,
+            options=self._normalize_full_analysis_options(kind, dict(options)),
+        )
         errors = self._run_analysis_service.validate(request)
         if errors:
             try:

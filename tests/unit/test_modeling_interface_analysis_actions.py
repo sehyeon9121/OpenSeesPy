@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication
 
 from openframe.core.domain import AnalysisKind, AnalysisRequest, AnalysisResult, AnalysisStatus
 from openframe.features.analysis.application.run_analysis import RunAnalysisService
+from openframe.features.analysis.application.run_analysis import RunAnalysisService
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
 
@@ -170,3 +171,31 @@ def test_cancel_requests_thread_stop(
     page._cancel_full_analysis()
 
     thread_instance.request_cancel.assert_called_once()
+
+
+def test_normalize_time_history_paths_resolves_relative_paths(tmp_path: Path) -> None:
+    motion = tmp_path / "motions" / "gm.txt"
+    motion.parent.mkdir()
+    motion.write_text("NPTS= 2, DT= 0.01 SEC\n0.0\n0.0\n", encoding="utf-8")
+    original_cwd = Path.cwd()
+    os.chdir(tmp_path)
+    try:
+        options = ModelingInterfacePage._normalize_full_analysis_options(
+            AnalysisKind.TIME_HISTORY,
+            {
+                "directions": [
+                    {
+                        "dof": 1,
+                        "path": "motions/gm.txt",
+                        "unit": "model",
+                        "scaling_method": "factor",
+                        "scale_factor": 1.0,
+                        "target_pga": 0.0,
+                    }
+                ],
+            },
+        )
+    finally:
+        os.chdir(original_cwd)
+
+    assert Path(options["directions"][0]["path"]).resolve() == motion.resolve()
