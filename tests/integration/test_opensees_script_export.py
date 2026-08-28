@@ -28,6 +28,8 @@ from openframe.core.domain import (
     Element,
     NodalLoad,
     Node,
+    PointElementLoad,
+    RigidDiaphragm,
     StructuralModel,
     UniformElementLoad,
 )
@@ -37,6 +39,17 @@ from openframe.features.analysis.statics.solver import MaterialFreeStaticsSolver
 from openframe.infrastructure.opensees.runner import OpenSeesProcessRunner
 
 _FRAME_PROPERTIES = {"E": 200.0e6, "A": 0.02, "I": 8.0e-5, "density": 5.0}
+#: 3D equivalent of ``_FRAME_PROPERTIES`` - Iy != Iz on purpose so a
+#: local_axis_angle test actually has something to be wrong about.
+_FRAME_PROPERTIES_3D = {
+    "E": 200.0e6,
+    "A": 0.02,
+    "G": 77.0e6,
+    "J": 2.0e-6,
+    "Iy": 6.0e-5,
+    "Iz": 8.0e-5,
+    "density": 5.0,
+}
 
 
 def _run_exported_script(model: StructuralModel, tmp_path: Path, **export_kwargs) -> tuple:
@@ -233,15 +246,19 @@ def test_exported_modal_analysis_matches_the_in_process_canvas_solver(tmp_path: 
         )
 
 
-def test_export_rejects_a_3d_model() -> None:
-    model = StructuralModel(ndm=3, ndf=6)
-    with pytest.raises(ValueError, match="2D 모델만"):
-        export_opensees_script(model)
+def test_export_rejects_an_unsupported_ndm() -> None:
+    with pytest.raises(ValueError, match="2D 또는 3D"):
+        export_opensees_script(StructuralModel(ndm=1, ndf=1))
 
 
 def test_export_rejects_an_empty_model() -> None:
     with pytest.raises(ValueError, match="절점과 부재"):
         export_opensees_script(StructuralModel(ndm=2, ndf=3))
+
+
+def test_export_rejects_an_empty_3d_model() -> None:
+    with pytest.raises(ValueError, match="절점과 부재"):
+        export_opensees_script(StructuralModel(ndm=3, ndf=6))
 
 
 def test_export_rejects_a_member_missing_real_section_properties() -> None:
@@ -253,3 +270,310 @@ def test_export_rejects_a_member_missing_real_section_properties() -> None:
     )
     with pytest.raises(ValueError, match=r"부재 1.*E/A/I"):
         export_opensees_script(model)
+
+
+def test_export_rejects_a_3d_member_missing_real_section_properties() -> None:
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 4.0, 0.0, 0.0)},
+        elements={1: Element(1, 1, 2, "elasticBeamColumn")},
+    )
+    with pytest.raises(ValueError, match=r"부재 1.*E/A/G/J/Iy/Iz"):
+        export_opensees_script(model)
+
+
+def test_export_rejects_a_3d_trapezoidal_load() -> None:
+    """MaterialFreeStaticsSolver._apply_loads rejects this too (a 3D member
+    is never discretized into sub-elements the way a 2D one is) - the
+    exporter must reproduce the same rejection, not silently emit a wrong
+    (constant) load."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 6.0, 0.0, 0.0)},
+        elements={1: Element(1, 1, 2, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D)},
+        boundaries=[
+            BoundaryCondition(1, (True,) * 6),
+            BoundaryCondition(2, (True,) * 6),
+        ],
+        element_loads=[UniformElementLoad(1, wy=-5.0, wy_j=-15.0)],
+    )
+    with pytest.raises(ValueError, match="3D 모델의 선형 변화"):
+        export_opensees_script(model)
+
+
+def test_exported_3d_frame_matches_the_in_process_canvas_solver(tmp_path: Path) -> None:
+    """Two orthogonal members meeting at a free corner: member 1 runs along
+    global X (``_reference_vector``'s auto-picked reference is global Z),
+    member 2 runs along global Z (falls back to global X, per that
+    function's own docstring) - exercises both auto-orientation branches in
+    one model, plus a combined 6-DOF nodal force+moment."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0),
+            2: Node(2, 4.0, 0.0, 0.0),
+            3: Node(3, 4.0, 0.0, 3.0),
+        },
+        elements={
+            1: Element(1, 1, 2, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D),
+            2: Element(2, 2, 3, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D),
+        },
+        boundaries=[
+            BoundaryCondition(1, (True,) * 6),
+            BoundaryCondition(3, (True,) * 6),
+        ],
+        nodal_loads=[NodalLoad(2, (5.0, -8.0, 3.0, 0.0, 2.0, -1.0))],
+    )
+
+    exported_result, _ = _run_exported_script(model, tmp_path)
+    canvas_result = MaterialFreeStaticsSolver().solve(model)
+
+    assert exported_result.status == AnalysisStatus.COMPLETED
+    assert canvas_result.status == AnalysisStatus.COMPLETED
+    assert _round_state(exported_result, model) == _round_state(canvas_result, model)
+
+
+def test_exported_3d_local_axis_angle_matches_the_in_process_canvas_solver(
+    tmp_path: Path,
+) -> None:
+    """A cantilever rotated 30 degrees about its own axis (local_axis_angle)
+    with an asymmetric section (Iy != Iz, see _FRAME_PROPERTIES_3D) - the
+    rotation only changes the answer once the section's strong/weak axis is
+    no longer symmetric, per _reference_vector's own docstring."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 5.0, 0.0, 0.0)},
+        elements={
+            1: Element(
+                1,
+                1,
+                2,
+                "elasticBeamColumn",
+                properties=_FRAME_PROPERTIES_3D,
+                local_axis_angle=30.0,
+            )
+        },
+        boundaries=[BoundaryCondition(1, (True,) * 6)],
+        nodal_loads=[NodalLoad(2, (0.0, -4.0, 2.0, 0.0, 0.0, 0.0))],
+    )
+
+    exported_result, _ = _run_exported_script(model, tmp_path)
+    canvas_result = MaterialFreeStaticsSolver().solve(model)
+
+    assert exported_result.status == AnalysisStatus.COMPLETED
+    assert canvas_result.status == AnalysisStatus.COMPLETED
+    assert _round_state(exported_result, model) == _round_state(canvas_result, model)
+
+
+def test_exported_3d_rigid_diaphragm_matches_the_in_process_canvas_solver(
+    tmp_path: Path,
+) -> None:
+    """Two columns whose top nodes share the same elevation (z=3), tied by a
+    rigid diaphragm (perp_dirn=3, Story Manager's own feature) - a lateral
+    load applied only at the master node must still engage both columns
+    through the diaphragm, both in the exported script and in-process."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0),
+            2: Node(2, 4.0, 0.0, 0.0),
+            3: Node(3, 0.0, 0.0, 3.0),
+            4: Node(4, 4.0, 0.0, 3.0),
+        },
+        elements={
+            1: Element(1, 1, 3, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D),
+            2: Element(2, 2, 4, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D),
+        },
+        boundaries=[
+            BoundaryCondition(1, (True,) * 6),
+            BoundaryCondition(2, (True,) * 6),
+        ],
+        nodal_loads=[NodalLoad(3, (10.0, 0.0, 0.0, 0.0, 0.0, 0.0))],
+        rigid_diaphragms=(RigidDiaphragm(perp_dirn=3, master_tag=3, slave_tags=(4,)),),
+    )
+
+    exported_result, _ = _run_exported_script(model, tmp_path)
+    canvas_result = MaterialFreeStaticsSolver().solve(model)
+
+    assert exported_result.status == AnalysisStatus.COMPLETED
+    assert canvas_result.status == AnalysisStatus.COMPLETED
+    assert _round_state(exported_result, model) == _round_state(canvas_result, model)
+
+
+def test_exported_3d_spring_support_matches_the_in_process_canvas_solver(
+    tmp_path: Path,
+) -> None:
+    """A cantilever whose far end is elastically (spring) supported in
+    translation instead of rigidly fixed or left free - Story Manager's own
+    feature, text form of ``MaterialFreeStaticsSolver._apply_springs``."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 5.0, 0.0, 0.0)},
+        elements={1: Element(1, 1, 2, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D)},
+        boundaries=[
+            BoundaryCondition(1, (True,) * 6),
+            BoundaryCondition(
+                2,
+                (False,) * 6,
+                spring_stiffnesses=(1.0e5, 1.0e5, 1.0e5, 0.0, 0.0, 0.0),
+            ),
+        ],
+        nodal_loads=[NodalLoad(2, (0.0, -6.0, 0.0, 0.0, 0.0, 0.0))],
+    )
+
+    exported_result, _ = _run_exported_script(model, tmp_path)
+    canvas_result = MaterialFreeStaticsSolver().solve(model)
+
+    assert exported_result.status == AnalysisStatus.COMPLETED
+    assert canvas_result.status == AnalysisStatus.COMPLETED
+    assert _round_state(exported_result, model) == _round_state(canvas_result, model)
+
+
+def test_exported_3d_rigid_end_offset_matches_the_in_process_canvas_solver(
+    tmp_path: Path,
+) -> None:
+    """A cantilever with a nonzero rigid end-zone (panel zone) offset at both
+    ends - OpenSeesPy's own geomTransf ``-jntOffset``, text form of the same
+    call MaterialFreeStaticsSolver._build makes for a 3D member."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 5.0, 0.0, 0.0)},
+        elements={
+            1: Element(
+                1,
+                1,
+                2,
+                "elasticBeamColumn",
+                properties=_FRAME_PROPERTIES_3D,
+                offset_i=(0.0, 0.0, 0.3),
+                offset_j=(-0.2, 0.0, 0.0),
+            )
+        },
+        boundaries=[BoundaryCondition(1, (True,) * 6)],
+        nodal_loads=[NodalLoad(2, (0.0, -5.0, 0.0, 0.0, 0.0, 0.0))],
+    )
+
+    exported_result, _ = _run_exported_script(model, tmp_path)
+    canvas_result = MaterialFreeStaticsSolver().solve(model)
+
+    assert exported_result.status == AnalysisStatus.COMPLETED
+    assert canvas_result.status == AnalysisStatus.COMPLETED
+    assert _round_state(exported_result, model) == _round_state(canvas_result, model)
+
+
+def test_exported_3d_member_hinge_matches_the_in_process_canvas_solver(tmp_path: Path) -> None:
+    """A straight fixed-fixed beam with a full moment release at its
+    midpoint (element 1 released at j, element 2 released at i, both ending
+    at shared node 2) - both members release at that node, so it is a true
+    shared hinge with nothing else anchoring its rotation there, exercising
+    the orphaned-rotation ``ops.fix(node, 0,0,0,0,1,1)`` branch in
+    ``_write_3d_frame_elements`` alongside a one-sided release on the same
+    model (element 1's own i-end stays rigid)."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0),
+            2: Node(2, 4.0, 0.0, 0.0),
+            3: Node(3, 8.0, 0.0, 0.0),
+        },
+        elements={
+            1: Element(
+                1, 1, 2, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D, moment_release_j=True
+            ),
+            2: Element(
+                2,
+                2,
+                3,
+                "elasticBeamColumn",
+                properties=_FRAME_PROPERTIES_3D,
+                moment_release_i=True,
+                moment_release_j=True,
+            ),
+        },
+        boundaries=[
+            BoundaryCondition(1, (True,) * 6),
+            BoundaryCondition(3, (True,) * 6),
+        ],
+        nodal_loads=[NodalLoad(2, (0.0, -10.0, 0.0, 0.0, 0.0, 0.0))],
+    )
+
+    exported_result, _ = _run_exported_script(model, tmp_path)
+    canvas_result = MaterialFreeStaticsSolver().solve(model)
+
+    assert exported_result.status == AnalysisStatus.COMPLETED
+    assert canvas_result.status == AnalysisStatus.COMPLETED
+    assert _round_state(exported_result, model) == _round_state(canvas_result, model)
+
+
+def test_exported_3d_element_loads_match_the_in_process_canvas_solver(tmp_path: Path) -> None:
+    """A cantilever carrying both a 3D uniform load (wy/wz/wx) and a 3D point
+    load (py/xL/n) together - the argument order for both differs from 2D
+    (see _write_loads's own comments). Fixed at node 1 only (not also at
+    node 2): a two-node, one-element model fixed at *both* ends has zero free
+    DOFs anywhere in the structure, which crashes OpenSeesPy's banded solver
+    outright (``DGBSV parameter number 9``) rather than raising a catchable
+    Python error - confirmed independently of both this exporter and
+    ``MaterialFreeStaticsSolver`` by reproducing it directly against
+    OpenSeesPy. Not this exporter's bug (a real model always has other
+    elements/nodes providing free DOFs elsewhere), so the fix here is simply
+    not to hand the in-process solver a degenerate one-element structure.
+
+    ``pz`` is deliberately left at its default (0.0): empirically checking
+    OpenSeesPy directly shows the real 3D ``-beamPoint`` argument order is
+    ``(Py, Pz, xL, N)``, but ``MaterialFreeStaticsSolver._apply_loads``
+    passes ``point_load.py, point_load.position, point_load.pz, point_load.n``
+    - i.e. ``position``/``pz`` are swapped, a second pre-existing bug in that
+    in-process solver (also out of this exporter's scope - see the session
+    report). This exporter intentionally mirrors that same call order
+    exactly, since its whole contract is bit-for-bit parity with
+    ``MaterialFreeStaticsSolver``, bugs included - "fixing" only the exported
+    text would make it diverge from the in-process solver instead of
+    matching it. A nonzero ``pz`` would land in whichever slot that bug
+    currently sends it to and is therefore not safe to assert on here; ``py``
+    and ``n`` are unaffected by the swap and still verify real fidelity."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 6.0, 0.0, 0.0)},
+        elements={1: Element(1, 1, 2, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D)},
+        boundaries=[BoundaryCondition(1, (True,) * 6)],
+        element_loads=[UniformElementLoad(1, wx=1.0, wy=-3.0, wz=2.0)],
+        point_loads=[PointElementLoad(1, position=0.5, py=-4.0, n=0.5)],
+    )
+
+    exported_result, _ = _run_exported_script(model, tmp_path)
+    canvas_result = MaterialFreeStaticsSolver().solve(model)
+
+    assert exported_result.status == AnalysisStatus.COMPLETED
+    assert canvas_result.status == AnalysisStatus.COMPLETED
+    assert _round_state(exported_result, model) == _round_state(canvas_result, model)
+
+
+def test_exported_3d_mass_uses_six_component_ops_mass() -> None:
+    """``ops.mass`` in 3D needs 6 components (3 translational + 3 rotational,
+    the last three always zero - no rotational mass, the standard
+    lumped-mass convention), unlike 2D's 3-component form. Checked directly
+    against the generated text since there is no independent 3D modal ground
+    truth to round-trip against - ``ModalStaticsSolver``, the in-process
+    modal solver, is 2D-frame-only (see this module's own docstring)."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 6.0, 0.0, 0.0)},
+        elements={1: Element(1, 1, 2, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D)},
+        boundaries=[BoundaryCondition(1, (True,) * 6)],
+    )
+
+    script = export_opensees_script(model, include_mass=True, length_unit="m")
+
+    expected_mass = (5.0 * 0.02 * 6.0 / 2.0) / 9.81
+    assert f"ops.mass(2, {expected_mass!r}, {expected_mass!r}, {expected_mass!r}, 0.0, 0.0, 0.0)" in script
+    assert f"ops.mass(1, {expected_mass!r}, {expected_mass!r}, {expected_mass!r}, 0.0, 0.0, 0.0)" in script
