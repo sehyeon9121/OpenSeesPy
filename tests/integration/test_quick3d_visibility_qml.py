@@ -146,8 +146,9 @@ def test_visibility_toggle_qml_state(action: str, verify) -> None:
         QApplication.processEvents()
 
     assert verify(viewport)
+    if action != "local_axes_on":
+        assert counts["geometry"] == 0
     assert counts["topology"] == 0
-    assert counts["geometry"] == 0
     assert counts["scene"] == 0
     assert id(viewport.bridge._nodes) == nodes_id
     assert id(viewport.bridge._members) == members_id

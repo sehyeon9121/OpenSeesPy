@@ -585,6 +585,32 @@ def test_3d_box_selection_updates_and_highlights_nodes_and_members() -> None:
     assert member in page.preview_3d.bridge.selectedMemberTags
 
 
+def test_3d_box_selection_ignores_narrowed_selection_filter() -> None:
+    """Transform tabs auto-narrow selection_filter to "elements" or "nodes" for
+    plain clicks, but a drag box must still apply both kinds from the QML
+    viewport — half the result used to be dropped silently."""
+    page = _page(start_in_3d=True)
+    left = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    right = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    member = page.canvas.add_member(left, right)
+
+    page._element_subcategory_clicked("duplicate")
+    assert page.canvas.selection_filter == "elements"
+
+    page._on_3d_box_selected({left, right}, {member}, False)
+
+    assert page.canvas.selected_nodes == {left, right}
+    assert page.canvas.selected_elements == {member}
+
+    page._node_subcategory_clicked("duplicate_node")
+    assert page.canvas.selection_filter == "nodes"
+
+    page._on_3d_box_selected({left, right}, {member}, False)
+
+    assert page.canvas.selected_nodes == {left, right}
+    assert page.canvas.selected_elements == {member}
+
+
 def test_delete_and_ctrl_z_reach_the_canvas_while_the_3d_viewport_has_focus() -> None:
     """Delete/Ctrl+Z/Ctrl+Y are scoped to self.canvas, which stays hidden in
     3D mode and can therefore never hold keyboard focus - so a node/member

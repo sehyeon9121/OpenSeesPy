@@ -138,6 +138,54 @@ def test_selection_emits_only_selection_changed() -> None:
     assert counts["scene"] == 0
 
 
+def test_repeat_set_selection_is_noop() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    bridge.set_model(_grid_model(4, 4))
+    bridge.set_selection({1}, {1})
+
+    counts = {"selection": 0}
+    bridge.selection_changed.connect(lambda: counts.__setitem__("selection", counts["selection"] + 1))
+    bridge.set_selection({1}, {1})
+    assert counts["selection"] == 0
+
+
+def test_node_marker_radius_never_shrinks_below_global_fallback() -> None:
+    """A slender member's section bulge must not replace the default node
+    sphere with a sub-pixel radius - reported as nodes vanishing in 3D."""
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = StructuralModel(
+        ndm=3,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 4.0, 0.0, 0.0, 6),
+        },
+        elements={
+            1: Element(1, 1, 2, "elasticBeamColumn", properties={"width": 0.01, "height": 0.01}),
+        },
+    )
+    bridge.set_model(model)
+
+    fallback = bridge._node_radius
+    for node in bridge.nodes:
+        assert node["radius"] >= fallback
+
+
+def test_selected_member_highlight_lists_only_selected_parts() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(4, 4)
+    bridge.set_model(model)
+    first_member = next(iter(model.elements))
+    bridge.set_selection(set(), {first_member})
+
+    highlight_tags = {int(part["tag"]) for part in bridge.selectedMemberHighlight}
+    assert highlight_tags == {first_member}
+    assert len(bridge.selectedMemberHighlight) >= 1
+    assert len(bridge.selectedMemberHighlight) < len(bridge._members)
+
+
 def test_preview_segment_dedup() -> None:
     _app()
     bridge = Quick3DSceneBridge()
@@ -341,7 +389,7 @@ def test_h_section_incremental_preserves_three_part_identities() -> None:
     assert id(bridge._members[0]) == web_id
     assert {id(bridge._members[1]), id(bridge._members[2])} == flange_ids
     assert float(bridge._members[0]["x"]) != before_x
-    assert counts == {"scene": 0, "topology": 0, "geometry": 1, "loads": 1}
+    assert counts == {"scene": 0, "topology": 0, "geometry": 1, "loads": 0}
 
 
 def test_h_section_part_count_change_triggers_topology_rebuild() -> None:
@@ -513,3 +561,36 @@ def test_h_section_fingerprint_stable_across_extent_change() -> None:
     fp_spread = bridge._cached_topology_fingerprint
 
     assert fp_compact == fp_spread
+
+
+def test_duplicate_set_model_with_same_geometry_is_skipped() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(4, 4)
+    bridge.set_model(model)
+
+    counts = {"geometry": 0, "topology": 0}
+    bridge.geometry_changed.connect(lambda: counts.__setitem__("geometry", counts["geometry"] + 1))
+    bridge.topology_changed.connect(lambda: counts.__setitem__("topology", counts["topology"] + 1))
+
+    bridge.set_model(model)
+    assert counts == {"geometry": 0, "topology": 0}
+
+
+def test_coordinate_update_without_loads_skips_loads_changed() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(5, 5)
+    bridge.set_model(model)
+
+    counts = {"loads": 0, "geometry": 0, "metrics": 0}
+    bridge.loads_changed.connect(lambda: counts.__setitem__("loads", counts["loads"] + 1))
+    bridge.geometry_changed.connect(lambda: counts.__setitem__("geometry", counts["geometry"] + 1))
+    bridge.scene_metrics_changed.connect(
+        lambda: counts.__setitem__("metrics", counts["metrics"] + 1)
+    )
+
+    bridge.set_model(_move_node(model, max(model.nodes), 1.0, 1.0))
+    assert counts["loads"] == 0
+    assert counts["geometry"] == 1
+    assert counts["metrics"] == 1

@@ -24,6 +24,12 @@ def _viewport() -> Quick3DViewport:
     return viewport
 
 
+def _set_model(viewport: Quick3DViewport, model: StructuralModel, **kwargs) -> None:
+    """Apply a model through the coalesced viewport path used in production."""
+    viewport.set_model(model, **kwargs)
+    QApplication.processEvents()
+
+
 def test_qml_is_not_loaded_until_first_visible_show() -> None:
     """Startup builds several QQuickWidgets before MainWindow appears; mapping
     their native surfaces early flashes blank title-bar windows on Windows.
@@ -85,10 +91,10 @@ def test_set_model_resets_the_camera_by_default_but_can_be_told_not_to() -> None
     viewport.set_camera_preset("xy")
     assert root.property("cameraPitch") == pytest.approx(-89.0)
 
-    viewport.set_model(model, reset_camera=False)
+    _set_model(viewport, model, reset_camera=False)
     assert root.property("cameraPitch") == pytest.approx(-89.0), "must not reframe"
 
-    viewport.set_model(model)
+    _set_model(viewport, model)
     assert root.property("cameraPitch") == pytest.approx(-25.0), "default still reframes to iso"
 
 
@@ -100,7 +106,7 @@ def test_members_expose_endpoints_for_projected_box_selection() -> None:
         ndm=3,
     )
 
-    viewport.set_model(model)
+    _set_model(viewport, model)
 
     member = viewport.bridge.members[0]
     assert (member["start_x"], member["start_y"], member["start_z"]) == pytest.approx(
@@ -143,12 +149,13 @@ def test_qml_window_drag_selects_only_nodes_even_when_members_are_fully_enclosed
     ("crossing") still takes enclosed/touched members."""
     viewport = _viewport()
     viewport.setFixedSize(640, 480)
-    viewport.set_model(
+    _set_model(
+        viewport,
         StructuralModel(
             nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 1.0, 0.0, 0.0)},
             elements={3: Element(3, 1, 2, "frame")},
             ndm=3,
-        )
+        ),
     )
     viewport.set_camera_preset("xy")
     for _ in range(20):
@@ -245,7 +252,7 @@ def test_selection_highlight_does_not_replace_geometry_lists() -> None:
         },
         elements={1: Element(1, 1, 2, "elasticBeamColumn")},
     )
-    viewport.set_model(model)
+    _set_model(viewport, model)
     bridge = viewport.bridge
     nodes_ref = bridge.nodes
     members_ref = bridge.members

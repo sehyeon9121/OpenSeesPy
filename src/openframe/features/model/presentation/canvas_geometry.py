@@ -145,7 +145,9 @@ class _GeometryMixin:
             return None
         self._record_history()
         tag = max(self.elements, default=0) + 1
-        self.elements[tag] = Element(tag, node_i, node_j, self.element_family)
+        self.elements[tag] = Element(
+            tag, node_i, node_j, self.element_family, {"behavior": self.element_behavior}
+        )
         for candidate_tag in self.nodes:
             if candidate_tag not in {node_i, node_j}:
                 self._attach_node_to_member(candidate_tag, preferred_member=tag)

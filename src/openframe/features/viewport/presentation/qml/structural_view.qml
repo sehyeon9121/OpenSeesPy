@@ -7,10 +7,26 @@ Item {
     // evaluate once more - guard every read so offscreen tests do not spam
     // "Cannot read property 'extent' of null".
     readonly property bool bridgeReady: sceneBridge !== null && sceneBridge !== undefined
-    readonly property real bridgeExtent: bridgeReady ? sceneBridge.extent : 1.0
-    readonly property real bridgeCenterX: bridgeReady ? sceneBridge.center_x : 0.0
-    readonly property real bridgeCenterY: bridgeReady ? sceneBridge.center_y : 0.0
-    readonly property real bridgeCenterZ: bridgeReady ? sceneBridge.center_z : 0.0
+    readonly property real bridgeExtent: {
+        if (bridgeReady)
+            sceneBridge.sceneMetricsRevision
+        return bridgeReady ? sceneBridge.extent : 1.0
+    }
+    readonly property real bridgeCenterX: {
+        if (bridgeReady)
+            sceneBridge.sceneMetricsRevision
+        return bridgeReady ? sceneBridge.center_x : 0.0
+    }
+    readonly property real bridgeCenterY: {
+        if (bridgeReady)
+            sceneBridge.sceneMetricsRevision
+        return bridgeReady ? sceneBridge.center_y : 0.0
+    }
+    readonly property real bridgeCenterZ: {
+        if (bridgeReady)
+            sceneBridge.sceneMetricsRevision
+        return bridgeReady ? sceneBridge.center_z : 0.0
+    }
     property real cameraYaw: 45
     property real cameraPitch: -25
     property real cameraDistance: Math.max(bridgeExtent * 2.8, 4.0)
@@ -19,6 +35,15 @@ Item {
     property real lastMouseX: 0
     property real lastMouseY: 0
     property bool panning: false
+    // True while the camera is actively being orbited/panned/zoomed - drops
+    // MSAA quality for the duration (see the View3D's SceneEnvironment below)
+    // so a large model stays smooth to spin instead of stuttering at full
+    // antialiasing every frame; interactionIdleTimer flips it back off a
+    // moment after the last drag/wheel event, restoring full quality once
+    // the camera actually settles ("자유롭게 돌리면서 부드럽지도 않고 뚝뚝
+    // 끊겨서" - MSAA resolve cost was the one part of every orbit frame that
+    // scales with viewport resolution rather than model size).
+    property bool interacting: false
     property bool pickingEnabled: false
     property int hoveredNodeTag: -1
     property real snapScreenX: 0
@@ -286,6 +311,20 @@ Item {
             bridgeExtent * 0.18,
             Math.min(bridgeExtent * 25, cameraDistance * factor)
         )
+        root.markInteracting()
+    }
+
+    // Orbit/pan/zoom all funnel through here so "interacting" and its idle
+    // timer stay in one place instead of three near-duplicate copies.
+    function markInteracting() {
+        root.interacting = true
+        interactionIdleTimer.restart()
+    }
+
+    Timer {
+        id: interactionIdleTimer
+        interval: 200
+        onTriggered: root.interacting = false
     }
 
     View3D {
@@ -295,7 +334,16 @@ Item {
         environment: SceneEnvironment {
             backgroundMode: SceneEnvironment.Color
             clearColor: "#f4f6f8"
-            antialiasingMode: SceneEnvironment.MSAA
+            // MSAA resolve is a real per-pixel cost that scales with viewport
+            // resolution, not model size - paid on every single frame while
+            // orbiting even though a mid-drag frame is thrown away a moment
+            // later anyway, and jagged edges are barely visible while the
+            // model is actively spinning regardless. Switching to NoAA only
+            // while root.interacting is true (see markInteracting()) buys
+            // back that cost for orbit/pan/zoom on a complex model; it snaps
+            // back to full MSAA ~200ms after the last drag/wheel event, so
+            // the settled view is unaffected.
+            antialiasingMode: root.interacting ? SceneEnvironment.NoAA : SceneEnvironment.MSAA
             antialiasingQuality: SceneEnvironment.High
         }
 
@@ -444,11 +492,6 @@ Item {
             model: bridgeReady ? sceneBridge.members : []
             delegate: Model {
                 property int memberTag: modelData.tag
-                property bool memberSelected: {
-                    if (bridgeReady)
-                        sceneBridge.selectionRevision
-                    return root.tagIsSelected(sceneBridge.selectedMemberTags, memberTag)
-                }
                 visible: (!bridgeReady
                     || !sceneBridge.timeHistoryDeformationActive
                     || sceneBridge.timeHistoryShowDeformed)
@@ -478,16 +521,15 @@ Item {
                         sceneBridge.geometryRevision
                         sceneBridge.deformationRevision
                     }
-                    const thick = memberSelected ? 1.35 : 1.0
                     return Qt.vector3d(
-                        modelData.width_b * thick / 100,
+                        modelData.width_b / 100,
                         modelData.length / 100,
-                        modelData.width_h * thick / 100
+                        modelData.width_h / 100
                     )
                 }
                 materials: [
                     PrincipledMaterial {
-                        baseColor: memberSelected ? "#ef4444" : modelData.color
+                        baseColor: modelData.color
                         opacity: modelData.opacity
                         metalness: 0.0
                         roughness: 0.55
@@ -499,6 +541,60 @@ Item {
                 // mode.  Keeping them non-pickable while drawing lets the
                 // invisible work plane and nearby node snaps remain reachable.
                 pickable: root.pickingEnabled
+            }
+        }
+
+        Repeater3D {
+            // Red overlay for the few selected members only.  Coloring every
+            // member delegate via selectionRevision made a single click walk
+            // thousands of QML bindings on large models.
+            model: bridgeReady ? sceneBridge.selectedMemberHighlight : []
+            delegate: Model {
+                visible: !bridgeReady
+                    || !sceneBridge.timeHistoryDeformationActive
+                    || sceneBridge.timeHistoryShowDeformed
+                source: modelData.source
+                position: {
+                    if (bridgeReady) {
+                        sceneBridge.geometryRevision
+                        sceneBridge.deformationRevision
+                    }
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
+                rotation: {
+                    if (bridgeReady) {
+                        sceneBridge.geometryRevision
+                        sceneBridge.deformationRevision
+                    }
+                    return Qt.quaternion(
+                        modelData.qscalar,
+                        modelData.qx,
+                        modelData.qy,
+                        modelData.qz
+                    )
+                }
+                scale: {
+                    if (bridgeReady) {
+                        sceneBridge.geometryRevision
+                        sceneBridge.deformationRevision
+                    }
+                    return Qt.vector3d(
+                        modelData.width_b * 1.35 / 100,
+                        modelData.length / 100,
+                        modelData.width_h * 1.35 / 100
+                    )
+                }
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: "#ef4444"
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.55
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                pickable: false
             }
         }
 
@@ -1381,6 +1477,7 @@ Item {
                 root.cameraYaw += dx * 0.42
                 root.cameraPitch = Math.max(-85, Math.min(85, root.cameraPitch - dy * 0.38))
             }
+            root.markInteracting()
             root.cameraModeChanged("free")
         }
         onReleased: function(mouse) {
@@ -1405,6 +1502,7 @@ Item {
                 bridgeExtent * 0.18,
                 Math.min(bridgeExtent * 25, root.cameraDistance * factor)
             )
+            root.markInteracting()
             wheel.accepted = true
         }
     }

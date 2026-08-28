@@ -208,7 +208,10 @@ def test_apply_full_section_does_nothing_without_a_selection() -> None:
         elastic=2.5e7,
     )
 
-    assert canvas.elements[member].properties == {}
+    # Untouched by apply_full_section_to_selection - still just the
+    # structural-intent tag every newly drawn member gets (see
+    # canvas_geometry.add_member), nothing section-related added.
+    assert canvas.elements[member].properties == {"behavior": "general_beam"}
 
 
 def test_apply_section_to_selection_legacy_path_still_works_unchanged() -> None:

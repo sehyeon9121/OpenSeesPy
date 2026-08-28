@@ -123,6 +123,13 @@ class StaticsDrawingCanvas(
         # from now on, not the members already on the canvas — matching how a
         # real truss/frame is a whole-model choice, not a per-click one.
         self.element_family = "frame"
+        #: Finer-grained structural intent behind element_family's collapsed
+        #: "frame"/"truss" - one of _ELEMENT_TYPE_OPTIONS's own values
+        #: (general_beam/truss/tension_only/compression_only/cable), stamped
+        #: onto each newly drawn member's properties["behavior"] (see
+        #: add_member) so the 3D viewport can color-code by structural type
+        #: instead of by whichever section happens to be assigned.
+        self.element_behavior = "general_beam"
         self.selection_filter = "all"
         self.grid = 1.0
         self._member_start: int | None = None

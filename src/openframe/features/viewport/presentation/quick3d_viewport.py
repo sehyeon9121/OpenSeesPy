@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QUrl, Signal
+from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QShowEvent
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
@@ -69,6 +69,11 @@ class Quick3DViewport(QFrame):
         self._pending_picking: bool | None = None
         self._pending_plane_picking: bool | None = None
         self._qml_path = Path(__file__).with_name("qml") / "structural_view.qml"
+        self._pending_model: StructuralModel | None = None
+        self._pending_reset_camera = True
+        self._model_coalesce_timer = QTimer(self)
+        self._model_coalesce_timer.setSingleShot(True)
+        self._model_coalesce_timer.timeout.connect(self._flush_coalesced_model)
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -112,6 +117,12 @@ class Quick3DViewport(QFrame):
             self.quick_widget.setCursor(Qt.CursorShape.CrossCursor)
         elif self._pending_plane_picking:
             self.quick_widget.setCursor(Qt.CursorShape.CrossCursor)
+
+        if self._pending_model is not None:
+            self._model_coalesce_timer.stop()
+            self._flush_coalesced_model()
+        else:
+            self.bridge.resync_after_qml_load()
 
     def _on_node_picked(self, tag: int, x: float, y: float) -> None:
         global_pos = self.quick_widget.mapToGlobal(QPoint(int(x), int(y)))
@@ -192,10 +203,32 @@ class Quick3DViewport(QFrame):
         while a student is actively drawing — the view would jump back to ISO
         after every single click, which is the opposite of the free orbiting
         this viewport is meant to offer.
+
+        Rapid ``model_changed`` bursts (copy/array, property apply) are
+        coalesced to one bridge update per event-loop turn so intermediate
+        ``build_model()`` results never stack back-to-back on the GUI thread.
         """
+        self._pending_model = model
+        self._pending_reset_camera = reset_camera
+        if not self._model_coalesce_timer.isActive():
+            self._model_coalesce_timer.start(0)
+
+    def _flush_coalesced_model(self) -> None:
+        model = self._pending_model
+        if model is None:
+            return
+        reset_camera = self._pending_reset_camera
+        self._pending_model = None
         self.bridge.set_model(model)
         if reset_camera:
             self.set_camera_preset("iso")
+
+    def _ensure_bridge_current(self) -> None:
+        """Apply any coalesced ``set_model`` before other bridge operations."""
+        if self._pending_model is None:
+            return
+        self._model_coalesce_timer.stop()
+        self._flush_coalesced_model()
 
     def show_result(
         self,
@@ -205,6 +238,7 @@ class Quick3DViewport(QFrame):
         show_undeformed: bool = True,
         member_magnitudes: dict[int, float] | None = None,
     ) -> None:
+        self._ensure_bridge_current()
         self.bridge.set_result(
             model, result, scale, show_undeformed, member_magnitudes=member_magnitudes
         )
@@ -216,6 +250,7 @@ class Quick3DViewport(QFrame):
         show_original: bool = True,
         show_deformed: bool = True,
     ) -> None:
+        self._ensure_bridge_current()
         self.bridge.begin_time_history_deformation(
             model, show_original=show_original, show_deformed=show_deformed
         )
@@ -228,6 +263,7 @@ class Quick3DViewport(QFrame):
         show_deformed: bool = True,
         node_ratios: dict[int, float] | None = None,
     ) -> None:
+        self._ensure_bridge_current()
         self.bridge.update_deformed_node_positions(
             deformed_points,
             show_original=show_original,
@@ -236,33 +272,43 @@ class Quick3DViewport(QFrame):
         )
 
     def end_time_history_deformation(self) -> None:
+        self._ensure_bridge_current()
         self.bridge.end_time_history_deformation()
 
     def begin_torsion_marker_mode(self, model: StructuralModel, marker_count: int = 5) -> None:
+        self._ensure_bridge_current()
         self.bridge.begin_torsion_marker_mode(model, marker_count=marker_count)
 
     def update_torsion_markers(self, arms: tuple[object, ...], *, visible: bool) -> None:
+        self._ensure_bridge_current()
         self.bridge.update_torsion_markers(arms, visible=visible)
 
     def end_torsion_marker_mode(self) -> None:
+        self._ensure_bridge_current()
         self.bridge.end_torsion_marker_mode()
 
     def clear_result(self) -> None:
+        self._ensure_bridge_current()
         self.bridge.clear_result()
 
     def set_loads_visible(self, visible: bool) -> None:
+        self._ensure_bridge_current()
         self.bridge.set_loads_visible(visible)
 
     def set_supports_visible(self, visible: bool) -> None:
+        self._ensure_bridge_current()
         self.bridge.set_supports_visible(visible)
 
     def set_local_axes_visible(self, visible: bool) -> None:
+        self._ensure_bridge_current()
         self.bridge.set_local_axes_visible(visible)
 
     def set_load_filter(self, load_filter: str) -> None:
+        self._ensure_bridge_current()
         self.bridge.set_load_filter(load_filter)
 
     def set_load_case_filter(self, case_filter: str) -> None:
+        self._ensure_bridge_current()
         self.bridge.set_load_case_filter(case_filter)
 
     def set_load_entries(
@@ -276,6 +322,7 @@ class Quick3DViewport(QFrame):
         active_combination_id: str | None = None,
         scale: float = 1.0,
     ) -> None:
+        self._ensure_bridge_current()
         self.bridge.set_load_entries(
             load_entries,
             load_cases,
@@ -287,15 +334,19 @@ class Quick3DViewport(QFrame):
         )
 
     def set_selected_node(self, tag: int | None) -> None:
+        self._ensure_bridge_current()
         self.bridge.set_selected_node(tag)
 
     def set_selection(self, node_tags: set[int], member_tags: set[int]) -> None:
+        self._ensure_bridge_current()
         self.bridge.set_selection(node_tags, member_tags)
 
     def set_isolate(self, node_tags: set[int], member_tags: set[int]) -> None:
+        self._ensure_bridge_current()
         self.bridge.set_isolate(node_tags, member_tags)
 
     def clear_isolate(self) -> None:
+        self._ensure_bridge_current()
         self.bridge.clear_isolate()
 
     def isolate_active(self) -> bool:

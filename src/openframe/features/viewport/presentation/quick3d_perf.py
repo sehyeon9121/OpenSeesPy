@@ -41,6 +41,7 @@ class Quick3DPerfCounters:
     set_model_calls: int = 0
     set_model_incremental: int = 0
     set_model_full: int = 0
+    set_model_skipped: int = 0
     incremental_fallbacks: int = 0
     signal_emits: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     scoped_ms: dict[str, float] = field(default_factory=lambda: defaultdict(float))
@@ -58,6 +59,7 @@ class Quick3DPerfCounters:
         self.set_model_calls = 0
         self.set_model_incremental = 0
         self.set_model_full = 0
+        self.set_model_skipped = 0
         self.build_model_calls = 0
         self.incremental_fallbacks = 0
         self.signal_emits.clear()
@@ -68,7 +70,8 @@ class Quick3DPerfCounters:
     def summary_lines(self) -> list[str]:
         lines = [
             f"set_model calls={self.set_model_calls} "
-            f"(incremental={self.set_model_incremental}, full={self.set_model_full})",
+            f"(incremental={self.set_model_incremental}, full={self.set_model_full}, "
+            f"skipped={self.set_model_skipped})",
             f"build_model calls={self.build_model_calls} incremental_fallbacks={self.incremental_fallbacks}",
             f"topology_rebuilds={self.topology_rebuilds} scene_rebuilds={self.scene_rebuilds} "
             f"geometry_updates={self.geometry_updates} selection_updates={self.selection_updates} "

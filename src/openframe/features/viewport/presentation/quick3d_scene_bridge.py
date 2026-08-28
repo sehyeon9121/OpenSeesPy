@@ -174,6 +174,10 @@ class Quick3DSceneBridge(QObject):
     loads_changed = Signal()
     #: Isolate, load/support/local-axis master toggles, and load filters.
     visibility_changed = Signal()
+    #: Bounding-box centre/extent/ground metrics - camera framing only, not
+    #: delegate transforms.  Kept off ``geometry_changed`` so moving a node
+    #: does not re-run every ``geometryRevision`` binding in all Repeaters.
+    scene_metrics_changed = Signal()
     #: Emitted when time-history deformation updates node/member coordinates
     #: in place - without rebuilding the whole scene (see deformationRevision).
     deformed_positions_changed = Signal()
@@ -255,7 +259,9 @@ class Quick3DSceneBridge(QObject):
         #: Stable Repeater3D model lists for topology-preserving edits - see
         #: ``_update_geometry_in_place`` (mirrors time-history deformation).
         self._cached_topology_fingerprint: tuple[object, ...] | None = None
+        self._cached_geometry_signature: tuple[object, ...] | None = None
         self._geometry_revision = 0
+        self._scene_metrics_revision = 0
         self._visibility_revision = 0
         self._preview_revision = 0
         self._loads_revision = 0
@@ -298,6 +304,21 @@ class Quick3DSceneBridge(QObject):
 
             with recorder.scope("topology_fingerprint"):
                 fingerprint = self._compute_topology_fingerprint(model)
+            geometry_signature = self._model_geometry_signature(model)
+
+            if (
+                self._cached_topology_fingerprint is not None
+                and fingerprint == self._cached_topology_fingerprint
+                and geometry_signature == self._cached_geometry_signature
+                and self._nodes
+            ):
+                self._last_model = model
+                if perf_enabled():
+                    recorder.counters.set_model_skipped += 1
+                self._restore_selection(preserved_nodes, preserved_members, model)
+                self._restore_isolate(*preserved_isolate, model)
+                self._record_bridge_state()
+                return
 
             if (
                 self._cached_topology_fingerprint is not None
@@ -307,6 +328,7 @@ class Quick3DSceneBridge(QObject):
                 self._last_model = model
                 with recorder.scope("incremental_geometry"):
                     self._update_geometry_in_place(model)
+                self._cached_geometry_signature = geometry_signature
                 self._restore_selection(preserved_nodes, preserved_members, model)
                 self._restore_isolate(*preserved_isolate, model)
                 if perf_enabled():
@@ -318,11 +340,13 @@ class Quick3DSceneBridge(QObject):
             with recorder.scope("full_topology_rebuild"):
                 self._full_topology_rebuild(model)
             self._cached_topology_fingerprint = fingerprint
+            self._cached_geometry_signature = geometry_signature
             self._restore_selection(preserved_nodes, preserved_members, model)
             self._restore_isolate(*preserved_isolate, model)
             if perf_enabled():
                 recorder.counters.set_model_full += 1
             self._emit_topology_changed()
+            self._emit_scene_metrics_changed()
             self._record_bridge_state()
 
     def set_result(
@@ -366,7 +390,7 @@ class Quick3DSceneBridge(QObject):
                 "x": point[0],
                 "y": point[1],
                 "z": point[2],
-                "radius": self._node_radii.get(tag, self._node_radius),
+                "radius": self._display_node_radius(tag),
                 "color": _color_for_ratio(ratios.get(tag, 0.0)),
                 "opacity": 1.0,
             }
@@ -405,7 +429,7 @@ class Quick3DSceneBridge(QObject):
                     "x": point[0],
                     "y": point[1],
                     "z": point[2],
-                    "radius": self._node_radii.get(tag, self._node_radius),
+                    "radius": self._display_node_radius(tag),
                     "color": _GHOST_COLOR,
                     "opacity": _GHOST_OPACITY,
                 }
@@ -475,7 +499,7 @@ class Quick3DSceneBridge(QObject):
                 "x": point[0],
                 "y": point[1],
                 "z": point[2],
-                "radius": self._node_radii.get(tag, self._node_radius),
+                "radius": self._display_node_radius(tag),
                 "color": _DEFAULT_NODE_COLOR,
                 "opacity": 1.0,
             }
@@ -674,7 +698,7 @@ class Quick3DSceneBridge(QObject):
                 "x": point[0],
                 "y": point[1],
                 "z": point[2],
-                "radius": self._node_radii.get(tag, self._node_radius),
+                "radius": self._display_node_radius(tag),
                 "color": _GHOST_COLOR,
                 "opacity": _GHOST_OPACITY,
             }
@@ -727,6 +751,12 @@ class Quick3DSceneBridge(QObject):
         if self._local_axes_visible == visible:
             return
         self._local_axes_visible = visible
+        if visible and self._last_model is not None and self._points:
+            self._local_axis_gizmos = self._local_axis_gizmo_parts(
+                self._last_model, self._points
+            )
+            self._geometry_revision += 1
+            self._emit_geometry_changed()
         self._emit_visibility_changed()
 
     def set_load_filter(self, load_filter: str) -> None:
@@ -791,6 +821,8 @@ class Quick3DSceneBridge(QObject):
         if self._last_model is not None:
             node_tags = {tag for tag in node_tags if tag in self._last_model.nodes}
             member_tags = {tag for tag in member_tags if tag in self._last_model.elements}
+        if node_tags == self._selected_node_tags and member_tags == self._selected_member_tags:
+            return
         self._selected_node_tags = set(node_tags)
         self._selected_member_tags = set(member_tags)
         self._emit_selection_changed()
@@ -936,6 +968,10 @@ class Quick3DSceneBridge(QObject):
     def geometryRevision(self) -> int:
         return self._geometry_revision
 
+    @Property(int, notify=scene_metrics_changed)
+    def sceneMetricsRevision(self) -> int:
+        return self._scene_metrics_revision
+
     @Property(int, notify=selection_changed)
     def selectionRevision(self) -> int:
         return self._selection_revision
@@ -953,6 +989,14 @@ class Quick3DSceneBridge(QObject):
         """Only the selected nodes - keeps the halo Repeater3D small."""
         lookup = self._node_by_tag
         return [lookup[tag] for tag in sorted(self._selected_node_tags) if tag in lookup]
+
+    @Property("QVariantList", notify=selection_changed)
+    def selectedMemberHighlight(self) -> list[dict[str, float | int | str]]:
+        """Selected member parts only - highlight overlay without rebinding every delegate."""
+        if not self._selected_member_tags:
+            return []
+        selected = self._selected_member_tags
+        return [part for part in self._members if int(part["tag"]) in selected]
 
     @Property("QVariantList", notify=topology_changed)
     def ghostNodes(self) -> list[dict[str, float | int | str]]:
@@ -1009,31 +1053,31 @@ class Quick3DSceneBridge(QObject):
     def localAxisGizmos(self) -> list[dict[str, float | int | str]]:
         return self._local_axis_gizmos
 
-    @Property(float, notify=geometry_changed)
+    @Property(float, notify=scene_metrics_changed)
     def center_x(self) -> float:
         return self._center[0]
 
-    @Property(float, notify=geometry_changed)
+    @Property(float, notify=scene_metrics_changed)
     def center_y(self) -> float:
         return self._center[1]
 
-    @Property(float, notify=geometry_changed)
+    @Property(float, notify=scene_metrics_changed)
     def center_z(self) -> float:
         return self._center[2]
 
-    @Property(float, notify=geometry_changed)
+    @Property(float, notify=scene_metrics_changed)
     def extent(self) -> float:
         return self._extent
 
-    @Property(float, notify=geometry_changed)
+    @Property(float, notify=scene_metrics_changed)
     def ground_y(self) -> float:
         return self._ground_y
 
-    @Property(float, notify=geometry_changed)
+    @Property(float, notify=scene_metrics_changed)
     def ground_width(self) -> float:
         return self._ground_width
 
-    @Property(float, notify=geometry_changed)
+    @Property(float, notify=scene_metrics_changed)
     def ground_depth(self) -> float:
         return self._ground_depth
 
@@ -1098,9 +1142,16 @@ class Quick3DSceneBridge(QObject):
             half_width = 0.5 * max(visual["width_b"], visual["width_h"])
             bulge = min(half_width * 1.08, self._extent * 0.03)
             for tag in (element.node_i, element.node_j):
-                if bulge > radii.get(tag, 0.0):
+                # Only enlarge past the section-agnostic fallback - storing a
+                # bulge smaller than ``_node_radius`` used to shrink the
+                # marker at that joint and could make nodes vanish on screen.
+                if bulge > self._node_radius and bulge > radii.get(tag, 0.0):
                     radii[tag] = bulge
         return radii
+
+    def _display_node_radius(self, tag: int) -> float:
+        """On-screen node marker radius - never below the global fallback."""
+        return max(self._node_radii.get(tag, 0.0), self._node_radius)
 
     def _rebuild_default_geometry(self, model: StructuralModel) -> None:
         self._local_axis_gizmos = self._local_axis_gizmo_parts(model, self._points)
@@ -1110,7 +1161,7 @@ class Quick3DSceneBridge(QObject):
                 "x": point[0],
                 "y": point[1],
                 "z": point[2],
-                "radius": self._node_radii.get(tag, self._node_radius),
+                "radius": self._display_node_radius(tag),
                 "color": _DEFAULT_NODE_COLOR,
                 "opacity": 1.0,
             }
@@ -1147,7 +1198,19 @@ class Quick3DSceneBridge(QObject):
         self,
         model: StructuralModel,
         points: dict[int, tuple[float, float, float]],
-    ) -> None:
+    ) -> bool:
+        """Refresh bbox centre/extent and derived marker radii.
+
+        Returns True when camera-framing metrics changed.  Node radii are only
+        recomputed when extent moves - a pure translate of the whole model
+        should not walk every element again on a 4k-member scene.
+        """
+        previous_extent = self._extent
+        previous_center = self._center
+        previous_ground_y = self._ground_y
+        previous_ground_width = self._ground_width
+        previous_ground_depth = self._ground_depth
+
         x_values = [point[0] for point in points.values()]
         y_values = [point[1] for point in points.values()]
         z_values = [point[2] for point in points.values()]
@@ -1159,7 +1222,9 @@ class Quick3DSceneBridge(QObject):
         self._extent = max(*spans, 1.0)
         self._default_thickness = max(self._extent * 0.012, 0.025)
         self._node_radius = self._default_thickness * 0.72
-        self._node_radii = self._compute_node_radii(model, self._default_thickness)
+        extent_changed = abs(self._extent - previous_extent) > max(previous_extent, 1.0) * 1.0e-9
+        if extent_changed or not self._node_radii:
+            self._node_radii = self._compute_node_radii(model, self._default_thickness)
         self._center = (
             0.5 * (min(x_values) + max(x_values)),
             0.5 * (min(y_values) + max(y_values)),
@@ -1180,13 +1245,20 @@ class Quick3DSceneBridge(QObject):
             self._ground_y = min(y_values) - self._extent * 0.025
         self._ground_width = max(spans[0] + self._extent * 0.35, self._extent * 0.5)
         self._ground_depth = max(spans[2] + self._extent * 0.35, self._extent * 0.5)
+        return (
+            extent_changed
+            or self._center != previous_center
+            or self._ground_y != previous_ground_y
+            or self._ground_width != previous_ground_width
+            or self._ground_depth != previous_ground_depth
+        )
 
     def _update_geometry_in_place(self, model: StructuralModel) -> None:
         """Move existing node/member/load/support dicts without replacing lists."""
         points = {
             tag: self._view_coordinates(node.x, node.y, node.z) for tag, node in model.nodes.items()
         }
-        self._update_scene_metrics(model, points)
+        metrics_changed = self._update_scene_metrics(model, points)
         self._points = points
 
         for tag, point in points.items():
@@ -1197,7 +1269,7 @@ class Quick3DSceneBridge(QObject):
             entry["x"] = point[0]
             entry["y"] = point[1]
             entry["z"] = point[2]
-            entry["radius"] = self._node_radii.get(tag, self._node_radius)
+            entry["radius"] = self._display_node_radius(tag)
 
         for element, part_dicts in self._geometry_member_records:
             color = _member_type_color(element)
@@ -1209,36 +1281,52 @@ class Quick3DSceneBridge(QObject):
                 )
                 return
 
-        fresh_loads = self._build_all_load_arrows(model, points)
-        if not self._replace_part_list_in_place(self._load_arrows, fresh_loads, "load_arrows"):
-            self._fallback_to_full_topology_rebuild(model, reason="load_arrows")
-            return
+        loads_dirty = False
+        if model.nodal_loads or model.element_loads:
+            fresh_loads = self._build_all_load_arrows(model, points)
+            if not self._replace_part_list_in_place(self._load_arrows, fresh_loads, "load_arrows"):
+                self._fallback_to_full_topology_rebuild(model, reason="load_arrows")
+                return
+            loads_dirty = True
 
-        fresh_supports = self._build_support_parts(model, points)
-        if not self._replace_part_list_in_place(self._support_parts, fresh_supports, "support_parts"):
-            self._fallback_to_full_topology_rebuild(model, reason="support_parts")
-            return
+        if model.boundaries:
+            fresh_supports = self._build_support_parts(model, points)
+            if not self._replace_part_list_in_place(
+                self._support_parts, fresh_supports, "support_parts"
+            ):
+                self._fallback_to_full_topology_rebuild(model, reason="support_parts")
+                return
+            loads_dirty = True
 
-        fresh_gizmos = self._local_axis_gizmo_parts(model, points)
-        if not self._replace_part_list_in_place(
-            self._local_axis_gizmos, fresh_gizmos, "local_axis_gizmos"
-        ):
-            self._fallback_to_full_topology_rebuild(model, reason="local_axis_gizmos")
-            return
+        if self._local_axes_visible and self._local_axis_gizmos:
+            fresh_gizmos = self._local_axis_gizmo_parts(model, points)
+            if not self._replace_part_list_in_place(
+                self._local_axis_gizmos, fresh_gizmos, "local_axis_gizmos"
+            ):
+                self._fallback_to_full_topology_rebuild(model, reason="local_axis_gizmos")
+                return
 
         entry_key = self._load_entries_topology_key()
         if entry_key != self._load_entry_topology_key:
             self._load_entry_topology_key = entry_key
             self._rebuild_load_entry_parts()
-            self._emit_loads_changed()
+            loads_dirty = True
         elif self._load_entry_parts:
-            self._rebuild_load_entry_parts()
-            self._emit_loads_changed()
-        else:
+            fresh_entries = self._build_load_entry_parts(model, points)
+            if not self._replace_part_list_in_place(
+                self._load_entry_parts, fresh_entries, "load_entry_parts"
+            ):
+                self._fallback_to_full_topology_rebuild(model, reason="load_entry_parts")
+                return
+            loads_dirty = True
+
+        if loads_dirty:
             self._emit_loads_changed()
 
         self._geometry_revision += 1
         self._emit_geometry_changed()
+        if metrics_changed:
+            self._emit_scene_metrics_changed()
         if perf_enabled():
             perf_recorder().counters.geometry_updates += 1
 
@@ -1248,7 +1336,9 @@ class Quick3DSceneBridge(QObject):
             perf_recorder().record_incremental_fallback(reason)
         self._full_topology_rebuild(model)
         self._cached_topology_fingerprint = self._compute_topology_fingerprint(model)
+        self._cached_geometry_signature = self._model_geometry_signature(model)
         self._emit_topology_changed()
+        self._emit_scene_metrics_changed()
 
     @staticmethod
     def _replace_part_list_in_place(
@@ -1312,6 +1402,41 @@ class Quick3DSceneBridge(QObject):
             self._load_entries_topology_key(),
             self._local_axis_topology_signature(model),
         )
+
+    @staticmethod
+    def _model_geometry_signature(model: StructuralModel) -> tuple[object, ...]:
+        """Everything that moves existing delegates without a topology rebuild."""
+        nodes = tuple(
+            (tag, round(node.x, 9), round(node.y, 9), round(node.z, 9))
+            for tag, node in sorted(model.nodes.items())
+        )
+        nodal_loads = tuple(
+            sorted(
+                (
+                    load.node_tag,
+                    load.case_type.value,
+                    load.pattern_tag,
+                    tuple(round(value, 9) for value in load.values[:6]),
+                )
+                for load in model.nodal_loads
+            )
+        )
+        element_loads = tuple(
+            sorted(
+                (
+                    load.element_tag,
+                    load.case_type.value,
+                    load.pattern_tag,
+                    round(load.wx, 9),
+                    round(load.wy, 9),
+                    round(load.wz, 9),
+                    round(load.xL1, 9),
+                    round(load.xL2, 9),
+                )
+                for load in model.element_loads
+            )
+        )
+        return (nodes, nodal_loads, element_loads)
 
     def _element_topology_signature(self, element: Element) -> tuple[object, ...]:
         props = element.properties
@@ -1454,6 +1579,21 @@ class Quick3DSceneBridge(QObject):
     ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
         return (self._quantize_preview_point(start), self._quantize_preview_point(end))
 
+    def resync_after_qml_load(self) -> None:
+        """Replay scene notifications QML missed before ``setSource()`` ran.
+
+        ``set_model()`` often finishes while the viewport still has
+        ``WA_DontShowOnScreen`` set, so the first ``topology_changed`` /
+        ``geometry_changed`` can fire with no Repeater3D listening yet.
+        Re-emit once the scene graph exists so nodes and members actually
+        appear instead of leaving an empty view until the next edit.
+        """
+        if not self._nodes:
+            return
+        self._emit_topology_changed()
+        self._emit_geometry_changed()
+        self._emit_scene_metrics_changed()
+
     def _emit_topology_changed(self) -> None:
         if perf_enabled():
             counters = perf_recorder().counters
@@ -1467,6 +1607,11 @@ class Quick3DSceneBridge(QObject):
     def _emit_geometry_changed(self) -> None:
         self._record_signal("geometry_changed")
         self.geometry_changed.emit()
+
+    def _emit_scene_metrics_changed(self) -> None:
+        self._scene_metrics_revision += 1
+        self._record_signal("scene_metrics_changed")
+        self.scene_metrics_changed.emit()
 
     def _emit_preview_changed(self) -> None:
         self._preview_revision += 1
@@ -2892,9 +3037,11 @@ class Quick3DSceneBridge(QObject):
         self._ground_depth = 1.0
         self._points = {}
         self._cached_topology_fingerprint = None
+        self._cached_geometry_signature = None
         self._node_by_tag = {}
         self._geometry_member_records = []
         self._emit_topology_changed()
+        self._emit_scene_metrics_changed()
 
     @staticmethod
     def _view_coordinates(x: float, y: float, z: float) -> tuple[float, float, float]:

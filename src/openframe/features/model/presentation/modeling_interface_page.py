@@ -1957,6 +1957,7 @@ class ModelingInterfacePage(QFrame):
         behavior = self.element_type_selector.currentData()
         axial_only = behavior != "general_beam"
         self.canvas.element_family = "truss" if axial_only else "frame"
+        self.canvas.element_behavior = behavior
 
         # Keep the older model-level controls consistent without letting their
         # signals collapse a refined axial choice (e.g. Cable) back to Truss.
@@ -6680,6 +6681,7 @@ class ModelingInterfacePage(QFrame):
         self.canvas.element_family = (
             "frame" if element_behavior == "general_beam" else "truss"
         )
+        self.canvas.element_behavior = element_behavior
         self._element_property_selection_changed()
         self.truss_mode_toggle.blockSignals(True)
         self.truss_mode_toggle.setChecked(self.canvas.element_family == "truss")
@@ -7038,6 +7040,7 @@ class ModelingInterfacePage(QFrame):
         self.canvas.element_family = "truss" if checked else "frame"
         if hasattr(self, "element_type_selector"):
             target_behavior = "truss" if checked else "general_beam"
+            self.canvas.element_behavior = target_behavior
             behavior_index = self.element_type_selector.findData(target_behavior)
             if behavior_index >= 0:
                 self.element_type_selector.blockSignals(True)
@@ -7189,7 +7192,13 @@ class ModelingInterfacePage(QFrame):
         self, node_tags: set[int], member_tags: set[int], additive: bool
     ) -> None:
         """Apply the QML viewport's projected rectangle selection to the
-        shared modeling canvas state, including the active selection filter.
+        shared modeling canvas state.
+
+        Deliberately ignores ``selection_filter``: transform tabs (부재
+        이동/복사, 노드 이동/복사 등) auto-narrow the filter to "elements" or
+        "nodes" so a plain click picks only the kind being transformed, but
+        a drag box must still take everything the QML view enclosed — half
+        the box result used to be dropped with no visible reason why.
 
         A no-op while picking a floor boundary - a box has no click order,
         so honoring it here would silently overwrite selected_nodes out from
@@ -7201,10 +7210,8 @@ class ModelingInterfacePage(QFrame):
         if not additive:
             self.canvas.selected_nodes.clear()
             self.canvas.selected_elements.clear()
-        if self.canvas.selection_filter in {"all", "nodes"}:
-            self.canvas.selected_nodes.update(node_tags)
-        if self.canvas.selection_filter in {"all", "elements"}:
-            self.canvas.selected_elements.update(member_tags)
+        self.canvas.selected_nodes.update(node_tags)
+        self.canvas.selected_elements.update(member_tags)
         self.canvas.selection_changed.emit()
 
     def _on_3d_node_hovered(self, tag: int) -> None:

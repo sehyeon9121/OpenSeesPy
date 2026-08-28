@@ -57,6 +57,7 @@ class _SerializationMixin:
             "version": 1,
             "ndm": self.ndm,
             "element_family": self.element_family,
+            "element_behavior": self.element_behavior,
             "include_self_weight": self.include_self_weight,
             "levels": [
                 {"kind": str(plane.kind), "offset": plane.offset, "label": plane.label}
@@ -174,6 +175,7 @@ class _SerializationMixin:
         """
         self.ndm = int(data.get("ndm", 2))
         self.element_family = str(data.get("element_family", "frame"))
+        self.element_behavior = str(data.get("element_behavior", "general_beam"))
         self.include_self_weight = bool(data.get("include_self_weight", False))
         levels_data = data.get("levels") or [{"kind": "xy", "offset": 0.0, "label": "1F"}]
         self.levels = [
