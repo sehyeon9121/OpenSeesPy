@@ -3,9 +3,17 @@ import QtQuick3D
 
 Item {
     id: root
+    // sceneBridge is cleared during QQuickWidget teardown while bindings still
+    // evaluate once more - guard every read so offscreen tests do not spam
+    // "Cannot read property 'extent' of null".
+    readonly property bool bridgeReady: sceneBridge !== null && sceneBridge !== undefined
+    readonly property real bridgeExtent: bridgeReady ? sceneBridge.extent : 1.0
+    readonly property real bridgeCenterX: bridgeReady ? sceneBridge.center_x : 0.0
+    readonly property real bridgeCenterY: bridgeReady ? sceneBridge.center_y : 0.0
+    readonly property real bridgeCenterZ: bridgeReady ? sceneBridge.center_z : 0.0
     property real cameraYaw: 45
     property real cameraPitch: -25
-    property real cameraDistance: Math.max(sceneBridge.extent * 2.8, 4.0)
+    property real cameraDistance: Math.max(bridgeExtent * 2.8, 4.0)
     property real panX: 0
     property real panY: 0
     property real lastMouseX: 0
@@ -58,6 +66,8 @@ Item {
     }
 
     function showSnapFeedback(tag) {
+        if (!bridgeReady)
+            return
         hoveredNodeTag = tag
         for (let index = 0; index < sceneBridge.nodes.length; ++index) {
             const node = sceneBridge.nodes[index]
@@ -126,6 +136,8 @@ Item {
     }
 
     function finishSelectionBox(additive) {
+        if (!bridgeReady)
+            return
         const left = Math.min(selectionStartX, selectionCurrentX)
         const right = Math.max(selectionStartX, selectionCurrentX)
         const top = Math.min(selectionStartY, selectionCurrentY)
@@ -181,7 +193,7 @@ Item {
         }
         panX = 0
         panY = 0
-        cameraDistance = Math.max(sceneBridge.extent * 2.8, 4.0)
+        cameraDistance = Math.max(bridgeExtent * 2.8, 4.0)
         cameraModeChanged(preset)
     }
 
@@ -191,15 +203,15 @@ Item {
     // in the view always matches what the 2D canvas would show for that plane.
     function planePosition() {
         if (root.planeKind === "xy") {
-            return Qt.vector3d(sceneBridge.center_x, root.planeOffset, sceneBridge.center_z)
+            return Qt.vector3d(bridgeCenterX, root.planeOffset, bridgeCenterZ)
         } else if (root.planeKind === "xz") {
-            return Qt.vector3d(sceneBridge.center_x, sceneBridge.center_y, -root.planeOffset)
+            return Qt.vector3d(bridgeCenterX, bridgeCenterY, -root.planeOffset)
         }
-        return Qt.vector3d(root.planeOffset, sceneBridge.center_y, sceneBridge.center_z)
+        return Qt.vector3d(root.planeOffset, bridgeCenterY, bridgeCenterZ)
     }
     function planeScale() {
-        let size = Math.max(sceneBridge.extent * 3, 10) / 100
-        let thin = Math.max(sceneBridge.extent * 0.003, 0.004) / 100
+        let size = Math.max(bridgeExtent * 3, 10) / 100
+        let thin = Math.max(bridgeExtent * 0.003, 0.004) / 100
         if (root.planeKind === "xy") {
             return Qt.vector3d(size, thin, size)
         } else if (root.planeKind === "xz") {
@@ -210,8 +222,8 @@ Item {
 
     function zoomBy(factor) {
         cameraDistance = Math.max(
-            sceneBridge.extent * 0.18,
-            Math.min(sceneBridge.extent * 25, cameraDistance * factor)
+            bridgeExtent * 0.18,
+            Math.min(bridgeExtent * 25, cameraDistance * factor)
         )
     }
 
@@ -230,17 +242,17 @@ Item {
             id: camera
             parent: cameraPitchNode
             position: Qt.vector3d(0, 0, root.cameraDistance)
-            clipNear: Math.max(sceneBridge.extent * 0.001, 0.001)
-            clipFar: Math.max(sceneBridge.extent * 30, 100)
+            clipNear: Math.max(bridgeExtent * 0.001, 0.001)
+            clipFar: Math.max(bridgeExtent * 30, 100)
             fieldOfView: 38
         }
 
         Node {
             id: cameraTarget
             position: Qt.vector3d(
-                sceneBridge.center_x + root.panX,
-                sceneBridge.center_y + root.panY,
-                sceneBridge.center_z
+                bridgeCenterX + root.panX,
+                bridgeCenterY + root.panY,
+                bridgeCenterZ
             )
             Node {
                 id: cameraYawNode
@@ -313,7 +325,7 @@ Item {
 
         Repeater3D {
             // MIDAS-style support glyphs: block=fixed, cone=pin, cone+rollers=roller.
-            model: sceneBridge.supportSymbols
+            model: bridgeReady ? sceneBridge.supportSymbols : []
             delegate: Model {
                 source: modelData.shape
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
@@ -355,7 +367,7 @@ Item {
             // it does a nested multi-child delegate (a copied member
             // intermittently rendered as a bare hairline instead of its
             // real cross-section under the nested form).
-            model: sceneBridge.members
+            model: bridgeReady ? sceneBridge.members : []
             delegate: Model {
                 property int memberTag: modelData.tag
                 source: modelData.source
@@ -393,7 +405,7 @@ Item {
             // Quick3DSceneBridge.set_preview_segment. Never pickable, so it
             // can never itself become a snap target while it follows the
             // cursor.
-            model: sceneBridge.previewMembers
+            model: bridgeReady ? sceneBridge.previewMembers : []
             delegate: Model {
                 source: "#Cube"
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
@@ -433,7 +445,7 @@ Item {
             // plain #Cylinder parts - the same pattern every other glyph
             // list here already uses - is far cheaper to rebuild every move.
             // Never pickable, so it can never shadow the nodes it connects.
-            model: sceneBridge.floorBoundaryOutline
+            model: bridgeReady ? sceneBridge.floorBoundaryOutline : []
             delegate: Model {
                 source: modelData.shape
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
@@ -461,7 +473,7 @@ Item {
         }
 
         Repeater3D {
-            model: sceneBridge.nodes
+            model: bridgeReady ? sceneBridge.nodes : []
             delegate: Model {
                 property int nodeTag: modelData.tag
                 property bool snapTarget: root.planePickingEnabled
@@ -491,7 +503,7 @@ Item {
             // A translucent outer sphere makes a selected node unmistakable
             // even when its solid red core is partly hidden by several
             // members. It is deliberately non-pickable.
-            model: sceneBridge.nodes
+            model: bridgeReady ? sceneBridge.nodes : []
             delegate: Model {
                 visible: modelData.selected === true
                 source: "#Sphere"
@@ -520,7 +532,7 @@ Item {
             // Translucent undeformed reference overlay - a plain B x H box
             // is enough here (no flange/web split), since it is only a faint
             // low-opacity backdrop behind the actual deformed member.
-            model: sceneBridge.ghostMembers
+            model: bridgeReady ? sceneBridge.ghostMembers : []
             delegate: Model {
                 source: modelData.source
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
@@ -549,7 +561,7 @@ Item {
         }
 
         Repeater3D {
-            model: sceneBridge.ghostNodes
+            model: bridgeReady ? sceneBridge.ghostNodes : []
             delegate: Model {
                 source: "#Sphere"
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
@@ -575,7 +587,7 @@ Item {
             // Each load contributes two flat entries (shaft + head), positioned and
             // rotated independently by the bridge - the same scheme members already
             // use - so there is no parent/child offset math that could leave a gap.
-            model: sceneBridge.loadArrows
+            model: bridgeReady ? sceneBridge.loadArrows : []
             delegate: Model {
                 source: modelData.shape
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
@@ -609,7 +621,7 @@ Item {
             // scheme (shaft/head/moment "bowtie" cone pair/distribution
             // line, each self-positioned) - see
             // Quick3DSceneBridge.loadEntryGlyphs.
-            model: sceneBridge.loadEntryGlyphs
+            model: bridgeReady ? sceneBridge.loadEntryGlyphs : []
             delegate: Model {
                 source: modelData.shape
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
@@ -639,7 +651,7 @@ Item {
         Repeater3D {
             // Local-axis gizmo: two flat entries per 3D member (local y, local
             // z), off by default - see Quick3DSceneBridge.localAxisGizmos.
-            model: sceneBridge.localAxisGizmos
+            model: bridgeReady ? sceneBridge.localAxisGizmos : []
             delegate: Model {
                 source: "#Cylinder"
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
@@ -738,15 +750,15 @@ Item {
         objectName: "worldOriginAxes"
         z: 8
         anchors.fill: parent
-        property real axisLength: Math.max(sceneBridge.extent * 0.18, 0.35)
+        property real axisLength: Math.max(bridgeExtent * 0.18, 0.35)
         property real trackedYaw: root.cameraYaw
         property real trackedPitch: root.cameraPitch
         property real trackedDistance: root.cameraDistance
         property real trackedPanX: root.panX
         property real trackedPanY: root.panY
-        property real trackedCenterX: sceneBridge.center_x
-        property real trackedCenterY: sceneBridge.center_y
-        property real trackedCenterZ: sceneBridge.center_z
+        property real trackedCenterX: bridgeCenterX
+        property real trackedCenterY: bridgeCenterY
+        property real trackedCenterZ: bridgeCenterZ
 
         function structuralPoint(x, y, z) {
             return view3d.mapFrom3DScene(Qt.vector3d(x, z, -y))
@@ -1141,8 +1153,8 @@ Item {
         onWheel: function(wheel) {
             let factor = wheel.angleDelta.y > 0 ? 0.88 : 1.14
             root.cameraDistance = Math.max(
-                sceneBridge.extent * 0.18,
-                Math.min(sceneBridge.extent * 25, root.cameraDistance * factor)
+                bridgeExtent * 0.18,
+                Math.min(bridgeExtent * 25, root.cameraDistance * factor)
             )
             wheel.accepted = true
         }
