@@ -34,20 +34,22 @@ _COLOR_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
 
 _DEFAULT_NODE_COLOR = "#2877b7"
 _DEFAULT_MEMBER_COLOR = "#647789"
-#: Categorical palette (Tableau10-derived, red dropped since it's reserved for
-#: the selection highlight) used to color-code members by assigned section in
-#: the default (non-results) view, so a W24x100 column and a W8x10 brace read
-#: as visibly different members even where their box-extrusion sizes alone
-#: are hard to tell apart at a glance. Assigned in ``_assign_section_colors``.
-_SECTION_COLOR_PALETTE: tuple[str, ...] = (
-    "#4c78a8",  # blue
-    "#f58518",  # orange
-    "#54a24b",  # green
-    "#b279a2",  # purple
-    "#eeca3b",  # yellow
-    "#72b7b2",  # teal
-    "#9d755d",  # brown
-)
+#: MIDAS-style structural-intent palette: every member reads by what it
+#: structurally *is* (moment-connected beam/column vs. an axial-only
+#: brace/tie/cable) rather than by whichever cross-section happens to be
+#: assigned to it - far more useful at a glance when scanning a whole
+#: building for e.g. a tension-only brace pattern than a per-section
+#: palette was, where a W24x100 column and a W8x10 brace of the same
+#: family just happened to read as different colors (or the same one, if
+#: they shared a section). Red is dropped since it's reserved for the
+#: selection highlight. Looked up in ``_member_type_color``.
+_MEMBER_TYPE_COLORS: dict[str, str] = {
+    "general_beam": _DEFAULT_MEMBER_COLOR,
+    "truss": "#4c78a8",  # blue
+    "tension_only": "#54a24b",  # green
+    "compression_only": "#f58518",  # orange
+    "cable": "#b279a2",  # purple
+}
 #: Free-form 3D draw mode's live rubber-band preview - a thin, translucent
 #: cube from the open chain's last node to wherever the cursor (or a node it
 #: has snapped onto) currently is, cleared the instant the segment commits.
@@ -80,7 +82,6 @@ _LOAD_CASE_COLORS = {
 #: ramp and the load-arrow reds/oranges/purples, so it reads as "selected" regardless
 #: of what colour the node would otherwise have.
 _SELECTED_NODE_COLOR = "#ef4444"
-_SELECTED_NODE_RADIUS_SCALE = 2.0
 _SELECTED_MEMBER_COLOR = "#ef4444"
 _SELECTED_MEMBER_THICKNESS_SCALE = 1.35
 _SUPPORT_COLORS = {
@@ -109,6 +110,24 @@ _LOCAL_Z_AXIS_COLOR = "#ec4899"
 _TRUSS_ELEMENT_TYPES = frozenset({"truss", "corottruss"})
 
 
+def _member_type_color(element: Element) -> str:
+    """The structural-intent palette color for ``element`` (see
+    ``_MEMBER_TYPE_COLORS``).
+
+    Reads the fine-grained choice stamped at draw time into
+    ``properties["behavior"]`` (general_beam/truss/tension_only/
+    compression_only/cable - see ``canvas_geometry.add_member``); falls
+    back to the coarse element_type-derived family (frame vs. truss) for
+    anything drawn before this existed, split from such an element, or
+    produced by an importer that only ever fills in ``element_type``.
+    """
+    behavior = element.properties.get("behavior")
+    if isinstance(behavior, str) and behavior in _MEMBER_TYPE_COLORS:
+        return _MEMBER_TYPE_COLORS[behavior]
+    is_truss = element.element_type.lower() in _TRUSS_ELEMENT_TYPES
+    return _MEMBER_TYPE_COLORS["truss" if is_truss else "general_beam"]
+
+
 def _color_for_ratio(ratio: float) -> str:
     """Hex colour at ``ratio`` (0..1) along the shared blue-to-red scale.
 
@@ -135,6 +154,8 @@ def _color_for_ratio(ratio: float) -> str:
 
 class Quick3DSceneBridge(QObject):
     scene_changed = Signal()
+    #: Selection highlight only - must not invalidate the whole scene graph.
+    selection_changed = Signal()
     #: Emitted when time-history deformation updates node/member coordinates
     #: in place - without rebuilding the whole scene (see deformationRevision).
     deformed_positions_changed = Signal()
@@ -171,6 +192,7 @@ class Quick3DSceneBridge(QObject):
         self._last_model: StructuralModel | None = None
         self._selected_node_tags: set[int] = set()
         self._selected_member_tags: set[int] = set()
+        self._selection_revision = 0
         #: Per-node bulge radius (see _compute_node_radii) - a large section's
         #: box can be several times wider than the old flat, section-agnostic
         #: node radius, swallowing the node both visually and for picking.
@@ -427,12 +449,10 @@ class Quick3DSceneBridge(QObject):
             self._deformed_node_by_tag[tag] = entry
             self._nodes.append(entry)
 
-        section_colors = self._assign_section_colors(model)
         self._members = []
         self._deformation_member_records = []
         for element in sorted(model.elements.values(), key=lambda item: item.tag):
-            key = self._section_color_key(element.properties)
-            color = _DEFAULT_MEMBER_COLOR if key is None else section_colors[key]
+            color = _member_type_color(element)
             parts = self._member_parts(
                 element, self._points, self._default_thickness, color=color
             )
@@ -710,7 +730,7 @@ class Quick3DSceneBridge(QObject):
     def set_selected_node(self, tag: int | None) -> None:
         self._selected_node_tags = set() if tag is None else {tag}
         self._selected_member_tags.clear()
-        self.scene_changed.emit()
+        self._emit_selection_changed()
 
     def set_selection(self, node_tags: set[int], member_tags: set[int]) -> None:
         """Highlight the authoring canvas selection in the 3D scene.
@@ -720,7 +740,11 @@ class Quick3DSceneBridge(QObject):
         """
         self._selected_node_tags = set(node_tags)
         self._selected_member_tags = set(member_tags)
-        self.scene_changed.emit()
+        self._emit_selection_changed()
+
+    def _emit_selection_changed(self) -> None:
+        self._selection_revision += 1
+        self.selection_changed.emit()
 
     def set_isolate(self, node_tags: set[int], member_tags: set[int]) -> None:
         """MIDAS-style "Active Only" view filter: hide everything except the
@@ -826,45 +850,35 @@ class Quick3DSceneBridge(QObject):
 
     @Property("QVariantList", notify=scene_changed)
     def nodes(self) -> list[dict[str, float | int | str]]:
-        source = self._nodes
         if self._isolate_active:
-            source = [node for node in source if node["tag"] in self._isolate_node_tags]
-        if not self._selected_node_tags:
-            return source
-        # A picked node is highlighted here rather than baked into `_nodes` at build
-        # time, so the highlight survives whatever set_result()/clear_result() next
-        # rebuilds `_nodes` with (deformation scale changes, undeformed toggle, ...).
-        highlighted = []
-        for node in source:
-            if node["tag"] in self._selected_node_tags:
-                node = dict(node)
-                node["selected"] = True
-                node["color"] = _SELECTED_NODE_COLOR
-                node["radius"] = node["radius"] * _SELECTED_NODE_RADIUS_SCALE
-            highlighted.append(node)
-        return highlighted
+            return [node for node in self._nodes if node["tag"] in self._isolate_node_tags]
+        return self._nodes
 
     @Property("QVariantList", notify=scene_changed)
     def members(self) -> list[dict[str, float | int | str]]:
-        source = self._members
         if self._isolate_active:
-            source = [member for member in source if member["tag"] in self._isolate_member_tags]
-        if not self._selected_member_tags:
-            return source
-        highlighted = []
-        for member in source:
-            if member["tag"] in self._selected_member_tags:
-                member = dict(member)
-                member["selected"] = True
-                member["color"] = _SELECTED_MEMBER_COLOR
-                # Each part (a plain box, or one of an H-section's web/
-                # flanges) is now fully self-contained - scaling its own
-                # width_b/width_h is enough, no separate web/flange keys to
-                # keep in sync with it any more.
-                member["width_b"] = member["width_b"] * _SELECTED_MEMBER_THICKNESS_SCALE
-                member["width_h"] = member["width_h"] * _SELECTED_MEMBER_THICKNESS_SCALE
-            highlighted.append(member)
-        return highlighted
+            return [
+                member for member in self._members if member["tag"] in self._isolate_member_tags
+            ]
+        return self._members
+
+    @Property(int, notify=selection_changed)
+    def selectionRevision(self) -> int:
+        return self._selection_revision
+
+    @Property("QVariantList", notify=selection_changed)
+    def selectedNodeTags(self) -> list[int]:
+        return sorted(self._selected_node_tags)
+
+    @Property("QVariantList", notify=selection_changed)
+    def selectedMemberTags(self) -> list[int]:
+        return sorted(self._selected_member_tags)
+
+    @Property("QVariantList", notify=selection_changed)
+    def selectedNodeHalo(self) -> list[dict[str, float | int | str]]:
+        """Only the selected nodes - keeps the halo Repeater3D small."""
+        lookup = {node["tag"]: node for node in self.nodes}
+        return [lookup[tag] for tag in sorted(self._selected_node_tags) if tag in lookup]
 
     @Property("QVariantList", notify=scene_changed)
     def ghostNodes(self) -> list[dict[str, float | int | str]]:
@@ -974,7 +988,7 @@ class Quick3DSceneBridge(QObject):
     def _compute_node_radii(
         self, model: StructuralModel, default_thickness: float
     ) -> dict[int, float]:
-        """Per-node marker radius, large enough to poke out past the
+        """Per-node marker radius, large enough to poke out just past the
         cross-section of every member framing into that node.
 
         The old radius was a single value derived only from
@@ -987,12 +1001,18 @@ class Quick3DSceneBridge(QObject):
         the node. Radius is per-node (not a single global bump) so a
         slender brace elsewhere in the same model doesn't get an
         oversized ball for no reason.
+
+        Sized off the box's *half-width* (not its corner-to-corner half
+        diagonal, which is always bigger than either side) with only a
+        slight 1.08x margin - just enough that the sphere still reads as
+        attached/flush with the member instead of a separate ball floating
+        above it with a visible gap on every side.
         """
         radii: dict[int, float] = {}
         for element in model.elements.values():
             visual = self._section_visual_dimensions(element.properties, default_thickness)
-            half_diagonal = 0.5 * math.hypot(visual["width_b"], visual["width_h"])
-            bulge = min(half_diagonal * 1.15, self._extent * 0.03)
+            half_width = 0.5 * max(visual["width_b"], visual["width_h"])
+            bulge = min(half_width * 1.08, self._extent * 0.03)
             for tag in (element.node_i, element.node_j):
                 if bulge > radii.get(tag, 0.0):
                     radii[tag] = bulge
@@ -1012,60 +1032,13 @@ class Quick3DSceneBridge(QObject):
             }
             for tag, point in sorted(self._points.items())
         ]
-        section_colors = self._assign_section_colors(model)
         members: list[dict[str, float | int | str]] = []
         for element in sorted(model.elements.values(), key=lambda item: item.tag):
-            key = self._section_color_key(element.properties)
-            color = _DEFAULT_MEMBER_COLOR if key is None else section_colors[key]
+            color = _member_type_color(element)
             members.extend(
                 self._member_parts(element, self._points, self._default_thickness, color=color)
             )
         self._members = members
-
-    @staticmethod
-    def _section_color_key(properties: dict[str, float | str]) -> str | None:
-        """A hashable identity for "this member's section", for color-coding
-        the default view - ``None`` for a member with no section assigned
-        yet (predates the section feature, or only ever got A/Iy/Iz/J), which
-        keeps the old uniform ``_DEFAULT_MEMBER_COLOR`` rather than picking up
-        an arbitrary palette entry. A Database section carries a stable
-        ``section_id`` (e.g. two W8x10 columns picked from the Master DB
-        share one), while a Custom section has none, so its own shape plus
-        every ``dim_*``/``width``/``height`` value stands in for identity -
-        two members with identical dimensions still read as "the same
-        section" even though neither has a ``section_id``.
-        """
-        shape = properties.get("section_shape")
-        if not shape:
-            return None
-        section_id = properties.get("section_id")
-        if section_id:
-            return f"id:{section_id}"
-        dims = sorted(
-            (key, value)
-            for key, value in properties.items()
-            if key.startswith("dim_") or key in ("width", "height")
-        )
-        return f"{shape}:{dims}"
-
-    def _assign_section_colors(self, model: StructuralModel) -> dict[str, str]:
-        """Stable section-key -> palette-color mapping for one rebuild, so
-        every member sharing a section gets the same color. Sorted rather
-        than insertion-ordered so the mapping doesn't shuffle between
-        rebuilds just because members were added/reordered - only adding or
-        removing a distinct section changes anyone's color.
-        """
-        keys = sorted(
-            {
-                key
-                for element in model.elements.values()
-                if (key := self._section_color_key(element.properties)) is not None
-            }
-        )
-        return {
-            key: _SECTION_COLOR_PALETTE[index % len(_SECTION_COLOR_PALETTE)]
-            for index, key in enumerate(keys)
-        }
 
     def _build_support_parts(
         self,

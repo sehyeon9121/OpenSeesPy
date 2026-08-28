@@ -338,15 +338,11 @@ def test_selection_highlight_scales_every_part_of_a_member_together() -> None:
     )
     bridge = _bridge()
     bridge.set_model(model)
-    plain_parts = list(bridge.members)
+    plain_parts = bridge.members
     assert len(plain_parts) == 3
 
     bridge.set_selection(set(), {1})
-    selected_parts = list(bridge.members)
-    assert len(selected_parts) == 3
-
-    for plain, selected in zip(plain_parts, selected_parts):
-        assert selected["color"] != plain["color"]
-        scale_b = selected["width_b"] / plain["width_b"] if plain["width_b"] else 1.0
-        scale_h = selected["width_h"] / plain["width_h"] if plain["width_h"] else 1.0
-        assert scale_b > 1.0 or scale_h > 1.0
+    assert bridge.selectedMemberTags == [1]
+    assert bridge.selectionRevision >= 1
+    # Geometry lists stay stable - highlight is applied in QML via selectionRevision.
+    assert bridge.members is plain_parts

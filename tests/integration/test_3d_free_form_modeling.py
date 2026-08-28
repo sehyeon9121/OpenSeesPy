@@ -403,9 +403,7 @@ def test_clicking_an_existing_node_in_3d_selects_it_outside_draw_mode() -> None:
     page._on_3d_node_picked(node, 0, 0)
 
     assert page.canvas.selected_nodes == {node}
-    highlighted = next(item for item in page.preview_3d.bridge.nodes if item["tag"] == node)
-    assert highlighted["color"] == "#ef4444"
-    assert highlighted["selected"] is True
+    assert node in page.preview_3d.bridge.selectedNodeTags
 
 
 def test_clicking_an_existing_member_in_3d_selects_and_highlights_it() -> None:
@@ -419,11 +417,7 @@ def test_clicking_an_existing_member_in_3d_selects_and_highlights_it() -> None:
 
     assert page.canvas.selected_nodes == set()
     assert page.canvas.selected_elements == {member}
-    highlighted = next(
-        item for item in page.preview_3d.bridge.members if item["tag"] == member
-    )
-    assert highlighted["color"] == "#ef4444"
-    assert highlighted["selected"] is True
+    assert member in page.preview_3d.bridge.selectedMemberTags
 
 
 def test_changing_the_active_plane_keeps_the_3d_view_in_sync() -> None:
@@ -587,12 +581,8 @@ def test_3d_box_selection_updates_and_highlights_nodes_and_members() -> None:
 
     assert page.canvas.selected_nodes == {left}
     assert page.canvas.selected_elements == {member}
-    selected_node = next(node for node in page.preview_3d.bridge.nodes if node["tag"] == left)
-    selected_member = next(
-        item for item in page.preview_3d.bridge.members if item["tag"] == member
-    )
-    assert selected_node["color"] == "#ef4444"
-    assert selected_member["color"] == "#ef4444"
+    assert left in page.preview_3d.bridge.selectedNodeTags
+    assert member in page.preview_3d.bridge.selectedMemberTags
 
 
 def test_delete_and_ctrl_z_reach_the_canvas_while_the_3d_viewport_has_focus() -> None:

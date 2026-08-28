@@ -226,3 +226,27 @@ def test_orientation_axis_actions_change_to_the_matching_orthographic_view() -> 
     gizmo.activateTarget("ISO")
     assert root.property("cameraYaw") == pytest.approx(45.0)
     assert root.property("cameraPitch") == pytest.approx(-25.0)
+
+
+def test_selection_highlight_does_not_replace_geometry_lists() -> None:
+    viewport = _viewport()
+    model = StructuralModel(
+        ndm=3,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0),
+            2: Node(2, 4.0, 0.0, 0.0),
+        },
+        elements={1: Element(1, 1, 2, "elasticBeamColumn")},
+    )
+    viewport.set_model(model)
+    bridge = viewport.bridge
+    nodes_ref = bridge.nodes
+    members_ref = bridge.members
+
+    bridge.set_selection({1}, {1})
+
+    assert bridge.nodes is nodes_ref
+    assert bridge.members is members_ref
+    assert bridge.selectedNodeTags == [1]
+    assert bridge.selectedMemberTags == [1]
+    assert bridge.selectionRevision >= 1

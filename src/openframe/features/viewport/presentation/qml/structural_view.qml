@@ -87,6 +87,13 @@ Item {
     // (StaticsDrawingCanvas._SNAP_PIXELS). Probing a small ring of nearby
     // points and taking the first node hit reproduces that same forgiving
     // snap here.
+    function tagIsSelected(tagList, tag) {
+        for (let i = 0; i < tagList.length; ++i)
+            if (tagList[i] === tag)
+                return true
+        return false
+    }
+
     function pickNearestNode(mx, my) {
         let exact = view3d.pick(mx, my)
         if (exact.objectHit && exact.objectHit.nodeTag !== undefined)
@@ -396,6 +403,11 @@ Item {
             model: bridgeReady ? sceneBridge.members : []
             delegate: Model {
                 property int memberTag: modelData.tag
+                property bool memberSelected: {
+                    if (bridgeReady)
+                        sceneBridge.selectionRevision
+                    return root.tagIsSelected(sceneBridge.selectedMemberTags, memberTag)
+                }
                 visible: !bridgeReady
                     || !sceneBridge.timeHistoryDeformationActive
                     || sceneBridge.timeHistoryShowDeformed
@@ -418,15 +430,16 @@ Item {
                 scale: {
                     if (bridgeReady)
                         sceneBridge.deformationRevision
+                    const thick = memberSelected ? 1.35 : 1.0
                     return Qt.vector3d(
-                        modelData.width_b / 100,
+                        modelData.width_b * thick / 100,
                         modelData.length / 100,
-                        modelData.width_h / 100
+                        modelData.width_h * thick / 100
                     )
                 }
                 materials: [
                     PrincipledMaterial {
-                        baseColor: modelData.color
+                        baseColor: memberSelected ? "#ef4444" : modelData.color
                         opacity: modelData.opacity
                         metalness: 0.0
                         roughness: 0.55
@@ -519,6 +532,11 @@ Item {
                 property int nodeTag: modelData.tag
                 property bool snapTarget: root.planePickingEnabled
                     && root.hoveredNodeTag === nodeTag
+                property bool nodeSelected: {
+                    if (bridgeReady)
+                        sceneBridge.selectionRevision
+                    return root.tagIsSelected(sceneBridge.selectedNodeTags, nodeTag)
+                }
                 visible: !bridgeReady
                     || !sceneBridge.timeHistoryDeformationActive
                     || sceneBridge.timeHistoryShowDeformed
@@ -536,7 +554,7 @@ Item {
                 }
                 materials: [
                     PrincipledMaterial {
-                        baseColor: snapTarget ? "#f59e0b" : modelData.color
+                        baseColor: snapTarget ? "#f59e0b" : (nodeSelected ? "#ef4444" : modelData.color)
                         opacity: modelData.opacity
                         metalness: 0.0
                         roughness: 0.55
@@ -552,12 +570,11 @@ Item {
             // A translucent outer sphere makes a selected node unmistakable
             // even when its solid red core is partly hidden by several
             // members. It is deliberately non-pickable.
-            model: bridgeReady ? sceneBridge.nodes : []
+            model: bridgeReady ? sceneBridge.selectedNodeHalo : []
             delegate: Model {
-                visible: (!bridgeReady
+                visible: !bridgeReady
                     || !sceneBridge.timeHistoryDeformationActive
-                    || sceneBridge.timeHistoryShowDeformed)
-                    && modelData.selected === true
+                    || sceneBridge.timeHistoryShowDeformed
                 source: "#Sphere"
                 position: {
                     if (bridgeReady)
