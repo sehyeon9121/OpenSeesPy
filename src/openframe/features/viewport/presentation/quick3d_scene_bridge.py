@@ -22,6 +22,11 @@ from openframe.core.domain import (
     local_y_z_axes,
     rotate_about_axis,
 )
+from openframe.features.viewport.presentation.quick3d_perf import perf_enabled, perf_recorder
+
+#: Preview rubber-band dedup - sub-millimetre structural jitter should not
+#: spam preview_changed on every hover pixel.
+_PREVIEW_COORD_EPS = 1.0e-6
 
 #: Blue -> yellow -> red stops, matching
 #: features/results/presentation/result_color_scale.py's palette so the 2D result
@@ -153,9 +158,22 @@ def _color_for_ratio(ratio: float) -> str:
 
 
 class Quick3DSceneBridge(QObject):
+    #: Full topology rebuild - Repeater3D model lists replaced.  Kept as an
+    #: alias of ``topology_changed`` for any legacy binding; incremental paths
+    #: must not emit this.
     scene_changed = Signal()
+    topology_changed = Signal()
+    #: Node/member/support/load-glyph coordinates updated in place - same list
+    #: and dict identity, delegates re-read transforms via ``geometryRevision``.
+    geometry_changed = Signal()
     #: Selection highlight only - must not invalidate the whole scene graph.
     selection_changed = Signal()
+    #: Draw-mode rubber-band and floor-boundary outline only.
+    preview_changed = Signal()
+    #: Model load arrows and Loads-tab glyphs - positions or filter visibility.
+    loads_changed = Signal()
+    #: Isolate, load/support/local-axis master toggles, and load filters.
+    visibility_changed = Signal()
     #: Emitted when time-history deformation updates node/member coordinates
     #: in place - without rebuilding the whole scene (see deformationRevision).
     deformed_positions_changed = Signal()
@@ -234,65 +252,78 @@ class Quick3DSceneBridge(QObject):
         self._torsion_marker_count = 5
         self._torsion_revision = 0
         self._torsion_markers: list[dict[str, float | int | str | bool]] = []
+        #: Stable Repeater3D model lists for topology-preserving edits - see
+        #: ``_update_geometry_in_place`` (mirrors time-history deformation).
+        self._cached_topology_fingerprint: tuple[object, ...] | None = None
+        self._geometry_revision = 0
+        self._visibility_revision = 0
+        self._preview_revision = 0
+        self._loads_revision = 0
+        self._node_by_tag: dict[int, dict[str, float | int | str]] = {}
+        self._geometry_member_records: list[
+            tuple[Element, list[dict[str, float | int | str]]]
+        ] = []
+        self._preview_segment_key: tuple[tuple[float, float, float], tuple[float, float, float]] | None = (
+            None
+        )
+        self._load_entry_topology_key: tuple[object, ...] | None = None
 
     def set_model(self, model: StructuralModel) -> None:
-        self._end_torsion_marker_mode(notify=False)
-        self._end_time_history_deformation(notify=False)
-        self._last_model = model
-        self._selected_node_tags.clear()
-        self._selected_member_tags.clear()
-        self._isolate_active = False
-        self._isolate_node_tags.clear()
-        self._isolate_member_tags.clear()
-        if not model.nodes:
-            self._clear()
-            return
+        """Load or refresh the structural model in the 3D scene.
 
-        points = {
-            tag: self._view_coordinates(node.x, node.y, node.z) for tag, node in model.nodes.items()
-        }
-        x_values = [point[0] for point in points.values()]
-        y_values = [point[1] for point in points.values()]
-        z_values = [point[2] for point in points.values()]
-        spans = (
-            max(x_values) - min(x_values),
-            max(y_values) - min(y_values),
-            max(z_values) - min(z_values),
-        )
-        self._extent = max(*spans, 1.0)
-        self._default_thickness = max(self._extent * 0.012, 0.025)
-        self._node_radius = self._default_thickness * 0.72
-        self._node_radii = self._compute_node_radii(model, self._default_thickness)
+        When topology (tags, connectivity, section part count, load/support
+        attachment layout) is unchanged, only coordinates and dependent
+        transforms are updated in place - ``geometry_changed`` instead of
+        rebuilding every Repeater3D model list.
+        """
+        recorder = perf_recorder()
+        with recorder.scope("set_model"):
+            if perf_enabled():
+                recorder.counters.set_model_calls += 1
+            self._end_torsion_marker_mode(notify=False)
+            self._end_time_history_deformation(notify=False)
 
-        self._center = (
-            0.5 * (min(x_values) + max(x_values)),
-            0.5 * (min(y_values) + max(y_values)),
-            0.5 * (min(z_values) + max(z_values)),
-        )
-        if model.boundaries:
-            support_height = max(self._extent * 0.05, 0.055)
-            support_plate = max(support_height * 0.16, 0.012)
-            ground_thickness = max(self._extent * 0.012, 0.01)
-            self._ground_y = (
-                min(y_values)
-                - self._node_radius
-                - support_height
-                - support_plate
-                - ground_thickness / 2
+            preserved_nodes = set(self._selected_node_tags)
+            preserved_members = set(self._selected_member_tags)
+            preserved_isolate = (
+                self._isolate_active,
+                set(self._isolate_node_tags),
+                set(self._isolate_member_tags),
             )
-        else:
-            self._ground_y = min(y_values) - self._extent * 0.025
-        self._ground_width = max(spans[0] + self._extent * 0.35, self._extent * 0.5)
-        self._ground_depth = max(spans[2] + self._extent * 0.35, self._extent * 0.5)
 
-        self._points = points
-        self._rebuild_default_geometry(model)
-        self._ghost_nodes = []
-        self._ghost_members = []
-        self._load_arrows = self._build_all_load_arrows(model, points)
-        self._support_parts = self._build_support_parts(model, points)
-        self._rebuild_load_entry_parts()
-        self.scene_changed.emit()
+            if not model.nodes:
+                self._cached_topology_fingerprint = None
+                self._clear()
+                return
+
+            with recorder.scope("topology_fingerprint"):
+                fingerprint = self._compute_topology_fingerprint(model)
+
+            if (
+                self._cached_topology_fingerprint is not None
+                and fingerprint == self._cached_topology_fingerprint
+                and self._nodes
+            ):
+                self._last_model = model
+                with recorder.scope("incremental_geometry"):
+                    self._update_geometry_in_place(model)
+                self._restore_selection(preserved_nodes, preserved_members, model)
+                self._restore_isolate(*preserved_isolate, model)
+                if perf_enabled():
+                    recorder.counters.set_model_incremental += 1
+                self._record_bridge_state()
+                return
+
+            self._last_model = model
+            with recorder.scope("full_topology_rebuild"):
+                self._full_topology_rebuild(model)
+            self._cached_topology_fingerprint = fingerprint
+            self._restore_selection(preserved_nodes, preserved_members, model)
+            self._restore_isolate(*preserved_isolate, model)
+            if perf_enabled():
+                recorder.counters.set_model_full += 1
+            self._emit_topology_changed()
+            self._record_bridge_state()
 
     def set_result(
         self,
@@ -397,7 +428,8 @@ class Quick3DSceneBridge(QObject):
             self._ghost_members = []
 
         self._load_arrows = self._build_all_load_arrows(model, deformed_points)
-        self.scene_changed.emit()
+        self._cached_topology_fingerprint = None
+        self._emit_topology_changed()
 
     def clear_result(self) -> None:
         """Drop the result overlay and go back to the plain undeformed model."""
@@ -409,7 +441,8 @@ class Quick3DSceneBridge(QObject):
             self._rebuild_default_geometry(self._last_model)
             self._load_arrows = self._build_all_load_arrows(self._last_model, self._points)
             self._rebuild_load_entry_parts()
-        self.scene_changed.emit()
+        self._cached_topology_fingerprint = None
+        self._emit_topology_changed()
 
     def begin_time_history_deformation(
         self,
@@ -458,7 +491,7 @@ class Quick3DSceneBridge(QObject):
             )
             self._deformation_member_records.append((element, parts))
             self._members.extend(parts)
-        self.scene_changed.emit()
+        self._emit_topology_changed()
 
     def update_deformed_node_positions(
         self,
@@ -554,7 +587,7 @@ class Quick3DSceneBridge(QObject):
                     }
                 )
         self._torsion_markers = markers
-        self.scene_changed.emit()
+        self._emit_topology_changed()
 
     def update_torsion_markers(
         self,
@@ -614,7 +647,7 @@ class Quick3DSceneBridge(QObject):
         self._torsion_markers = []
         self._torsion_revision = 0
         if notify:
-            self.scene_changed.emit()
+            self._emit_topology_changed()
 
     def end_time_history_deformation(self) -> None:
         self._end_time_history_deformation(notify=True)
@@ -632,7 +665,7 @@ class Quick3DSceneBridge(QObject):
         if self._last_model is not None and self._points:
             self._rebuild_default_geometry(self._last_model)
         if notify:
-            self.scene_changed.emit()
+            self._emit_topology_changed()
 
     def _build_time_history_ghost_geometry(self, model: StructuralModel) -> None:
         self._ghost_nodes = [
@@ -677,26 +710,39 @@ class Quick3DSceneBridge(QObject):
             existing.update(updated)
 
     def set_loads_visible(self, visible: bool) -> None:
+        if self._loads_visible == visible:
+            return
         self._loads_visible = visible
-        self.scene_changed.emit()
+        self._emit_visibility_changed()
+        self._emit_loads_changed()
 
     def set_supports_visible(self, visible: bool) -> None:
+        if self._supports_visible == visible:
+            return
         self._supports_visible = visible
-        self.scene_changed.emit()
+        self._emit_visibility_changed()
 
     def set_local_axes_visible(self, visible: bool) -> None:
+        if self._local_axes_visible == visible:
+            return
         self._local_axes_visible = visible
-        self.scene_changed.emit()
+        self._emit_visibility_changed()
 
     def set_load_filter(self, load_filter: str) -> None:
         if load_filter not in {"all", "nodal", "element"}:
             return
+        if self._load_filter == load_filter:
+            return
         self._load_filter = load_filter
-        self.scene_changed.emit()
+        self._emit_visibility_changed()
+        self._emit_loads_changed()
 
     def set_load_case_filter(self, case_filter: str) -> None:
+        if self._load_case_filter == case_filter:
+            return
         self._load_case_filter = case_filter
-        self.scene_changed.emit()
+        self._emit_visibility_changed()
+        self._emit_loads_changed()
 
     def set_load_entries(
         self,
@@ -725,7 +771,10 @@ class Quick3DSceneBridge(QObject):
         self._load_entry_active_combination_id = active_combination_id
         self._load_entry_scale = scale
         self._rebuild_load_entry_parts()
-        self.scene_changed.emit()
+        self._load_entry_topology_key = self._load_entries_topology_key()
+        if self._last_model is not None:
+            self._cached_topology_fingerprint = self._compute_topology_fingerprint(self._last_model)
+        self._emit_loads_changed()
 
     def set_selected_node(self, tag: int | None) -> None:
         self._selected_node_tags = set() if tag is None else {tag}
@@ -742,10 +791,6 @@ class Quick3DSceneBridge(QObject):
         self._selected_member_tags = set(member_tags)
         self._emit_selection_changed()
 
-    def _emit_selection_changed(self) -> None:
-        self._selection_revision += 1
-        self.selection_changed.emit()
-
     def set_isolate(self, node_tags: set[int], member_tags: set[int]) -> None:
         """MIDAS-style "Active Only" view filter: hide everything except the
         given nodes/members (see the F2 shortcut in modeling_interface_page)
@@ -758,7 +803,7 @@ class Quick3DSceneBridge(QObject):
         self._isolate_active = True
         self._isolate_node_tags = set(node_tags)
         self._isolate_member_tags = set(member_tags)
-        self.scene_changed.emit()
+        self._emit_visibility_changed()
 
     def clear_isolate(self) -> None:
         """Show everything again (Ctrl+A) - the inverse of set_isolate."""
@@ -767,11 +812,23 @@ class Quick3DSceneBridge(QObject):
         self._isolate_active = False
         self._isolate_node_tags.clear()
         self._isolate_member_tags.clear()
-        self.scene_changed.emit()
+        self._emit_visibility_changed()
 
-    @Property(bool, notify=scene_changed)
+    @Property(bool, notify=visibility_changed)
     def isolateActive(self) -> bool:
         return self._isolate_active
+
+    @Property(int, notify=visibility_changed)
+    def visibilityRevision(self) -> int:
+        return self._visibility_revision
+
+    @Property("QVariantList", notify=visibility_changed)
+    def isolateNodeTags(self) -> list[int]:
+        return sorted(self._isolate_node_tags)
+
+    @Property("QVariantList", notify=visibility_changed)
+    def isolateMemberTags(self) -> list[int]:
+        return sorted(self._isolate_member_tags)
 
     def set_preview_segment(
         self,
@@ -788,7 +845,11 @@ class Quick3DSceneBridge(QObject):
         if start is None or end is None:
             if self._preview_member is not None:
                 self._preview_member = None
-                self.scene_changed.emit()
+                self._preview_segment_key = None
+                self._emit_preview_changed()
+            return
+        segment_key = self._preview_segment_key_from(start, end)
+        if segment_key == self._preview_segment_key and self._preview_member is not None:
             return
         view_start = self._view_coordinates(*start)
         view_end = self._view_coordinates(*end)
@@ -796,10 +857,11 @@ class Quick3DSceneBridge(QObject):
         if orientation is None:
             if self._preview_member is not None:
                 self._preview_member = None
-                self.scene_changed.emit()
+                self._preview_segment_key = None
+                self._emit_preview_changed()
             return
         length, scalar, qx, qy, qz = orientation
-        self._preview_member = {
+        preview = {
             "x": 0.5 * (view_start[0] + view_end[0]),
             "y": 0.5 * (view_start[1] + view_end[1]),
             "z": 0.5 * (view_start[2] + view_end[2]),
@@ -812,7 +874,12 @@ class Quick3DSceneBridge(QObject):
             "color": _PREVIEW_MEMBER_COLOR,
             "opacity": _PREVIEW_MEMBER_OPACITY,
         }
-        self.scene_changed.emit()
+        if self._preview_member is None:
+            self._preview_member = preview
+        else:
+            self._preview_member.update(preview)
+        self._preview_segment_key = segment_key
+        self._emit_preview_changed()
 
     def set_floor_boundary_outline(self, points: list[tuple[float, float, float]]) -> None:
         """Trace the in-progress floor boundary as a yellow outline: one edge
@@ -846,21 +913,19 @@ class Quick3DSceneBridge(QObject):
         if parts == self._floor_outline_parts:
             return
         self._floor_outline_parts = parts
-        self.scene_changed.emit()
+        self._emit_preview_changed()
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property("QVariantList", notify=topology_changed)
     def nodes(self) -> list[dict[str, float | int | str]]:
-        if self._isolate_active:
-            return [node for node in self._nodes if node["tag"] in self._isolate_node_tags]
         return self._nodes
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property("QVariantList", notify=topology_changed)
     def members(self) -> list[dict[str, float | int | str]]:
-        if self._isolate_active:
-            return [
-                member for member in self._members if member["tag"] in self._isolate_member_tags
-            ]
         return self._members
+
+    @Property(int, notify=geometry_changed)
+    def geometryRevision(self) -> int:
+        return self._geometry_revision
 
     @Property(int, notify=selection_changed)
     def selectionRevision(self) -> int:
@@ -877,79 +942,89 @@ class Quick3DSceneBridge(QObject):
     @Property("QVariantList", notify=selection_changed)
     def selectedNodeHalo(self) -> list[dict[str, float | int | str]]:
         """Only the selected nodes - keeps the halo Repeater3D small."""
-        lookup = {node["tag"]: node for node in self.nodes}
+        lookup = self._node_by_tag
         return [lookup[tag] for tag in sorted(self._selected_node_tags) if tag in lookup]
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property("QVariantList", notify=topology_changed)
     def ghostNodes(self) -> list[dict[str, float | int | str]]:
         return self._ghost_nodes
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property("QVariantList", notify=topology_changed)
     def ghostMembers(self) -> list[dict[str, float | int | str]]:
         return self._ghost_members
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property("QVariantList", notify=preview_changed)
     def previewMembers(self) -> list[dict[str, float | int | str]]:
         return [] if self._preview_member is None else [self._preview_member]
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property("QVariantList", notify=preview_changed)
     def floorBoundaryOutline(self) -> list[dict[str, float | int | str]]:
         """Edges of the floor boundary currently being click-picked - see
         ``set_floor_boundary_outline``."""
         return self._floor_outline_parts
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property(bool, notify=visibility_changed)
+    def loadsVisible(self) -> bool:
+        return self._loads_visible
+
+    @Property(str, notify=visibility_changed)
+    def loadFilter(self) -> str:
+        return self._load_filter
+
+    @Property(str, notify=visibility_changed)
+    def loadCaseFilter(self) -> str:
+        return self._load_case_filter
+
+    @Property(bool, notify=visibility_changed)
+    def supportsVisible(self) -> bool:
+        return self._supports_visible
+
+    @Property(bool, notify=visibility_changed)
+    def localAxesVisible(self) -> bool:
+        return self._local_axes_visible
+
+    @Property("QVariantList", notify=loads_changed)
     def loadArrows(self) -> list[dict[str, float | int | str]]:
-        if not self._loads_visible:
-            return []
-        return [
-            part
-            for part in self._load_arrows
-            if (self._load_filter == "all" or part["kind"] == self._load_filter)
-            and (self._load_case_filter == "all" or part["case_type"] == self._load_case_filter)
-        ]
+        return self._load_arrows
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property("QVariantList", notify=loads_changed)
     def loadEntryGlyphs(self) -> list[dict[str, float | int | str]]:
-        """Glyphs for the Loads tab's case-based store - gated by the same
-        master ``_loads_visible`` toggle as ``loadArrows`` (the Display
-        combo's "Hide Loads" mode already empties ``_load_entry_parts``
-        itself, in ``_build_load_entry_parts``)."""
-        return self._load_entry_parts if self._loads_visible else []
+        """Glyphs for the Loads tab's case-based store."""
+        return self._load_entry_parts
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property("QVariantList", notify=topology_changed)
     def supportSymbols(self) -> list[dict[str, float | int | str]]:
-        return self._support_parts if self._supports_visible else []
+        return self._support_parts
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property("QVariantList", notify=topology_changed)
     def localAxisGizmos(self) -> list[dict[str, float | int | str]]:
-        return self._local_axis_gizmos if self._local_axes_visible else []
+        return self._local_axis_gizmos
 
-    @Property(float, notify=scene_changed)
+    @Property(float, notify=geometry_changed)
     def center_x(self) -> float:
         return self._center[0]
 
-    @Property(float, notify=scene_changed)
+    @Property(float, notify=geometry_changed)
     def center_y(self) -> float:
         return self._center[1]
 
-    @Property(float, notify=scene_changed)
+    @Property(float, notify=geometry_changed)
     def center_z(self) -> float:
         return self._center[2]
 
-    @Property(float, notify=scene_changed)
+    @Property(float, notify=geometry_changed)
     def extent(self) -> float:
         return self._extent
 
-    @Property(float, notify=scene_changed)
+    @Property(float, notify=geometry_changed)
     def ground_y(self) -> float:
         return self._ground_y
 
-    @Property(float, notify=scene_changed)
+    @Property(float, notify=geometry_changed)
     def ground_width(self) -> float:
         return self._ground_width
 
-    @Property(float, notify=scene_changed)
+    @Property(float, notify=geometry_changed)
     def ground_depth(self) -> float:
         return self._ground_depth
 
@@ -973,7 +1048,7 @@ class Quick3DSceneBridge(QObject):
             return True
         return self._deformation_show_original
 
-    @Property("QVariantList", notify=scene_changed)
+    @Property("QVariantList", notify=topology_changed)
     def torsionMarkers(self) -> list[dict[str, float | int | str | bool]]:
         return self._torsion_markers
 
@@ -1033,12 +1108,379 @@ class Quick3DSceneBridge(QObject):
             for tag, point in sorted(self._points.items())
         ]
         members: list[dict[str, float | int | str]] = []
+        member_records: list[tuple[Element, list[dict[str, float | int | str]]]] = []
         for element in sorted(model.elements.values(), key=lambda item: item.tag):
             color = _member_type_color(element)
-            members.extend(
-                self._member_parts(element, self._points, self._default_thickness, color=color)
+            parts = self._member_parts(
+                element, self._points, self._default_thickness, color=color
             )
+            member_records.append((element, parts))
+            members.extend(parts)
         self._members = members
+        self._node_by_tag = {int(node["tag"]): node for node in self._nodes}
+        self._geometry_member_records = member_records
+
+    def _full_topology_rebuild(self, model: StructuralModel) -> None:
+        points = {
+            tag: self._view_coordinates(node.x, node.y, node.z) for tag, node in model.nodes.items()
+        }
+        self._update_scene_metrics(model, points)
+        self._points = points
+        self._rebuild_default_geometry(model)
+        self._ghost_nodes = []
+        self._ghost_members = []
+        self._load_arrows = self._build_all_load_arrows(model, points)
+        self._support_parts = self._build_support_parts(model, points)
+        self._rebuild_load_entry_parts()
+        self._load_entry_topology_key = self._load_entries_topology_key()
+
+    def _update_scene_metrics(
+        self,
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+    ) -> None:
+        x_values = [point[0] for point in points.values()]
+        y_values = [point[1] for point in points.values()]
+        z_values = [point[2] for point in points.values()]
+        spans = (
+            max(x_values) - min(x_values),
+            max(y_values) - min(y_values),
+            max(z_values) - min(z_values),
+        )
+        self._extent = max(*spans, 1.0)
+        self._default_thickness = max(self._extent * 0.012, 0.025)
+        self._node_radius = self._default_thickness * 0.72
+        self._node_radii = self._compute_node_radii(model, self._default_thickness)
+        self._center = (
+            0.5 * (min(x_values) + max(x_values)),
+            0.5 * (min(y_values) + max(y_values)),
+            0.5 * (min(z_values) + max(z_values)),
+        )
+        if model.boundaries:
+            support_height = max(self._extent * 0.05, 0.055)
+            support_plate = max(support_height * 0.16, 0.012)
+            ground_thickness = max(self._extent * 0.012, 0.01)
+            self._ground_y = (
+                min(y_values)
+                - self._node_radius
+                - support_height
+                - support_plate
+                - ground_thickness / 2
+            )
+        else:
+            self._ground_y = min(y_values) - self._extent * 0.025
+        self._ground_width = max(spans[0] + self._extent * 0.35, self._extent * 0.5)
+        self._ground_depth = max(spans[2] + self._extent * 0.35, self._extent * 0.5)
+
+    def _update_geometry_in_place(self, model: StructuralModel) -> None:
+        """Move existing node/member/load/support dicts without replacing lists."""
+        points = {
+            tag: self._view_coordinates(node.x, node.y, node.z) for tag, node in model.nodes.items()
+        }
+        self._update_scene_metrics(model, points)
+        self._points = points
+
+        for tag, point in points.items():
+            entry = self._node_by_tag.get(tag)
+            if entry is None:
+                self._full_topology_rebuild(model)
+                self._cached_topology_fingerprint = self._compute_topology_fingerprint(model)
+                self._emit_topology_changed()
+                return
+            entry["x"] = point[0]
+            entry["y"] = point[1]
+            entry["z"] = point[2]
+            entry["radius"] = self._node_radii.get(tag, self._node_radius)
+
+        for element, part_dicts in self._geometry_member_records:
+            color = _member_type_color(element)
+            self._update_member_parts_in_place(
+                element, part_dicts, points, color=color
+            )
+
+        fresh_loads = self._build_all_load_arrows(model, points)
+        if not self._replace_part_list_in_place(self._load_arrows, fresh_loads):
+            self._load_arrows = fresh_loads
+
+        fresh_supports = self._build_support_parts(model, points)
+        if not self._replace_part_list_in_place(self._support_parts, fresh_supports):
+            self._support_parts = fresh_supports
+
+        fresh_gizmos = self._local_axis_gizmo_parts(model, points)
+        if not self._replace_part_list_in_place(self._local_axis_gizmos, fresh_gizmos):
+            self._local_axis_gizmos = fresh_gizmos
+
+        entry_key = self._load_entries_topology_key()
+        if entry_key != self._load_entry_topology_key:
+            self._load_entry_topology_key = entry_key
+        if self._load_entries:
+            self._rebuild_load_entry_parts()
+            self._emit_loads_changed()
+
+        self._geometry_revision += 1
+        self._emit_geometry_changed()
+        if perf_enabled():
+            perf_recorder().counters.geometry_updates += 1
+
+    @staticmethod
+    def _replace_part_list_in_place(
+        existing: list[dict[str, float | int | str]],
+        fresh: list[dict[str, float | int | str]],
+    ) -> bool:
+        if len(existing) != len(fresh):
+            return False
+        for current, updated in zip(existing, fresh, strict=True):
+            current.update(updated)
+        return True
+
+    def _restore_selection(
+        self,
+        node_tags: set[int],
+        member_tags: set[int],
+        model: StructuralModel,
+    ) -> None:
+        valid_nodes = {tag for tag in node_tags if tag in model.nodes}
+        valid_members = {tag for tag in member_tags if tag in model.elements}
+        if valid_nodes == self._selected_node_tags and valid_members == self._selected_member_tags:
+            return
+        self._selected_node_tags = valid_nodes
+        self._selected_member_tags = valid_members
+        self._emit_selection_changed()
+
+    def _restore_isolate(
+        self,
+        active: bool,
+        node_tags: set[int],
+        member_tags: set[int],
+        model: StructuralModel,
+    ) -> None:
+        if not active:
+            return
+        valid_nodes = {tag for tag in node_tags if tag in model.nodes}
+        valid_members = {tag for tag in member_tags if tag in model.elements}
+        if not valid_nodes and not valid_members:
+            if self._isolate_active:
+                self._isolate_active = False
+                self._isolate_node_tags.clear()
+                self._isolate_member_tags.clear()
+                self._emit_visibility_changed()
+            return
+        self._isolate_active = True
+        self._isolate_node_tags = valid_nodes
+        self._isolate_member_tags = valid_members
+        self._emit_visibility_changed()
+
+    def _compute_topology_fingerprint(self, model: StructuralModel) -> tuple[object, ...]:
+        return (
+            tuple(sorted(model.nodes)),
+            tuple(self._element_topology_signature(element) for element in sorted(
+                model.elements.values(), key=lambda item: item.tag
+            )),
+            self._supports_topology_signature(model),
+            self._model_loads_topology_signature(model),
+            self._load_entries_topology_key(),
+            self._local_axis_topology_signature(model),
+        )
+
+    def _element_topology_signature(self, element: Element) -> tuple[object, ...]:
+        props = element.properties
+        dim_items = tuple(
+            sorted(
+                (key, props[key])
+                for key in props
+                if key.startswith("dim_") or key in {"width", "height", "A", "behavior", "section_shape"}
+            )
+        )
+        return (
+            element.tag,
+            element.node_i,
+            element.node_j,
+            element.element_type.lower(),
+            round(element.local_axis_angle, 9),
+            dim_items,
+            self._expected_member_part_count(element, props),
+        )
+
+    def _expected_member_part_count(
+        self, element: Element, properties: dict[str, float | str] | None = None
+    ) -> int:
+        props = properties if properties is not None else element.properties
+        if element.element_type.lower() in _TRUSS_ELEMENT_TYPES:
+            return 1
+        visual = self._section_visual_dimensions(
+            props, self._default_thickness if self._default_thickness > 0 else 0.025
+        )
+        if visual["shape"] == "H/I Section" and float(visual.get("web_height", 0.0) or 0.0) > 0.0:
+            return 3
+        return 1
+
+    @staticmethod
+    def _supports_topology_signature(model: StructuralModel) -> tuple[object, ...]:
+        return tuple(
+            sorted(
+                (
+                    boundary.node_tag,
+                    boundary.support_kind.value,
+                    tuple(boundary.restraints),
+                    round(boundary.angle, 9),
+                    tuple(boundary.spring_stiffnesses),
+                )
+                for boundary in model.boundaries
+            )
+        )
+
+    @staticmethod
+    def _model_loads_topology_signature(model: StructuralModel) -> tuple[object, ...]:
+        nodal = tuple(
+            sorted(
+                (
+                    load.node_tag,
+                    load.case_type.value,
+                    load.pattern_tag,
+                    tuple(round(value, 6) for value in load.values),
+                )
+                for load in model.nodal_loads
+            )
+        )
+        element = tuple(
+            sorted(
+                (
+                    load.element_tag,
+                    load.case_type.value,
+                    load.pattern_tag,
+                    round(load.wx, 6),
+                    round(load.wy, 6),
+                    round(load.wz, 6),
+                    round(load.wx_j or load.wx, 6),
+                    round(load.wy_j or load.wy, 6),
+                    round(load.wz_j or load.wz, 6),
+                    round(load.xL1, 6),
+                    round(load.xL2, 6),
+                )
+                for load in model.element_loads
+            )
+        )
+        return (nodal, element)
+
+    def _load_entries_topology_key(self) -> tuple[object, ...]:
+        entries = tuple(
+            sorted(
+                (
+                    entry.id,
+                    entry.kind.value,
+                    entry.target,
+                    entry.case_id,
+                    entry.hidden,
+                )
+                for entry in self._load_entries.values()
+            )
+        )
+        return (
+            entries,
+            tuple(sorted(self._load_cases)),
+            tuple(sorted(self._load_combinations)),
+            self._load_entry_mode,
+            self._load_entry_active_case_id,
+            self._load_entry_active_combination_id,
+            round(self._load_entry_scale, 9),
+        )
+
+    @staticmethod
+    def _local_axis_topology_signature(model: StructuralModel) -> tuple[object, ...]:
+        return tuple(
+            sorted(
+                tag
+                for tag, element in model.elements.items()
+                if element.element_type.lower() not in _TRUSS_ELEMENT_TYPES
+            )
+        )
+
+    @staticmethod
+    def _quantize_preview_point(point: tuple[float, float, float]) -> tuple[float, float, float]:
+        return (
+            round(point[0] / _PREVIEW_COORD_EPS) * _PREVIEW_COORD_EPS,
+            round(point[1] / _PREVIEW_COORD_EPS) * _PREVIEW_COORD_EPS,
+            round(point[2] / _PREVIEW_COORD_EPS) * _PREVIEW_COORD_EPS,
+        )
+
+    def _preview_segment_key_from(
+        self,
+        start: tuple[float, float, float],
+        end: tuple[float, float, float],
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        return (self._quantize_preview_point(start), self._quantize_preview_point(end))
+
+    def _emit_topology_changed(self) -> None:
+        if perf_enabled():
+            counters = perf_recorder().counters
+            counters.topology_rebuilds += 1
+            counters.scene_rebuilds += 1
+        self._record_signal("topology_changed")
+        self._record_signal("scene_changed")
+        self.topology_changed.emit()
+        self.scene_changed.emit()
+
+    def _emit_geometry_changed(self) -> None:
+        self._record_signal("geometry_changed")
+        self.geometry_changed.emit()
+
+    def _emit_preview_changed(self) -> None:
+        self._preview_revision += 1
+        if perf_enabled():
+            perf_recorder().counters.preview_updates += 1
+        self._record_signal("preview_changed")
+        self.preview_changed.emit()
+
+    def _emit_loads_changed(self) -> None:
+        self._loads_revision += 1
+        if perf_enabled():
+            perf_recorder().counters.loads_updates += 1
+        self._record_signal("loads_changed")
+        self.loads_changed.emit()
+
+    def _emit_visibility_changed(self) -> None:
+        self._visibility_revision += 1
+        if perf_enabled():
+            perf_recorder().counters.visibility_updates += 1
+        self._record_signal("visibility_changed")
+        self.visibility_changed.emit()
+
+    def _emit_selection_changed(self) -> None:
+        self._selection_revision += 1
+        if perf_enabled():
+            perf_recorder().counters.selection_updates += 1
+        self._record_signal("selection_changed")
+        self.selection_changed.emit()
+
+    @staticmethod
+    def _record_signal(name: str) -> None:
+        if perf_enabled():
+            perf_recorder().record_signal(name)
+
+    def _record_bridge_state(self) -> None:
+        if not perf_enabled():
+            return
+        recorder = perf_recorder()
+        recorder.record_delegate_counts(
+            {
+                "nodes": len(self._nodes),
+                "members": len(self._members),
+                "loadArrows": len(self._load_arrows),
+                "supportSymbols": len(self._support_parts),
+                "localAxisGizmos": len(self._local_axis_gizmos),
+                "loadEntryGlyphs": len(self._load_entry_parts),
+                "previewMembers": 0 if self._preview_member is None else 1,
+                "floorBoundaryOutline": len(self._floor_outline_parts),
+            }
+        )
+        recorder.record_list_identities(
+            {
+                "nodes": id(self._nodes),
+                "members": id(self._members),
+                "loadArrows": id(self._load_arrows),
+                "supportSymbols": id(self._support_parts),
+            }
+        )
 
     def _build_support_parts(
         self,
@@ -2405,7 +2847,10 @@ class Quick3DSceneBridge(QObject):
         self._ground_width = 1.0
         self._ground_depth = 1.0
         self._points = {}
-        self.scene_changed.emit()
+        self._cached_topology_fingerprint = None
+        self._node_by_tag = {}
+        self._geometry_member_records = []
+        self._emit_topology_changed()
 
     @staticmethod
     def _view_coordinates(x: float, y: float, z: float) -> tuple[float, float, float]:

@@ -94,6 +94,34 @@ Item {
         return false
     }
 
+    function nodeVisible(tag) {
+        if (!bridgeReady || !sceneBridge.isolateActive)
+            return true
+        if (bridgeReady)
+            sceneBridge.visibilityRevision
+        return root.tagIsSelected(sceneBridge.isolateNodeTags, tag)
+    }
+
+    function memberVisible(tag) {
+        if (!bridgeReady || !sceneBridge.isolateActive)
+            return true
+        if (bridgeReady)
+            sceneBridge.visibilityRevision
+        return root.tagIsSelected(sceneBridge.isolateMemberTags, tag)
+    }
+
+    function loadArrowVisible(part) {
+        if (!bridgeReady || !sceneBridge.loadsVisible)
+            return false
+        if (bridgeReady)
+            sceneBridge.visibilityRevision
+        if (sceneBridge.loadFilter !== "all" && part.kind !== sceneBridge.loadFilter)
+            return false
+        if (sceneBridge.loadCaseFilter !== "all" && part.case_type !== sceneBridge.loadCaseFilter)
+            return false
+        return true
+    }
+
     function pickNearestNode(mx, my) {
         let exact = view3d.pick(mx, my)
         if (exact.objectHit && exact.objectHit.nodeTag !== undefined)
@@ -360,8 +388,14 @@ Item {
             // MIDAS-style support glyphs: block=fixed, cone=pin, cone+rollers=roller.
             model: bridgeReady ? sceneBridge.supportSymbols : []
             delegate: Model {
+                property int supportNodeTag: modelData.tag
+                visible: bridgeReady && sceneBridge.supportsVisible && root.nodeVisible(supportNodeTag)
                 source: modelData.shape
-                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                position: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
                 rotation: Qt.quaternion(
                     modelData.qscalar,
                     modelData.qx,
@@ -382,7 +416,6 @@ Item {
                 ]
                 castsShadows: false
                 receivesShadows: false
-                property int supportNodeTag: modelData.tag
                 property string supportKind: modelData.kind
             }
         }
@@ -408,18 +441,23 @@ Item {
                         sceneBridge.selectionRevision
                     return root.tagIsSelected(sceneBridge.selectedMemberTags, memberTag)
                 }
-                visible: !bridgeReady
+                visible: (!bridgeReady
                     || !sceneBridge.timeHistoryDeformationActive
-                    || sceneBridge.timeHistoryShowDeformed
+                    || sceneBridge.timeHistoryShowDeformed)
+                    && root.memberVisible(memberTag)
                 source: modelData.source
                 position: {
-                    if (bridgeReady)
+                    if (bridgeReady) {
+                        sceneBridge.geometryRevision
                         sceneBridge.deformationRevision
+                    }
                     return Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 }
                 rotation: {
-                    if (bridgeReady)
+                    if (bridgeReady) {
+                        sceneBridge.geometryRevision
                         sceneBridge.deformationRevision
+                    }
                     return Qt.quaternion(
                         modelData.qscalar,
                         modelData.qx,
@@ -428,8 +466,10 @@ Item {
                     )
                 }
                 scale: {
-                    if (bridgeReady)
+                    if (bridgeReady) {
+                        sceneBridge.geometryRevision
                         sceneBridge.deformationRevision
+                    }
                     const thick = memberSelected ? 1.35 : 1.0
                     return Qt.vector3d(
                         modelData.width_b * thick / 100,
@@ -537,18 +577,23 @@ Item {
                         sceneBridge.selectionRevision
                     return root.tagIsSelected(sceneBridge.selectedNodeTags, nodeTag)
                 }
-                visible: !bridgeReady
+                visible: (!bridgeReady
                     || !sceneBridge.timeHistoryDeformationActive
-                    || sceneBridge.timeHistoryShowDeformed
+                    || sceneBridge.timeHistoryShowDeformed)
+                    && root.nodeVisible(nodeTag)
                 source: "#Sphere"
                 position: {
-                    if (bridgeReady)
+                    if (bridgeReady) {
+                        sceneBridge.geometryRevision
                         sceneBridge.deformationRevision
+                    }
                     return Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 }
                 scale: {
-                    if (bridgeReady)
+                    if (bridgeReady) {
+                        sceneBridge.geometryRevision
                         sceneBridge.deformationRevision
+                    }
                     const radiusScale = modelData.radius * 2 * (snapTarget ? 1.65 : 1) / 100
                     return Qt.vector3d(radiusScale, radiusScale, radiusScale)
                 }
@@ -577,8 +622,10 @@ Item {
                     || sceneBridge.timeHistoryShowDeformed
                 source: "#Sphere"
                 position: {
-                    if (bridgeReady)
+                    if (bridgeReady) {
+                        sceneBridge.geometryRevision
                         sceneBridge.deformationRevision
+                    }
                     return Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 }
                 scale: Qt.vector3d(
@@ -738,8 +785,13 @@ Item {
             // use - so there is no parent/child offset math that could leave a gap.
             model: bridgeReady ? sceneBridge.loadArrows : []
             delegate: Model {
+                visible: root.loadArrowVisible(modelData)
                 source: modelData.shape
-                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                position: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
                 rotation: Qt.quaternion(
                     modelData.qscalar,
                     modelData.qx,
@@ -772,8 +824,13 @@ Item {
             // Quick3DSceneBridge.loadEntryGlyphs.
             model: bridgeReady ? sceneBridge.loadEntryGlyphs : []
             delegate: Model {
+                visible: bridgeReady && sceneBridge.loadsVisible
                 source: modelData.shape
-                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                position: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
                 rotation: Qt.quaternion(
                     modelData.qscalar,
                     modelData.qx,
@@ -802,8 +859,13 @@ Item {
             // z), off by default - see Quick3DSceneBridge.localAxisGizmos.
             model: bridgeReady ? sceneBridge.localAxisGizmos : []
             delegate: Model {
+                visible: bridgeReady && sceneBridge.localAxesVisible
                 source: "#Cylinder"
-                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                position: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
                 rotation: Qt.quaternion(
                     modelData.qscalar,
                     modelData.qx,

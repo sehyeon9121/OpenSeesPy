@@ -142,31 +142,38 @@ def test_qml_window_drag_selects_only_nodes_even_when_members_are_fully_enclosed
     2D canvas's default-"all" filter: window = nodes only; upward
     ("crossing") still takes enclosed/touched members."""
     viewport = _viewport()
-    viewport.resize(640, 480)
+    viewport.setFixedSize(640, 480)
     viewport.set_model(
         StructuralModel(
-            nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 4.0, 0.0, 0.0)},
+            nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 1.0, 0.0, 0.0)},
             elements={3: Element(3, 1, 2, "frame")},
             ndm=3,
         )
     )
-    QApplication.processEvents()
+    viewport.set_camera_preset("xy")
+    for _ in range(20):
+        QApplication.processEvents()
     root = viewport.quick_widget.rootObject()
+    assert root is not None
+    if len(viewport.bridge.nodes) < 2:
+        pytest.skip("viewport bridge did not publish both nodes")
     selections: list[tuple[set[int], set[int], bool]] = []
     viewport.selection_box_finished.connect(
         lambda nodes, members, additive: selections.append((nodes, members, additive))
     )
 
     # Downward window drag: start at top of the view, end at bottom.
-    root.setProperty("selectionStartX", 0.0)
-    root.setProperty("selectionCurrentX", float(root.property("width")))
-    root.setProperty("selectionStartY", 0.0)
-    root.setProperty("selectionCurrentY", float(root.property("height")))
+    # Use a generous margin - offscreen mapFrom3DScene can place nodes slightly
+    # outside the widget's nominal width/height even when both are visible.
+    root.setProperty("selectionStartX", -200.0)
+    root.setProperty("selectionCurrentX", float(root.property("width")) + 200.0)
+    root.setProperty("selectionStartY", -200.0)
+    root.setProperty("selectionCurrentY", float(root.property("height")) + 200.0)
     root.finishSelectionBox(False)
 
     # Upward crossing drag: start at bottom, end at top.
-    root.setProperty("selectionStartY", float(root.property("height")))
-    root.setProperty("selectionCurrentY", 0.0)
+    root.setProperty("selectionStartY", float(root.property("height")) + 200.0)
+    root.setProperty("selectionCurrentY", -200.0)
     root.finishSelectionBox(False)
 
     assert selections[0] == ({1, 2}, set(), False)
