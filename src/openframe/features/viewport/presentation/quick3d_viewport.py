@@ -292,6 +292,15 @@ class Quick3DViewport(QFrame):
     def set_selection(self, node_tags: set[int], member_tags: set[int]) -> None:
         self.bridge.set_selection(node_tags, member_tags)
 
+    def set_isolate(self, node_tags: set[int], member_tags: set[int]) -> None:
+        self.bridge.set_isolate(node_tags, member_tags)
+
+    def clear_isolate(self) -> None:
+        self.bridge.clear_isolate()
+
+    def isolate_active(self) -> bool:
+        return self.bridge.isolateActive
+
     def set_camera_preset(self, preset: str) -> None:
         if preset not in {"iso", "xy", "xz", "yz"}:
             return

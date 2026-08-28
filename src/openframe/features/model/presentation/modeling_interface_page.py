@@ -317,6 +317,19 @@ class ModelingInterfacePage(QFrame):
             # during 3D drawing, so filter them as a deterministic fallback.
             self.preview_3d.quick_widget.installEventFilter(self)
             self.draw_entry.installEventFilter(self)
+            # MIDAS-style "Active Only" view isolation: F2 hides everything
+            # except the current selection (e.g. one story's nodes/members),
+            # Ctrl+A shows the whole model again. Scoped to the whole page,
+            # same reason as escape_shortcut_3d above - the selection can be
+            # made either on the hidden 2D canvas or by dragging a box in
+            # preview_3d itself, and either way the shortcut has to fire
+            # regardless of which of them currently owns focus.
+            self.isolate_shortcut_3d = QShortcut(QKeySequence(Qt.Key.Key_F2), self)
+            self.isolate_shortcut_3d.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            self.isolate_shortcut_3d.activated.connect(self._isolate_selection_3d)
+            self.show_all_shortcut_3d = QShortcut(QKeySequence("Ctrl+A"), self)
+            self.show_all_shortcut_3d.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            self.show_all_shortcut_3d.activated.connect(self.preview_3d.clear_isolate)
         self.fit_shortcut = QShortcut(QKeySequence("F"), self.canvas)
         self.fit_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.fit_shortcut.activated.connect(self.canvas.fit_model)
@@ -7342,6 +7355,18 @@ class ModelingInterfacePage(QFrame):
             return
         self.canvas.end_chain()
         self.canvas.clear_selection()
+
+    def _isolate_selection_3d(self) -> None:
+        """F2: MIDAS-style "Active Only" - hide everything except the
+        current selection, so e.g. one story's nodes/members stay easy to
+        see and click while giving it a floor load without the rest of the
+        building in the way. A no-op with nothing selected. Ctrl+A
+        (preview_3d.clear_isolate, wired alongside this shortcut) shows the
+        whole model again.
+        """
+        self.preview_3d.set_isolate(
+            set(self.canvas.selected_nodes), set(self.canvas.selected_elements)
+        )
 
     def _activate_draw_tool(self) -> None:
         if self._start_in_3d and self._active_element_kwargs is None:

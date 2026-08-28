@@ -104,6 +104,32 @@ Item {
                     return hit
             }
         }
+        // The ray-cast probes above are still occluded by whatever geometry
+        // sits in front of the node along that particular ray - a member's
+        // cross-section can render several times wider on screen than the
+        // node's own marker, so a big section can block every one of those
+        // rays too, at any real zoom level. Nodes are the anchors members
+        // attach to (not the reverse), so fall back to a depth-blind
+        // nearest-node-by-screen-position search: if a node's projected
+        // position really is this close to the cursor, it wins regardless
+        // of what is rendered on top of it.
+        if (root.bridgeReady) {
+            let bestTag = -1
+            let bestDistance = 16
+            for (let index = 0; index < sceneBridge.nodes.length; ++index) {
+                const node = sceneBridge.nodes[index]
+                const point = view3d.mapFrom3DScene(Qt.vector3d(node.x, node.y, node.z))
+                const dx = point.x - mx
+                const dy = point.y - my
+                const distance = Math.sqrt(dx * dx + dy * dy)
+                if (distance < bestDistance) {
+                    bestDistance = distance
+                    bestTag = node.tag
+                }
+            }
+            if (bestTag !== -1)
+                return { objectHit: { nodeTag: bestTag } }
+        }
         return exact
     }
 

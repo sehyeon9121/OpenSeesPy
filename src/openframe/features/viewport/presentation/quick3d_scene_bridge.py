@@ -171,6 +171,16 @@ class Quick3DSceneBridge(QObject):
         self._last_model: StructuralModel | None = None
         self._selected_node_tags: set[int] = set()
         self._selected_member_tags: set[int] = set()
+        #: Per-node bulge radius (see _compute_node_radii) - a large section's
+        #: box can be several times wider than the old flat, section-agnostic
+        #: node radius, swallowing the node both visually and for picking.
+        #: Falls back to _node_radius for any tag missing from this dict.
+        self._node_radii: dict[int, float] = {}
+        #: MIDAS-style "Active Only" view filter (F2 to isolate the current
+        #: selection, Ctrl+A to show everything again) - see set_isolate.
+        self._isolate_active = False
+        self._isolate_node_tags: set[int] = set()
+        self._isolate_member_tags: set[int] = set()
         #: Loads tab (case-based Load Case/Load Entry/Load Combination store) -
         #: entirely separate from the nodal_loads/element_loads-driven
         #: loadArrows above (see canvas_load_entries.py's own module
@@ -209,6 +219,9 @@ class Quick3DSceneBridge(QObject):
         self._last_model = model
         self._selected_node_tags.clear()
         self._selected_member_tags.clear()
+        self._isolate_active = False
+        self._isolate_node_tags.clear()
+        self._isolate_member_tags.clear()
         if not model.nodes:
             self._clear()
             return
@@ -227,6 +240,7 @@ class Quick3DSceneBridge(QObject):
         self._extent = max(*spans, 1.0)
         self._default_thickness = max(self._extent * 0.012, 0.025)
         self._node_radius = self._default_thickness * 0.72
+        self._node_radii = self._compute_node_radii(model, self._default_thickness)
 
         self._center = (
             0.5 * (min(x_values) + max(x_values)),
@@ -299,7 +313,7 @@ class Quick3DSceneBridge(QObject):
                 "x": point[0],
                 "y": point[1],
                 "z": point[2],
-                "radius": self._node_radius,
+                "radius": self._node_radii.get(tag, self._node_radius),
                 "color": _color_for_ratio(ratios.get(tag, 0.0)),
                 "opacity": 1.0,
             }
@@ -338,7 +352,7 @@ class Quick3DSceneBridge(QObject):
                     "x": point[0],
                     "y": point[1],
                     "z": point[2],
-                    "radius": self._node_radius,
+                    "radius": self._node_radii.get(tag, self._node_radius),
                     "color": _GHOST_COLOR,
                     "opacity": _GHOST_OPACITY,
                 }
@@ -406,7 +420,7 @@ class Quick3DSceneBridge(QObject):
                 "x": point[0],
                 "y": point[1],
                 "z": point[2],
-                "radius": self._node_radius,
+                "radius": self._node_radii.get(tag, self._node_radius),
                 "color": _DEFAULT_NODE_COLOR,
                 "opacity": 1.0,
             }
@@ -607,7 +621,7 @@ class Quick3DSceneBridge(QObject):
                 "x": point[0],
                 "y": point[1],
                 "z": point[2],
-                "radius": self._node_radius,
+                "radius": self._node_radii.get(tag, self._node_radius),
                 "color": _GHOST_COLOR,
                 "opacity": _GHOST_OPACITY,
             }
@@ -708,6 +722,33 @@ class Quick3DSceneBridge(QObject):
         self._selected_member_tags = set(member_tags)
         self.scene_changed.emit()
 
+    def set_isolate(self, node_tags: set[int], member_tags: set[int]) -> None:
+        """MIDAS-style "Active Only" view filter: hide everything except the
+        given nodes/members (see the F2 shortcut in modeling_interface_page)
+        so a floor load or other localized edit on one story doesn't have to
+        fight the rest of the building for visibility or click-picking.
+        A no-op if both sets are empty - nothing to isolate to.
+        """
+        if not node_tags and not member_tags:
+            return
+        self._isolate_active = True
+        self._isolate_node_tags = set(node_tags)
+        self._isolate_member_tags = set(member_tags)
+        self.scene_changed.emit()
+
+    def clear_isolate(self) -> None:
+        """Show everything again (Ctrl+A) - the inverse of set_isolate."""
+        if not self._isolate_active:
+            return
+        self._isolate_active = False
+        self._isolate_node_tags.clear()
+        self._isolate_member_tags.clear()
+        self.scene_changed.emit()
+
+    @Property(bool, notify=scene_changed)
+    def isolateActive(self) -> bool:
+        return self._isolate_active
+
     def set_preview_segment(
         self,
         start: tuple[float, float, float] | None,
@@ -785,13 +826,16 @@ class Quick3DSceneBridge(QObject):
 
     @Property("QVariantList", notify=scene_changed)
     def nodes(self) -> list[dict[str, float | int | str]]:
+        source = self._nodes
+        if self._isolate_active:
+            source = [node for node in source if node["tag"] in self._isolate_node_tags]
         if not self._selected_node_tags:
-            return self._nodes
+            return source
         # A picked node is highlighted here rather than baked into `_nodes` at build
         # time, so the highlight survives whatever set_result()/clear_result() next
         # rebuilds `_nodes` with (deformation scale changes, undeformed toggle, ...).
         highlighted = []
-        for node in self._nodes:
+        for node in source:
             if node["tag"] in self._selected_node_tags:
                 node = dict(node)
                 node["selected"] = True
@@ -802,10 +846,13 @@ class Quick3DSceneBridge(QObject):
 
     @Property("QVariantList", notify=scene_changed)
     def members(self) -> list[dict[str, float | int | str]]:
+        source = self._members
+        if self._isolate_active:
+            source = [member for member in source if member["tag"] in self._isolate_member_tags]
         if not self._selected_member_tags:
-            return self._members
+            return source
         highlighted = []
-        for member in self._members:
+        for member in source:
             if member["tag"] in self._selected_member_tags:
                 member = dict(member)
                 member["selected"] = True
@@ -924,6 +971,33 @@ class Quick3DSceneBridge(QObject):
     def torsionMarkersVisible(self) -> bool:
         return self._torsion_marker_active and self._torsion_markers_visible
 
+    def _compute_node_radii(
+        self, model: StructuralModel, default_thickness: float
+    ) -> dict[int, float]:
+        """Per-node marker radius, large enough to poke out past the
+        cross-section of every member framing into that node.
+
+        The old radius was a single value derived only from
+        ``default_thickness`` - a rough, section-agnostic fallback - while a
+        real assigned section's box can render several times wider
+        (``_section_visual_dimensions`` clamps up to ``extent * 0.055``).
+        That let a big W-section's box fully swallow the node sphere, both
+        visually and for click-picking, at a beam-column joint - the node
+        read as buried inside the member instead of the member framing into
+        the node. Radius is per-node (not a single global bump) so a
+        slender brace elsewhere in the same model doesn't get an
+        oversized ball for no reason.
+        """
+        radii: dict[int, float] = {}
+        for element in model.elements.values():
+            visual = self._section_visual_dimensions(element.properties, default_thickness)
+            half_diagonal = 0.5 * math.hypot(visual["width_b"], visual["width_h"])
+            bulge = min(half_diagonal * 1.15, self._extent * 0.03)
+            for tag in (element.node_i, element.node_j):
+                if bulge > radii.get(tag, 0.0):
+                    radii[tag] = bulge
+        return radii
+
     def _rebuild_default_geometry(self, model: StructuralModel) -> None:
         self._local_axis_gizmos = self._local_axis_gizmo_parts(model, self._points)
         self._nodes = [
@@ -932,7 +1006,7 @@ class Quick3DSceneBridge(QObject):
                 "x": point[0],
                 "y": point[1],
                 "z": point[2],
-                "radius": self._node_radius,
+                "radius": self._node_radii.get(tag, self._node_radius),
                 "color": _DEFAULT_NODE_COLOR,
                 "opacity": 1.0,
             }

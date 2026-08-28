@@ -55,7 +55,7 @@ class FloorLoadTypeManagerDialog(QDialog):
         self._canvas = canvas
         self._unit_system = unit_system or DEFAULT_UNIT_SYSTEM
         self.setWindowTitle("Floor Load Type Manager")
-        self.resize(520, 640)
+        self.resize(560, 820)
 
         layout = QVBoxLayout(self)
 
@@ -96,6 +96,8 @@ class FloorLoadTypeManagerDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.itemSelectionChanged.connect(self._load_selection_into_form)
+        self.table.setMinimumHeight(220)
+        self.table.verticalHeader().setDefaultSectionSize(28)
         layout.addWidget(self.table, 1)
 
         self.status_label = QLabel()
