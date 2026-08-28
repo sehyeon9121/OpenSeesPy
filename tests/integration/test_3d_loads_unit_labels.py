@@ -33,7 +33,7 @@ def test_nodal_force_and_moment_labels_show_the_default_units() -> None:
 
 def test_floor_magnitude_label_shows_stress_units() -> None:
     page = _page()
-    assert page.load3d_floor_magnitude_label.text() == "크기 (직접 입력) (kN/m²)"
+    assert page.load3d_floor_magnitude_label.text() == "크기 (kN/m²)"
 
 
 def test_member_uniform_subtype_shows_force_per_length() -> None:
@@ -70,7 +70,7 @@ def test_changing_the_unit_system_updates_every_load3d_label() -> None:
 
     assert page.load3d_nodal_field_labels["fx"].text() == "Fx (N)"
     assert page.load3d_nodal_field_labels["mz"].text() == "Mz (N·mm)"
-    assert page.load3d_floor_magnitude_label.text() == "크기 (직접 입력) (N/mm²)"
+    assert page.load3d_floor_magnitude_label.text() == "크기 (N/mm²)"
     assert page.load3d_member_start_value_label.text().endswith("(N/mm)")
 
 
