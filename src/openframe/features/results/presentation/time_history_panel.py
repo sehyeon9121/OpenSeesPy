@@ -82,6 +82,9 @@ class TimeHistoryPanel(QFrame):
         self._current_peak_step_index: int | None = None
         #: Set by a graph click; independent of the peak above.
         self._clicked_step_index: int | None = None
+        #: Tracks the Animation tab's current step for the graph cursor - updated
+        #: via ``set_animation_step``, not treated as a user click selection.
+        self._animation_step_index: int | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 14)
@@ -180,6 +183,7 @@ class TimeHistoryPanel(QFrame):
     def show_result(self, result: AnalysisResult) -> None:
         self._result = result
         self._result_times = tuple(step.time for step in result.time_history)
+        self._animation_step_index = None
         self._clear_click_selection()
         self._fill_node_selector()
         self._redraw()
@@ -187,9 +191,20 @@ class TimeHistoryPanel(QFrame):
     def clear_result(self) -> None:
         self._result = None
         self._result_times = ()
+        self._animation_step_index = None
         self._clear_click_selection()
         self._fill_node_selector()
         self.curve_view.set_empty_message("시간이력해석을 먼저 실행하세요")
+        self._redraw()
+
+    def set_animation_step(self, step_index: int) -> None:
+        """Sync the response graph cursor to Animation's current step."""
+        if self._result is None or not self._result.time_history:
+            self._animation_step_index = None
+        else:
+            self._animation_step_index = max(
+                0, min(step_index, len(self._result.time_history) - 1)
+            )
         self._redraw()
 
     def _clear_click_selection(self) -> None:
@@ -349,6 +364,9 @@ class TimeHistoryPanel(QFrame):
                     f"(Step {self._clicked_step_index}) · Value unavailable"
                 )
         self.curve_view.set_empty_message("시간이력해석을 먼저 실행하세요")
+        animation_time: float | None = None
+        if self._animation_step_index is not None:
+            animation_time = self._result.time_history[self._animation_step_index].time
         self.curve_view.set_series(
             tuple(times),
             tuple(values),
@@ -358,4 +376,5 @@ class TimeHistoryPanel(QFrame):
             selected_time=selected_time,
             selected_point=selected_point,
             selected_label=selected_label,
+            animation_time=animation_time,
         )

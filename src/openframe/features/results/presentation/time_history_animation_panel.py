@@ -22,7 +22,7 @@ import bisect
 import logging
 import math
 
-from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -45,6 +46,13 @@ from openframe.core.domain import (
     NodeResult,
     StructuralModel,
     UnitSystem,
+)
+from openframe.features.results.deformation.deformed_3d_state import (
+    build_deformed_3d_state,
+    compute_3d_translation_auto_scale,
+)
+from openframe.features.results.presentation.time_history_3d_animation_adapter import (
+    TimeHistory3DAnimationAdapter,
 )
 from openframe.features.viewport.presentation.structural_graphics_view import (
     StructuralGraphicsView,
@@ -79,6 +87,7 @@ _SCALE_OPTIONS: tuple[tuple[str, float | None], ...] = (
 )
 
 _AUTO_SCALE_TARGET_FRACTION = 0.08
+_MAX_AUTO_SCALE = 10_000.0
 
 
 def _xy(node_result: NodeResult | None) -> tuple[float, float]:
@@ -91,6 +100,10 @@ def _xy(node_result: NodeResult | None) -> tuple[float, float]:
 
 
 class TimeHistoryAnimationPanel(QFrame):
+    #: Emitted whenever the displayed time-history step changes - from play,
+    #: the slider, transport buttons, or an external ``set_current_step`` call.
+    current_step_changed = Signal(int)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("timeHistoryAnimationPanel")
@@ -106,8 +119,10 @@ class TimeHistoryAnimationPanel(QFrame):
         #: analysis's real dt so a 0.01s-dt Kobe run does not need a 10ms timer.
         self._playback_time = 0.0
         self._auto_scale_multiplier: float | None = None
+        self._suppress_step_signal = False
         self._element_items: dict[int, QGraphicsLineItem] = {}
         self._node_items: dict[int, QGraphicsEllipseItem] = {}
+        self._3d_adapter = TimeHistory3DAnimationAdapter()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -125,11 +140,16 @@ class TimeHistoryAnimationPanel(QFrame):
         header.addWidget(self.consistency_warning)
         layout.addLayout(header)
 
+        self._canvas_stack = QStackedWidget()
         self.scene = StructuralScene(self)
         self.view = StructuralGraphicsView(self.scene)
         self.view.setObjectName("resultGraphicsView")
         self.view.setDragMode(self.view.DragMode.ScrollHandDrag)
-        layout.addWidget(self.view, 1)
+        self._3d_view = self._3d_adapter.viewport
+        self._3d_view.setObjectName("timeHistoryQuick3DView")
+        self._canvas_stack.addWidget(self.view)
+        self._canvas_stack.addWidget(self._3d_view)
+        layout.addWidget(self._canvas_stack, 1)
 
         self.empty_label = QLabel("Run a Time History Analysis to view the animation.")
         self.empty_label.setObjectName("secondaryText")
@@ -178,9 +198,15 @@ class TimeHistoryAnimationPanel(QFrame):
             self.scale_selector.addItem(label, value)
         options_row.addWidget(self.scale_selector)
         options_row.addSpacing(14)
-        self.show_undeformed_checkbox = QCheckBox("Show Undeformed Shape")
+        self.show_undeformed_checkbox = QCheckBox("Show Original")
         self.show_undeformed_checkbox.setChecked(True)
         options_row.addWidget(self.show_undeformed_checkbox)
+        self.show_deformed_checkbox = QCheckBox("Show Deformed")
+        self.show_deformed_checkbox.setChecked(True)
+        self.show_deformed_checkbox.setVisible(False)
+        options_row.addWidget(self.show_deformed_checkbox)
+        self.loop_checkbox = QCheckBox("Loop")
+        options_row.addWidget(self.loop_checkbox)
         options_row.addStretch(1)
         controls_layout.addLayout(options_row)
 
@@ -198,6 +224,7 @@ class TimeHistoryAnimationPanel(QFrame):
         self.speed_selector.currentIndexChanged.connect(self._on_speed_changed)
         self.scale_selector.currentIndexChanged.connect(self._on_scale_changed)
         self.show_undeformed_checkbox.toggled.connect(self._on_show_undeformed_toggled)
+        self.show_deformed_checkbox.toggled.connect(self._on_show_deformed_toggled)
 
         self._show_empty_state()
 
@@ -215,7 +242,13 @@ class TimeHistoryAnimationPanel(QFrame):
         self._model = model
         self._element_items = {}
         self._node_items = {}
-        if model.ndm != 3:
+        is_3d = model.ndm == 3
+        self.show_deformed_checkbox.setVisible(is_3d)
+        if is_3d:
+            self._canvas_stack.setCurrentWidget(self._3d_view)
+            self._3d_adapter.set_model(model)
+        else:
+            self._canvas_stack.setCurrentWidget(self.view)
             self.scene.set_model(model)
             self._build_deformed_overlay(model)
             self._fit_view()
@@ -231,14 +264,17 @@ class TimeHistoryAnimationPanel(QFrame):
         self._check_node_consistency()
         if self._has_playable_result():
             self.empty_label.setVisible(False)
-            self.view.setVisible(True)
+            self._canvas_stack.setVisible(True)
             self.slider.setEnabled(True)
             self.slider.setMaximum(max(len(self._times) - 1, 0))
+            if self._model is not None and self._model.ndm == 3:
+                self._3d_adapter.set_result(result)
             self._apply_step(0)
             # The view may not have had a real size yet when set_model() first
             # fit it (e.g. this tab was never shown) - re-fit now that a
             # result exists and the widget is about to become visible.
-            self._fit_view()
+            if self._model is not None and self._model.ndm != 3:
+                self._fit_view()
         else:
             self._show_empty_state()
 
@@ -248,6 +284,7 @@ class TimeHistoryAnimationPanel(QFrame):
         self._times = ()
         self._current_step_index = 0
         self._playback_time = 0.0
+        self._3d_adapter.clear()
         self._show_empty_state()
 
     # -- geometry --------------------------------------------------------
@@ -321,16 +358,17 @@ class TimeHistoryAnimationPanel(QFrame):
     def _has_playable_result(self) -> bool:
         return (
             self._model is not None
-            and self._model.ndm != 3
             and self._result is not None
             and bool(self._result.time_history)
         )
 
     def _show_empty_state(self) -> None:
-        self.view.setVisible(False)
+        self._canvas_stack.setVisible(False)
         self.empty_label.setVisible(True)
-        if self._model is not None and self._model.ndm == 3:
-            self.empty_label.setText("3D 모델의 Time History 애니메이션은 이번 버전에서 지원하지 않습니다.")
+        if self._model is not None and self._result is not None and not self._result.time_history:
+            self.empty_label.setText("Run a Time History Analysis to view the animation.")
+        elif self._result is None:
+            self.empty_label.setText("Run a Time History Analysis to view the animation.")
         else:
             self.empty_label.setText("Run a Time History Analysis to view the animation.")
         self.slider.setEnabled(False)
@@ -352,6 +390,9 @@ class TimeHistoryAnimationPanel(QFrame):
         AUTO button: draw the peak at ~8% of the model's own span."""
         if self._model is None or not self._model.nodes or self._result is None:
             return 1.0
+        if self._model.ndm == 3:
+            raw = compute_3d_translation_auto_scale(self._model, self._result)
+            return max(1.0, min(_MAX_AUTO_SCALE, raw))
         max_displacement = 0.0
         for step in self._result.time_history:
             for node_result in step.node_results.values():
@@ -362,13 +403,27 @@ class TimeHistoryAnimationPanel(QFrame):
         xs = [node.x for node in self._model.nodes.values()]
         ys = [node.y for node in self._model.nodes.values()]
         span = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
-        return max(1.0, (span * _AUTO_SCALE_TARGET_FRACTION) / max_displacement)
+        return max(1.0, min(_MAX_AUTO_SCALE, (span * _AUTO_SCALE_TARGET_FRACTION) / max_displacement))
 
     def _apply_step(self, index: int) -> None:
-        if not self._has_playable_result():
+        if not self._has_playable_result() or self._model is None or self._result is None:
             return
-        step = self._result.time_history[index]
         scale = self._active_deformation_multiplier()
+        if self._model.ndm == 3:
+            max_magnitude = self._apply_step_3d(index, scale)
+        else:
+            max_magnitude = self._apply_step_2d(index, scale)
+
+        self._current_step_index = index
+        self.slider.blockSignals(True)
+        self.slider.setValue(index)
+        self.slider.blockSignals(False)
+        self._update_step_labels(max_magnitude)
+        self._emit_step_changed(index)
+
+    def _apply_step_2d(self, index: int, scale: float) -> float:
+        assert self._model is not None and self._result is not None
+        step = self._result.time_history[index]
         max_magnitude = 0.0
         for node_tag, item in self._node_items.items():
             node = self._model.nodes.get(node_tag)
@@ -395,12 +450,26 @@ class TimeHistoryAnimationPanel(QFrame):
                 node_j.x + ux_j * scale, node_j.y + uy_j * scale, node_j.z
             )
             item.setLine(start.x(), start.y(), end.x(), end.y())
+        return max_magnitude
 
-        self._current_step_index = index
-        self.slider.blockSignals(True)
-        self.slider.setValue(index)
-        self.slider.blockSignals(False)
-        self._update_step_labels(max_magnitude)
+    def _apply_step_3d(self, index: int, scale: float) -> float:
+        assert self._model is not None and self._result is not None
+        state = build_deformed_3d_state(self._model, self._result, index, scale)
+        max_magnitude = state.max_translation_magnitude if state is not None else 0.0
+        self._3d_adapter.set_translation_scale(scale)
+        self._3d_adapter.set_show_original(self.show_undeformed_checkbox.isChecked())
+        self._3d_adapter.set_show_deformed(self.show_deformed_checkbox.isChecked())
+        self._3d_adapter.set_step(index)
+        return max_magnitude
+
+    def _emit_step_changed(self, index: int) -> None:
+        if self._suppress_step_signal:
+            return
+        self._suppress_step_signal = True
+        try:
+            self.current_step_changed.emit(index)
+        finally:
+            self._suppress_step_signal = False
 
     def _update_step_labels(self, max_magnitude: float | None = None) -> None:
         if not self._has_playable_result():
@@ -459,7 +528,11 @@ class TimeHistoryAnimationPanel(QFrame):
         if index != self._current_step_index:
             self._apply_step(index)
         if index >= len(self._times) - 1:
-            self._set_playing(False)
+            if self.loop_checkbox.isChecked():
+                self._playback_time = self._times[0]
+                self._apply_step(0)
+            else:
+                self._set_playing(False)
 
     def set_current_step(self, index: int) -> None:
         """Jump to a specific step from outside this panel - Phase 3-J's "Go
@@ -509,7 +582,17 @@ class TimeHistoryAnimationPanel(QFrame):
             self._apply_step(self._current_step_index)
 
     def _on_show_undeformed_toggled(self) -> None:
-        self._apply_undeformed_visibility()
+        if self._model is not None and self._model.ndm == 3:
+            self._3d_adapter.set_show_original(self.show_undeformed_checkbox.isChecked())
+            if self._has_playable_result():
+                self._3d_adapter.set_step(self._current_step_index)
+        else:
+            self._apply_undeformed_visibility()
+
+    def _on_show_deformed_toggled(self) -> None:
+        if self._has_playable_result() and self._model is not None and self._model.ndm == 3:
+            self._3d_adapter.set_show_deformed(self.show_deformed_checkbox.isChecked())
+            self._3d_adapter.set_step(self._current_step_index)
 
     @staticmethod
     def _tool_button(text: str) -> QPushButton:

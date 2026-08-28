@@ -34,6 +34,7 @@ class TimeHistoryCurveView(QWidget):
         self._selected_time: float | None = None
         self._selected_point: tuple[float, float] | None = None
         self._selected_label = ""
+        self._animation_time: float | None = None
         self._last_plot_rect: QRectF | None = None
         self._last_max_time = 0.0
 
@@ -49,6 +50,7 @@ class TimeHistoryCurveView(QWidget):
         selected_time: float | None = None,
         selected_point: tuple[float, float] | None = None,
         selected_label: str = "",
+        animation_time: float | None = None,
     ) -> None:
         """``marker`` is an optional (time, value) point to highlight - e.g.
         where the absolute-max response occurs - drawn as a dot with a small
@@ -68,6 +70,7 @@ class TimeHistoryCurveView(QWidget):
         self._selected_time = selected_time
         self._selected_point = selected_point
         self._selected_label = selected_label
+        self._animation_time = animation_time
         self.update()
 
     def set_empty_message(self, message: str) -> None:
@@ -242,6 +245,14 @@ class TimeHistoryCurveView(QWidget):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 display_label,
             )
+
+        if self._animation_time is not None:
+            animation_x, _ = to_screen(self._animation_time, 0.0)
+            animation_color = QColor("#174ea6")
+            animation_pen = QPen(animation_color, 1.6)
+            animation_pen.setCosmetic(True)
+            painter.setPen(animation_pen)
+            painter.drawLine(animation_x, plot_rect.top(), animation_x, plot_rect.bottom())
 
         if self._selected_time is not None:
             selected_x, _ = to_screen(self._selected_time, 0.0)

@@ -194,7 +194,7 @@ def test_10_empty_time_history_shows_a_safe_message_instead_of_crashing() -> Non
     panel.show_result(AnalysisResult(status=AnalysisStatus.COMPLETED, time_history=()))
 
     assert panel.empty_label.isVisible()
-    assert not panel.view.isVisible()
+    assert not panel._canvas_stack.isVisible()
     assert panel._current_step_index == 0
 
 

@@ -60,6 +60,9 @@ class TimeHistoryResultsPanel(QFrame):
         # reaches into the other's widgets directly, this wrapper is the one
         # place "go to this step" turns into an Animation call + tab switch.
         self.response_history_panel.go_to_step_requested.connect(self._go_to_step)
+        self.animation_panel.current_step_changed.connect(
+            self.response_history_panel.set_animation_step
+        )
 
     def _on_tab_changed(self, index: int) -> None:
         if index != self.content_stack.indexOf(self.animation_panel):
