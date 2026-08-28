@@ -700,14 +700,15 @@ class Quick3DSceneBridge(QObject):
         points: dict[int, tuple[float, float, float]],
         *,
         color: str,
-    ) -> None:
+    ) -> bool:
         fresh_parts = self._member_parts(
             element, points, self._default_thickness, color=color
         )
         if len(fresh_parts) != len(part_dicts):
-            return
+            return False
         for existing, updated in zip(part_dicts, fresh_parts, strict=True):
             existing.update(updated)
+        return True
 
     def set_loads_visible(self, visible: bool) -> None:
         if self._loads_visible == visible:
@@ -787,6 +788,9 @@ class Quick3DSceneBridge(QObject):
         The result viewport still uses :meth:`set_selected_node`; modeling needs
         the full node/member sets because a box selection can contain both.
         """
+        if self._last_model is not None:
+            node_tags = {tag for tag in node_tags if tag in self._last_model.nodes}
+            member_tags = {tag for tag in member_tags if tag in self._last_model.elements}
         self._selected_node_tags = set(node_tags)
         self._selected_member_tags = set(member_tags)
         self._emit_selection_changed()
@@ -800,6 +804,11 @@ class Quick3DSceneBridge(QObject):
         """
         if not node_tags and not member_tags:
             return
+        if self._last_model is not None:
+            node_tags = {tag for tag in node_tags if tag in self._last_model.nodes}
+            member_tags = {tag for tag in member_tags if tag in self._last_model.elements}
+            if not node_tags and not member_tags:
+                return
         self._isolate_active = True
         self._isolate_node_tags = set(node_tags)
         self._isolate_member_tags = set(member_tags)
@@ -1183,9 +1192,7 @@ class Quick3DSceneBridge(QObject):
         for tag, point in points.items():
             entry = self._node_by_tag.get(tag)
             if entry is None:
-                self._full_topology_rebuild(model)
-                self._cached_topology_fingerprint = self._compute_topology_fingerprint(model)
-                self._emit_topology_changed()
+                self._fallback_to_full_topology_rebuild(model, reason="missing_node_dict")
                 return
             entry["x"] = point[0]
             entry["y"] = point[1]
@@ -1194,27 +1201,40 @@ class Quick3DSceneBridge(QObject):
 
         for element, part_dicts in self._geometry_member_records:
             color = _member_type_color(element)
-            self._update_member_parts_in_place(
+            if not self._update_member_parts_in_place(
                 element, part_dicts, points, color=color
-            )
+            ):
+                self._fallback_to_full_topology_rebuild(
+                    model, reason=f"member_part_count:{element.tag}"
+                )
+                return
 
         fresh_loads = self._build_all_load_arrows(model, points)
-        if not self._replace_part_list_in_place(self._load_arrows, fresh_loads):
-            self._load_arrows = fresh_loads
+        if not self._replace_part_list_in_place(self._load_arrows, fresh_loads, "load_arrows"):
+            self._fallback_to_full_topology_rebuild(model, reason="load_arrows")
+            return
 
         fresh_supports = self._build_support_parts(model, points)
-        if not self._replace_part_list_in_place(self._support_parts, fresh_supports):
-            self._support_parts = fresh_supports
+        if not self._replace_part_list_in_place(self._support_parts, fresh_supports, "support_parts"):
+            self._fallback_to_full_topology_rebuild(model, reason="support_parts")
+            return
 
         fresh_gizmos = self._local_axis_gizmo_parts(model, points)
-        if not self._replace_part_list_in_place(self._local_axis_gizmos, fresh_gizmos):
-            self._local_axis_gizmos = fresh_gizmos
+        if not self._replace_part_list_in_place(
+            self._local_axis_gizmos, fresh_gizmos, "local_axis_gizmos"
+        ):
+            self._fallback_to_full_topology_rebuild(model, reason="local_axis_gizmos")
+            return
 
         entry_key = self._load_entries_topology_key()
         if entry_key != self._load_entry_topology_key:
             self._load_entry_topology_key = entry_key
-        if self._load_entries:
             self._rebuild_load_entry_parts()
+            self._emit_loads_changed()
+        elif self._load_entry_parts:
+            self._rebuild_load_entry_parts()
+            self._emit_loads_changed()
+        else:
             self._emit_loads_changed()
 
         self._geometry_revision += 1
@@ -1222,12 +1242,23 @@ class Quick3DSceneBridge(QObject):
         if perf_enabled():
             perf_recorder().counters.geometry_updates += 1
 
+    def _fallback_to_full_topology_rebuild(self, model: StructuralModel, *, reason: str) -> None:
+        """Abort incremental update and rebuild lists safely."""
+        if perf_enabled():
+            perf_recorder().record_incremental_fallback(reason)
+        self._full_topology_rebuild(model)
+        self._cached_topology_fingerprint = self._compute_topology_fingerprint(model)
+        self._emit_topology_changed()
+
     @staticmethod
     def _replace_part_list_in_place(
         existing: list[dict[str, float | int | str]],
         fresh: list[dict[str, float | int | str]],
+        label: str,
     ) -> bool:
         if len(existing) != len(fresh):
+            if perf_enabled():
+                perf_recorder().record_incremental_fallback(f"{label}_length")
             return False
         for current, updated in zip(existing, fresh, strict=True):
             current.update(updated)
@@ -1301,16 +1332,40 @@ class Quick3DSceneBridge(QObject):
             self._expected_member_part_count(element, props),
         )
 
+    @staticmethod
+    def _h_section_has_three_parts(properties: dict[str, float | str]) -> bool:
+        """Extent-independent H/I section part layout - raw dim_* only.
+
+        ``_section_visual_dimensions`` clamps to the current model extent,
+        so reusing ``self._extent`` here would make part-count fingerprints
+        depend on stale metrics from the *previous* model after a large
+        scale change.
+        """
+        if properties.get("section_shape") != "H/I Section":
+            return False
+
+        def dim(key: str) -> float | None:
+            return Quick3DSceneBridge._number_property(properties, f"dim_{key}")
+
+        overall_h, overall_b = dim("H"), dim("B")
+        web_thickness, flange_thickness = dim("tw"), dim("tf")
+        if overall_h is None or overall_b is None or web_thickness is None or flange_thickness is None:
+            return False
+        if overall_h <= 0.0 or overall_b <= 0.0:
+            return False
+        if flange_thickness <= 0.0 or flange_thickness >= overall_h / 2.0:
+            return False
+        if web_thickness <= 0.0 or web_thickness >= overall_b:
+            return False
+        return True
+
     def _expected_member_part_count(
         self, element: Element, properties: dict[str, float | str] | None = None
     ) -> int:
         props = properties if properties is not None else element.properties
         if element.element_type.lower() in _TRUSS_ELEMENT_TYPES:
             return 1
-        visual = self._section_visual_dimensions(
-            props, self._default_thickness if self._default_thickness > 0 else 0.025
-        )
-        if visual["shape"] == "H/I Section" and float(visual.get("web_height", 0.0) or 0.0) > 0.0:
+        if self._h_section_has_three_parts(props):
             return 3
         return 1
 
@@ -1331,14 +1386,10 @@ class Quick3DSceneBridge(QObject):
 
     @staticmethod
     def _model_loads_topology_signature(model: StructuralModel) -> tuple[object, ...]:
+        """Load attachment layout only - magnitudes and directions are geometry."""
         nodal = tuple(
             sorted(
-                (
-                    load.node_tag,
-                    load.case_type.value,
-                    load.pattern_tag,
-                    tuple(round(value, 6) for value in load.values),
-                )
+                (load.node_tag, load.case_type.value, load.pattern_tag)
                 for load in model.nodal_loads
             )
         )
@@ -1348,14 +1399,8 @@ class Quick3DSceneBridge(QObject):
                     load.element_tag,
                     load.case_type.value,
                     load.pattern_tag,
-                    round(load.wx, 6),
-                    round(load.wy, 6),
-                    round(load.wz, 6),
-                    round(load.wx_j or load.wx, 6),
-                    round(load.wy_j or load.wy, 6),
-                    round(load.wz_j or load.wz, 6),
-                    round(load.xL1, 6),
-                    round(load.xL2, 6),
+                    round(load.xL1, 9),
+                    round(load.xL2, 9),
                 )
                 for load in model.element_loads
             )
@@ -1382,7 +1427,6 @@ class Quick3DSceneBridge(QObject):
             self._load_entry_mode,
             self._load_entry_active_case_id,
             self._load_entry_active_combination_id,
-            round(self._load_entry_scale, 9),
         )
 
     @staticmethod

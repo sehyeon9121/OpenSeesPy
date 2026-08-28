@@ -9,7 +9,7 @@ from dataclasses import replace
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from openframe.core.domain import Element, Node, NodalLoad, StructuralModel
+from openframe.core.domain import Element, Node, NodalLoad, StructuralModel, UniformElementLoad
 from openframe.core.domain.model import LoadCaseKind
 from openframe.features.viewport.presentation.quick3d_perf import (
     enable_quick3d_perf,
@@ -286,3 +286,230 @@ def test_perf_recorder_counts_incremental_path() -> None:
     assert counters.preview_updates >= 1
     assert counters.signal_emits.get("scene_changed", 0) >= 1
     assert counters.last_list_identities.get("nodes") == id(bridge._nodes)
+
+
+def _h_beam_model() -> StructuralModel:
+    model = StructuralModel(ndm=3, ndf=6)
+    model.nodes = {
+        1: Node(1, 0.0, 0.0, 0.0, 6),
+        2: Node(2, 4.0, 0.0, 0.0, 6),
+    }
+    model.elements = {
+        1: Element(
+            1,
+            1,
+            2,
+            "elasticBeamColumn",
+            properties={
+                "behavior": "general_beam",
+                "section_shape": "H/I Section",
+                "dim_H": 0.4,
+                "dim_B": 0.2,
+                "dim_tw": 0.008,
+                "dim_tf": 0.012,
+            },
+        ),
+    }
+    return model
+
+
+def _signal_counts(bridge: Quick3DSceneBridge) -> dict[str, int]:
+    counts = {"scene": 0, "topology": 0, "geometry": 0, "loads": 0}
+    bridge.scene_changed.connect(lambda: counts.__setitem__("scene", counts["scene"] + 1))
+    bridge.topology_changed.connect(lambda: counts.__setitem__("topology", counts["topology"] + 1))
+    bridge.geometry_changed.connect(lambda: counts.__setitem__("geometry", counts["geometry"] + 1))
+    bridge.loads_changed.connect(lambda: counts.__setitem__("loads", counts["loads"] + 1))
+    return counts
+
+
+def test_h_section_incremental_preserves_three_part_identities() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _h_beam_model()
+    bridge.set_model(model)
+    assert len(bridge._members) == 3
+    members_id = id(bridge._members)
+    web_id = id(bridge._members[0])
+    flange_ids = {id(bridge._members[1]), id(bridge._members[2])}
+    before_x = float(bridge._members[0]["x"])
+
+    counts = _signal_counts(bridge)
+    moved = _move_node(model, 2, 1.0, 0.0)
+    bridge.set_model(moved)
+
+    assert id(bridge._members) == members_id
+    assert id(bridge._members[0]) == web_id
+    assert {id(bridge._members[1]), id(bridge._members[2])} == flange_ids
+    assert float(bridge._members[0]["x"]) != before_x
+    assert counts == {"scene": 0, "topology": 0, "geometry": 1, "loads": 1}
+
+
+def test_h_section_part_count_change_triggers_topology_rebuild() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _h_beam_model()
+    bridge.set_model(model)
+
+    counts = _signal_counts(bridge)
+    element = model.elements[1]
+    props = dict(element.properties)
+    props["section_shape"] = "Rectangle"
+    props["width"] = 0.3
+    props["height"] = 0.5
+    model.elements[1] = replace(element, properties=props)
+    bridge.set_model(model)
+
+    assert len(bridge._members) == 1
+    assert counts["topology"] == 1
+    assert counts["scene"] == 1
+
+
+def test_nodal_load_magnitude_change_is_incremental() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(4, 4)
+    model.nodal_loads = [NodalLoad(1, (0.0, 0.0, -10.0), case_type=LoadCaseKind.DEAD)]
+    bridge.set_model(model)
+    loads_id = id(bridge._load_arrows)
+    magnitude_before = float(bridge._load_arrows[0]["magnitude"])
+    counts = _signal_counts(bridge)
+
+    loads = list(model.nodal_loads)
+    loads[0] = NodalLoad(1, (0.0, 0.0, -25.0), case_type=LoadCaseKind.DEAD)
+    bridge.set_model(replace(model, nodal_loads=loads))
+
+    magnitude_after = float(bridge._load_arrows[0]["magnitude"])
+    assert counts["topology"] == 0
+    assert counts["geometry"] == 1
+    assert id(bridge._load_arrows) == loads_id
+    assert magnitude_after == pytest.approx(25.0)
+    assert magnitude_before == pytest.approx(10.0)
+
+
+def test_nodal_load_direction_change_is_incremental() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(4, 4)
+    model.nodal_loads = [NodalLoad(1, (0.0, 0.0, -10.0), case_type=LoadCaseKind.DEAD)]
+    bridge.set_model(model)
+    rotation_before = (
+        float(bridge._load_arrows[0]["qx"]),
+        float(bridge._load_arrows[0]["qy"]),
+        float(bridge._load_arrows[0]["qz"]),
+    )
+    counts = _signal_counts(bridge)
+
+    loads = [NodalLoad(1, (10.0, 0.0, 0.0), case_type=LoadCaseKind.DEAD)]
+    bridge.set_model(replace(model, nodal_loads=loads))
+
+    rotation_after = (
+        float(bridge._load_arrows[0]["qx"]),
+        float(bridge._load_arrows[0]["qy"]),
+        float(bridge._load_arrows[0]["qz"]),
+    )
+    assert counts["topology"] == 0
+    assert counts["geometry"] == 1
+    assert rotation_after != rotation_before
+
+
+def test_element_load_magnitude_change_is_incremental() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(4, 4)
+    first_element = next(iter(model.elements))
+    model.element_loads = [
+        UniformElementLoad(first_element, wy=-5.0, case_type=LoadCaseKind.DEAD),
+    ]
+    bridge.set_model(model)
+    counts = _signal_counts(bridge)
+
+    model.element_loads = [
+        UniformElementLoad(first_element, wy=-20.0, case_type=LoadCaseKind.DEAD),
+    ]
+    bridge.set_model(model)
+
+    assert counts["topology"] == 0
+    assert counts["geometry"] == 1
+
+
+def test_load_add_and_delete_trigger_topology_rebuild() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(3, 3)
+    bridge.set_model(model)
+
+    counts = _signal_counts(bridge)
+    model.nodal_loads = [NodalLoad(1, (0.0, 0.0, -1.0), case_type=LoadCaseKind.DEAD)]
+    bridge.set_model(model)
+    assert counts["topology"] == 1
+
+    counts = _signal_counts(bridge)
+    bridge.set_model(replace(model, nodal_loads=[]))
+    assert counts["topology"] == 1
+
+
+def test_length_mismatch_falls_back_to_topology_rebuild() -> None:
+    _app()
+    enable_quick3d_perf(True)
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(3, 3)
+    model.nodal_loads = [NodalLoad(1, (0.0, 0.0, -5.0), case_type=LoadCaseKind.DEAD)]
+    bridge.set_model(model)
+
+    counts = _signal_counts(bridge)
+    bridge._load_arrows.pop()
+    moved = _move_node(model, 1, 0.1, 0.0)
+    bridge.set_model(moved)
+
+    assert counts["topology"] == 1
+    assert perf_recorder().counters.incremental_fallbacks >= 1
+
+
+def test_set_selection_filters_deleted_tags() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(3, 3)
+    bridge.set_model(model)
+    bridge.set_selection({1, 2, 99}, {1, 99})
+    assert bridge.selectedNodeTags == [1, 2]
+    assert bridge.selectedMemberTags == [1]
+
+
+def test_set_isolate_filters_deleted_tags() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(3, 3)
+    bridge.set_model(model)
+    bridge.set_isolate({1, 99}, {99})
+    assert bridge.isolateNodeTags == [1]
+    assert bridge.isolateMemberTags == []
+
+
+def test_isolate_tags_pruned_when_model_loses_nodes() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _grid_model(3, 3)
+    bridge.set_model(model)
+    bridge.set_isolate({1, 2}, {1})
+
+    nodes = dict(model.nodes)
+    del nodes[2]
+    bridge.set_model(replace(model, nodes=nodes))
+
+    assert bridge.isolateActive
+    assert bridge.isolateNodeTags == [1]
+
+
+def test_h_section_fingerprint_stable_across_extent_change() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    compact = _h_beam_model()
+    bridge.set_model(compact)
+    fp_compact = bridge._cached_topology_fingerprint
+
+    spread = _h_beam_model()
+    spread.nodes[2] = Node(2, 400.0, 0.0, 0.0, 6)
+    bridge.set_model(spread)
+    fp_spread = bridge._cached_topology_fingerprint
+
+    assert fp_compact == fp_spread

@@ -396,17 +396,25 @@ Item {
                         sceneBridge.geometryRevision
                     return Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 }
-                rotation: Qt.quaternion(
-                    modelData.qscalar,
-                    modelData.qx,
-                    modelData.qy,
-                    modelData.qz
-                )
-                scale: Qt.vector3d(
-                    modelData.scale_x / 100,
-                    modelData.scale_y / 100,
-                    modelData.scale_z / 100
-                )
+                rotation: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.quaternion(
+                        modelData.qscalar,
+                        modelData.qx,
+                        modelData.qy,
+                        modelData.qz
+                    )
+                }
+                scale: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(
+                        modelData.scale_x / 100,
+                        modelData.scale_y / 100,
+                        modelData.scale_z / 100
+                    )
+                }
                 materials: [
                     PrincipledMaterial {
                         baseColor: modelData.color
@@ -628,11 +636,17 @@ Item {
                     }
                     return Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 }
-                scale: Qt.vector3d(
-                    modelData.radius * 2.75 / 100,
-                    modelData.radius * 2.75 / 100,
-                    modelData.radius * 2.75 / 100
-                )
+                scale: {
+                    if (bridgeReady) {
+                        sceneBridge.geometryRevision
+                        sceneBridge.deformationRevision
+                    }
+                    return Qt.vector3d(
+                        modelData.radius * 2.75 / 100,
+                        modelData.radius * 2.75 / 100,
+                        modelData.radius * 2.75 / 100
+                    )
+                }
                 materials: [
                     PrincipledMaterial {
                         baseColor: "#ef4444"
@@ -792,17 +806,25 @@ Item {
                         sceneBridge.geometryRevision
                     return Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 }
-                rotation: Qt.quaternion(
-                    modelData.qscalar,
-                    modelData.qx,
-                    modelData.qy,
-                    modelData.qz
-                )
-                scale: Qt.vector3d(
-                    modelData.thickness / 100,
-                    modelData.length / 100,
-                    modelData.thickness / 100
-                )
+                rotation: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.quaternion(
+                        modelData.qscalar,
+                        modelData.qx,
+                        modelData.qy,
+                        modelData.qz
+                    )
+                }
+                scale: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(
+                        modelData.thickness / 100,
+                        modelData.length / 100,
+                        modelData.thickness / 100
+                    )
+                }
                 materials: [
                     PrincipledMaterial {
                         baseColor: modelData.color
@@ -831,17 +853,25 @@ Item {
                         sceneBridge.geometryRevision
                     return Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 }
-                rotation: Qt.quaternion(
-                    modelData.qscalar,
-                    modelData.qx,
-                    modelData.qy,
-                    modelData.qz
-                )
-                scale: Qt.vector3d(
-                    modelData.thickness / 100,
-                    modelData.length / 100,
-                    modelData.thickness / 100
-                )
+                rotation: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.quaternion(
+                        modelData.qscalar,
+                        modelData.qx,
+                        modelData.qy,
+                        modelData.qz
+                    )
+                }
+                scale: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(
+                        modelData.thickness / 100,
+                        modelData.length / 100,
+                        modelData.thickness / 100
+                    )
+                }
                 materials: [
                     PrincipledMaterial {
                         baseColor: modelData.color
@@ -866,17 +896,25 @@ Item {
                         sceneBridge.geometryRevision
                     return Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 }
-                rotation: Qt.quaternion(
-                    modelData.qscalar,
-                    modelData.qx,
-                    modelData.qy,
-                    modelData.qz
-                )
-                scale: Qt.vector3d(
-                    modelData.thickness / 100,
-                    modelData.length / 100,
-                    modelData.thickness / 100
-                )
+                rotation: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.quaternion(
+                        modelData.qscalar,
+                        modelData.qx,
+                        modelData.qy,
+                        modelData.qz
+                    )
+                }
+                scale: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(
+                        modelData.thickness / 100,
+                        modelData.length / 100,
+                        modelData.thickness / 100
+                    )
+                }
                 materials: [
                     PrincipledMaterial {
                         baseColor: modelData.color

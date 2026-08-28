@@ -41,7 +41,7 @@ class Quick3DPerfCounters:
     set_model_calls: int = 0
     set_model_incremental: int = 0
     set_model_full: int = 0
-    build_model_calls: int = 0
+    incremental_fallbacks: int = 0
     signal_emits: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     scoped_ms: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     last_delegate_counts: dict[str, int] = field(default_factory=dict)
@@ -59,6 +59,7 @@ class Quick3DPerfCounters:
         self.set_model_incremental = 0
         self.set_model_full = 0
         self.build_model_calls = 0
+        self.incremental_fallbacks = 0
         self.signal_emits.clear()
         self.scoped_ms.clear()
         self.last_delegate_counts.clear()
@@ -68,7 +69,7 @@ class Quick3DPerfCounters:
         lines = [
             f"set_model calls={self.set_model_calls} "
             f"(incremental={self.set_model_incremental}, full={self.set_model_full})",
-            f"build_model calls={self.build_model_calls}",
+            f"build_model calls={self.build_model_calls} incremental_fallbacks={self.incremental_fallbacks}",
             f"topology_rebuilds={self.topology_rebuilds} scene_rebuilds={self.scene_rebuilds} "
             f"geometry_updates={self.geometry_updates} selection_updates={self.selection_updates} "
             f"preview_updates={self.preview_updates}",
@@ -123,6 +124,11 @@ class Quick3DPerfRecorder:
     def record_list_identities(self, identities: dict[str, int]) -> None:
         if perf_enabled():
             self.counters.last_list_identities = dict(identities)
+
+    def record_incremental_fallback(self, reason: str) -> None:
+        if perf_enabled():
+            self.counters.incremental_fallbacks += 1
+            self.counters.scoped_ms[f"fallback:{reason}"] += 0.0
 
     def log_summary(self) -> None:
         if not perf_enabled():
