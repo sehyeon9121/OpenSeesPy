@@ -370,19 +370,34 @@ Item {
             model: bridgeReady ? sceneBridge.members : []
             delegate: Model {
                 property int memberTag: modelData.tag
+                visible: !bridgeReady
+                    || !sceneBridge.timeHistoryDeformationActive
+                    || sceneBridge.timeHistoryShowDeformed
                 source: modelData.source
-                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
-                rotation: Qt.quaternion(
-                    modelData.qscalar,
-                    modelData.qx,
-                    modelData.qy,
-                    modelData.qz
-                )
-                scale: Qt.vector3d(
-                    modelData.width_b / 100,
-                    modelData.length / 100,
-                    modelData.width_h / 100
-                )
+                position: {
+                    if (bridgeReady)
+                        sceneBridge.deformationRevision
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
+                rotation: {
+                    if (bridgeReady)
+                        sceneBridge.deformationRevision
+                    return Qt.quaternion(
+                        modelData.qscalar,
+                        modelData.qx,
+                        modelData.qy,
+                        modelData.qz
+                    )
+                }
+                scale: {
+                    if (bridgeReady)
+                        sceneBridge.deformationRevision
+                    return Qt.vector3d(
+                        modelData.width_b / 100,
+                        modelData.length / 100,
+                        modelData.width_h / 100
+                    )
+                }
                 materials: [
                     PrincipledMaterial {
                         baseColor: modelData.color
@@ -478,13 +493,21 @@ Item {
                 property int nodeTag: modelData.tag
                 property bool snapTarget: root.planePickingEnabled
                     && root.hoveredNodeTag === nodeTag
+                visible: !bridgeReady
+                    || !sceneBridge.timeHistoryDeformationActive
+                    || sceneBridge.timeHistoryShowDeformed
                 source: "#Sphere"
-                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
-                scale: Qt.vector3d(
-                    modelData.radius * 2 * (snapTarget ? 1.65 : 1) / 100,
-                    modelData.radius * 2 * (snapTarget ? 1.65 : 1) / 100,
-                    modelData.radius * 2 * (snapTarget ? 1.65 : 1) / 100
-                )
+                position: {
+                    if (bridgeReady)
+                        sceneBridge.deformationRevision
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
+                scale: {
+                    if (bridgeReady)
+                        sceneBridge.deformationRevision
+                    const radiusScale = modelData.radius * 2 * (snapTarget ? 1.65 : 1) / 100
+                    return Qt.vector3d(radiusScale, radiusScale, radiusScale)
+                }
                 materials: [
                     PrincipledMaterial {
                         baseColor: snapTarget ? "#f59e0b" : modelData.color
@@ -505,9 +528,16 @@ Item {
             // members. It is deliberately non-pickable.
             model: bridgeReady ? sceneBridge.nodes : []
             delegate: Model {
-                visible: modelData.selected === true
+                visible: (!bridgeReady
+                    || !sceneBridge.timeHistoryDeformationActive
+                    || sceneBridge.timeHistoryShowDeformed)
+                    && modelData.selected === true
                 source: "#Sphere"
-                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                position: {
+                    if (bridgeReady)
+                        sceneBridge.deformationRevision
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
                 scale: Qt.vector3d(
                     modelData.radius * 2.75 / 100,
                     modelData.radius * 2.75 / 100,
@@ -534,6 +564,9 @@ Item {
             // low-opacity backdrop behind the actual deformed member.
             model: bridgeReady ? sceneBridge.ghostMembers : []
             delegate: Model {
+                visible: !bridgeReady
+                    || !sceneBridge.timeHistoryDeformationActive
+                    || sceneBridge.timeHistoryShowOriginal
                 source: modelData.source
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 rotation: Qt.quaternion(
@@ -563,6 +596,9 @@ Item {
         Repeater3D {
             model: bridgeReady ? sceneBridge.ghostNodes : []
             delegate: Model {
+                visible: !bridgeReady
+                    || !sceneBridge.timeHistoryDeformationActive
+                    || sceneBridge.timeHistoryShowOriginal
                 source: "#Sphere"
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 scale: Qt.vector3d(

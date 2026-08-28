@@ -209,6 +209,35 @@ class Quick3DViewport(QFrame):
             model, result, scale, show_undeformed, member_magnitudes=member_magnitudes
         )
 
+    def begin_time_history_deformation(
+        self,
+        model: StructuralModel,
+        *,
+        show_original: bool = True,
+        show_deformed: bool = True,
+    ) -> None:
+        self.bridge.begin_time_history_deformation(
+            model, show_original=show_original, show_deformed=show_deformed
+        )
+
+    def update_deformed_node_positions(
+        self,
+        deformed_points: dict[int, tuple[float, float, float]],
+        *,
+        show_original: bool = True,
+        show_deformed: bool = True,
+        node_ratios: dict[int, float] | None = None,
+    ) -> None:
+        self.bridge.update_deformed_node_positions(
+            deformed_points,
+            show_original=show_original,
+            show_deformed=show_deformed,
+            node_ratios=node_ratios,
+        )
+
+    def end_time_history_deformation(self) -> None:
+        self.bridge.end_time_history_deformation()
+
     def clear_result(self) -> None:
         self.bridge.clear_result()
 

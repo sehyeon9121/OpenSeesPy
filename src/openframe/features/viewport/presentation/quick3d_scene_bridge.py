@@ -135,6 +135,9 @@ def _color_for_ratio(ratio: float) -> str:
 
 class Quick3DSceneBridge(QObject):
     scene_changed = Signal()
+    #: Emitted when time-history deformation updates node/member coordinates
+    #: in place - without rebuilding the whole scene (see deformationRevision).
+    deformed_positions_changed = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -182,8 +185,19 @@ class Quick3DSceneBridge(QObject):
         self._load_entry_active_combination_id: str | None = None
         self._load_entry_scale = 1.0
         self._load_entry_parts: list[dict[str, float | int | str]] = []
+        #: Time-history animation keeps stable node/member dicts and only moves
+        #: coordinates each step - see begin_time_history_deformation().
+        self._time_history_deformation_active = False
+        self._deformation_show_original = True
+        self._deformation_show_deformed = True
+        self._deformation_revision = 0
+        self._deformed_node_by_tag: dict[int, dict[str, float | int | str]] = {}
+        self._deformation_member_records: list[
+            tuple[Element, list[dict[str, float | int | str]]]
+        ] = []
 
     def set_model(self, model: StructuralModel) -> None:
+        self._end_time_history_deformation(notify=False)
         self._last_model = model
         self._selected_node_tags.clear()
         self._selected_member_tags.clear()
@@ -246,6 +260,7 @@ class Quick3DSceneBridge(QObject):
     ) -> None:
         """Overlay analysis displacements: deformed + colour-mapped geometry, an
         optional translucent undeformed ghost, and arrows at loaded nodes."""
+        self._end_time_history_deformation(notify=False)
         if not self._points:
             return
         self._last_model = model
@@ -341,6 +356,7 @@ class Quick3DSceneBridge(QObject):
 
     def clear_result(self) -> None:
         """Drop the result overlay and go back to the plain undeformed model."""
+        self._end_time_history_deformation(notify=False)
         self._ghost_nodes = []
         self._ghost_members = []
         if self._last_model is not None and self._points:
@@ -348,6 +364,173 @@ class Quick3DSceneBridge(QObject):
             self._load_arrows = self._build_all_load_arrows(self._last_model, self._points)
             self._rebuild_load_entry_parts()
         self.scene_changed.emit()
+
+    def begin_time_history_deformation(
+        self,
+        model: StructuralModel,
+        *,
+        show_original: bool = True,
+        show_deformed: bool = True,
+    ) -> None:
+        """One-time setup for time-history playback: stable node/member dicts.
+
+        Ghost (undeformed) geometry is built once from ``self._points`` and
+        never moved again; each step only calls
+        :meth:`update_deformed_node_positions`.
+        """
+        if not self._points:
+            return
+        self._end_time_history_deformation(notify=False)
+        self._last_model = model
+        self._time_history_deformation_active = True
+        self._deformation_show_original = show_original
+        self._deformation_show_deformed = show_deformed
+        self._deformation_revision = 0
+        self._build_time_history_ghost_geometry(model)
+
+        self._deformed_node_by_tag = {}
+        self._nodes = []
+        for tag, point in sorted(self._points.items()):
+            entry: dict[str, float | int | str] = {
+                "tag": tag,
+                "x": point[0],
+                "y": point[1],
+                "z": point[2],
+                "radius": self._node_radius,
+                "color": _DEFAULT_NODE_COLOR,
+                "opacity": 1.0,
+            }
+            self._deformed_node_by_tag[tag] = entry
+            self._nodes.append(entry)
+
+        section_colors = self._assign_section_colors(model)
+        self._members = []
+        self._deformation_member_records = []
+        for element in sorted(model.elements.values(), key=lambda item: item.tag):
+            key = self._section_color_key(element.properties)
+            color = _DEFAULT_MEMBER_COLOR if key is None else section_colors[key]
+            parts = self._member_parts(
+                element, self._points, self._default_thickness, color=color
+            )
+            self._deformation_member_records.append((element, parts))
+            self._members.extend(parts)
+        self.scene_changed.emit()
+
+    def update_deformed_node_positions(
+        self,
+        deformed_points: dict[int, tuple[float, float, float]],
+        *,
+        show_original: bool = True,
+        show_deformed: bool = True,
+        node_ratios: dict[int, float] | None = None,
+    ) -> None:
+        """Move the deformed overlay to ``deformed_points`` without rebuilding lists."""
+        if not self._time_history_deformation_active:
+            return
+        self._deformation_show_original = show_original
+        self._deformation_show_deformed = show_deformed
+
+        for tag, point in deformed_points.items():
+            entry = self._deformed_node_by_tag.get(tag)
+            if entry is None:
+                continue
+            entry["x"] = point[0]
+            entry["y"] = point[1]
+            entry["z"] = point[2]
+            if node_ratios is not None and tag in node_ratios:
+                entry["color"] = _color_for_ratio(node_ratios[tag])
+
+        for element, part_dicts in self._deformation_member_records:
+            if not part_dicts:
+                continue
+            if node_ratios is not None:
+                ratio = 0.5 * (
+                    node_ratios.get(element.node_i, 0.0)
+                    + node_ratios.get(element.node_j, 0.0)
+                )
+                color = _color_for_ratio(ratio)
+            else:
+                color = str(part_dicts[0]["color"])
+            self._update_member_parts_in_place(
+                element, part_dicts, deformed_points, color=color
+            )
+
+        self._deformation_revision += 1
+        self.deformed_positions_changed.emit()
+
+    def set_deformed_node_positions(
+        self,
+        deformed_points: dict[int, tuple[float, float, float]],
+        *,
+        show_undeformed: bool = True,
+        show_deformed: bool = True,
+        node_ratios: dict[int, float] | None = None,
+    ) -> None:
+        self.update_deformed_node_positions(
+            deformed_points,
+            show_original=show_undeformed,
+            show_deformed=show_deformed,
+            node_ratios=node_ratios,
+        )
+
+    def end_time_history_deformation(self) -> None:
+        self._end_time_history_deformation(notify=True)
+
+    def _end_time_history_deformation(self, *, notify: bool) -> None:
+        if not self._time_history_deformation_active:
+            return
+        self._time_history_deformation_active = False
+        self._deformed_node_by_tag = {}
+        self._deformation_member_records = []
+        self._ghost_nodes = []
+        self._ghost_members = []
+        self._deformation_revision = 0
+        if self._last_model is not None and self._points:
+            self._rebuild_default_geometry(self._last_model)
+        if notify:
+            self.scene_changed.emit()
+
+    def _build_time_history_ghost_geometry(self, model: StructuralModel) -> None:
+        self._ghost_nodes = [
+            {
+                "tag": tag,
+                "x": point[0],
+                "y": point[1],
+                "z": point[2],
+                "radius": self._node_radius,
+                "color": _GHOST_COLOR,
+                "opacity": _GHOST_OPACITY,
+            }
+            for tag, point in sorted(self._points.items())
+        ]
+        ghost_members: list[dict[str, float | int | str]] = []
+        for element in sorted(model.elements.values(), key=lambda item: item.tag):
+            ghost_members.extend(
+                self._member_parts(
+                    element,
+                    self._points,
+                    self._default_thickness,
+                    color=_GHOST_COLOR,
+                    opacity=_GHOST_OPACITY,
+                )
+            )
+        self._ghost_members = ghost_members
+
+    def _update_member_parts_in_place(
+        self,
+        element: Element,
+        part_dicts: list[dict[str, float | int | str]],
+        points: dict[int, tuple[float, float, float]],
+        *,
+        color: str,
+    ) -> None:
+        fresh_parts = self._member_parts(
+            element, points, self._default_thickness, color=color
+        )
+        if len(fresh_parts) != len(part_dicts):
+            return
+        for existing, updated in zip(part_dicts, fresh_parts, strict=True):
+            existing.update(updated)
 
     def set_loads_visible(self, visible: bool) -> None:
         self._loads_visible = visible
@@ -598,6 +781,26 @@ class Quick3DSceneBridge(QObject):
     @Property(float, notify=scene_changed)
     def ground_depth(self) -> float:
         return self._ground_depth
+
+    @Property(int, notify=deformed_positions_changed)
+    def deformationRevision(self) -> int:
+        return self._deformation_revision
+
+    @Property(bool, notify=deformed_positions_changed)
+    def timeHistoryDeformationActive(self) -> bool:
+        return self._time_history_deformation_active
+
+    @Property(bool, notify=deformed_positions_changed)
+    def timeHistoryShowDeformed(self) -> bool:
+        if not self._time_history_deformation_active:
+            return True
+        return self._deformation_show_deformed
+
+    @Property(bool, notify=deformed_positions_changed)
+    def timeHistoryShowOriginal(self) -> bool:
+        if not self._time_history_deformation_active:
+            return True
+        return self._deformation_show_original
 
     def _rebuild_default_geometry(self, model: StructuralModel) -> None:
         self._local_axis_gizmos = self._local_axis_gizmo_parts(model, self._points)
@@ -2012,6 +2215,10 @@ class Quick3DSceneBridge(QObject):
         ]
 
     def _clear(self) -> None:
+        self._time_history_deformation_active = False
+        self._deformed_node_by_tag = {}
+        self._deformation_member_records = []
+        self._deformation_revision = 0
         self._nodes = []
         self._members = []
         self._ghost_nodes = []
