@@ -1,15 +1,11 @@
-"""Phase 2-F.1 diagnostics: 3D moment-release hinges vs elastic buckling.
+"""Phase 2-F hinge/buckling diagnostics - updated after orphan-DOF fix (2-F.2).
 
-These tests document a known defect - buckling extraction uses FullGeneral and
-fails when the hinge zeroLength leaves zero-stiffness bending DOFs in the
-tangent matrix. Product code is intentionally untouched here; this file only
-records reproduction cases and topology parity between exporter and in-process
-solver builds.
+Stable free-end hinges and shared hinges in braced frames should converge;
+true mechanisms (base release, both-end release on an isolated cantilever) must
+fail with an explicit mechanism message, not a bare LAPACK singular warning.
 """
 
 from __future__ import annotations
-
-import re
 
 import openseespy.opensees as ops
 import pytest
@@ -17,13 +13,14 @@ import pytest
 from openframe.core.domain.results import AnalysisStatus
 from openframe.features.analysis.statics.solver import MaterialFreeStaticsSolver, _HINGE_MATERIAL_TAG
 from tests.integration.buckling_3d_hinge_diagnostics_helpers import (
-    MINIMAL_REPRODUCTION_MODELS,
     BucklingFailureStage,
+    _write_temp_script,
     attempt_buckling,
+    euler_cantilever_pcr,
     export_script,
     run_linear_static,
     shared_hinge_cantilever,
-    stiffness_diagnostics,
+    stable_portal_shared_hinge,
     topology_from_script,
     vertical_cantilever,
 )
@@ -46,49 +43,46 @@ def _in_process_node_tags(model) -> set[int]:
     return tags
 
 
-@pytest.mark.parametrize("case_name", ["no_hinge"])
-def test_buckling_succeeds_without_hinges(case_name: str) -> None:
-    attempt = attempt_buckling(MINIMAL_REPRODUCTION_MODELS[case_name]())
+def test_buckling_succeeds_without_hinges() -> None:
+    attempt = attempt_buckling(vertical_cantilever())
+    assert attempt.stage == BucklingFailureStage.COMPLETED
+    assert attempt.buckling_load_factor == pytest.approx(euler_cantilever_pcr(), rel=0.015)
+
+
+def test_free_end_hinge_buckling_matches_the_pin_top_euler_column() -> None:
+    """Fixed-base column with a tip release is still K=2 - same Pcr as the rigid-tip case."""
+    no_hinge = attempt_buckling(vertical_cantilever()).buckling_load_factor
+    tip_hinge = attempt_buckling(vertical_cantilever(release_j=True)).buckling_load_factor
+    assert tip_hinge == pytest.approx(no_hinge, rel=1.0e-6)
+    assert tip_hinge == pytest.approx(euler_cantilever_pcr(), rel=0.015)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: vertical_cantilever(release_i=True),
+        lambda: vertical_cantilever(release_i=True, release_j=True),
+        shared_hinge_cantilever,
+    ],
+)
+def test_true_mechanisms_are_rejected_with_an_explicit_message(factory) -> None:
+    attempt = attempt_buckling(factory())
+    assert attempt.stage == BucklingFailureStage.MECHANISM
+    assert "기구 상태" in attempt.message
+
+
+def test_free_end_hinge_linear_static_converges() -> None:
+    assert run_linear_static(vertical_cantilever(release_j=True)) == AnalysisStatus.COMPLETED
+
+
+def test_stable_portal_shared_hinge_buckling_converges() -> None:
+    attempt = attempt_buckling(stable_portal_shared_hinge())
     assert attempt.stage == BucklingFailureStage.COMPLETED
     assert attempt.buckling_load_factor is not None
     assert attempt.buckling_load_factor > 0.0
 
 
-@pytest.mark.parametrize(
-    "case_name",
-    [
-        "top_release",
-        "base_release",
-        "both_ends",
-        "shared_hinge",
-        "local_axis_angle_plus_hinge",
-        "offset_plus_hinge",
-    ],
-)
-def test_buckling_currently_fails_when_hinges_are_present(case_name: str) -> None:
-    """Every hinge topology today dies before K_loaded - at zero-load K_material."""
-    attempt = attempt_buckling(MINIMAL_REPRODUCTION_MODELS[case_name]())
-    assert attempt.stage == BucklingFailureStage.K_MATERIAL
-    assert "무하중 상태" in attempt.message
-
-
-def test_top_release_linear_static_also_fails_on_singular_stiffness() -> None:
-    """A tip release leaves a free global Rx on the real top node (orphan fix pins
-    Ry/Rz only) - BandGeneral cannot factorize K even at full load."""
-    status = run_linear_static(vertical_cantilever(release_j=True))
-    assert status == AnalysisStatus.FAILED
-
-
-def test_base_release_linear_static_still_converges_with_band_general() -> None:
-    """Same hinge topology, but the fixed base keeps the real node rigid so only
-    the dummy node's two released bending DOFs are zero-energy - BandGeneral still
-    finds a particular static solution even though FullGeneral buckling cannot."""
-    status = run_linear_static(vertical_cantilever(release_i=True))
-    assert status == AnalysisStatus.COMPLETED
-
-
 def test_exporter_and_in_process_hinge_topology_match() -> None:
-    """Duplicate-node tags and zeroLength count from export must mirror _build."""
     model = shared_hinge_cantilever()
     script = export_script(model)
     exported = topology_from_script(script, model)
@@ -105,43 +99,53 @@ def test_exporter_and_in_process_hinge_topology_match() -> None:
         assert f"{_HINGE_MATERIAL_TAG}" in call
 
 
-def test_top_release_zero_energy_mode_is_free_global_rx_at_tip() -> None:
-    diag = stiffness_diagnostics(vertical_cantilever(release_j=True))
-    assert diag.zero_eigenvalue_count >= 1
-    assert any("n5:Rx" in mode for mode in diag.zero_energy_modes)
+def test_free_end_hinge_passes_full_general_zero_load_analysis() -> None:
+    """After orphan pins, K_material must factorize under the same solver stack as buckling."""
+    from openframe.infrastructure.opensees.script_execution import run_model_script
+
+    source = _write_temp_script(vertical_cantilever(release_j=True))
+    run_model_script(source)
+    ops.wipeAnalysis()
+    ops.system("FullGeneral")
+    ops.numberer("RCM")
+    ops.constraints("Transformation")
+    ops.algorithm("Linear")
+    ops.integrator("LoadControl", 0.0)
+    ops.analysis("Static")
+    assert ops.analyze(1) == 0
+    ops.wipe()
 
 
-def test_base_release_zero_energy_modes_live_on_dummy_hinge_node() -> None:
-    dummy_tag = MaterialFreeStaticsSolver._hinge_node_tag(1, "i")
-    diag = stiffness_diagnostics(vertical_cantilever(release_i=True))
-    assert diag.zero_eigenvalue_count >= 2
-    assert any(f"n{dummy_tag}:" in mode for mode in diag.zero_energy_modes)
-
-
-def test_shared_hinge_applies_orphan_rotation_fix_on_internal_node() -> None:
+def test_shared_hinge_applies_full_orphan_rotation_pin_on_internal_node() -> None:
     model = shared_hinge_cantilever()
     script = export_script(model)
     exported = topology_from_script(script, model)
     assert exported.orphaned_rotation_fixes == (2,)
     assert "ops.fix(2," in script
-    assert "0, 0, 0, 0, 1, 1)" in script
+    assert "0, 0, 0, 1, 1, 1)" in script
 
 
-def test_hinge_zeroLength_orientation_ignores_local_axis_angle() -> None:
-    """Documented mismatch: geomTransf uses local_axis_angle, _hinge_local_axes does not."""
+def test_hinge_zeroLength_orientation_uses_local_axis_angle() -> None:
+    """Hinge vecy must rotate with ``local_axis_angle`` the same way geomTransf vecxz does."""
     model = vertical_cantilever(release_j=True, local_axis_angle=15.0)
-    script = export_script(model)
-    orient_match = re.search(r"ops\.geomTransf\('Linear', 4, ([^)]+)\)", script)
-    hinge_match = re.search(r"ops\.element\('zeroLength', 8000041, 5, 8000041, .*'-orient', ([^)]+)\)", script)
-    assert orient_match is not None
-    assert hinge_match is not None
-    # vecxz for the beam (first three numbers after tag) differs from hinge vecx.
-    beam_vecxz = tuple(float(part) for part in orient_match.group(1).split(",")[:3])
-    hinge_vecx = tuple(float(part) for part in hinge_match.group(1).split(",")[:3])
-    assert beam_vecxz != pytest.approx(hinge_vecx, abs=1.0e-6)
+    node_i = model.nodes[4]
+    node_j = model.nodes[5]
+    from openframe.features.analysis.statics.solver import _hinge_local_axes
+
+    _, vecy_zero = _hinge_local_axes(node_i, node_j, 0.0)
+    _, vecy_rotated = _hinge_local_axes(node_i, node_j, 15.0)
+    assert vecy_rotated != pytest.approx(vecy_zero, abs=1.0e-6)
 
 
-@pytest.mark.xfail(strict=True, reason="Known defect: hinge models are singular at K_material.")
-def test_top_release_buckling_should_eventually_succeed() -> None:
-    attempt = attempt_buckling(vertical_cantilever(release_j=True))
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: vertical_cantilever(release_j=True, local_axis_angle=15.0),
+        lambda: vertical_cantilever(release_j=True, offset_i=(0.0, 0.0, 0.1)),
+    ],
+)
+def test_angled_and_offset_free_end_hinges_buckle_successfully(factory) -> None:
+    attempt = attempt_buckling(factory())
     assert attempt.stage == BucklingFailureStage.COMPLETED
+    assert attempt.buckling_load_factor is not None
+    assert attempt.buckling_load_factor > 0.0

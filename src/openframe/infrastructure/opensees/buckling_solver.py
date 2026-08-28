@@ -207,6 +207,28 @@ def _apply_reference_load(
             ops.eleLoad("-ele", item["element_tag"], "-type", "-beamPoint", py, position, n)
 
 
+def _count_near_zero_stiffness_modes(system_size: int) -> int:
+    """How many structural modes K fails to resist at the current state.
+
+    Called only after ``ops.analyze`` itself has already failed - ``printA`` still
+    returns the assembled tangent even though the linear solve hit a zero pivot.
+    """
+    matrix = _extract_stiffness_matrix(system_size)
+    symmetric = (matrix + matrix.T) / 2.0
+    eigenvalues = np.linalg.eigvalsh(symmetric)
+    scale = float(np.max(np.abs(eigenvalues))) if eigenvalues.size else 0.0
+    floor = max(1.0e-6 * scale, 1.0e-6)
+    return int(np.sum(np.abs(eigenvalues) <= floor))
+
+
+def _raise_zero_load_stiffness_failure(system_size: int) -> None:
+    if system_size > 0 and _count_near_zero_stiffness_modes(system_size) > 0:
+        raise RuntimeError(
+            "모멘트 해제로 인해 구조가 기구 상태가 되어 좌굴해석을 수행할 수 없습니다."
+        )
+    raise RuntimeError("무하중 상태의 재료강성 해석이 수렴하지 않았습니다.")
+
+
 def _extract_stiffness_matrix(size: int) -> np.ndarray:
     flat = ops.printA("-ret")
     matrix = np.asarray(flat, dtype=float).reshape(size, size)
@@ -483,7 +505,7 @@ def run_buckling_analysis(
     ops.integrator("LoadControl", 0.0)
     ops.analysis("Static")
     if ops.analyze(1) != 0:
-        raise RuntimeError("무하중 상태의 재료강성 해석이 수렴하지 않았습니다.")
+        _raise_zero_load_stiffness_failure(ops.systemSize())
     system_size = ops.systemSize()
     if system_size <= 0:
         raise RuntimeError("시스템 자유도 수가 0입니다.")

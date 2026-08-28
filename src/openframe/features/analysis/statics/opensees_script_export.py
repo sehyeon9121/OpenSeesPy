@@ -47,6 +47,8 @@ from openframe.features.analysis.statics.solver import (
     MaterialFreeStaticsSolver,
     _element_family,
     _hinge_local_axes,
+    _orphan_joint_nodes_for_rotation_pin,
+    _orphan_joint_rotation_fix_pattern,
     _reference_vector,
     _released_and_rigid_nodes,
 )
@@ -374,13 +376,13 @@ def _write_3d_frame_elements(
         # A node where every touching element releases there ends up with
         # nothing giving its own bending rotations any stiffness (each
         # released element connects to its own dummy node instead - see
-        # _write_hinge) - a zero-pivot unless pinned here. The value is
-        # physically meaningless (nothing reads it; the real hinge rotations
-        # live on the dummy nodes), so this only removes the singularity.
+        # _write_hinge) - a zero-pivot unless every unused joint rotation is
+        # pinned (see _orphan_joint_rotation_fix_pattern). The duplicate node
+        # still carries the physical hinge via zeroLength local dofs 5-6.
         released_ends_by_node, rigid_nodes = _released_and_rigid_nodes(model)
-        for node_tag in sorted(released_ends_by_node):
-            if node_tag not in rigid_nodes:
-                lines.append(f"ops.fix({node_tag}, 0, 0, 0, 0, 1, 1)")
+        for node_tag in _orphan_joint_nodes_for_rotation_pin(model):
+            pattern = ", ".join(str(value) for value in _orphan_joint_rotation_fix_pattern(6))
+            lines.append(f"ops.fix({node_tag}, {pattern})")
         lines.append("")
 
     for element in sorted(frame_elements, key=lambda item: item.tag):
@@ -397,9 +399,13 @@ def _write_3d_frame_elements(
         end_i_tag = element.node_i
         end_j_tag = element.node_j
         if element.moment_release_i:
-            end_i_tag = _write_hinge(lines, element.tag, "i", node_i, node_j)
+            end_i_tag = _write_hinge(
+                lines, element.tag, "i", node_i, node_j, element.local_axis_angle
+            )
         if element.moment_release_j:
-            end_j_tag = _write_hinge(lines, element.tag, "j", node_i, node_j)
+            end_j_tag = _write_hinge(
+                lines, element.tag, "j", node_i, node_j, element.local_axis_angle
+            )
 
         elastic, area, shear, torsion, inertia_y, inertia_z = _element_properties(element, 3)
         lines.append(
@@ -410,7 +416,14 @@ def _write_3d_frame_elements(
     lines.append("")
 
 
-def _write_hinge(lines: list[str], element_tag: int, end: str, node_i, node_j) -> int:
+def _write_hinge(
+    lines: list[str],
+    element_tag: int,
+    end: str,
+    node_i,
+    node_j,
+    local_axis_angle: float = 0.0,
+) -> int:
     """Text form of ``MaterialFreeStaticsSolver._build_hinge`` - the elastic
     (moment-release) form only, never the lumped-plasticity Steel01 one (see
     this module's own docstring for why). A duplicate node at ``end`` plus an
@@ -423,7 +436,7 @@ def _write_hinge(lines: list[str], element_tag: int, end: str, node_i, node_j) -
     lines.append(
         f"ops.node({dummy_tag}, {_num(real_node.x)}, {_num(real_node.y)}, {_num(real_node.z)})"
     )
-    vector_x, vector_y = _hinge_local_axes(node_i, node_j)
+    vector_x, vector_y = _hinge_local_axes(node_i, node_j, local_axis_angle)
     real_tag = node_i.tag if end == "i" else node_j.tag
     orient_args = ", ".join(_num(v) for v in (*vector_x, *vector_y))
     lines.append(

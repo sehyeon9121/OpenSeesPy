@@ -577,9 +577,8 @@ class MaterialFreeStaticsSolver:
             # only removes the singularity; it does not constrain the actual
             # bending behaviour, which the dummy nodes still carry freely.
             _released_ends_by_node, _rigid_nodes = _released_and_rigid_nodes(model)
-            for node_tag in _released_ends_by_node:
-                if node_tag not in _rigid_nodes:
-                    ops.fix(node_tag, 0, 0, 0, 0, 1, 1)
+            for node_tag in _orphan_joint_nodes_for_rotation_pin(model):
+                ops.fix(node_tag, *_orphan_joint_rotation_fix_pattern(ndf))
         for element in model.elements.values():
             node_i = model.nodes[element.node_i]
             node_j = model.nodes[element.node_j]
@@ -595,21 +594,23 @@ class MaterialFreeStaticsSolver:
             hinge_capacities = plastic_hinge_capacities.get(element.tag)
             if element.moment_release_i:
                 end_i_tag = MaterialFreeStaticsSolver._build_hinge(
-                    element.tag, "i", node_i, node_j
+                    element.tag, "i", node_i, node_j, element.local_axis_angle
                 )
             elif hinge_capacities is not None:
                 my_capacity, mz_capacity, hardening_ratio = hinge_capacities
                 end_i_tag = MaterialFreeStaticsSolver._build_plastic_hinge(
-                    element.tag, "i", node_i, node_j, my_capacity, mz_capacity, hardening_ratio
+                    element.tag, "i", node_i, node_j, my_capacity, mz_capacity, hardening_ratio,
+                    element.local_axis_angle,
                 )
             if element.moment_release_j:
                 end_j_tag = MaterialFreeStaticsSolver._build_hinge(
-                    element.tag, "j", node_i, node_j
+                    element.tag, "j", node_i, node_j, element.local_axis_angle
                 )
             elif hinge_capacities is not None:
                 my_capacity, mz_capacity, hardening_ratio = hinge_capacities
                 end_j_tag = MaterialFreeStaticsSolver._build_plastic_hinge(
-                    element.tag, "j", node_i, node_j, my_capacity, mz_capacity, hardening_ratio
+                    element.tag, "j", node_i, node_j, my_capacity, mz_capacity, hardening_ratio,
+                    element.local_axis_angle,
                 )
             elastic, area, shear, torsion, inertia_y, inertia_z = (
                 MaterialFreeStaticsSolver._resolve_material_3d(element)
@@ -633,7 +634,9 @@ class MaterialFreeStaticsSolver:
         return _HINGE_NODE_TAG_OFFSET + element_tag * 10 + (0 if end == "i" else 1)
 
     @staticmethod
-    def _build_hinge(element_tag: int, end: str, node_i, node_j) -> int:
+    def _build_hinge(
+        element_tag: int, end: str, node_i, node_j, local_axis_angle: float = 0.0
+    ) -> int:
         """Insert a duplicate node at the given end plus a zeroLength element that
         ties it back to the real end node in translation and torsion (both rigid)
         but leaves the two local bending rotations free - the 3D equivalent of a
@@ -653,7 +656,7 @@ class MaterialFreeStaticsSolver:
         real_node = node_i if end == "i" else node_j
         dummy_tag = MaterialFreeStaticsSolver._hinge_node_tag(element_tag, end)
         ops.node(dummy_tag, real_node.x, real_node.y, real_node.z)
-        vector_x, vector_y = _hinge_local_axes(node_i, node_j)
+        vector_x, vector_y = _hinge_local_axes(node_i, node_j, local_axis_angle)
         real_tag = node_i.tag if end == "i" else node_j.tag
         ops.element(
             "zeroLength",
@@ -715,6 +718,7 @@ class MaterialFreeStaticsSolver:
         my_capacity: float,
         mz_capacity: float,
         hardening_ratio: float,
+        local_axis_angle: float = 0.0,
     ) -> int:
         """Same duplicate-node + zeroLength construction as ``_build_hinge``,
         except local bending dofs 5 (My) and 6 (Mz) get a real ``Steel01``
@@ -729,7 +733,7 @@ class MaterialFreeStaticsSolver:
         real_node = node_i if end == "i" else node_j
         dummy_tag = MaterialFreeStaticsSolver._plastic_hinge_node_tag(element_tag, end)
         ops.node(dummy_tag, real_node.x, real_node.y, real_node.z)
-        vector_x, vector_y = _hinge_local_axes(node_i, node_j)
+        vector_x, vector_y = _hinge_local_axes(node_i, node_j, local_axis_angle)
         real_tag = node_i.tag if end == "i" else node_j.tag
         my_material_tag, mz_material_tag = MaterialFreeStaticsSolver._plastic_hinge_material_tags(
             element_tag, end
@@ -1193,20 +1197,55 @@ def _reference_vector(node_i, node_j, angle_deg: float = 0.0) -> tuple[float, fl
     return rotate_about_axis(reference, axis, math.radians(angle_deg))
 
 
+def _orphan_joint_nodes_for_rotation_pin(model: StructuralModel) -> list[int]:
+    """Joint-side nodes whose own rotational DOFs never enter any element stiffness.
+
+    Every released end connects its ``elasticBeamColumn`` to a duplicate node
+    instead of the original joint node, so a joint where *all* touching ends
+    release there (and nothing else anchors rotation there) would otherwise
+    carry three global rotations that no element reads - a zero pivot. The
+    duplicate node still carries the real hinge through the zeroLength's free
+    local bending directions 5-6, so pinning the joint node's rotations here
+    removes only numerical orphans, not the physical release.
+    """
+    released_ends_by_node, rigid_nodes = _released_and_rigid_nodes(model)
+    return sorted(tag for tag in released_ends_by_node if tag not in rigid_nodes)
+
+
+def _orphan_joint_rotation_fix_pattern(ndf: int) -> tuple[int, ...]:
+    """Restraints applied to orphan *joint-side* nodes only (never duplicate nodes).
+
+    Translations stay free so zeroLength elements can still transfer axial and
+    shear. All three global rotations are pinned because none of them receive
+    stiffness from any frame element once every end there releases to its own
+    duplicate - the old (0,0,0,0,1,1) pattern left one rotation free on members
+    not aligned with global Y/Z (e.g. vertical columns left global Rx dangling).
+    """
+    if ndf == 6:
+        return (0, 0, 0, 1, 1, 1)
+    if ndf == 3:
+        return (0, 0, 1)
+    return (0,) * ndf
+
+
 def _hinge_local_axes(
-    node_i, node_j
+    node_i, node_j, angle_deg: float = 0.0
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """``(vecx, vecy)`` for a hinge zeroLength's ``-orient``: vecx is the member's
     own axial direction (so the rigid-material dofs 1-4 line up with axial, the two
     shears, and torsion), vecy is any unit vector exactly perpendicular to it (its
     exact direction within the cross-section doesn't matter here, since both
-    bending dofs 5-6 are released together rather than one-at-a-time)."""
+    bending dofs 5-6 are released together rather than one-at-a-time).
+
+    Uses the same ``_reference_vector(..., angle_deg)`` input as the member's own
+    ``geomTransf`` vecxz so the released bending directions cannot drift away from
+    the beam's local y/z when ``local_axis_angle`` is non-zero."""
     dx = node_j.x - node_i.x
     dy = node_j.y - node_i.y
     dz = node_j.z - node_i.z
     length = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
     vecx = (dx / length, dy / length, dz / length)
-    reference = _reference_vector(node_i, node_j)
+    reference = _reference_vector(node_i, node_j, angle_deg)
     cross = (
         reference[1] * vecx[2] - reference[2] * vecx[1],
         reference[2] * vecx[0] - reference[0] * vecx[2],

@@ -40,6 +40,7 @@ CANTILEVER_ELEMENTS = 4
 class BucklingFailureStage(StrEnum):
     COMPLETED = "completed"
     K_MATERIAL = "k_material"
+    MECHANISM = "mechanism"
     K_LOADED = "k_loaded"
     K_GEOMETRIC = "k_geometric"
     EIGENVALUE = "eigenvalue"
@@ -146,6 +147,63 @@ def shared_hinge_cantilever() -> StructuralModel:
     )
 
 
+def stable_portal_shared_hinge() -> StructuralModel:
+    """Two fixed columns and a two-segment beam sharing a hinge at mid-span."""
+    return StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0),
+            2: Node(2, 0.0, 0.0, CANTILEVER_LENGTH),
+            3: Node(3, 6.0, 0.0, 0.0),
+            4: Node(4, 6.0, 0.0, CANTILEVER_LENGTH),
+            5: Node(5, 3.0, 0.0, CANTILEVER_LENGTH),
+        },
+        elements={
+            1: Element(1, 1, 2, "elasticBeamColumn", properties=FRAME_PROPERTIES_3D),
+            2: Element(2, 3, 4, "elasticBeamColumn", properties=FRAME_PROPERTIES_3D),
+            3: Element(
+                3,
+                2,
+                5,
+                "elasticBeamColumn",
+                properties=FRAME_PROPERTIES_3D,
+                moment_release_j=True,
+            ),
+            4: Element(
+                4,
+                5,
+                4,
+                "elasticBeamColumn",
+                properties=FRAME_PROPERTIES_3D,
+                moment_release_i=True,
+            ),
+        },
+        boundaries=[
+            BoundaryCondition(1, (True,) * 6),
+            BoundaryCondition(3, (True,) * 6),
+        ],
+        nodal_loads=[
+            NodalLoad(2, (0.0, 0.0, -0.5, 0.0, 0.0, 0.0)),
+            NodalLoad(4, (0.0, 0.0, -0.5, 0.0, 0.0, 0.0)),
+        ],
+    )
+
+
+def euler_cantilever_pcr() -> float:
+    import math
+
+    return (
+        math.pi**2
+        * FRAME_PROPERTIES_3D["E"]
+        * FRAME_PROPERTIES_3D["Iy"]
+        / (2.0 * CANTILEVER_LENGTH) ** 2
+    )
+
+
+    return export_opensees_script(model, include_mass=False, length_unit="m")
+
+
 def export_script(model: StructuralModel) -> str:
     return export_opensees_script(model, include_mass=False, length_unit="m")
 
@@ -201,6 +259,8 @@ def run_linear_static(model: StructuralModel) -> AnalysisStatus:
 
 
 def classify_buckling_failure(message: str) -> BucklingFailureStage:
+    if "기구 상태" in message:
+        return BucklingFailureStage.MECHANISM
     if "무하중 상태" in message:
         return BucklingFailureStage.K_MATERIAL
     if "REFERENCE LOAD 적용 상태" in message:
@@ -249,7 +309,7 @@ def stiffness_diagnostics(model: StructuralModel) -> StiffnessDiagnostics:
     matrix = np.array(ops.printA("-ret"), dtype=float).reshape(size, size)
     symmetric = (matrix + matrix.T) / 2.0
     eigenvalues, eigenvectors = np.linalg.eigh(symmetric)
-    floor = 1.0e-3 * max(float(np.max(np.abs(eigenvalues))), 1.0)
+    floor = 1.0e-6 * max(float(np.max(np.abs(eigenvalues))), 1.0)
     zero_indices = [index for index, value in enumerate(eigenvalues) if abs(value) <= floor]
     dof_names = ("Ux", "Uy", "Uz", "Rx", "Ry", "Rz")
     modes: list[str] = []
