@@ -2130,6 +2130,16 @@ class ModelingInterfacePage(QFrame):
     def _on_analysis_method_changed(self, _index: int | None = None) -> None:
         _label, kind, dialog_cls = self._current_analysis_method_option()
         is_linear = dialog_cls is None
+        # Preview the Results sidebar's section set (and its analysis-kind
+        # label) for whichever method is now selected, not just once a run
+        # actually starts (_run_full_analysis's own call) - picking "좌굴
+        # (Buckling)" here should already show BUCKLING/mode-shape-style
+        # sections, not leave the last-run kind's stale ones up. Guarded:
+        # this fires once during __init__ (_build_analysis_category, inside
+        # _build_modeling_workspace) before _build_result_workspace has
+        # created self.results.
+        if hasattr(self, "results"):
+            self.results.set_analysis_kind(kind)
         # Nonlinear Static is the one non-linear method actually wired to a
         # real solve now (MaterialFreeStaticsSolver.solve_nonlinear_static,
         # a lumped-plasticity pushover - see its own docstring for scope).

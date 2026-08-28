@@ -60,6 +60,27 @@ def test_full_analysis_kind_disabled_without_service(app) -> None:
     assert page.analysis_run_button.isEnabled() is False
 
 
+@pytest.mark.parametrize(
+    "kind",
+    [
+        AnalysisKind.LINEAR_STATIC,
+        AnalysisKind.MODAL,
+        AnalysisKind.BUCKLING,
+        AnalysisKind.TIME_HISTORY,
+        AnalysisKind.RESPONSE_SPECTRUM,
+    ],
+)
+def test_selecting_analysis_method_previews_the_results_sidebar(
+    app, kind: AnalysisKind
+) -> None:
+    """Picking a method must already update the Results sidebar's context
+    label/sections (ResultTypeSidebar.set_analysis_kind) - not leave the
+    last-*run* kind's stale label up until 해석하기 actually starts."""
+    page = _page(with_service=True)
+    _select_kind(page, kind)
+    assert page.results.result_types.context_label.text() == kind.value.replace("_", " ").upper()
+
+
 @patch("openframe.features.model.presentation.modeling_interface_page.AnalysisRunThread")
 @patch("openframe.features.model.presentation.modeling_interface_page.export_opensees_script")
 def test_run_full_analysis_builds_request_and_starts_thread(
