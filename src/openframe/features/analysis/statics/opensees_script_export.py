@@ -568,10 +568,12 @@ def _write_loads(lines: list[str], model: StructuralModel) -> None:
             )
     for point_load in model.point_loads:
         if ndm == 3:
+            # (Py, Pz, xL, N) - see solver.py's own comment on this same call
+            # for how the correct order was confirmed independently.
             lines.append(
                 f"ops.eleLoad('-ele', {point_load.element_tag}, '-type', '-beamPoint', "
-                f"{_num(point_load.py)}, {_num(point_load.position)}, "
-                f"{_num(point_load.pz)}, {_num(point_load.n)})"
+                f"{_num(point_load.py)}, {_num(point_load.pz)}, "
+                f"{_num(point_load.position)}, {_num(point_load.n)})"
             )
         else:
             lines.append(

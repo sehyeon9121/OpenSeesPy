@@ -968,11 +968,18 @@ class MaterialFreeStaticsSolver:
             # -beamUniform call above), n is local axial, position is the
             # xL fraction (0..1) along whichever element/segment actually
             # carries this load (build_model() already resolved which one).
-            # 2D has no out-of-plane pz component to pass.
+            # 2D has no out-of-plane pz component to pass. The 3D argument
+            # order is (Py, Pz, xL, N) - confirmed by reproducing OpenSeesPy's
+            # own "invalid xDivL" rejection independently of this solver: an
+            # earlier version of this call passed (py, position, pz, n)
+            # instead, silently swapping position/pz (see
+            # tests/unit/test_solver_beam_point_argument_order.py, which pins
+            # this order down with a monkeypatched ops.eleLoad so a future
+            # edit can't reintroduce the swap without a failing test).
             if ndm == 3:
                 ops.eleLoad(
                     "-ele", point_load.element_tag, "-type", "-beamPoint",
-                    point_load.py, point_load.position, point_load.pz, point_load.n,
+                    point_load.py, point_load.pz, point_load.position, point_load.n,
                 )
             else:
                 ops.eleLoad(

@@ -515,30 +515,19 @@ def test_exported_3d_member_hinge_matches_the_in_process_canvas_solver(tmp_path:
 
 def test_exported_3d_element_loads_match_the_in_process_canvas_solver(tmp_path: Path) -> None:
     """A cantilever carrying both a 3D uniform load (wy/wz/wx) and a 3D point
-    load (py/xL/n) together - the argument order for both differs from 2D
-    (see _write_loads's own comments). Fixed at node 1 only (not also at
-    node 2): a two-node, one-element model fixed at *both* ends has zero free
-    DOFs anywhere in the structure, which crashes OpenSeesPy's banded solver
-    outright (``DGBSV parameter number 9``) rather than raising a catchable
-    Python error - confirmed independently of both this exporter and
+    load (py/pz/xL/n) together - the argument order for both differs from 2D
+    (see _write_loads's own comments; the point-load order was a real bug
+    until Phase 2-A.1 - see test_exported_3d_point_load_uses_py_pz_xl_n_order
+    and test_solver_beam_point_argument_order.py for the independent checks
+    that pin it down). Fixed at node 1 only (not also at node 2): a two-node,
+    one-element model fixed at *both* ends has zero free DOFs anywhere in the
+    structure, which crashes OpenSeesPy's banded solver outright (``DGBSV
+    parameter number 9``) rather than raising a catchable Python error -
+    confirmed independently of both this exporter and
     ``MaterialFreeStaticsSolver`` by reproducing it directly against
     OpenSeesPy. Not this exporter's bug (a real model always has other
     elements/nodes providing free DOFs elsewhere), so the fix here is simply
-    not to hand the in-process solver a degenerate one-element structure.
-
-    ``pz`` is deliberately left at its default (0.0): empirically checking
-    OpenSeesPy directly shows the real 3D ``-beamPoint`` argument order is
-    ``(Py, Pz, xL, N)``, but ``MaterialFreeStaticsSolver._apply_loads``
-    passes ``point_load.py, point_load.position, point_load.pz, point_load.n``
-    - i.e. ``position``/``pz`` are swapped, a second pre-existing bug in that
-    in-process solver (also out of this exporter's scope - see the session
-    report). This exporter intentionally mirrors that same call order
-    exactly, since its whole contract is bit-for-bit parity with
-    ``MaterialFreeStaticsSolver``, bugs included - "fixing" only the exported
-    text would make it diverge from the in-process solver instead of
-    matching it. A nonzero ``pz`` would land in whichever slot that bug
-    currently sends it to and is therefore not safe to assert on here; ``py``
-    and ``n`` are unaffected by the swap and still verify real fidelity."""
+    not to hand the in-process solver a degenerate one-element structure."""
     model = StructuralModel(
         ndm=3,
         ndf=6,
@@ -546,7 +535,7 @@ def test_exported_3d_element_loads_match_the_in_process_canvas_solver(tmp_path: 
         elements={1: Element(1, 1, 2, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D)},
         boundaries=[BoundaryCondition(1, (True,) * 6)],
         element_loads=[UniformElementLoad(1, wx=1.0, wy=-3.0, wz=2.0)],
-        point_loads=[PointElementLoad(1, position=0.5, py=-4.0, n=0.5)],
+        point_loads=[PointElementLoad(1, position=0.5, py=-4.0, pz=1.5, n=0.5)],
     )
 
     exported_result, _ = _run_exported_script(model, tmp_path)
@@ -555,6 +544,71 @@ def test_exported_3d_element_loads_match_the_in_process_canvas_solver(tmp_path: 
     assert exported_result.status == AnalysisStatus.COMPLETED
     assert canvas_result.status == AnalysisStatus.COMPLETED
     assert _round_state(exported_result, model) == _round_state(canvas_result, model)
+
+
+def test_exported_3d_point_load_uses_py_pz_xl_n_order() -> None:
+    """Direct text check on the exported script, independent of executing
+    anything - if the exporter and MaterialFreeStaticsSolver ever diverge
+    again (or both drift back to the same wrong order together, which a
+    round-trip comparison alone cannot catch - see
+    test_solver_beam_point_argument_order.py for the equivalent check on the
+    in-process solver side), this fails on the exporter half specifically.
+    Four distinct values (py/pz/position/n) so a transposition shows up as a
+    literal wrong-order substring, not just a wrong number."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 6.0, 0.0, 0.0)},
+        elements={1: Element(1, 1, 2, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D)},
+        boundaries=[BoundaryCondition(1, (True,) * 6)],
+        point_loads=[PointElementLoad(1, position=0.25, py=2.0, pz=7.0, n=0.5)],
+    )
+
+    script = export_opensees_script(model)
+
+    assert "'-beamPoint', 2.0, 7.0, 0.25, 0.5)" in script
+
+
+def test_exported_3d_point_load_matches_the_closed_form_fixed_end_reactions(
+    tmp_path: Path,
+) -> None:
+    """Independent physics check, not just solver/exporter self-agreement:
+    for a cantilever under a single 3D point load, the fixed-end reactions
+    follow directly from global equilibrium alone (Fx=-N, Fy=-Py, Fz=-Pz,
+    Mz=-Py*a, My=+Pz*a, a = position*L from the fixed end) and do not depend
+    on E/A/G/J/Iy/Iz at all - reactions of a statically determinate structure
+    never do. The sign/axis mapping here (Py <-> Fy/Mz, Pz <-> Fz/My) was
+    confirmed empirically against plain OpenSeesPy directly, independent of
+    both this exporter and MaterialFreeStaticsSolver (see the Phase 2-A.1
+    session report) - so if py/pz/position were still swapped, these
+    specific numbers would not come out right even though *some* analysis
+    would still nominally "complete"."""
+    length = 6.0
+    distance_from_fixed_end = 0.25 * length
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, length, 0.0, 0.0)},
+        elements={1: Element(1, 1, 2, "elasticBeamColumn", properties=_FRAME_PROPERTIES_3D)},
+        boundaries=[BoundaryCondition(1, (True,) * 6)],
+        point_loads=[PointElementLoad(1, position=0.25, py=2.0, pz=7.0, n=0.5)],
+    )
+    expected_reaction = (
+        -0.5,
+        -2.0,
+        -7.0,
+        0.0,
+        7.0 * distance_from_fixed_end,
+        -2.0 * distance_from_fixed_end,
+    )
+
+    exported_result, _ = _run_exported_script(model, tmp_path)
+    canvas_result = MaterialFreeStaticsSolver().solve(model)
+
+    for result in (exported_result, canvas_result):
+        assert result.status == AnalysisStatus.COMPLETED
+        reaction = tuple(round(v, 6) for v in result.node_results[1].reaction)
+        assert reaction == tuple(round(v, 6) for v in expected_reaction)
 
 
 def test_exported_3d_mass_uses_six_component_ops_mass() -> None:
