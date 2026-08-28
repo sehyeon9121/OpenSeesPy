@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from openframe.app.shell.modeling_workflow import ModelingWorkflowBar
+from openframe.features.analysis.application.run_analysis import RunAnalysisService
 from openframe.features.model.presentation.material_settings_page import MaterialSettingsPage
 from openframe.features.model.presentation.model_setup_page import (
     ModelSetupPage,
@@ -36,7 +37,12 @@ class DirectModelWorkspace(QFrame):
     project_opened = Signal(Path)
     project_saved = Signal(Path)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        run_analysis_service: RunAnalysisService | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("directModelWorkspace")
 
@@ -65,7 +71,10 @@ class DirectModelWorkspace(QFrame):
         # session must never see geometry drawn in a 2D session (or vice
         # versa), so this is its own page/canvas instance, not a mode toggle
         # on the 2D one.
-        self.geometry_page_3d = ModelingInterfacePage(start_in_3d=True)
+        self.geometry_page_3d = ModelingInterfacePage(
+            start_in_3d=True,
+            run_analysis_service=run_analysis_service,
+        )
         self.supports_page = WorkflowPlaceholderPage(
             "지점 및 구속조건",
             "작성한 구조 모델에 지점과 자유도 구속을 배치하는 영역입니다.",

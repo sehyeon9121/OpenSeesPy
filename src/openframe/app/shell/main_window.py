@@ -127,7 +127,9 @@ class MainWindow(QMainWindow):
         self.analysis_progress = AnalysisProgressBanner(self)
         self.start_workspace = StartWorkspace()
         self.template_gallery_page = TemplateGalleryPage()
-        self.direct_model_workspace = DirectModelWorkspace()
+        self.direct_model_workspace = DirectModelWorkspace(
+            run_analysis_service=self._run_analysis_service
+        )
         self.model_sidebar = ModelSidebar()
         self.viewport = ModelViewport()
         # The single source of truth for the selected analysis kind and its options -

@@ -20,6 +20,7 @@ never adds another mode to learn, just another category button.
 import json
 import math
 import re
+import tempfile
 from pathlib import Path
 from typing import ClassVar, NamedTuple
 
@@ -63,6 +64,9 @@ from openframe.core.domain import (
     FORCE_UNITS,
     LENGTH_UNITS,
     AnalysisKind,
+    AnalysisRequest,
+    AnalysisResult,
+    AnalysisStatus,
     FloorLoadEntry,
     MemberDistributedLoadEntry,
     MemberPointLoadEntry,
@@ -80,6 +84,8 @@ from openframe.core.domain import (
     unit_conversion_factors,
     wind_force_by_story,
 )
+from openframe.features.analysis.application.run_analysis import RunAnalysisService
+from openframe.features.analysis.presentation.analysis_run_thread import AnalysisRunThread
 from openframe.features.analysis.presentation.analysis_settings_panel import AnalysisSettingsPanel
 from openframe.features.analysis.statics import (
     MaterialFreeSolveThread,
@@ -159,10 +165,19 @@ class ModelingInterfacePage(QFrame):
     #: opens it there.
     analysis_script_exported = Signal(Path)
 
-    def __init__(self, parent: QWidget | None = None, *, start_in_3d: bool = False) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        start_in_3d: bool = False,
+        run_analysis_service: RunAnalysisService | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("modelingInterfacePage")
         self._start_in_3d = start_in_3d
+        self._run_analysis_service = run_analysis_service
+        self._analysis_run_thread: AnalysisRunThread | None = None
+        self._analysis_temp_script: Path | None = None
         self._unit_system = DEFAULT_UNIT_SYSTEM
         self._model_name = "New 3D Model" if start_in_3d else "New 2D Model"
         self._vertical_axis = "Z" if start_in_3d else "Y"
@@ -179,6 +194,7 @@ class ModelingInterfacePage(QFrame):
         self._solver = MaterialFreeStaticsSolver()
         self._solve_thread: MaterialFreeSolveThread | None = None
         self.analysis_progress = AnalysisProgressBanner(self)
+        self.analysis_progress.cancel_requested.connect(self._cancel_full_analysis)
         self.canvas = StaticsDrawingCanvas()
         # Default 집중하중 input mode - plain Fx/Fy, same as every other axis
         # field in this app; "부재 수직" (magnitude+auto-angle, see
@@ -1966,6 +1982,25 @@ class ModelingInterfacePage(QFrame):
         ("시간이력 (Time History)", AnalysisKind.TIME_HISTORY, AnalysisSettingsDialog),
         ("응답스펙트럼 (Response Spectrum)", AnalysisKind.RESPONSE_SPECTRUM, AnalysisSettingsDialog),
     )
+    #: Routed through ``_run_full_analysis`` and the shared OpenSees worker
+    #: pipeline (export script -> ``RunAnalysisService``) instead of the
+    #: in-canvas ``MaterialFreeStaticsSolver``.
+    _FULL_ANALYSIS_KINDS: ClassVar[frozenset[AnalysisKind]] = frozenset(
+        {
+            AnalysisKind.MODAL,
+            AnalysisKind.BUCKLING,
+            AnalysisKind.TIME_HISTORY,
+            AnalysisKind.RESPONSE_SPECTRUM,
+        }
+    )
+    _ANALYSIS_DISPLAY_NAMES: ClassVar[dict[AnalysisKind, str]] = {
+        AnalysisKind.LINEAR_STATIC: "Linear Static",
+        AnalysisKind.NONLINEAR_STATIC: "Nonlinear Static",
+        AnalysisKind.MODAL: "Modal (Eigenvalue)",
+        AnalysisKind.TIME_HISTORY: "Time History",
+        AnalysisKind.BUCKLING: "Elastic Buckling",
+        AnalysisKind.RESPONSE_SPECTRUM: "Response Spectrum",
+    }
 
     def _build_analysis_category(self) -> QWidget:
         """3D workbench's Analysis tab. The header's own 정정성 검사 및 해석/
@@ -2072,9 +2107,8 @@ class ModelingInterfacePage(QFrame):
         root.addWidget(self.task_results_button)
 
         advanced_hint = QLabel(
-            "모드/고유치·좌굴·시간이력은 이 캔버스에서 아직 실행할 수 없습니다 — 위 "
-            "설정...으로 내용을 채워둔 뒤, 모델을 OpenSeesPy 스크립트로 내보내 "
-            "\"파일 불러오기\" 화면의 정밀해석 엔진으로 돌리세요."
+            "모드/고유치·좌굴·시간이력·응답스펙트럼은 설정...으로 옵션을 저장한 뒤 "
+            "해석하기로 실행할 수 있습니다."
         )
         advanced_hint.setWordWrap(True)
         advanced_hint.setObjectName("setupSectionHint")
@@ -2101,18 +2135,32 @@ class ModelingInterfacePage(QFrame):
         # a lumped-plasticity pushover - see its own docstring for scope).
         # Every other kind here (Modal/Buckling/Time History) still only
         # collects settings, unchanged.
-        can_run = is_linear or kind == AnalysisKind.NONLINEAR_STATIC
+        can_run = self._can_run_selected_analysis(kind, is_linear)
         self.analysis_settings_button.setVisible(not is_linear)
         self.analysis_settings_summary.setVisible(not is_linear)
-        self.analysis_run_button.setEnabled(can_run)
-        self.analysis_run_button.setToolTip(
-            "" if can_run else "이 방법은 아직 실행에 연결되지 않았습니다 - 정밀해석으로 내보내세요."
-        )
+        if self._analysis_run_thread is not None and self._analysis_run_thread.isRunning():
+            self.analysis_run_button.setEnabled(False)
+        else:
+            self.analysis_run_button.setEnabled(can_run)
+        if kind in self._FULL_ANALYSIS_KINDS and self._run_analysis_service is None:
+            run_tooltip = "정밀해석 실행 서비스가 연결되지 않았습니다."
+        elif not can_run:
+            run_tooltip = "이 방법은 아직 실행에 연결되지 않았습니다."
+        else:
+            run_tooltip = ""
+        self.analysis_run_button.setToolTip(run_tooltip)
         if not is_linear:
             has_settings = kind.value in self._analysis_settings
             self.analysis_settings_summary.setText(
                 "✓ 설정을 저장했습니다." if has_settings else "아직 설정하지 않았습니다."
             )
+
+    def _can_run_selected_analysis(self, kind: AnalysisKind, is_linear: bool) -> bool:
+        if is_linear or kind == AnalysisKind.NONLINEAR_STATIC:
+            return True
+        if kind in self._FULL_ANALYSIS_KINDS and self._run_analysis_service is not None:
+            return True
+        return False
 
     def _shared_analysis_settings_panel(self) -> AnalysisSettingsPanel:
         """One ``AnalysisSettingsPanel`` reused across every 설정... click,
@@ -6665,10 +6713,15 @@ class ModelingInterfacePage(QFrame):
         """
         if self._solve_thread is not None and self._solve_thread.isRunning():
             return
+        if self._analysis_run_thread is not None and self._analysis_run_thread.isRunning():
+            return
         if self._start_in_3d and hasattr(self, "analysis_method_selector"):
             _label, kind, _dialog_cls = self._current_analysis_method_option()
             if kind == AnalysisKind.NONLINEAR_STATIC:
                 self._solve_nonlinear_static()
+                return
+            if kind in self._FULL_ANALYSIS_KINDS:
+                self._run_full_analysis(kind)
                 return
         model = self.canvas.build_model()
         check = check_determinacy(model)
@@ -6757,6 +6810,135 @@ class ModelingInterfacePage(QFrame):
         if hasattr(self, "task_results_button"):
             self.task_results_button.setEnabled(True)
         self.workspace_stack.setCurrentIndex(1)
+
+    def _run_full_analysis(self, kind: AnalysisKind) -> None:
+        """Export the 3D canvas to a temp OpenSeesPy script and run it through
+        the same ``RunAnalysisService`` pipeline SETUP uses - deliberately no
+        popups here (status bar only), matching this page's own ``solve()``
+        failure style."""
+        if self._analysis_run_thread is not None and self._analysis_run_thread.isRunning():
+            return
+        if self._run_analysis_service is None:
+            self.determinacy_status.setText("해석 실행 서비스가 연결되지 않았습니다.")
+            return
+        options = self._analysis_settings.get(kind.value)
+        if not options:
+            self.determinacy_status.setText(
+                f"먼저 '설정...' 버튼으로 {self._ANALYSIS_DISPLAY_NAMES[kind]} 해석 설정을 입력하세요."
+            )
+            return
+        try:
+            model = self.canvas.build_model()
+        except Exception as error:  # noqa: BLE001 - surface any build failure in the status bar.
+            self.determinacy_status.setText(f"모델 빌드 실패: {error}")
+            return
+        try:
+            script = export_opensees_script(
+                model, include_mass=True, length_unit=self._unit_system.length
+            )
+        except ValueError as error:
+            self.determinacy_status.setText(f"보내기 실패: {error}")
+            return
+        try:
+            handle = tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".py",
+                prefix="openframe-canvas-",
+                delete=False,
+                encoding="utf-8",
+            )
+            with handle:
+                handle.write(script)
+                source_path = Path(handle.name)
+        except OSError as error:
+            self.determinacy_status.setText(f"임시 스크립트 생성 실패: {error}")
+            return
+        request = AnalysisRequest(source_path=source_path, kind=kind, options=dict(options))
+        errors = self._run_analysis_service.validate(request)
+        if errors:
+            try:
+                source_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.determinacy_status.setText(errors[0])
+            return
+        self._analysis_temp_script = source_path
+        analysis_name = self._ANALYSIS_DISPLAY_NAMES[kind]
+        self.analysis_run_button.setEnabled(False)
+        self.results.set_analysis_kind(kind)
+        self.analysis_progress.show_running(analysis_name)
+        thread = AnalysisRunThread(self._run_analysis_service, request)
+        thread.completed.connect(lambda result: self._full_analysis_completed(result, model, kind))
+        thread.progress_changed.connect(self.analysis_progress.set_progress)
+        thread.finished.connect(self._analysis_run_finished)
+        self._analysis_run_thread = thread
+        thread.start()
+
+    def _full_analysis_completed(
+        self, result: AnalysisResult, model: object, kind: AnalysisKind
+    ) -> None:
+        analysis_name = self._ANALYSIS_DISPLAY_NAMES[kind]
+        if result.status == AnalysisStatus.COMPLETED:
+            if result.mode_shapes:
+                summary = f"{len(result.mode_shapes)}개 모드 결과가 준비되었습니다."
+            elif result.buckling_modes:
+                summary = f"{len(result.buckling_modes)}개 좌굴모드 결과가 준비되었습니다."
+            elif result.time_history:
+                summary = f"{len(result.time_history)}개 시간이력 스텝 결과가 준비되었습니다."
+            else:
+                summary = (
+                    f"절점 {len(result.node_results)}개, 부재 {len(result.element_results)}개 "
+                    "결과가 준비되었습니다."
+                )
+            self.analysis_progress.show_completed(summary)
+            self.determinacy_status.setText(f"{analysis_name} 해석 완료: {summary}")
+            self.results.set_model(model)
+            self.results.show_result(result)
+            self.view_results_button.setEnabled(True)
+            if hasattr(self, "task_results_button"):
+                self.task_results_button.setEnabled(True)
+            self.workspace_stack.setCurrentIndex(1)
+            return
+        if result.status == AnalysisStatus.PARTIAL and result.buckling_modes:
+            detail = " ".join(result.messages) or "요청한 모드 수보다 적은 유효 모드를 찾았습니다."
+            self.analysis_progress.show_failed(detail)
+            self.determinacy_status.setText(f"{analysis_name} 부분 결과: {detail}")
+            self.results.set_model(model)
+            self.results.show_result(result)
+            if hasattr(self, "task_results_button"):
+                self.task_results_button.setEnabled(True)
+            return
+        if result.status == AnalysisStatus.CANCELLED:
+            self.analysis_progress.show_failed("해석이 취소되었습니다.")
+            self.determinacy_status.setText("해석이 취소되었습니다.")
+            return
+        detail = " ".join(result.messages) or f"{analysis_name} 해석에 실패했습니다."
+        self.analysis_progress.show_failed(detail)
+        self.determinacy_status.setText(detail)
+
+    def _cancel_full_analysis(self) -> None:
+        thread = self._analysis_run_thread
+        if thread is None or not thread.isRunning():
+            return
+        self.analysis_progress.show_cancelling()
+        thread.request_cancel()
+
+    def _analysis_run_finished(self) -> None:
+        if hasattr(self, "analysis_run_button"):
+            self._on_analysis_method_changed()
+        if hasattr(self, "solve_button"):
+            self.solve_button.setEnabled(True)
+        thread = self._analysis_run_thread
+        self._analysis_run_thread = None
+        if thread is not None:
+            thread.deleteLater()
+        temp_script = self._analysis_temp_script
+        self._analysis_temp_script = None
+        if temp_script is not None:
+            try:
+                temp_script.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _solve_thread_finished(self) -> None:
         self.solve_button.setEnabled(True)
