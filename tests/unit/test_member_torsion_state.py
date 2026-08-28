@@ -286,3 +286,87 @@ def test_nan_rotation_is_sanitized() -> None:
     assert state is not None
     assert math.isfinite(state.markers[0].direction_x)
     assert math.isfinite(state.markers[-1].theta_display)
+
+
+def test_zero_length_member_is_skipped() -> None:
+    """Coincident original nodes have no axis - no markers for that element."""
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0),
+            2: Node(2, 0.0, 0.0, 0.0),
+            3: Node(3, 5.0, 0.0, 0.0),
+        },
+        elements={
+            1: Element(1, 1, 2, "elasticBeamColumn"),
+            2: Element(2, 2, 3, "elasticBeamColumn"),
+        },
+    )
+    result = _history_result(
+        model,
+        {
+            1: (0.0, 0.0, 0.0, 0.1, 0.0, 0.0),
+            2: (0.0, 0.0, 0.0, 0.1, 0.0, 0.0),
+            3: (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        },
+    )
+    deformed = build_deformed_3d_state(model, result, 0, 1.0)
+    assert deformed is not None
+    state = build_member_torsion_state(
+        model,
+        result,
+        deformed,
+        0,
+        rotation_scale=1.0,
+        marker_count=3,
+    )
+    assert state is not None
+    assert all(arm.element_tag == 2 for arm in state.markers)
+
+
+def test_coincident_deformed_nodes_skip_torsion_markers() -> None:
+    """Large translation scale can collapse a member to zero length in view."""
+    model = _beam_model(i=(0.0, 0.0, 0.0), j=(10.0, 0.0, 0.0))
+    result = _history_result(
+        model,
+        {
+            1: (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            2: (-10.0, 0.0, 0.0, 0.1, 0.0, 0.0),
+        },
+    )
+    deformed = build_deformed_3d_state(model, result, 0, 1.0)
+    assert deformed is not None
+    state = build_member_torsion_state(
+        model,
+        result,
+        deformed,
+        0,
+        rotation_scale=1.0,
+        marker_count=3,
+    )
+    assert state is not None
+    assert state.markers == ()
+
+
+def test_excessive_rotation_scale_is_clamped_for_display() -> None:
+    model = _beam_model(i=(0.0, 0.0, 0.0), j=(10.0, 0.0, 0.0))
+    result = _history_result(
+        model,
+        {
+            1: (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            2: (0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+        },
+    )
+    deformed = build_deformed_3d_state(model, result, 0, 1.0)
+    assert deformed is not None
+    state = build_member_torsion_state(
+        model,
+        result,
+        deformed,
+        0,
+        rotation_scale=100.0,
+        marker_count=2,
+    )
+    assert state is not None
+    assert _theta_at_marker(state, 1, 1) == pytest.approx(math.pi)

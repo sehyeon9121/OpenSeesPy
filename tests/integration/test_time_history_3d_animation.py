@@ -252,3 +252,65 @@ def test_3d_time_history_solver_result_feeds_animation(tmp_path: Path) -> None:
     animation._apply_step(min(5, len(result.time_history) - 1))
     application.processEvents()
     panel.close()
+
+
+def test_3d_animation_lifecycle_on_clear_and_rerun() -> None:
+    application = QApplication.instance() or QApplication([])
+    model = OpenSeesModelImporter(timeout_seconds=30).load(_FRAME_3D)
+    node_tags = sorted(model.nodes)
+    steps = tuple(
+        TimeHistoryStep(
+            time=index * 0.01,
+            node_results={
+                tag: NodeResult(
+                    tag,
+                    displacement=(
+                        0.0,
+                        0.0,
+                        0.0,
+                        math.sin(index * 0.3 + tag) * 0.01,
+                        math.cos(index * 0.2) * 0.005,
+                        index * 0.0002,
+                    ),
+                )
+                for tag in node_tags
+            },
+        )
+        for index in range(1, 21)
+    )
+    result = AnalysisResult(status=AnalysisStatus.COMPLETED, time_history=steps)
+
+    panel = TimeHistoryResultsPanel()
+    panel.show()
+    panel.set_model(model)
+    panel.show_result(result)
+    application.processEvents()
+
+    animation = panel.animation_panel
+    animation.torsion_markers_checkbox.setChecked(True)
+    animation._apply_step(5)
+    application.processEvents()
+    bridge = animation._3d_adapter.viewport.bridge
+    assert bridge.torsionMarkersVisible
+
+    animation.torsion_markers_checkbox.setChecked(False)
+    animation._apply_step(5)
+    application.processEvents()
+    assert not bridge.torsionMarkersVisible
+
+    panel.response_history_tab.click()
+    application.processEvents()
+    assert panel.content_stack.currentWidget() is panel.response_history_panel
+
+    panel.clear_result()
+    application.processEvents()
+    assert not bridge.torsionMarkers
+    assert not bridge.torsionMarkersVisible
+
+    panel.show_result(result)
+    animation.torsion_markers_checkbox.setChecked(True)
+    animation._apply_step(3)
+    application.processEvents()
+    assert bridge.torsionMarkersVisible
+
+    panel.close()

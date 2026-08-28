@@ -21,6 +21,34 @@ from openframe.features.viewport.presentation.quick3d_viewport import Quick3DVie
 DEFAULT_MARKER_COUNT = 5
 _TRUSS_TYPES = frozenset({"truss", "corottruss"})
 _MAX_TORSION_STATIONS = 500
+_MAX_ROTATION_SCALE = 100.0
+
+
+def sanitize_rotation_scale(scale: float) -> float:
+    """Clamp programmatic rotation multipliers to a finite, display-safe range."""
+    value = float(scale)
+    if not math.isfinite(value):
+        return 1.0
+    return max(-_MAX_ROTATION_SCALE, min(_MAX_ROTATION_SCALE, value))
+
+
+def compute_effective_marker_count(
+    model: StructuralModel | None,
+    requested: int,
+) -> int:
+    """Return the station count actually used after the 500-station global cap."""
+    count = max(1, requested)
+    if model is None:
+        return count
+    beam_count = sum(
+        1
+        for element in model.elements.values()
+        if element.element_type.lower() not in _TRUSS_TYPES
+    )
+    if beam_count <= 0:
+        return count
+    station_cap = max(1, _MAX_TORSION_STATIONS // beam_count)
+    return max(1, min(count, station_cap))
 
 
 class TimeHistory3DAnimationAdapter:
@@ -52,6 +80,8 @@ class TimeHistory3DAnimationAdapter:
         self._viewport.set_model(model, reset_camera=True)
 
     def set_result(self, result: AnalysisResult) -> None:
+        if self._deformation_active or self._torsion_active:
+            self._viewport.end_time_history_deformation()
         self._result = result
         self._step_index = 0
         self._deformation_active = False
@@ -67,7 +97,7 @@ class TimeHistory3DAnimationAdapter:
         self._translation_scale = scale
 
     def set_rotation_scale(self, scale: float) -> None:
-        self._rotation_scale = scale
+        self._rotation_scale = sanitize_rotation_scale(scale)
 
     def set_marker_count(self, count: int) -> None:
         count = max(1, count)
@@ -101,6 +131,18 @@ class TimeHistory3DAnimationAdapter:
     def current_step_index(self) -> int:
         return self._step_index
 
+    def requested_marker_count(self) -> int:
+        return self._marker_count
+
+    def effective_marker_count(self) -> int:
+        return compute_effective_marker_count(self._model, self._marker_count)
+
+    def is_marker_density_capped(self) -> bool:
+        return self.effective_marker_count() < self._marker_count
+
+    def effective_rotation_scale(self) -> float:
+        return self._rotation_scale
+
     def _ensure_deformation_mode(self) -> None:
         if self._model is None:
             return
@@ -113,27 +155,13 @@ class TimeHistory3DAnimationAdapter:
             self._deformation_active = True
             self._torsion_active = False
 
-    def _effective_marker_count(self) -> int:
-        requested = self._marker_count
-        if self._model is None:
-            return requested
-        beam_count = sum(
-            1
-            for element in self._model.elements.values()
-            if element.element_type.lower() not in _TRUSS_TYPES
-        )
-        if beam_count <= 0:
-            return requested
-        station_cap = max(1, _MAX_TORSION_STATIONS // beam_count)
-        return max(1, min(requested, station_cap))
-
     def _ensure_torsion_mode(self) -> None:
         if self._model is None:
             return
         if not self._torsion_active:
             self._viewport.begin_torsion_marker_mode(
                 self._model,
-                self._effective_marker_count(),
+                self.effective_marker_count(),
             )
             self._torsion_active = True
 
@@ -211,7 +239,7 @@ class TimeHistory3DAnimationAdapter:
             state,
             self._step_index,
             self._rotation_scale,
-            marker_count=self._effective_marker_count(),
+            marker_count=self.effective_marker_count(),
         )
         show_markers = (
             self._show_torsion_markers

@@ -22,6 +22,9 @@ from openframe.features.results.deformation.deformed_3d_state import Deformed3DS
 
 _TRUSS_TYPES = frozenset({"truss", "corottruss"})
 _DEFAULT_MARKER_COUNT = 5
+# Twist markers are a visual hint, not a literal radian readout - beyond one
+# half-turn the arms just spin in place and quaternion interpolation gets noisy.
+_MAX_DISPLAY_TWIST_RAD = math.pi
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,8 +50,16 @@ class MemberTorsionState:
     has_torsion: bool
 
 
+def _clamp_theta_display(theta_display: float) -> float:
+    if not math.isfinite(theta_display):
+        return 0.0
+    if abs(theta_display) > _MAX_DISPLAY_TWIST_RAD:
+        return math.copysign(_MAX_DISPLAY_TWIST_RAD, theta_display)
+    return theta_display
+
+
 def _rotation_vector(displacement: tuple[float, ...]) -> tuple[float, float, float]:
-    padded = (*displacement, 0.0, 0.0, 0.0, 0.0, 0.0)
+    padded = (*displacement, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)[:6]
     rx, ry, rz = float(padded[3]), float(padded[4]), float(padded[5])
     if not (math.isfinite(rx) and math.isfinite(ry) and math.isfinite(rz)):
         return 0.0, 0.0, 0.0
@@ -126,7 +137,7 @@ def build_member_torsion_state(
         for marker_index in range(marker_count):
             station = marker_index / (marker_count - 1) if marker_count > 1 else 0.0
             theta = (1.0 - station) * theta_i + station * theta_j
-            theta_display = scale * theta
+            theta_display = _clamp_theta_display(scale * theta)
             ey = rotate_about_axis(ey0, axis, theta_display)
             ez = rotate_about_axis(ez0, axis, theta_display)
             position = tuple(start[k] + station * (end[k] - start[k]) for k in range(3))

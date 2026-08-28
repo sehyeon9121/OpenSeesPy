@@ -251,6 +251,10 @@ class TimeHistoryAnimationPanel(QFrame):
         self.marker_density_selector.setCurrentIndex(1)
         self.marker_density_selector.setVisible(False)
         torsion_row.addWidget(self.marker_density_selector)
+        self.marker_density_status_label = QLabel("")
+        self.marker_density_status_label.setObjectName("secondaryText")
+        self.marker_density_status_label.setVisible(False)
+        torsion_row.addWidget(self.marker_density_status_label)
         torsion_row.addStretch(1)
         controls_layout.addLayout(torsion_row)
 
@@ -297,16 +301,19 @@ class TimeHistoryAnimationPanel(QFrame):
             self.rotation_scale_selector,
             self.marker_density_label,
             self.marker_density_selector,
+            self.marker_density_status_label,
         ):
             widget.setVisible(is_3d)
         if is_3d:
             self._canvas_stack.setCurrentWidget(self._3d_view)
             self._3d_adapter.set_model(model)
+            self._update_marker_density_status()
         else:
             self._canvas_stack.setCurrentWidget(self.view)
             self.scene.set_model(model)
             self._build_deformed_overlay(model)
             self._fit_view()
+            self.marker_density_status_label.setVisible(False)
         self._apply_undeformed_visibility()
 
     def show_result(self, result: AnalysisResult) -> None:
@@ -518,7 +525,22 @@ class TimeHistoryAnimationPanel(QFrame):
         self._3d_adapter.set_show_deformed(self.show_deformed_checkbox.isChecked())
         self._3d_adapter.set_show_torsion_markers(self.torsion_markers_checkbox.isChecked())
         self._3d_adapter.set_step(index)
+        self._update_marker_density_status()
         return max_magnitude
+
+    def _update_marker_density_status(self) -> None:
+        if self._model is None or self._model.ndm != 3:
+            self.marker_density_status_label.setVisible(False)
+            return
+        requested = self._marker_density()
+        effective = self._3d_adapter.effective_marker_count()
+        if effective < requested:
+            self.marker_density_status_label.setText(
+                f"표시 밀도: {effective} (요청 {requested}, 성능 제한 적용)"
+            )
+            self.marker_density_status_label.setVisible(True)
+        else:
+            self.marker_density_status_label.setVisible(False)
 
     def _active_rotation_multiplier(self) -> float:
         value = self.rotation_scale_selector.currentData()
@@ -671,6 +693,7 @@ class TimeHistoryAnimationPanel(QFrame):
     def _on_marker_density_changed(self) -> None:
         if self._has_playable_result() and self._model is not None and self._model.ndm == 3:
             self._3d_adapter.set_marker_count(self._marker_density())
+            self._update_marker_density_status()
             self._apply_step(self._current_step_index)
 
     @staticmethod

@@ -119,3 +119,28 @@ def test_play_pause_and_loop_restart() -> None:
 
     assert panel._current_step_index == 0
     assert panel._playing is True
+
+
+def test_marker_density_status_shows_when_capped() -> None:
+    from openframe.features.results.presentation.time_history_3d_animation_adapter import (
+        compute_effective_marker_count,
+    )
+
+    panel = _panel()
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={index: Node(index, float(index - 1), 0.0, 0.0) for index in range(1, 1202)},
+        elements={
+            index: Element(index, index, index + 1, "elasticBeamColumn")
+            for index in range(1, 1201)
+        },
+    )
+    panel.set_model(model)
+    panel.marker_density_selector.setCurrentIndex(2)  # 7
+    panel._update_marker_density_status()
+
+    assert compute_effective_marker_count(model, 7) == 1
+    assert panel.marker_density_status_label.isVisible()
+    assert "성능 제한" in panel.marker_density_status_label.text()
+    assert "요청 7" in panel.marker_density_status_label.text()
