@@ -9,6 +9,18 @@ import math
 from openframe.core.domain import BoundaryCondition, Element, NodalLoad, Node, UniformElementLoad
 from openframe.features.model.presentation.canvas_model_build import _lerp
 
+#: Matches _nearest_node_3d's own per-axis 1e-9 coincidence tolerance -
+#: see _add_node_at's ``coord_index`` parameter.
+_COORD_TOLERANCE = 1.0e-9
+
+
+def _quantize_point(point: tuple[float, float, float]) -> tuple[int, int, int]:
+    return (
+        round(point[0] / _COORD_TOLERANCE),
+        round(point[1] / _COORD_TOLERANCE),
+        round(point[2] / _COORD_TOLERANCE),
+    )
+
 
 class _GeometryMixin:
     def add_node(self, x: float, y: float) -> int:
@@ -20,7 +32,12 @@ class _GeometryMixin:
         """
         return self._add_node_at(self.work_plane.to_3d(x, y))
 
-    def _add_node_at(self, point: tuple[float, float, float]) -> int:
+    def _add_node_at(
+        self,
+        point: tuple[float, float, float],
+        *,
+        coord_index: dict[tuple[int, int, int], int] | None = None,
+    ) -> int:
         """Add a node at a true 3D model point, bypassing the active plane.
 
         Used where the target point is already known in model space — a
@@ -42,13 +59,28 @@ class _GeometryMixin:
         splitting_the_visible_member``): here the node is what's new, so
         there is no question the user meant to add something at this exact
         point on the member, not just happened to draw across it.
+
+        ``coord_index`` is an optional coordinate -> tag cache a caller
+        making many calls in a row (e.g. transform_selected_nodes's "copy"
+        loop) builds once and keeps reusing, in place of the default
+        ``_nearest_node_3d`` duplicate check - a full O(existing nodes)
+        linear scan every call, which turned copying a K-node structure into
+        an O(K x nodes) scan and was a real contributor to the whole app
+        going "Not Responding" on a large "copy a floor upward" transform.
+        Omitted (the default) everywhere else; behavior there is unchanged.
         """
-        existing = self._nearest_node_3d(point)
+        if coord_index is not None:
+            key = _quantize_point(point)
+            existing = coord_index.get(key)
+        else:
+            existing = self._nearest_node_3d(point)
         if existing is not None:
             return existing
         self._record_history()
         tag = max(self.nodes, default=0) + 1
         self.nodes[tag] = Node(tag, *point)
+        if coord_index is not None:
+            coord_index[key] = tag
         self._attach_node_to_member(tag)
         host = self.embedded_nodes.pop(tag, None)
         if host is not None:
@@ -135,12 +167,28 @@ class _GeometryMixin:
             self.selected_elements.update({first_tag, second_tag})
         return first_tag, second_tag
 
-    def add_member(self, node_i: int, node_j: int) -> int | None:
+    def add_member(
+        self,
+        node_i: int,
+        node_j: int,
+        *,
+        edge_index: set[frozenset[int]] | None = None,
+    ) -> int | None:
+        """``edge_index`` is an optional cache of every existing member's
+        ``frozenset({node_i, node_j})``, built once and reused across many
+        calls (see ``transform_selected_nodes``'s "copy" loop) so the
+        duplicate-member check below is an O(1) set lookup instead of an
+        O(existing elements) scan repeated once per new member. Omitted
+        (the default) everywhere else; behavior is unchanged there.
+        """
         if node_i == node_j:
             return None
-        if any(
-            {element.node_i, element.node_j} == {node_i, node_j}
-            for element in self.elements.values()
+        pair = frozenset((node_i, node_j))
+        if edge_index is not None:
+            if pair in edge_index:
+                return None
+        elif any(
+            {element.node_i, element.node_j} == pair for element in self.elements.values()
         ):
             return None
         self._record_history()
@@ -148,9 +196,31 @@ class _GeometryMixin:
         self.elements[tag] = Element(
             tag, node_i, node_j, self.element_family, {"behavior": self.element_behavior}
         )
-        for candidate_tag in self.nodes:
-            if candidate_tag not in {node_i, node_j}:
-                self._attach_node_to_member(candidate_tag, preferred_member=tag)
+        if edge_index is not None:
+            edge_index.add(pair)
+        # Only the *new* member's own line can newly qualify a pre-existing
+        # node for embedding here - every other node/member pair was already
+        # resolved when each of them was created, so re-running the general
+        # _attach_node_to_member() sweep (checks a node against every element
+        # in the model, falling through past `preferred_member` to recheck
+        # ones that never changed) turned every add_member() call into an
+        # O(nodes x elements) scan. On a "copy a whole floor upward" transform
+        # - hundreds of new members, each one re-scanning an already-large
+        # model - that compounded into the multi-minute UI freeze reported as
+        # "복잡한 구조물을 위로 복사하면 아예 응답없음". A direct check
+        # against just (node_i, node_j) is O(nodes) per call instead, and
+        # (as a side effect) no longer risks silently re-embedding an
+        # unrelated node onto a *different*, coincidentally-collinear member
+        # it already belonged to just because this new member happened to
+        # sort earlier by tag.
+        start = self.nodes[node_i]
+        end = self.nodes[node_j]
+        for candidate_tag, candidate_node in self.nodes.items():
+            if candidate_tag in pair:
+                continue
+            position = self._point_parameter(candidate_node, start, end)
+            if position is not None:
+                self.embedded_nodes[candidate_tag] = (tag, position)
         if self.ndm == 2:
             self._split_crossings_for(tag)
         self._changed()
@@ -319,14 +389,30 @@ class _GeometryMixin:
     def _attach_node_to_member(
         self, node_tag: int, preferred_member: int | None = None
     ) -> bool:
+        """Embed ``node_tag`` onto whichever member's line it geometrically
+        sits on, if any - ``preferred_member`` (when given) is checked
+        first, purely so a node landing on the member that was *just*
+        created finds it without waiting to reach it in iteration order.
+
+        Iterates ``self.elements`` in its own (insertion, i.e. ascending-tag
+        for any element never deleted and re-added) order rather than
+        ``sorted(self.elements)`` - re-sorting every element tag on every
+        single new-node/new-member call turned into real, measurable cost
+        once a "copy a whole floor" transform started calling this hundreds
+        or thousands of times in a row on an already-large model.
+        """
         node = self.nodes[node_tag]
-        ordered = sorted(self.elements)
-        if preferred_member in self.elements:
-            ordered.remove(preferred_member)
-            ordered.insert(0, preferred_member)
-        for element_tag in ordered:
-            element = self.elements[element_tag]
-            if node_tag in {element.node_i, element.node_j}:
+        if preferred_member is not None and preferred_member in self.elements:
+            element = self.elements[preferred_member]
+            if node_tag not in {element.node_i, element.node_j}:
+                position = self._point_parameter(
+                    node, self.nodes[element.node_i], self.nodes[element.node_j]
+                )
+                if position is not None:
+                    self.embedded_nodes[node_tag] = (preferred_member, position)
+                    return True
+        for element_tag, element in self.elements.items():
+            if element_tag == preferred_member or node_tag in {element.node_i, element.node_j}:
                 continue
             position = self._point_parameter(
                 node, self.nodes[element.node_i], self.nodes[element.node_j]

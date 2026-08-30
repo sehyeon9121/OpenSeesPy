@@ -37,31 +37,42 @@ class _RenderingMixin:
         return current_px.y() < start_px.y() - _CROSSING_DRAG_DEAD_ZONE_PX
 
     def _changed(self) -> None:
-        """Redraw the 2D canvas immediately (cheap - a direct QPainter repaint
-        of the current in-memory state), but only actually emit
-        model_changed while no history group is open.
+        """Redraw the 2D canvas and emit model_changed - deferred to a single
+        pass in end_history_group() while a history group is open.
+
+        _redraw() is NOT a cheap QPainter repaint - it's scene_model.clear()
+        followed by re-creating a fresh QGraphicsItem for every node, member,
+        label, load glyph and support glyph in the model from scratch. An
+        operation like transform_selected_nodes's "copy" calls
+        _add_node_at/add_member once per new node/member - each one its own
+        call to this method - so copying a K-node/K-member floor upward used
+        to rebuild the *entire* (and growing) 2D scene 2K times in a row,
+        each rebuild doing more work than the last. That's the quadratic
+        blow-up reported as "복잡한 구조물을 위로 복사하면 아예 응답없음":
+        nobody ever sees those intermediate scenes anyway (Qt doesn't
+        actually paint until the event loop gets a turn, and this whole loop
+        runs synchronously without one), so redrawing mid-batch was pure
+        wasted work on top of being mischaracterized as free.
 
         model_changed drives the 3D preview's full rebuild
         (Quick3DSceneBridge.set_model(), a fresh Repeater3D-backed scene for
-        every node/member). An operation like transform_selected_nodes's
-        "copy" calls _add_node_at/add_member several times in a row - each
-        one its own call to this method - and firing that rebuild once per
-        intermediate step (nodes created, then the member joining them, all
-        within the same Python call) fires several full QML scene rebuilds
-        back to back with no event-loop turn between them. Qt Quick 3D's
-        Repeater3D does not reliably finish constructing a brand-new
+        every node/member) for the same reason - see end_history_group() in
+        canvas_history.py, which is what actually flushes both once the
+        outermost group closes. Firing either one per intermediate step
+        (nodes created, then the member joining them, all within the same
+        Python call) fired several full rebuilds back to back with no
+        event-loop turn between them; for the 3D side specifically, Qt Quick
+        3D's Repeater3D does not reliably finish constructing a brand-new
         delegate before the next rebuild replaces its model out from under
         it, which is what made a freshly copied member intermittently render
         as a bare hairline instead of its real cross-section - a bug an
         immediately following undo+redo (a single _changed() call) always
-        "fixed" by forcing one last clean rebuild. Deferring to a single
-        emit in end_history_group() (see canvas_history.py) removes the
-        rapid-fire rebuilds instead of relying on a coincidental extra one.
+        "fixed" by forcing one last clean rebuild.
         """
-        self._redraw()
         if self._history_group_depth:
             self._pending_change_notification = True
             return
+        self._redraw()
         self.model_changed.emit()
 
     def _projected_node(self, node: Node) -> Node:

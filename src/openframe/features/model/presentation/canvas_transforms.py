@@ -8,6 +8,7 @@ import math
 from dataclasses import replace
 
 from openframe.core.domain import Node
+from openframe.features.model.presentation.canvas_geometry import _quantize_point
 
 
 class _TransformMixin:
@@ -18,9 +19,10 @@ class _TransformMixin:
         node_j: int,
         *,
         copy_element_loads: bool,
+        edge_index: set[frozenset[int]] | None = None,
     ) -> int | None:
         """Create a geometric copy without dropping its structural identity."""
-        new_tag = self.add_member(node_i, node_j)
+        new_tag = self.add_member(node_i, node_j, edge_index=edge_index)
         if new_tag is None:
             return None
         self.elements[new_tag] = replace(
@@ -126,21 +128,36 @@ class _TransformMixin:
             for element_tag in self.selected_elements
             if element_tag in self.elements
         ]
+        # Built once and reused for every _add_node_at call this transform
+        # makes (potentially thousands, for "copy a whole floor upward" on a
+        # complex structure) - see _add_node_at's own ``coord_index`` param.
+        # Without it, each call's default duplicate check was an O(existing
+        # nodes) linear scan, turning a K-node copy into an O(K x nodes)
+        # scan - a real contributor (alongside add_member's own former
+        # O(nodes x elements) scan, fixed separately) to the whole app going
+        # "Not Responding" on a large copy.
+        coord_index = {
+            _quantize_point((node.x, node.y, node.z)): tag for tag, node in self.nodes.items()
+        }
+        # Same idea as coord_index, for add_member's own duplicate-edge scan.
+        edge_index = {
+            frozenset((element.node_i, element.node_j)) for element in self.elements.values()
+        }
         try:
             for step in range(1, max(1, repeat) + 1):
                 mapping: dict[int, int] = {}
                 for source_tag in selected:
                     source_u, source_v = self._uv(self.nodes[source_tag])
-                    before = set(self.nodes)
+                    before_count = len(self.nodes)
                     target_point = self._replace_uvw(
                         self.nodes[source_tag],
                         source_u + dx * step,
                         source_v + dy * step,
                         dz * step,
                     )
-                    tag = self._add_node_at(target_point)
+                    tag = self._add_node_at(target_point, coord_index=coord_index)
                     mapping[source_tag] = tag
-                    if tag in before:
+                    if len(self.nodes) == before_count:
                         continue
                     created.add(tag)
                     if source_tag in self.hinge_nodes:
@@ -158,6 +175,7 @@ class _TransformMixin:
                             mapping[element.node_i],
                             mapping[element.node_j],
                             copy_element_loads=copy_element_loads,
+                            edge_index=edge_index,
                         )
                         if new_tag is not None:
                             created_elements.add(new_tag)

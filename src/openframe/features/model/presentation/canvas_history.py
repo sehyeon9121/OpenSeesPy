@@ -22,11 +22,13 @@ class _HistoryMixin:
                 self._undo_stack.append(self._history_group_snapshot)
                 self._redo_stack.clear()
             self._history_group_snapshot = None
-        # One clean model_changed for the whole group, instead of the one
-        # _changed() swallowed per intermediate node/member it created along
-        # the way - see _changed()'s own docstring (canvas_rendering.py).
+        # One clean redraw + model_changed for the whole group, instead of
+        # the redraw-and-rebuild pair _changed() swallowed per intermediate
+        # node/member it created along the way - see _changed()'s own
+        # docstring (canvas_rendering.py).
         if self._pending_change_notification:
             self._pending_change_notification = False
+            self._redraw()
             self.model_changed.emit()
 
     def undo(self) -> None:

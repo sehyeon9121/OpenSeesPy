@@ -35,15 +35,6 @@ Item {
     property real lastMouseX: 0
     property real lastMouseY: 0
     property bool panning: false
-    // True while the camera is actively being orbited/panned/zoomed - drops
-    // MSAA quality for the duration (see the View3D's SceneEnvironment below)
-    // so a large model stays smooth to spin instead of stuttering at full
-    // antialiasing every frame; interactionIdleTimer flips it back off a
-    // moment after the last drag/wheel event, restoring full quality once
-    // the camera actually settles ("자유롭게 돌리면서 부드럽지도 않고 뚝뚝
-    // 끊겨서" - MSAA resolve cost was the one part of every orbit frame that
-    // scales with viewport resolution rather than model size).
-    property bool interacting: false
     property bool pickingEnabled: false
     property int hoveredNodeTag: -1
     property real snapScreenX: 0
@@ -311,20 +302,6 @@ Item {
             bridgeExtent * 0.18,
             Math.min(bridgeExtent * 25, cameraDistance * factor)
         )
-        root.markInteracting()
-    }
-
-    // Orbit/pan/zoom all funnel through here so "interacting" and its idle
-    // timer stay in one place instead of three near-duplicate copies.
-    function markInteracting() {
-        root.interacting = true
-        interactionIdleTimer.restart()
-    }
-
-    Timer {
-        id: interactionIdleTimer
-        interval: 200
-        onTriggered: root.interacting = false
     }
 
     View3D {
@@ -334,16 +311,7 @@ Item {
         environment: SceneEnvironment {
             backgroundMode: SceneEnvironment.Color
             clearColor: "#f4f6f8"
-            // MSAA resolve is a real per-pixel cost that scales with viewport
-            // resolution, not model size - paid on every single frame while
-            // orbiting even though a mid-drag frame is thrown away a moment
-            // later anyway, and jagged edges are barely visible while the
-            // model is actively spinning regardless. Switching to NoAA only
-            // while root.interacting is true (see markInteracting()) buys
-            // back that cost for orbit/pan/zoom on a complex model; it snaps
-            // back to full MSAA ~200ms after the last drag/wheel event, so
-            // the settled view is unaffected.
-            antialiasingMode: root.interacting ? SceneEnvironment.NoAA : SceneEnvironment.MSAA
+            antialiasingMode: SceneEnvironment.MSAA
             antialiasingQuality: SceneEnvironment.High
         }
 
@@ -1477,7 +1445,6 @@ Item {
                 root.cameraYaw += dx * 0.42
                 root.cameraPitch = Math.max(-85, Math.min(85, root.cameraPitch - dy * 0.38))
             }
-            root.markInteracting()
             root.cameraModeChanged("free")
         }
         onReleased: function(mouse) {
@@ -1502,7 +1469,6 @@ Item {
                 bridgeExtent * 0.18,
                 Math.min(bridgeExtent * 25, root.cameraDistance * factor)
             )
-            root.markInteracting()
             wheel.accepted = true
         }
     }

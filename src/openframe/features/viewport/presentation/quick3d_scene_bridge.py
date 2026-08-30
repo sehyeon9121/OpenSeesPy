@@ -416,7 +416,6 @@ class Quick3DSceneBridge(QObject):
                 self._member_parts(
                     element,
                     deformed_points,
-                    self._default_thickness,
                     color=_color_for_ratio(ratio),
                 )
             )
@@ -441,7 +440,6 @@ class Quick3DSceneBridge(QObject):
                     self._member_parts(
                         element,
                         self._points,
-                        self._default_thickness,
                         color=_GHOST_COLOR,
                         opacity=_GHOST_OPACITY,
                     )
@@ -510,9 +508,7 @@ class Quick3DSceneBridge(QObject):
         self._deformation_member_records = []
         for element in sorted(model.elements.values(), key=lambda item: item.tag):
             color = _member_type_color(element)
-            parts = self._member_parts(
-                element, self._points, self._default_thickness, color=color
-            )
+            parts = self._member_parts(element, self._points, color=color)
             self._deformation_member_records.append((element, parts))
             self._members.extend(parts)
         self._emit_topology_changed()
@@ -710,7 +706,6 @@ class Quick3DSceneBridge(QObject):
                 self._member_parts(
                     element,
                     self._points,
-                    self._default_thickness,
                     color=_GHOST_COLOR,
                     opacity=_GHOST_OPACITY,
                 )
@@ -725,9 +720,7 @@ class Quick3DSceneBridge(QObject):
         *,
         color: str,
     ) -> bool:
-        fresh_parts = self._member_parts(
-            element, points, self._default_thickness, color=color
-        )
+        fresh_parts = self._member_parts(element, points, color=color)
         if len(fresh_parts) != len(part_dicts):
             return False
         for existing, updated in zip(part_dicts, fresh_parts, strict=True):
@@ -1114,33 +1107,44 @@ class Quick3DSceneBridge(QObject):
         return self._torsion_marker_active and self._torsion_markers_visible
 
     def _compute_node_radii(
-        self, model: StructuralModel, default_thickness: float
+        self,
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
     ) -> dict[int, float]:
-        """Per-node marker radius, large enough to poke out just past the
+        """Per-node marker radius, large enough to poke out past the
         cross-section of every member framing into that node.
 
-        The old radius was a single value derived only from
-        ``default_thickness`` - a rough, section-agnostic fallback - while a
-        real assigned section's box can render several times wider
-        (``_section_visual_dimensions`` clamps up to ``extent * 0.055``).
-        That let a big W-section's box fully swallow the node sphere, both
-        visually and for click-picking, at a beam-column joint - the node
-        read as buried inside the member instead of the member framing into
-        the node. Radius is per-node (not a single global bump) so a
-        slender brace elsewhere in the same model doesn't get an
-        oversized ball for no reason.
+        A single section-agnostic radius let a big W-section's box fully
+        swallow the node sphere, both visually and for click-picking, at a
+        beam-column joint - the node read as buried inside the member
+        instead of the member framing into the node. Radius is per-node (not
+        one global bump) so a slender brace elsewhere in the same model
+        doesn't get an oversized ball for no reason.
 
-        Sized off the box's *half-width* (not its corner-to-corner half
-        diagonal, which is always bigger than either side) with only a
-        slight 1.08x margin - just enough that the sphere still reads as
-        attached/flush with the member instead of a separate ball floating
-        above it with a visible gap on every side.
+        Sized off the box's corner-to-corner **half diagonal**, not its
+        half-width. Half-width only clears the box's four flat faces; every
+        corner still sticks out past the sphere, and at an interior joint of
+        a multi-storey frame - a column running straight through, beams
+        framing in from all four sides - those corners are exactly what is
+        left uncovered, so the marker disappeared into the members entirely.
+        The half diagonal clears the section in every radial direction, and
+        the small 1.06x margin keeps the sphere reading as flush with the
+        member rather than a ball floating above it. The remaining cap is
+        relative to the member's own length (like
+        ``_section_visual_dimensions``' clamps) so it, too, stays put when
+        the model grows.
         """
         radii: dict[int, float] = {}
         for element in model.elements.values():
-            visual = self._section_visual_dimensions(element.properties, default_thickness)
-            half_width = 0.5 * max(visual["width_b"], visual["width_h"])
-            bulge = min(half_width * 1.08, self._extent * 0.03)
+            start, end = points.get(element.node_i), points.get(element.node_j)
+            if start is None or end is None:
+                continue
+            length = math.dist(start, end)
+            if length <= 1.0e-12:
+                continue
+            visual = self._section_visual_dimensions(element.properties, length)
+            half_diagonal = 0.5 * math.hypot(visual["width_b"], visual["width_h"])
+            bulge = min(half_diagonal * 1.06, length * 0.3)
             for tag in (element.node_i, element.node_j):
                 # Only enlarge past the section-agnostic fallback - storing a
                 # bulge smaller than ``_node_radius`` used to shrink the
@@ -1171,9 +1175,7 @@ class Quick3DSceneBridge(QObject):
         member_records: list[tuple[Element, list[dict[str, float | int | str]]]] = []
         for element in sorted(model.elements.values(), key=lambda item: item.tag):
             color = _member_type_color(element)
-            parts = self._member_parts(
-                element, self._points, self._default_thickness, color=color
-            )
+            parts = self._member_parts(element, self._points, color=color)
             member_records.append((element, parts))
             members.extend(parts)
         self._members = members
@@ -1201,9 +1203,12 @@ class Quick3DSceneBridge(QObject):
     ) -> bool:
         """Refresh bbox centre/extent and derived marker radii.
 
-        Returns True when camera-framing metrics changed.  Node radii are only
-        recomputed when extent moves - a pure translate of the whole model
-        should not walk every element again on a 4k-member scene.
+        Returns True when camera-framing metrics changed.  Node radii are
+        recomputed every time: they now depend on each member's own length and
+        section rather than on the bbox extent, so an extent-only gate went
+        stale whenever a member moved or was re-sectioned without the bbox
+        changing. The walk is O(elements) with plain arithmetic, and every
+        caller of this method already walks the elements once anyway.
         """
         previous_extent = self._extent
         previous_center = self._center
@@ -1223,8 +1228,7 @@ class Quick3DSceneBridge(QObject):
         self._default_thickness = max(self._extent * 0.012, 0.025)
         self._node_radius = self._default_thickness * 0.72
         extent_changed = abs(self._extent - previous_extent) > max(previous_extent, 1.0) * 1.0e-9
-        if extent_changed or not self._node_radii:
-            self._node_radii = self._compute_node_radii(model, self._default_thickness)
+        self._node_radii = self._compute_node_radii(model, points)
         self._center = (
             0.5 * (min(x_values) + max(x_values)),
             0.5 * (min(y_values) + max(y_values)),
@@ -1858,7 +1862,7 @@ class Quick3DSceneBridge(QObject):
         return parts
 
     def _section_visual_dimensions(
-        self, properties: dict[str, float | str], default_thickness: float
+        self, properties: dict[str, float | str], member_length: float
     ) -> dict[str, float | str]:
         """Cross-section box dimensions for rendering, in the same B(width)/
         H(height) convention ``core.domain.section_properties`` uses: H is
@@ -1875,9 +1879,28 @@ class Quick3DSceneBridge(QObject):
         Anything else (a User Defined custom section, or a member that
         predates this feature and only ever got A/Iy/Iz/J) falls back to the
         old uniform sqrt(area) square, unchanged.
+
+        Both clamp bounds come from the member's **own length**, never from
+        the model bounding box. A bbox-relative clamp silently re-sized every
+        member already on screen the moment the model grew - copy one element,
+        or stack a second storey, and the extent jumped, un-clamping sections
+        that had been pinned at ``extent * 0.055`` so every member suddenly
+        rendered thicker with nothing about those members having changed.
+        Length is local to the member, so a copy always draws exactly like the
+        member it was copied from, and it is still the units-sanity net the
+        extent clamp was there for (a section entered in millimetres inside a
+        metre model stays bounded).
+
+        ``minimum`` keeps the same 0.24%-of-reference ratio the old
+        ``default_thickness``-derived floor worked out to (``extent * 0.012
+        * 0.2`` for a lone member, where ``extent`` and this member's own
+        length are the same number) - just anchored to the member instead of
+        the whole model, and with an absolute 5 mm floor under that so a
+        very short member's own clamp cannot collapse to zero.
         """
-        minimum = default_thickness * 0.2
-        maximum = self._extent * 0.055
+        reference = member_length if member_length > 0.0 else self._extent
+        maximum = reference * 0.45
+        minimum = min(max(reference * 0.0024, 0.005), maximum)
 
         def clamp(value: float) -> float:
             return min(max(value, minimum), maximum)
@@ -2081,7 +2104,6 @@ class Quick3DSceneBridge(QObject):
         self,
         element: Element,
         points: dict[int, tuple[float, float, float]],
-        default_thickness: float,
         *,
         color: str,
         opacity: float = 1.0,
@@ -2123,8 +2145,11 @@ class Quick3DSceneBridge(QObject):
             # unchanged, regardless of any section_shape it happens to carry.
             area = self._number_property(element.properties, "A")
             size = min(
-                max(math.sqrt(area) if area is not None and area > 0.0 else 0.0, default_thickness),
-                self._extent * 0.055,
+                max(
+                    math.sqrt(area) if area is not None and area > 0.0 else 0.0,
+                    max(length * 0.0024, 0.005),
+                ),
+                length * 0.45,
             )
             return [
                 self._box_part(
@@ -2133,7 +2158,7 @@ class Quick3DSceneBridge(QObject):
                 )
             ]
 
-        visual = self._section_visual_dimensions(element.properties, default_thickness)
+        visual = self._section_visual_dimensions(element.properties, length)
         scalar, qx, qy, qz = self._member_frame_rotation(direction, element.local_axis_angle)
 
         if visual["shape"] == "H/I Section" and visual.get("web_height", 0.0) > 0.0:
