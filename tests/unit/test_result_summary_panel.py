@@ -5,7 +5,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from openframe.core.domain import AnalysisResult, AnalysisStatus, NodeResult, StructuralModel
+from openframe.core.domain import (
+    UNIT_STIFFNESS_DISPLACEMENT_WARNING,
+    AnalysisResult,
+    AnalysisStatus,
+    DisplacementStiffnessKind,
+    NodeResult,
+    StructuralModel,
+)
 from openframe.features.results.presentation.result_summary_panel import ResultSummaryPanel
 from openframe.features.results.presentation.results_workspace import ResultsWorkspace
 
@@ -93,3 +100,32 @@ def test_results_workspace_uses_a_narrow_context_inspector_shell() -> None:
     workspace.set_result_type("reaction")
     assert not workspace.summary.metric_rows["reaction"].isHidden()
     assert workspace.summary.metric_rows["moment"].isHidden()
+
+
+def test_unit_stiffness_warning_banner_appears_and_clears_on_rerun() -> None:
+    QApplication.instance() or QApplication([])
+    workspace = ResultsWorkspace()
+    result_unit = AnalysisResult(
+        status=AnalysisStatus.COMPLETED,
+        displacement_stiffness=DisplacementStiffnessKind.UNIT_STIFFNESS,
+        node_results={1: NodeResult(1, displacement=(0.02, 0.0, 0.0))},
+    )
+    result_physical = AnalysisResult(
+        status=AnalysisStatus.COMPLETED,
+        displacement_stiffness=DisplacementStiffnessKind.PHYSICAL,
+        node_results={1: NodeResult(1, displacement=(0.001, 0.0, 0.0))},
+    )
+
+    workspace.show_result(result_unit)
+    assert not workspace.stiffness_warning.isHidden()
+    assert workspace.stiffness_warning.text() == UNIT_STIFFNESS_DISPLACEMENT_WARNING
+    assert not workspace.viewport.relative_shape_badge.isHidden()
+    assert "상대" in workspace.summary.metric_values["displacement"].text()
+
+    workspace.show_result(result_physical)
+    assert workspace.stiffness_warning.isHidden()
+    assert workspace.viewport.relative_shape_badge.isHidden()
+    assert "상대" not in workspace.summary.metric_values["displacement"].text()
+
+    workspace.clear_result()
+    assert workspace.stiffness_warning.isHidden()

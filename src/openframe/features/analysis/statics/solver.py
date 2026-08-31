@@ -1,14 +1,21 @@
 """Solve statically determinate textbook problems without material data, plus
-indeterminate 2D and 3D frames once real section/material properties are given.
+indeterminate 2D and 3D frames, and indeterminate *pure* trusses once every
+member carries real section/material properties.
 
 For a stable determinate structure, reactions and member forces follow from
 equilibrium and do not depend on EA or EI.  OpenSees is therefore given normalized
-positive stiffness solely as a numerical mechanism.  An indeterminate structure's
+positive stiffness solely as a numerical mechanism - but that placeholder must
+never be presented as a physical displacement.  An indeterminate structure's
 force distribution genuinely depends on member stiffness, so it is rejected unless
 every element carries real properties - (E, A, I) for a 2D frame, (E, A, G, J, Iy,
-Iz) for a 3D one, the same key convention model_inspector_panel.py's readiness
-check already expects.  Indeterminate trusses (2D or 3D) are still always rejected:
-this solver only ever builds a stiffness-based truss with unit placeholder EA.
+Iz) for a 3D one, (E, A) for a truss/cable/tension-only/compression-only member
+(all of which share the "truss" element family - see ``_element_family``), the
+same key convention model_inspector_panel.py's readiness check already expects.
+
+A mixed frame+truss model is still rejected: this solver has no combined
+stiffness assembly for that case. Pure trusses (2D and 3D) with a valid E and A
+on every member are solved with that real EA, including 1+ degree indeterminate
+ones.
 """
 
 import math
@@ -19,8 +26,10 @@ import openseespy.opensees as ops
 from openframe.core.domain.geometric_transform import auto_reference_vector, rotate_about_axis
 from openframe.core.domain.model import BoundaryCondition, Element, StructuralModel
 from openframe.core.domain.results import (
+    UNIT_STIFFNESS_DISPLACEMENT_WARNING,
     AnalysisResult,
     AnalysisStatus,
+    DisplacementStiffnessKind,
     ElementResult,
     LoadDisplacementPoint,
     NodeResult,
@@ -38,8 +47,12 @@ _INCLINED_SUPPORT_MATERIAL_TAG = 9_000_001
 _INCLINED_SUPPORT_STIFFNESS = 1.0e8
 # `element Truss` takes a *material* tag, not a raw modulus — one shared linear-
 # elastic material (E=1, matching every other unit-stiffness placeholder here)
-# covers every truss member in the model.
+# covers every truss member that carries no real E/A of its own.
 _TRUSS_MATERIAL_TAG = 9_000_002
+# A truss member that DOES carry real (E, A) needs its own material tag (E
+# varies per element, unlike the unit placeholder above) - offset by the
+# element's own tag, same scheme as every other *_TAG_OFFSET here.
+_TRUSS_ELEMENT_MATERIAL_TAG_OFFSET = 9_600_000
 
 # OpenSeesPy's own eleLoad has no linearly-varying ("trapezoidal") transverse load
 # type - only a constant -beamUniform. A member carrying one (wx != wx_j or
@@ -123,7 +136,8 @@ def check_determinacy(model: StructuralModel) -> DeterminacyCheck:
         return DeterminacyCheck(
             "mixed",
             1,
-            "프레임과 트러스가 혼합된 모델은 재료 및 단면 강성이 필요합니다.",
+            "프레임과 트러스가 혼합된 모델은 이 솔버에서 강성해석을 지원하지 않습니다. "
+            "프레임만 또는 트러스만으로 모델을 구성하세요.",
         )
 
     system = kinds.pop()
@@ -218,39 +232,90 @@ class MaterialFreeStaticsSolver:
             )
         check = check_determinacy(model)
         needs_material = not check.can_solve_without_materials or geometric_nonlinearity != "Linear"
-        if needs_material:
-            if check.system != "frame":
+        truss_unit_stiffness = False
+        displacement_stiffness = DisplacementStiffnessKind.PHYSICAL
+        if check.system == "truss":
+            # Pure truss policy (2D and 3D share this): real E/A on every
+            # member → physical stiffness, including indeterminate systems.
+            # Any missing/invalid E/A on a determinate truss still allows
+            # equilibrium forces, but every member is built with the shared
+            # unit placeholder so a mix of real and fake EA cannot produce
+            # a displacement field that looks physical. An indeterminate
+            # truss without a complete E/A set is refused, with the missing
+            # members named, rather than solved under E=1, A=1.
+            gaps = self._truss_stiffness_gaps(model)
+            if geometric_nonlinearity != "Linear":
                 return AnalysisResult(
                     status=AnalysisStatus.FAILED,
                     messages=[
                         check.message,
-                        "부정정 트러스 모델의 강성 해석은 아직 지원하지 않습니다.",
+                        "트러스·케이블 모델의 P-Delta(기하비선형) 해석은 아직 지원하지 않습니다.",
                     ],
                 )
-            # ``material`` is a 2D-shaped (E, A, I) fallback - meaningless for a
-            # 3D member's (E, A, G, J, Iy, Iz), so it can never stand in for a
-            # missing per-element 3D property set the way it can in 2D.
-            has_fallback = material is not None and model.ndm != 3
-            if not has_fallback and not self._has_material_everywhere(model, check.system, model.ndm):
-                messages = [] if check.can_solve_without_materials else [check.message]
+            if gaps:
+                if not check.can_solve_without_materials:
+                    return AnalysisResult(
+                        status=AnalysisStatus.FAILED,
+                        messages=[
+                            check.message,
+                            "다음 부재에 유효한 재료·단면(E>0, A>0)이 필요합니다.",
+                            *gaps,
+                        ],
+                    )
+                truss_unit_stiffness = True
+                displacement_stiffness = DisplacementStiffnessKind.UNIT_STIFFNESS
+        elif needs_material:
+            if check.system != "frame":
+                # empty / unsupported / mixed: still no silent unit-stiffness
+                # shortcut. Mixed is rejected even when every member happens
+                # to carry properties - this solver has no combined frame+
+                # truss stiffness path.
                 if geometric_nonlinearity != "Linear":
-                    messages.append(
-                        "P-Delta(기하비선형) 해석에는 모든 부재의 실제 재료·단면(E/A/I)이 "
-                        "필요합니다 - 정정구조라도 2차효과는 강성에 좌우됩니다."
+                    return AnalysisResult(
+                        status=AnalysisStatus.FAILED,
+                        messages=[
+                            check.message,
+                            "트러스·케이블 모델의 P-Delta(기하비선형) 해석은 아직 지원하지 않습니다.",
+                        ],
                     )
-                elif model.ndm == 3:
-                    messages.append(
-                        "부정정 3D 모델은 모든 부재에 실제 재료·단면(E/A/G/J/Iy/Iz)이 "
-                        "필요합니다."
-                    )
-                return AnalysisResult(status=AnalysisStatus.FAILED, messages=messages)
+                return AnalysisResult(status=AnalysisStatus.FAILED, messages=[check.message])
+            else:
+                # ``material`` is a 2D-shaped (E, A, I) fallback - meaningless for a
+                # 3D member's (E, A, G, J, Iy, Iz), so it can never stand in for a
+                # missing per-element 3D property set the way it can in 2D.
+                has_fallback = material is not None and model.ndm != 3
+                if not has_fallback and not self._has_material_everywhere(model, check.system, model.ndm):
+                    messages = [] if check.can_solve_without_materials else [check.message]
+                    if geometric_nonlinearity != "Linear":
+                        messages.append(
+                            "P-Delta(기하비선형) 해석에는 모든 부재의 실제 재료·단면(E/A/I)이 "
+                            "필요합니다 - 정정구조라도 2차효과는 강성에 좌우됩니다."
+                        )
+                    elif model.ndm == 3:
+                        messages.append(
+                            "부정정 3D 모델은 모든 부재에 실제 재료·단면(E/A/G/J/Iy/Iz)이 "
+                            "필요합니다."
+                        )
+                    return AnalysisResult(status=AnalysisStatus.FAILED, messages=messages)
 
         ops.wipe()
         try:
-            self._build(model, check.system, material, geometric_nonlinearity)
+            self._build(
+                model,
+                check.system,
+                material,
+                geometric_nonlinearity,
+                truss_unit_stiffness=truss_unit_stiffness,
+            )
             self._apply_loads(model, check.system)
             self._analyze(geometric_nonlinearity, has_multipoint_constraints=bool(model.rigid_diaphragms))
-            return self._collect(model, check.system, check.message, material)
+            return self._collect(
+                model,
+                check.system,
+                check.message,
+                material,
+                displacement_stiffness=displacement_stiffness,
+            )
         except (RuntimeError, ValueError, ops.OpenSeesError) as error:
             return AnalysisResult(
                 status=AnalysisStatus.FAILED,
@@ -406,9 +471,10 @@ class MaterialFreeStaticsSolver:
 
     @staticmethod
     def _element_material(element: Element) -> tuple[float, float, float] | None:
-        """(E, A, I) from ``element.properties``, or ``None`` if any of the
-        three is missing or not a real number - e.g. a truss member's own
-        "A"/"material_tag" pair, which is a different shape entirely."""
+        """(E, A, I) from ``element.properties`` for a 2D frame member, or
+        ``None`` if any of the three is missing or not a real number - a
+        truss/cable member's own (E, A) is a different shape entirely, see
+        ``_element_material_truss``."""
         try:
             return (
                 float(element.properties["E"]),
@@ -417,6 +483,53 @@ class MaterialFreeStaticsSolver:
             )
         except (KeyError, TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _element_material_truss(element: Element) -> tuple[float, float] | None:
+        """(E, A) from ``element.properties`` for a truss/cable/tension-only/
+        compression-only member (all built as an OpenSees ``truss`` element -
+        see ``_element_family``) - or ``None`` if either is missing, not a
+        real number, non-finite, or not strictly positive.
+
+        Zero / negative / NaN stiffness would either crash OpenSees or
+        silently fall back to the unit placeholder; both look like a physical
+        displacement. ``apply_full_section_to_selection``
+        (``canvas_property_application.py``) writes "E"/"A" for every element
+        regardless of its axial-only behaviour, so this reads the exact same
+        keys ``_element_material`` does for a frame member.
+        """
+        if MaterialFreeStaticsSolver._truss_stiffness_gap(element) is not None:
+            return None
+        return (float(element.properties["E"]), float(element.properties["A"]))
+
+    @staticmethod
+    def _truss_stiffness_gap(element: Element) -> str | None:
+        """Human-readable reason this truss member cannot use real EA, or None."""
+        problems: list[str] = []
+        for key in ("E", "A"):
+            if key not in element.properties:
+                problems.append(f"{key} 없음")
+                continue
+            raw = element.properties[key]
+            try:
+                number = float(raw)
+            except (TypeError, ValueError):
+                problems.append(f"{key}={raw!r} (숫자가 아님)")
+                continue
+            if not math.isfinite(number) or number <= 0.0:
+                problems.append(f"{key}={raw!r} (양수여야 함)")
+        if problems:
+            return f"부재 {element.tag}: {', '.join(problems)}"
+        return None
+
+    @staticmethod
+    def _truss_stiffness_gaps(model: StructuralModel) -> list[str]:
+        return [
+            problem
+            for element in model.elements.values()
+            if (problem := MaterialFreeStaticsSolver._truss_stiffness_gap(element)) is not None
+        ]
+
 
     @staticmethod
     def _resolve_material(
@@ -472,6 +585,11 @@ class MaterialFreeStaticsSolver:
 
     @staticmethod
     def _has_material_everywhere(model: StructuralModel, system: str, ndm: int = 2) -> bool:
+        if system == "truss":
+            return all(
+                MaterialFreeStaticsSolver._element_material_truss(element) is not None
+                for element in model.elements.values()
+            )
         if system != "frame":
             return False
         reader = (
@@ -488,6 +606,7 @@ class MaterialFreeStaticsSolver:
         material: tuple[float, float, float] | None = None,
         geometric_nonlinearity: str = "Linear",
         material_nonlinearity: bool = False,
+        truss_unit_stiffness: bool = False,
     ) -> None:
         ndm = model.ndm
         ndf = (2 if system == "truss" else 3) if ndm == 2 else (3 if system == "truss" else 6)
@@ -495,11 +614,7 @@ class MaterialFreeStaticsSolver:
         for node in model.nodes.values():
             coordinates = (node.x, node.y) if ndm == 2 else (node.x, node.y, node.z)
             ops.node(node.tag, *coordinates)
-        inclined = (
-            [condition for condition in model.boundaries if condition.is_inclined]
-            if ndm == 2
-            else []
-        )
+        inclined = [condition for condition in model.boundaries if condition.is_inclined]
         for condition in model.boundaries:
             if condition.is_inclined:
                 continue
@@ -518,8 +633,36 @@ class MaterialFreeStaticsSolver:
         if system == "truss":
             ops.uniaxialMaterial("Elastic", _TRUSS_MATERIAL_TAG, 1.0)
             for element in model.elements.values():
+                # When any member is missing E/A we deliberately ignore the
+                # ones that do have it: mixing real EA with the unit
+                # placeholder on a determinate truss still yields the right
+                # forces (equilibrium) but a displacement field that is
+                # physical on some members and fake on others.
+                real_material = (
+                    None
+                    if truss_unit_stiffness
+                    else MaterialFreeStaticsSolver._element_material_truss(element)
+                )
+                if real_material is None:
+                    ops.element(
+                        "truss",
+                        element.tag,
+                        element.node_i,
+                        element.node_j,
+                        1.0,
+                        _TRUSS_MATERIAL_TAG,
+                    )
+                    continue
+                elastic, area = real_material
+                element_material_tag = _TRUSS_ELEMENT_MATERIAL_TAG_OFFSET + element.tag
+                ops.uniaxialMaterial("Elastic", element_material_tag, elastic)
                 ops.element(
-                    "truss", element.tag, element.node_i, element.node_j, 1.0, _TRUSS_MATERIAL_TAG
+                    "truss",
+                    element.tag,
+                    element.node_i,
+                    element.node_j,
+                    area,
+                    element_material_tag,
                 )
             return
 
@@ -1030,6 +1173,7 @@ class MaterialFreeStaticsSolver:
         system: str,
         message: str,
         material: tuple[float, float, float] | None = None,
+        displacement_stiffness: DisplacementStiffnessKind = DisplacementStiffnessKind.PHYSICAL,
     ) -> AnalysisResult:
         # An inclined support's reaction was never fixed at the real node — it lives
         # on the dummy ground node the zero-length spring pushes against — so that is
@@ -1104,11 +1248,18 @@ class MaterialFreeStaticsSolver:
                 uniform_load=uniform_loads.get(tag, (0.0, 0.0, 0.0, 0.0)),
                 flexural_rigidity=flexural_rigidity,
             )
+        messages = [message, "반력과 부재력은 평형조건으로 계산되었습니다."]
+        if displacement_stiffness is DisplacementStiffnessKind.UNIT_STIFFNESS:
+            # Forces remain equilibrium-correct; the enum (not this string) is
+            # what the result UI keys off so a later Korean copy edit cannot
+            # silently drop the banner.
+            messages.append(UNIT_STIFFNESS_DISPLACEMENT_WARNING)
         return AnalysisResult(
             status=AnalysisStatus.COMPLETED,
             node_results=node_results,
             element_results=element_results,
-            messages=[message, "반력과 부재력은 평형조건으로 계산되었습니다."],
+            messages=messages,
+            displacement_stiffness=displacement_stiffness,
         )
 
 

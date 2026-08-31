@@ -25,9 +25,11 @@ from PySide6.QtWidgets import (
 
 from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
+    UNIT_STIFFNESS_DISPLACEMENT_WARNING,
     AnalysisResult,
     AnalysisStatus,
     BucklingMode,
+    DisplacementStiffnessKind,
     LoadDisplacementPoint,
     ModeShape,
     NodeResult,
@@ -112,6 +114,12 @@ class ResultViewport(QFrame):
         self.mode_badge = QLabel(RESULT_TYPE_NAMES[self._result_type])
         self.mode_badge.setObjectName("resultModeBadge")
         header_layout.addWidget(self.mode_badge)
+
+        self.relative_shape_badge = QLabel("상대 형상")
+        self.relative_shape_badge.setObjectName("unitStiffnessWarning")
+        self.relative_shape_badge.setToolTip(UNIT_STIFFNESS_DISPLACEMENT_WARNING)
+        self.relative_shape_badge.setVisible(False)
+        header_layout.addWidget(self.relative_shape_badge)
 
         self.force_selector = QFrame()
         self.force_selector.setObjectName("resultForceSelector")
@@ -274,6 +282,7 @@ class ResultViewport(QFrame):
     def show_result(self, result: AnalysisResult) -> None:
         self._result = result
         self._refresh_mode_selector()
+        self._refresh_stiffness_warning()
         self._redraw()
         self.fit_model()
 
@@ -281,6 +290,7 @@ class ResultViewport(QFrame):
         """Drop the drawn result so a new model never shows the previous one."""
         self._result = None
         self._refresh_mode_selector()
+        self._refresh_stiffness_warning()
         self._redraw()
         self.fit_model()
 
@@ -307,9 +317,25 @@ class ResultViewport(QFrame):
         # result, so toggling between Mode Shapes and Buckling Modes always
         # shows the right list even when the underlying result hasn't changed.
         self._refresh_mode_selector()
+        self._refresh_stiffness_warning()
         self._update_picking_mode()
         self._redraw()
         self.fit_model()
+
+    def _refresh_stiffness_warning(self) -> None:
+        """Show the relative-shape badge only for a unit-stiffness displacement view.
+
+        Force / stress maps do not plot translations, so the badge would be
+        noise there. Overview, deformation and nodal displacement are the
+        views where a millimetre reading would be inferred.
+        """
+        result = self._result
+        show = (
+            result is not None
+            and result.displacement_stiffness is DisplacementStiffnessKind.UNIT_STIFFNESS
+            and self._result_type in {"overview", "deformation", "displacement"}
+        )
+        self.relative_shape_badge.setVisible(show)
 
     def _refresh_mode_selector(self) -> None:
         if self._result_type == "buckling_modes":

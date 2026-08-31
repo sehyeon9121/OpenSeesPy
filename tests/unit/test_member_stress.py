@@ -1,5 +1,7 @@
 """Elastic peak fibre stress used by the Results Stress colour map."""
 
+import pytest
+
 from openframe.core.domain import (
     AnalysisResult,
     AnalysisStatus,
@@ -9,7 +11,7 @@ from openframe.core.domain import (
     StructuralModel,
 )
 from openframe.features.results.magnitudes import member_magnitudes
-from openframe.features.results.stress import peak_member_stress
+from openframe.features.results.stress import fibre_stress, member_end_stress, peak_member_stress
 
 
 def test_beam_peak_stress_combines_axial_and_bending() -> None:
@@ -82,3 +84,47 @@ def test_member_magnitudes_stress_colours_assigned_sections_only() -> None:
     magnitudes = member_magnitudes(model, result, "stress")
 
     assert magnitudes == {1: 1000.0}
+
+
+def test_missing_inertia_with_nonzero_moment_is_unavailable_not_axial_only() -> None:
+    """A frame carrying moment but no I used to fall back to |N/A|, which
+    under-reports fibre stress. Both contour and table must omit the value.
+    """
+    element = Element(
+        tag=1,
+        node_i=1,
+        node_j=2,
+        element_type="elasticBeamColumn",
+        properties={"A": 0.01},
+    )
+    result = ElementResult(
+        element_tag=1, local_forces=(-30.0, 0.0, -10.0, 30.0, 0.0, 10.0), length=4.0
+    )
+
+    assert peak_member_stress(element, result, ndm=2) is None
+    assert member_end_stress(element, result, end="i", ndm=2) is None
+    assert fibre_stress(element, axial_force=-30.0, moment=-10.0, ndm=2) is None
+
+
+def test_table_end_stress_uses_the_same_fibre_stress_helper_as_the_contour() -> None:
+    element = Element(
+        tag=1,
+        node_i=1,
+        node_j=2,
+        element_type="elasticBeamColumn",
+        properties={"A": 0.15, "I": 0.003125, "height": 0.5},
+    )
+    result = ElementResult(
+        element_tag=1,
+        local_forces=(-30.0, 0.0, -10.0, 30.0, 0.0, 10.0),
+        length=4.0,
+    )
+
+    i_stress = member_end_stress(element, result, end="i", ndm=2)
+    j_stress = member_end_stress(element, result, end="j", ndm=2)
+    assert i_stress == fibre_stress(element, axial_force=-30.0, moment=-10.0, ndm=2)
+    assert j_stress == fibre_stress(element, axial_force=30.0, moment=10.0, ndm=2)
+    # Contour peak is the larger |σ|; with this load that is 1000 at both ends.
+    assert peak_member_stress(element, result, ndm=2) == pytest.approx(1000.0)
+    assert abs(i_stress) == pytest.approx(1000.0)
+    assert abs(j_stress) == pytest.approx(1000.0)

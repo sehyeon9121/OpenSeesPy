@@ -1,12 +1,14 @@
 """Stitch-inspired, extensible structural post-processing workspace."""
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QSplitter, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QLabel, QSplitter, QStackedWidget, QVBoxLayout, QWidget
 
 from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
+    UNIT_STIFFNESS_DISPLACEMENT_WARNING,
     AnalysisKind,
     AnalysisResult,
+    DisplacementStiffnessKind,
     StructuralModel,
     UnitSystem,
 )
@@ -41,6 +43,12 @@ class ResultsWorkspace(QFrame):
         self.toolbar = ResultToolbar()
         self.toolbar.setVisible(not compact_2d)
         layout.addWidget(self.toolbar)
+
+        self.stiffness_warning = QLabel(UNIT_STIFFNESS_DISPLACEMENT_WARNING)
+        self.stiffness_warning.setObjectName("unitStiffnessWarning")
+        self.stiffness_warning.setWordWrap(True)
+        self.stiffness_warning.setVisible(False)
+        layout.addWidget(self.stiffness_warning)
 
         self.result_types = ResultTypeSidebar(compact_2d=compact_2d)
         self.viewport = ResultViewport()
@@ -92,6 +100,9 @@ class ResultsWorkspace(QFrame):
         self.time_history_results_panel.set_model(model)
 
     def show_result(self, result: AnalysisResult) -> None:
+        self.stiffness_warning.setVisible(
+            result.displacement_stiffness is DisplacementStiffnessKind.UNIT_STIFFNESS
+        )
         self.viewport.show_result(result)
         self.summary.show_result(result)
         self.tables_panel.show_result(result)
@@ -99,6 +110,7 @@ class ResultsWorkspace(QFrame):
 
     def clear_result(self) -> None:
         """Return the workspace to its waiting state, keeping the drawn model."""
+        self.stiffness_warning.setVisible(False)
         self.viewport.clear_result()
         self.summary.clear_result()
         self.tables_panel.clear_result()

@@ -669,6 +669,15 @@ QLabel#resultModeBadge {
     font-size: 7pt;
     font-weight: 700;
 }
+QLabel#unitStiffnessWarning {
+    color: #8a4b08;
+    background: #fff4e5;
+    border: 1px solid #f0c36d;
+    border-radius: 3px;
+    padding: 6px 10px;
+    font-size: 8pt;
+    font-weight: 600;
+}
 QFrame#resultForceSelector {
     background: #ffffff;
     border: 1px solid #c7d2df;

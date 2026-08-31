@@ -13,6 +13,26 @@ class AnalysisStatus(StrEnum):
     FAILED = "failed"
 
 
+class DisplacementStiffnessKind(StrEnum):
+    """Whether nodal translations in this result are physical (real E/A or EI)
+    or a unit-stiffness placeholder used only so OpenSees can form a matrix.
+
+    Determinate trusses can still report equilibrium forces without materials;
+    the displacements in that case must not be read as millimetres. UI code
+    should key off this enum rather than scraping ``messages`` for Korean text.
+    """
+
+    PHYSICAL = "physical"
+    UNIT_STIFFNESS = "unit_stiffness"
+
+
+#: Shown next to unit-stiffness displacements. Solvers may also append this
+#: to ``AnalysisResult.messages``; the UI must still key off the enum above.
+UNIT_STIFFNESS_DISPLACEMENT_WARNING = (
+    "단면 또는 재료 물성이 없어 변위는 실제 길이 단위가 아닙니다"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class NodeResult:
     node_tag: int
@@ -277,3 +297,9 @@ class AnalysisResult:
     #: node_results/element_results carry the SRSS-combined values themselves,
     #: same shape as a plain static result.
     response_spectrum_settings: ResponseSpectrumSettings | None = None
+    #: PHYSICAL (default) for every solver that already returns real-stiffness
+    #: displacements. UNIT_STIFFNESS only for a determinate truss solved without
+    #: E/A - forces are still equilibrium-correct; translations are not in
+    #: length units. Other analysis kinds leave this at the default so they
+    #: cannot inherit a stale warning from a previous static run.
+    displacement_stiffness: DisplacementStiffnessKind = DisplacementStiffnessKind.PHYSICAL

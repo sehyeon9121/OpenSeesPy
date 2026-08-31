@@ -7,6 +7,9 @@ Peak absolute fibre stress is what the Results Stress view colours by:
 with samples along the member when a 2D distributed load makes N/M vary
 between the ends. Missing section data is skipped (no silent A=1 / I=1
 defaults) so an unassigned member never invents a stress value.
+
+The result table uses the same ``fibre_stress`` helper as the contour so the
+two surfaces cannot drift onto different formulas.
 """
 
 from __future__ import annotations
@@ -18,21 +21,93 @@ from openframe.core.domain import Element, ElementResult, StructuralModel
 from openframe.features.results.diagrams import member_diagrams
 
 
-def peak_member_stress(element: Element, result: ElementResult, *, ndm: int) -> float | None:
-    """Largest |σ| on the member, or ``None`` when A (and I when needed) are absent."""
+def fibre_stress(
+    element: Element,
+    *,
+    axial_force: float,
+    moment: float = 0.0,
+    moment_y: float = 0.0,
+    moment_z: float = 0.0,
+    ndm: int = 2,
+) -> float | None:
+    """Signed extreme-fibre normal stress, or ``None`` if section data is missing.
+
+    A truss (``element_type`` contains ``"truss"``) is always ``σ = N/A`` and
+    ignores moments. A frame is ``σ = N/A ± M·c/I`` (3D: both ``My`` and
+    ``Mz``). The magnitude equals the contour's ``|N/A| + |M|c/I`` at the same
+    station; the sign is the extreme fibre's sign so a table cell can still
+    show tension vs compression when there is no bending.
+
+    Moments without a usable I (or fibre distance) return ``None`` rather than
+    silently dropping to ``N/A`` - that under-report would look like a real
+    stress. Axial-only (all moments zero) still returns ``N/A`` without I,
+    because I is not required for that case.
+    """
     area = _float_prop(element.properties, "A")
     if area is None or area <= 0.0:
         return None
 
     if "truss" in element.element_type.lower():
+        return axial_force / area
+
+    if ndm == 3:
+        return _frame_fibre_stress_3d(
+            element, area, axial_force, moment_y, moment_z
+        )
+    return _frame_fibre_stress_2d(element, area, axial_force, moment)
+
+
+def peak_member_stress(element: Element, result: ElementResult, *, ndm: int) -> float | None:
+    """Largest |σ| on the member, or ``None`` when A (and I when needed) are absent."""
+    if "truss" in element.element_type.lower():
         axial = _truss_axial(result)
         if axial is None:
             return None
-        return abs(axial / area)
+        value = fibre_stress(element, axial_force=axial, ndm=ndm)
+        return None if value is None else abs(value)
 
     if ndm == 3:
-        return _peak_stress_3d(element, result, area)
-    return _peak_stress_2d(element, result, area)
+        return _peak_stress_3d(element, result)
+    return _peak_stress_2d(element, result)
+
+
+def member_end_stress(
+    element: Element, result: ElementResult, *, end: str, ndm: int
+) -> float | None:
+    """Signed extreme-fibre stress at end ``"i"`` or ``"j"``.
+
+    Uses the same ``fibre_stress`` policy as the contour. End forces are the
+    raw local-force components the result table already shows, so the σ column
+    is derived from the N/M in that row rather than a second conversion.
+    """
+    if "truss" in element.element_type.lower():
+        axial = _truss_end_axial(result, end)
+        if axial is None:
+            return None
+        return fibre_stress(element, axial_force=axial, ndm=ndm)
+
+    if ndm == 3:
+        forces = (*result.local_forces, *((0.0,) * 12))[:12]
+        if end == "j":
+            return fibre_stress(
+                element,
+                axial_force=forces[6],
+                moment_y=forces[10],
+                moment_z=forces[11],
+                ndm=3,
+            )
+        return fibre_stress(
+            element,
+            axial_force=forces[0],
+            moment_y=forces[4],
+            moment_z=forces[5],
+            ndm=3,
+        )
+
+    forces = (*result.local_forces, *((0.0,) * 6))[:6]
+    if end == "j":
+        return fibre_stress(element, axial_force=forces[3], moment=forces[5], ndm=2)
+    return fibre_stress(element, axial_force=forces[0], moment=forces[2], ndm=2)
 
 
 def member_stress_magnitudes(
@@ -51,44 +126,29 @@ def member_stress_magnitudes(
     return magnitudes
 
 
-def _peak_stress_2d(element: Element, result: ElementResult, area: float) -> float | None:
+def _frame_fibre_stress_2d(
+    element: Element, area: float, axial_force: float, moment: float
+) -> float | None:
     inertia = _float_prop(element.properties, "I")
     if inertia is None:
         inertia = _float_prop(element.properties, "Iz")
+    if abs(moment) > 0.0 and (inertia is None or inertia <= 0.0):
+        return None
     if inertia is None or inertia <= 0.0:
-        # Axial-only when bending stiffness is unavailable (still exact for N/A).
-        axial = _truss_axial(result)
-        return None if axial is None else abs(axial / area)
-
+        return axial_force / area
     half_depth = _section_half_depth(element.properties, inertia, area)
     if half_depth is None:
         return None
-
-    try:
-        axial_diagram, _shear_diagram, moment_diagram = member_diagrams(result)
-    except ValueError:
-        forces = (*result.local_forces, *((0.0,) * 6))[:6]
-        samples = (
-            (-forces[0], -forces[2]),
-            (forces[3], forces[5]),
-        )
-        return max(abs(n / area) + abs(m) * half_depth / inertia for n, m in samples)
-
-    return max(
-        abs(axial_diagram.points[index].value / area)
-        + abs(moment_diagram.points[index].value) * half_depth / inertia
-        for index in range(len(axial_diagram.points))
-    )
+    return _extreme_fibre(axial_force / area, abs(moment) * half_depth / inertia)
 
 
-def _peak_stress_3d(element: Element, result: ElementResult, area: float) -> float | None:
-    forces = (*result.local_forces, *((0.0,) * 12))[:12]
-    # OpenSees 3D beam-column local end forces:
-    # (N, Vy, Vz, T, My, Mz)_i then same order at j.
-    axial = max(abs(forces[0]), abs(forces[6]))
-    my = max(abs(forces[4]), abs(forces[10]))
-    mz = max(abs(forces[5]), abs(forces[11]))
-
+def _frame_fibre_stress_3d(
+    element: Element,
+    area: float,
+    axial_force: float,
+    moment_y: float,
+    moment_z: float,
+) -> float | None:
     iy = _float_prop(element.properties, "Iy")
     iz = _float_prop(element.properties, "Iz")
     if iy is None:
@@ -101,28 +161,83 @@ def _peak_stress_3d(element: Element, result: ElementResult, area: float) -> flo
 
     bending = 0.0
     if iy is not None and iy > 0.0 and cy is not None:
-        bending += my * cy / iy
+        bending += abs(moment_y) * cy / iy
     if iz is not None and iz > 0.0 and cz is not None:
-        bending += mz * cz / iz
+        bending += abs(moment_z) * cz / iz
 
-    # Moments without a usable fibre distance would under-report stress if we
-    # returned N/A alone - omit the member until section geometry is assigned.
-    if (my > 0.0 or mz > 0.0) and bending == 0.0:
+    if (abs(moment_y) > 0.0 or abs(moment_z) > 0.0) and bending == 0.0:
         return None
+    return _extreme_fibre(axial_force / area, bending)
 
-    return axial / area + bending
+
+def _extreme_fibre(axial: float, bending: float) -> float:
+    """The fibre with larger |σ|; equals ``axial`` when there is no bending.
+
+    ``max(|a+b|, |a-b|) == |a| + |b|``, which is the contour magnitude.
+    """
+    tension_side = axial + bending
+    compression_side = axial - bending
+    if abs(tension_side) >= abs(compression_side):
+        return tension_side
+    return compression_side
+
+
+def _peak_stress_2d(element: Element, result: ElementResult) -> float | None:
+    peaks: list[float] = []
+    for axial_force, moment in _axial_moment_samples_2d(result):
+        value = fibre_stress(element, axial_force=axial_force, moment=moment, ndm=2)
+        if value is None:
+            return None
+        peaks.append(abs(value))
+    if not peaks:
+        return None
+    return max(peaks)
+
+
+def _axial_moment_samples_2d(result: ElementResult) -> tuple[tuple[float, float], ...]:
+    try:
+        axial_diagram, _shear_diagram, moment_diagram = member_diagrams(result)
+    except ValueError:
+        forces = (*result.local_forces, *((0.0,) * 6))[:6]
+        return ((-forces[0], -forces[2]), (forces[3], forces[5]))
+    return tuple(
+        (axial_diagram.points[index].value, moment_diagram.points[index].value)
+        for index in range(len(axial_diagram.points))
+    )
+
+
+def _peak_stress_3d(element: Element, result: ElementResult) -> float | None:
+    i_stress = member_end_stress(element, result, end="i", ndm=3)
+    j_stress = member_end_stress(element, result, end="j", ndm=3)
+    if i_stress is None or j_stress is None:
+        return None
+    return max(abs(i_stress), abs(j_stress))
 
 
 def _truss_axial(result: ElementResult) -> float | None:
     forces = result.local_forces
     if len(forces) >= 2 and len(forces) < 6:
-        # truss: (N_i, N_j) or similar short tuple
         return max((abs(value) for value in forces), default=0.0)
     if len(forces) >= 6:
         return max(abs(forces[0]), abs(forces[3] if len(forces) == 6 else forces[6]))
     if len(forces) == 0:
         return None
     return abs(forces[0])
+
+
+def _truss_end_axial(result: ElementResult, end: str) -> float | None:
+    forces = result.local_forces
+    if not forces:
+        return None
+    if end == "j":
+        if len(forces) >= 12:
+            return forces[6]
+        if len(forces) >= 6:
+            return forces[3]
+        if len(forces) >= 2:
+            return forces[1]
+        return forces[0]
+    return forces[0]
 
 
 def _section_half_depth(properties: Mapping[str, float | str], inertia: float, area: float) -> float | None:

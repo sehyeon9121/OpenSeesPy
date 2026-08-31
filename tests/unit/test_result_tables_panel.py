@@ -6,9 +6,11 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from openframe.core.domain import (
+    UNIT_STIFFNESS_DISPLACEMENT_WARNING,
     AnalysisResult,
     AnalysisStatus,
     BucklingMode,
+    DisplacementStiffnessKind,
     Element,
     ElementResult,
     ModeShape,
@@ -17,6 +19,7 @@ from openframe.core.domain import (
     UnitSystem,
 )
 from openframe.features.results.presentation.result_tables_panel import ResultTablesPanel
+from openframe.features.results.stress import fibre_stress
 
 
 def _panel() -> ResultTablesPanel:
@@ -394,3 +397,95 @@ def test_axial_stress_column_appears_for_a_mixed_truss_and_frame_3d_model() -> N
     rows = {i_table.item(row, 0).text(): _row_texts(i_table, row) for row in range(i_table.rowCount())}
     assert float(rows["1"][-1]) == pytest.approx(20.0 / 0.02)
     assert float(rows["2"][-1]) == pytest.approx(-5.0 / 0.001)
+
+
+def test_frame_stress_column_matches_shared_fibre_stress_helper() -> None:
+    panel = _panel()
+    element = Element(
+        tag=1,
+        node_i=1,
+        node_j=2,
+        element_type="elasticBeamColumn",
+        properties={"A": 0.15, "I": 0.003125, "height": 0.5},
+    )
+    panel.set_model(StructuralModel(ndm=2, elements={1: element}))
+    local_forces = (-30.0, 0.0, -10.0, 30.0, 0.0, 10.0)
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            element_results={1: ElementResult(element_tag=1, local_forces=local_forces)},
+        )
+    )
+
+    i_row = _row_texts(panel.member_force_i_table, 0)
+    j_row = _row_texts(panel.member_force_j_table, 0)
+    expected_i = fibre_stress(element, axial_force=-30.0, moment=-10.0, ndm=2)
+    expected_j = fibre_stress(element, axial_force=30.0, moment=10.0, ndm=2)
+    assert expected_i is not None and expected_j is not None
+    assert float(i_row[4]) == pytest.approx(expected_i)
+    assert float(j_row[4]) == pytest.approx(expected_j)
+
+
+def test_frame_stress_column_is_a_dash_when_moment_is_present_without_inertia() -> None:
+    panel = _panel()
+    panel.set_model(
+        StructuralModel(
+            ndm=2,
+            elements={
+                1: Element(
+                    tag=1, node_i=1, node_j=2, element_type="elasticBeamColumn",
+                    properties={"A": 0.01},
+                )
+            },
+        )
+    )
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            element_results={
+                1: ElementResult(
+                    element_tag=1, local_forces=(-30.0, 0.0, -10.0, 30.0, 0.0, 10.0)
+                )
+            },
+        )
+    )
+
+    assert _row_texts(panel.member_force_i_table, 0)[4] == "-"
+    assert _row_texts(panel.member_force_j_table, 0)[4] == "-"
+
+
+def test_unit_stiffness_result_relabels_displacement_units_and_shows_warning() -> None:
+    panel = _panel()
+    panel.set_model(StructuralModel(ndm=2))
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            displacement_stiffness=DisplacementStiffnessKind.UNIT_STIFFNESS,
+            node_results={1: NodeResult(1, displacement=(0.01, -0.02, 0.0))},
+        )
+    )
+
+    headers = [
+        panel.displacement_table.horizontalHeaderItem(column).text()
+        for column in range(panel.displacement_table.columnCount())
+    ]
+    assert headers[1] == "UX (상대)"
+    assert headers[2] == "UY (상대)"
+    assert not panel.stiffness_warning.isHidden()
+    assert panel.stiffness_warning.text() == UNIT_STIFFNESS_DISPLACEMENT_WARNING
+    assert panel.displacement_table.item(0, 1).text() == "0.01"
+
+    panel.show_result(
+        AnalysisResult(
+            status=AnalysisStatus.COMPLETED,
+            displacement_stiffness=DisplacementStiffnessKind.PHYSICAL,
+            node_results={1: NodeResult(1, displacement=(0.01, -0.02, 0.0))},
+        )
+    )
+    headers_after = [
+        panel.displacement_table.horizontalHeaderItem(column).text()
+        for column in range(panel.displacement_table.columnCount())
+    ]
+    assert headers_after[1].startswith("UX (")
+    assert "상대" not in headers_after[1]
+    assert panel.stiffness_warning.isHidden()

@@ -68,9 +68,11 @@ from openframe.core.domain.model import (
     UniformElementLoad,
 )
 from openframe.core.domain.results import (
+    UNIT_STIFFNESS_DISPLACEMENT_WARNING,
     AnalysisResult,
     AnalysisStatus,
     BucklingMode,
+    DisplacementStiffnessKind,
     ElementResult,
     LoadDisplacementPoint,
     ModeShape,
@@ -140,6 +142,7 @@ __all__ = [
     "STANDARD_GRAVITY_M_S2",
     "SUPPORTED_SHAPES",
     "TIME_UNITS",
+    "UNIT_STIFFNESS_DISPLACEMENT_WARNING",
     "AnalysisCapabilities",
     "AnalysisKind",
     "AnalysisRequest",
@@ -149,6 +152,7 @@ __all__ = [
     "BucklingMode",
     "ComponentField",
     "DataStatus",
+    "DisplacementStiffnessKind",
     "DuplicateRecordError",
     "Element",
     "ElementResult",

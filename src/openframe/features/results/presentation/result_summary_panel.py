@@ -20,8 +20,10 @@ from PySide6.QtWidgets import (
 
 from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
+    UNIT_STIFFNESS_DISPLACEMENT_WARNING,
     AnalysisResult,
     AnalysisStatus,
+    DisplacementStiffnessKind,
     StructuralModel,
     UnitSystem,
 )
@@ -296,7 +298,7 @@ class ResultSummaryPanel(QFrame):
         usable_statuses = {AnalysisStatus.COMPLETED, AnalysisStatus.PARTIAL}
         if result is None or result.status not in usable_statuses:
             self.status_badge.setText("WAITING")
-            self.metric_values["displacement"].setText(f"—  {unit.length}")
+            self.metric_values["displacement"].setText(f"—  {self._displacement_unit_label()}")
             self.metric_values["rotation"].setText("—  °")
             self.metric_values["reaction"].setText(f"—  {unit.force}")
             self.metric_values["moment"].setText(f"—  {unit.moment}")
@@ -344,7 +346,7 @@ class ResultSummaryPanel(QFrame):
                 moment.append(diagrams[2])
 
         self.metric_values["displacement"].setText(
-            f"{max_displacement:.6g}  {unit.length}"
+            f"{max_displacement:.6g}  {self._displacement_unit_label()}"
         )
         self.metric_values["rotation"].setText(f"{max_rotation:.4g}  °")
         reactions = (
@@ -391,6 +393,20 @@ class ResultSummaryPanel(QFrame):
         self._refresh_legend()
         self._refresh_end_forces()
 
+    def _displacement_unit_label(self) -> str:
+        """Length unit, or '상대' when the numbers are unit-stiffness placeholders.
+
+        The numeric UX/UY/UZ values stay on screen; only the unit label changes
+        so a millimetre reading cannot be inferred from the inspector.
+        """
+        result = self._result
+        if (
+            result is not None
+            and result.displacement_stiffness is DisplacementStiffnessKind.UNIT_STIFFNESS
+        ):
+            return "상대"
+        return self._unit_system.length
+
     #: What the coloured members mean for each result type.
     _LEGEND_CAPTIONS: ClassVar[dict[str, str]] = {
         "axial": "Members coloured by peak axial force.",
@@ -425,12 +441,18 @@ class ResultSummaryPanel(QFrame):
         elif self._result_type == "stress":
             symbol = unit.stress
         elif self._result_type in DISPLACEMENT_TYPES:
-            symbol = unit.length
+            symbol = self._displacement_unit_label()
         else:
             symbol = ""
         self.legend_minimum.setText(f"{lowest:.4g} {symbol}")
         self.legend_maximum.setText(f"{highest:.4g} {symbol}")
-        self.legend_caption.setText(self._LEGEND_CAPTIONS[self._result_type])
+        caption = self._LEGEND_CAPTIONS[self._result_type]
+        if (
+            result.displacement_stiffness is DisplacementStiffnessKind.UNIT_STIFFNESS
+            and self._result_type in DISPLACEMENT_TYPES
+        ):
+            caption = f"상대 형상. {UNIT_STIFFNESS_DISPLACEMENT_WARNING}"
+        self.legend_caption.setText(caption)
 
     def _member_selected(self) -> None:
         self._refresh_end_forces()

@@ -310,11 +310,13 @@ def test_indeterminate_beam_solves_with_real_material_given() -> None:
     )
 
 
-def test_indeterminate_truss_or_3d_still_rejected_even_with_material() -> None:
-    """Scope guard: the stiffness path only covers 2D frames so far (matches
-    _build's own material handling) - an indeterminate truss must still fail
-    clearly instead of silently ignoring the material and giving a wrong,
-    unit-stiffness answer."""
+def test_indeterminate_truss_without_element_ea_is_still_rejected() -> None:
+    """The solve-wide ``material=(E, A, I)`` fallback is 2D-frame-shaped and
+    must not be silently reused as a truss EA. An indeterminate truss without
+    per-element E/A used to be rejected even when that tuple was passed; that
+    refusal stays, but the failure now names the missing keys instead of
+    implying the structure is unsolvable in principle.
+    """
     model = StructuralModel(
         ndm=2,
         nodes={1: Node(1, 0.0, 0.0), 2: Node(2, 4.0, 0.0), 3: Node(3, 2.0, 3.0)},
@@ -334,6 +336,9 @@ def test_indeterminate_truss_or_3d_still_rejected_even_with_material() -> None:
     result = MaterialFreeStaticsSolver().solve(model, material=(200_000_000.0, 0.01, 0.0001))
 
     assert result.status == AnalysisStatus.FAILED
+    joined = " ".join(result.messages)
+    assert "E 없음" in joined
+    assert "A 없음" in joined
 
 
 def test_indeterminate_beam_solves_with_per_element_material_no_global_fallback() -> None:

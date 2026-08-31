@@ -23,12 +23,15 @@ from PySide6.QtWidgets import (
 
 from openframe.core.domain import (
     DEFAULT_UNIT_SYSTEM,
+    UNIT_STIFFNESS_DISPLACEMENT_WARNING,
     AnalysisResult,
+    DisplacementStiffnessKind,
     StructuralModel,
     UnitSystem,
 )
 from openframe.features.results.diagrams import member_diagrams
 from openframe.features.results.reactions import support_reactions
+from openframe.features.results.stress import fibre_stress
 
 _DOF_LABELS_2D = ("UX", "UY", "RZ")
 _DOF_LABELS_3D = ("UX", "UY", "UZ", "RX", "RY", "RZ")
@@ -58,6 +61,12 @@ class ResultTablesPanel(QFrame):
         self.status_label.setObjectName("resultDetailsText")
         header_layout.addWidget(self.status_label)
         layout.addWidget(header)
+
+        self.stiffness_warning = QLabel(UNIT_STIFFNESS_DISPLACEMENT_WARNING)
+        self.stiffness_warning.setObjectName("unitStiffnessWarning")
+        self.stiffness_warning.setWordWrap(True)
+        self.stiffness_warning.setVisible(False)
+        layout.addWidget(self.stiffness_warning)
 
         self.tabs = QTabWidget()
         self.tabs.setObjectName("resultTablesTabs")
@@ -193,6 +202,7 @@ class ResultTablesPanel(QFrame):
         result = self._result
         if result is None:
             self.status_label.setText("해석을 실행하면 값이 표시됩니다.")
+            self.stiffness_warning.setVisible(False)
         else:
             summary = f"{len(result.node_results)} NODES · {len(result.element_results)} ELEMENTS"
             if result.response_spectrum_settings is not None:
@@ -202,6 +212,9 @@ class ResultTablesPanel(QFrame):
                 # caveat the buckling tab gives its own scope_note for.
                 summary += " · SRSS 결합값(부호 없음, 설계 시 ±로 적용)"
             self.status_label.setText(summary)
+            self.stiffness_warning.setVisible(
+                result.displacement_stiffness is DisplacementStiffnessKind.UNIT_STIFFNESS
+            )
         self._refresh_displacements()
         self._refresh_reactions()
         self._refresh_member_forces()
@@ -216,7 +229,13 @@ class ResultTablesPanel(QFrame):
         labels = _DOF_LABELS_3D if is_3d else _DOF_LABELS_2D
         dof_count = len(labels)
         translations = 3 if is_3d else 2
-        units = (unit.length,) * translations + ("rad",) * (dof_count - translations)
+        length_unit = (
+            "상대"
+            if result is not None
+            and result.displacement_stiffness is DisplacementStiffnessKind.UNIT_STIFFNESS
+            else unit.length
+        )
+        units = (length_unit,) * translations + ("rad",) * (dof_count - translations)
         headers = ["NODE"] + [f"{label} ({u})" for label, u in zip(labels, units)]
         table = self.displacement_table
         table.setColumnCount(len(headers))
@@ -284,28 +303,34 @@ class ResultTablesPanel(QFrame):
                     QTableWidgetItem(str(value) if column == 0 else f"{value:.6g}"),
                 )
 
-    def _axial_stress(self, element_tag: int, axial_force: float) -> str:
-        """σ = N / A for one end of a member - "-" (not 0 or a crash) when the
-        member has no section assigned yet, or an unusable/non-positive A,
-        matching this panel's existing "no data yet" convention elsewhere.
-        Tension/compression sign is whatever ``axial_force`` already carries
-        (this app's own local-force sign convention) - never flipped here.
-        Values already live in the model's current unit system by the time
-        they reach this panel (see ``set_unit_system``/``UnitConversionFactors``),
-        so N/A is already a stress in that same system - no separate
-        conversion is needed, only the ``unit.stress`` label.
+    def _stress_text(
+        self,
+        element_tag: int,
+        *,
+        axial: float,
+        moment: float = 0.0,
+        moment_y: float = 0.0,
+        moment_z: float = 0.0,
+    ) -> str:
+        """σ from the same ``fibre_stress`` helper the contour uses.
+
+        "-" (not 0) when A or, for a frame with nonzero moment, I / fibre
+        distance is missing - matching this panel's existing "no data yet"
+        convention. Tension/compression sign is the extreme fibre's sign.
         """
         model = self._model
         member = None if model is None else model.elements.get(element_tag)
         if member is None:
             return "-"
-        try:
-            area = float(member.properties["A"])
-        except (KeyError, TypeError, ValueError):
-            return "-"
-        if area <= 0.0:
-            return "-"
-        return f"{axial_force / area:.6g}"
+        value = fibre_stress(
+            member,
+            axial_force=axial,
+            moment=moment,
+            moment_y=moment_y,
+            moment_z=moment_z,
+            ndm=model.ndm,
+        )
+        return "-" if value is None else f"{value:.6g}"
 
     def _refresh_member_forces(self) -> None:
         model = self._model
@@ -368,13 +393,31 @@ class ResultTablesPanel(QFrame):
                     row, column + 1, QTableWidgetItem(f"{values[width + column]:.6g}")
                 )
             stress_column = width + 1
+            if is_3d:
+                i_stress = self._stress_text(
+                    element.element_tag,
+                    axial=values[0],
+                    moment_y=values[4],
+                    moment_z=values[5],
+                )
+                j_stress = self._stress_text(
+                    element.element_tag,
+                    axial=values[width],
+                    moment_y=values[width + 4],
+                    moment_z=values[width + 5],
+                )
+            else:
+                i_stress = self._stress_text(
+                    element.element_tag, axial=values[0], moment=values[2]
+                )
+                j_stress = self._stress_text(
+                    element.element_tag, axial=values[width], moment=values[width + 2]
+                )
             self.member_force_i_table.setItem(
-                row, stress_column,
-                QTableWidgetItem(self._axial_stress(element.element_tag, values[0])),
+                row, stress_column, QTableWidgetItem(i_stress)
             )
             self.member_force_j_table.setItem(
-                row, stress_column,
-                QTableWidgetItem(self._axial_stress(element.element_tag, values[width])),
+                row, stress_column, QTableWidgetItem(j_stress)
             )
 
     def _refresh_truss_member_forces(self) -> None:
@@ -410,7 +453,7 @@ class ResultTablesPanel(QFrame):
             value = values.get(element.element_tag, 0.0)
             is_zero = abs(value) <= noise_floor
             status = "0부재" if is_zero else "인장" if value > 0.0 else "압축"
-            stress_text = self._axial_stress(element.element_tag, value)
+            stress_text = self._stress_text(element.element_tag, axial=value)
             for column, text in enumerate(
                 (str(element.element_tag), joints, f"{value:.6g}", status, stress_text)
             ):
