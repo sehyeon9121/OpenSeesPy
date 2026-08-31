@@ -122,3 +122,21 @@ def test_node_marker_clears_the_section_box_corners() -> None:
         half_diagonal = 0.5 * math.hypot(width_b, width_h)
         for tag in (element.node_i, element.node_j):
             assert radii[tag] > half_diagonal
+
+
+def test_rendered_member_stops_at_node_sphere_surfaces() -> None:
+    """Visual solids leave the centre-to-centre analysis line untouched in
+    their selection endpoints, but no longer pass through either node."""
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = _storey_frame(1)
+    bridge.set_model(model)
+
+    element = model.elements[1]
+    part = next(item for item in bridge.members if item["tag"] == element.tag)
+    node_radii = {item["tag"]: float(item["radius"]) for item in bridge.nodes}
+    true_length = math.dist(bridge._points[element.node_i], bridge._points[element.node_j])
+
+    assert float(part["length"]) == pytest.approx(
+        true_length - node_radii[element.node_i] - node_radii[element.node_j]
+    )

@@ -257,9 +257,16 @@ def test_3d_force_diagram_overlay_appears_for_moment_and_clears_afterwards() -> 
     shapes = {part["shape"] for part in bridge.forceDiagrams}
     assert "#Cylinder" in shapes
     assert "#Cube" in shapes
+    assert bridge.resultLabels
+    assert any("M" in str(part["text"]) for part in bridge.resultLabels)
 
     viewport.set_result_type("overview")
     application.processEvents()
     assert bridge.forceDiagrams == []
+    assert bridge.resultLabels == []
+
+    viewport.set_result_type("displacement")
+    application.processEvents()
+    assert any(str(part["text"]).startswith("Δ") for part in bridge.resultLabels)
 
     viewport.close()

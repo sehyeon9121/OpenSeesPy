@@ -50,6 +50,7 @@ def test_hogging_moment_is_drawn_on_the_positive_local_y_side() -> None:
     assert curve_i[2] == pytest.approx(axis_i[2])
     # Tip moment is zero, so the curve meets the axis at end j.
     assert strips[0].curve[-1] == pytest.approx(strips[0].axis[-1])
+    assert strips[0].end_values == pytest.approx((-1.0, 0.0))
 
 
 def test_positive_shear_is_drawn_on_the_positive_local_y_side() -> None:

@@ -5,7 +5,7 @@ The layout keeps the canvas dominant: a narrow tool rail on the left (only
 entry strip under the canvas, a category editor column further left
 (``_build_2d_editor_panel``), and a Work Tree/Selection Status inspector on
 the right (``_build_selection_panel``). A single-row category bar above
-the canvas (``_build_category_bar`` — 노드 추가/이동·복사·배열/노드
+the canvas (``_build_category_bar`` — 노드 추가/이동/노드
 분할/지점/노드 유형/부재/하중) picks which category's settings the
 editor column shows; nothing is pinned there any more, so it is empty
 until a category is picked and shows exactly one at a time. The editor
@@ -494,15 +494,13 @@ class ModelingInterfacePage(QFrame):
         "node": (
             "add",
             "translate_node",
-            "duplicate_node",
-            "array_node",
             "rotate_node",
             "mirror_node",
             "arch",
             "kind",
         ),
         "properties": ("member",),
-        "element": ("element_picker", "move", "duplicate", "array", "rotate", "mirror"),
+        "element": ("element_picker", "move", "rotate", "mirror"),
         "boundary": ("support",),
         "story": ("story",),
         "loads": ("load",),
@@ -1576,7 +1574,7 @@ class ModelingInterfacePage(QFrame):
     #: (category key, button label) for the single-row category bar above the
     #: canvas — order here is both the button order and the left-hand editor
     #: page order. Nothing is pinned any more: every one of these, including
-    #: 노드 추가/이동·복사·배열 (previously always-on in the right panel), is
+    #: 노드 추가/이동 (previously always-on in the right panel), is
     #: now an equal category that opens on click. The previous design's
     #: problem was exactly this asymmetry - 부재 노드 삽입·등분할 sat at the
     #: bottom of an always-visible stack, invisible below the fold unless you
@@ -1587,7 +1585,7 @@ class ModelingInterfacePage(QFrame):
     #: hide behind either way.
     _CATEGORY_OPTIONS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("add", "노드 추가"),
-        ("move", "이동·복사"),
+        ("move", "이동"),
         ("arch", "아치"),
         ("support", "지점"),
         ("kind", "노드 유형"),
@@ -1686,13 +1684,9 @@ class ModelingInterfacePage(QFrame):
         title_by_category = {
                 "add": "Node",
                 "move": "Translate",
-                "duplicate": "Duplicate",
-                "array": "Array Copy",
                 "rotate": "Rotate Copy",
                 "mirror": "Mirror Copy",
                 "translate_node": "Translate",
-                "duplicate_node": "Duplicate",
-                "array_node": "Array Copy",
                 "rotate_node": "Rotate Copy",
                 "mirror_node": "Mirror Copy",
                 "arch": "Arch",
@@ -1720,9 +1714,11 @@ class ModelingInterfacePage(QFrame):
         if key != "support":
             self.selection_filter.setCurrentIndex(self.selection_filter.findData("all"))
 
-    #: Node gets its own move/copy/array/rotate/mirror set, mirroring
-    #: Element's - MIDAS keeps these two separate (Node mode never drags a
-    #: member's far endpoint along; Element mode always does), which the
+    #: Node gets its own translate/rotate/mirror set, mirroring Element's.
+    #: Translate contains MIDAS-style Copy/Move modes and a repeat count, so
+    #: separate Duplicate and linear Array entries would only expose the same
+    #: operation twice. MIDAS keeps Node and Element separate (Node mode never
+    #: drags a member's far endpoint along; Element mode always does), which the
     #: ``selection_filter`` narrow to "nodes" (vs. Element's "elements") in
     #: ``_node_subcategory_clicked``/``_element_subcategory_clicked`` below
     #: enforces at the selection layer - the canvas-side operations
@@ -1730,8 +1726,6 @@ class ModelingInterfacePage(QFrame):
     _NODE_SUBCATEGORIES: ClassVar[tuple[tuple[str, str], ...]] = (
         ("add", "Create Node"),
         ("translate_node", "Translate Node"),
-        ("duplicate_node", "Duplicate Node"),
-        ("array_node", "Array Copy Node"),
         ("rotate_node", "Rotate Copy Node"),
         ("mirror_node", "Mirror Copy Node"),
         ("arch", "Arch"),
@@ -1741,8 +1735,6 @@ class ModelingInterfacePage(QFrame):
     _ELEMENT_SUBCATEGORIES: ClassVar[tuple[tuple[str, str], ...]] = (
         ("element_picker", "Create Element"),
         ("move", "Translate Element"),
-        ("duplicate", "Duplicate Element"),
-        ("array", "Array Copy Element"),
         ("rotate", "Rotate Copy Element"),
         ("mirror", "Mirror Copy Element"),
     )
@@ -1840,7 +1832,7 @@ class ModelingInterfacePage(QFrame):
         else:
             self._activate_select_tool()
         self._show_category(key, sync_workbench=False)
-        if key in {"move", "duplicate", "array", "rotate", "mirror"}:
+        if key in {"move", "rotate", "mirror"}:
             self.selection_filter.setCurrentIndex(
                 self.selection_filter.findData("elements")
             )
@@ -1863,8 +1855,6 @@ class ModelingInterfacePage(QFrame):
         self._show_category(key, sync_workbench=False)
         if key in {
             "translate_node",
-            "duplicate_node",
-            "array_node",
             "rotate_node",
             "mirror_node",
         }:
@@ -2575,12 +2565,6 @@ class ModelingInterfacePage(QFrame):
         self.category_pages["element_picker"] = self.category_stack.addWidget(
             self._build_element_category()
         )
-        self.category_pages["duplicate"] = self.category_stack.addWidget(
-            self._build_duplicate_element_section()
-        )
-        self.category_pages["array"] = self.category_stack.addWidget(
-            self._build_array_copy_section()
-        )
         self.category_pages["rotate"] = self.category_stack.addWidget(
             self._build_rotate_copy_section()
         )
@@ -2593,16 +2577,10 @@ class ModelingInterfacePage(QFrame):
         self.category_pages["story"] = self.category_stack.addWidget(
             self._build_story_category()
         )
-        # Node's move/copy/array/rotate/mirror set is dimension-independent;
-        # only coordinate/DOF fields inside each page differ.
+        # Node and Element keep separate selection scopes, while each
+        # Translate page owns its own MIDAS-style Copy/Move mode.
         self.category_pages["translate_node"] = self.category_stack.addWidget(
             self._build_node_translate_section()
-        )
-        self.category_pages["duplicate_node"] = self.category_stack.addWidget(
-            self._build_node_duplicate_section()
-        )
-        self.category_pages["array_node"] = self.category_stack.addWidget(
-            self._build_node_array_copy_section()
         )
         self.category_pages["rotate_node"] = self.category_stack.addWidget(
             self._build_node_rotate_copy_section()
@@ -5547,17 +5525,8 @@ class ModelingInterfacePage(QFrame):
         self._sync_selection_status()
 
     def _build_transform_section(self) -> QWidget:
-        """2D's 이동·복사·배열 category page — move, copy, array-copy, rotate-copy
-        and mirror all together behind one combo, in the left-hand editor
-        panel. 3D splits these into their own flat Element-tab entries
-        instead (``_build_element_translate_section`` and
-        ``_build_duplicate_element_section``/``_build_array_copy_section``/
-        ``_build_rotate_copy_section``/``_build_mirror_copy_section``) - kept
-        as separate builders rather than branching this one on
-        ``_start_in_3d``, so 2D's combo (never asked to change) stays exactly
-        as it always has.
-        """
-        section, root = self._section("노드 이동 · 복사 · 배열", show_title=False)
+        """2D quick Translate page with Copy/Move modes and repeat count."""
+        section, root = self._section("이동", show_title=False)
         transform_hint = QLabel(
             "위쪽 툴바의 '선택 필터'를 노드만/부재만으로 바꿔 옮기거나 "
             "복사할 대상을 고르세요 — 부재를 선택하면 양쪽 끝 노드까지 함께 "
@@ -5566,10 +5535,10 @@ class ModelingInterfacePage(QFrame):
         transform_hint.setWordWrap(True)
         transform_hint.setObjectName("setupSectionHint")
         root.addWidget(transform_hint)
+        root.addWidget(QLabel("Mode"))
         self.node_transform_operation = QComboBox()
-        self.node_transform_operation.addItem("이동", "move")
-        self.node_transform_operation.addItem("복사", "copy")
-        self.node_transform_operation.addItem("배열 복사 (부재 포함)", "array")
+        self.node_transform_operation.addItem("Copy", "copy")
+        self.node_transform_operation.addItem("Move", "move")
         self.node_transform_operation.addItem("회전 복사 (부재 포함)", "rotate")
         self.node_transform_operation.currentIndexChanged.connect(self._sync_transform_form)
         root.addWidget(self.node_transform_operation)
@@ -5588,8 +5557,7 @@ class ModelingInterfacePage(QFrame):
         form.addRow("회전각(°)", self.node_transform_angle)
         self.node_transform_repeat = SafeSpinBox()
         self.node_transform_repeat.setRange(1, 1000)
-        self.node_transform_repeat.setEnabled(False)
-        form.addRow("반복/배열 개수", self.node_transform_repeat)
+        form.addRow("Number of Times", self.node_transform_repeat)
         root.addLayout(form)
         self.copy_node_attributes = QCheckBox("Copy Node Attributes (지점·절점하중)")
         self.copy_node_attributes.setChecked(False)
@@ -5637,14 +5605,9 @@ class ModelingInterfacePage(QFrame):
     def _build_transform_offset_form(
         self, *, dx_label: str = "dX", dy_label: str = "dY"
     ) -> tuple[QFormLayout, QDoubleSpinBox, QDoubleSpinBox]:
-        """The dX/dY pair every 3D Element transform page needs, factored out
-        since Translate/Duplicate/Array/Rotate Copy each build their own
-        (rotate relabels them "중심 X"/"중심 Y" - same role a pivot plays that
-        an offset's dx/dy does, see the docstring 2D's combined combo used to
-        carry). Local widgets, not ``self.`` attributes - these five pages
-        all coexist in the same QStackedWidget, so five different pages
-        sharing one ``self.node_transform_dx`` name would each silently
-        overwrite the last one's reference.
+        """The center X/Y pair used by the Node and Element rotate-copy pages.
+
+        Local widgets avoid the two pages overwriting each other's references.
         """
         form = QFormLayout()
         dx_field = self._number(1.0)
@@ -5699,116 +5662,108 @@ class ModelingInterfacePage(QFrame):
         return copy_node_cb, copy_element_cb
 
     def _build_element_translate_section(self) -> QWidget:
-        """3D Element tab's Translate page — move only. Copy/array/rotate/
-        mirror used to live behind the same combo (see ``_build_transform_
-        section``, which 2D still uses unchanged); split into their own flat
-        entries here for discoverability, matching Create/Translate Element's
-        existing equal-footing pattern."""
+        """Element Translate with MIDAS-style Copy/Move modes.
+
+        Node and Element remain separate tools because Element translation
+        carries both end nodes and the selected member. Linear array copying
+        is simply Copy with ``Number of Times`` greater than one, so a second
+        Duplicate/Array page would only repeat this form.
+        """
         section, root = self._section("Element Translate", show_title=False)
         hint = QLabel(
-            "부재를 선택하면 양쪽 끝 노드와 함께 이동됩니다. dX/dY는 현재 작업평면의 "
+            "부재를 선택하면 양쪽 끝 노드와 함께 복사됩니다. dX/dY는 현재 작업평면의 "
             "로컬 축, dZ는 그 평면의 법선(수직) 축 기준입니다."
         )
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
         root.addWidget(hint)
+
+        root.addWidget(QLabel("Mode"))
+        mode_row = QWidget()
+        mode_layout = QHBoxLayout(mode_row)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        self.element_translate_copy_mode = QRadioButton("Copy")
+        self.element_translate_move_mode = QRadioButton("Move")
+        self.element_translate_mode_group = QButtonGroup(section)
+        self.element_translate_mode_group.addButton(self.element_translate_copy_mode)
+        self.element_translate_mode_group.addButton(self.element_translate_move_mode)
+        mode_layout.addWidget(self.element_translate_copy_mode)
+        mode_layout.addWidget(self.element_translate_move_mode)
+        mode_layout.addStretch(1)
+        root.addWidget(mode_row)
+
         form, offset_field = self._build_offset_line_form()
+        self.element_translate_offset = offset_field
+        self.element_translate_repeat = SafeSpinBox()
+        self.element_translate_repeat.setRange(1, 1000)
+        form.addRow("Number of Times", self.element_translate_repeat)
         root.addLayout(form)
-        apply_button = QPushButton("선택 항목에 적용")
 
-        def _apply() -> None:
-            dx, dy, dz = self._parse_offset_line(offset_field.text())
-            self.canvas.transform_selected_nodes("move", dx, dy, dz=dz)
+        (
+            self.element_translate_copy_node_attributes,
+            self.element_translate_copy_element_loads,
+        ) = self._build_transform_copy_option_checkboxes(root)
+        self.element_translate_apply_button = QPushButton("선택 부재 복사")
 
-        apply_button.clicked.connect(_apply)
-        root.addWidget(apply_button)
-        root.addStretch(1)
-        return section
-
-    def _build_duplicate_element_section(self) -> QWidget:
-        section, root = self._section("Element Duplicate", show_title=False)
-        hint = QLabel(
-            "부재를 선택하면 양쪽 끝 노드와 함께 복사됩니다. 복사된 부재는 원본의 "
-            "물성·단면·로컬축·단부 릴리즈를 그대로 유지합니다."
-        )
-        hint.setWordWrap(True)
-        hint.setObjectName("setupSectionHint")
-        root.addWidget(hint)
-        form, offset_field = self._build_offset_line_form()
-        repeat_field = SafeSpinBox()
-        repeat_field.setRange(1, 1000)
-        form.addRow("복사 개수", repeat_field)
-        root.addLayout(form)
-        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
-        apply_button = QPushButton("선택 항목에 적용")
+        def _sync_mode() -> None:
+            is_copy = self.element_translate_copy_mode.isChecked()
+            axis_note = (
+                " dX/dY는 현재 작업평면의 로컬 축, dZ는 그 평면의 "
+                "법선(수직) 축 기준입니다."
+                if self._start_in_3d
+                else ""
+            )
+            form.setRowVisible(self.element_translate_repeat, is_copy)
+            self.element_translate_copy_node_attributes.setVisible(is_copy)
+            self.element_translate_copy_element_loads.setVisible(is_copy)
+            self.element_translate_apply_button.setText(
+                "선택 부재 복사" if is_copy else "선택 부재 이동"
+            )
+            hint.setText(
+                (
+                    (
+                        "부재를 선택하면 양쪽 끝 노드와 함께 복사됩니다. "
+                        "Number of Times만큼 같은 간격으로 반복 복사합니다."
+                    )
+                    if is_copy
+                    else "부재를 선택하면 양쪽 끝 노드와 함께 이동됩니다."
+                )
+                + axis_note
+            )
 
         def _apply() -> None:
             dx, dy, dz = self._parse_offset_line(
                 offset_field.text(), include_z=self._start_in_3d
             )
-            if not self._start_in_3d:
+            if self.element_translate_move_mode.isChecked():
+                if self._start_in_3d:
+                    self.canvas.transform_selected_nodes("move", dx, dy, dz=dz)
+                else:
+                    self.canvas.transform_selected_nodes("move", dx, dy)
+                return
+            kwargs = {
+                "copy_node_attributes": self.element_translate_copy_node_attributes.isChecked(),
+                "copy_element_loads": self.element_translate_copy_element_loads.isChecked(),
+            }
+            if self._start_in_3d:
                 self.canvas.transform_selected_nodes(
                     "copy",
                     dx,
                     dy,
-                    repeat_field.value(),
-                    copy_node_attributes=copy_node_cb.isChecked(),
-                    copy_element_loads=copy_element_cb.isChecked(),
+                    self.element_translate_repeat.value(),
+                    dz=dz,
+                    **kwargs,
                 )
-                return
-            self.canvas.transform_selected_nodes(
-                "copy",
-                dx,
-                dy,
-                repeat_field.value(),
-                dz=dz,
-                copy_node_attributes=copy_node_cb.isChecked(),
-                copy_element_loads=copy_element_cb.isChecked(),
-            )
-
-        apply_button.clicked.connect(_apply)
-        root.addWidget(apply_button)
-        root.addStretch(1)
-        return section
-
-    def _build_array_copy_section(self) -> QWidget:
-        section, root = self._section("Element Array Copy", show_title=False)
-        hint = QLabel("부재를 선택하면 양쪽 끝 노드와 함께 일정 간격으로 반복 복사됩니다.")
-        hint.setWordWrap(True)
-        hint.setObjectName("setupSectionHint")
-        root.addWidget(hint)
-        form, offset_field = self._build_offset_line_form()
-        repeat_field = SafeSpinBox()
-        repeat_field.setRange(1, 1000)
-        form.addRow("배열 개수", repeat_field)
-        root.addLayout(form)
-        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
-        apply_button = QPushButton("선택 항목에 적용")
-
-        def _apply() -> None:
-            dx, dy, dz = self._parse_offset_line(
-                offset_field.text(), include_z=self._start_in_3d
-            )
-            if not self._start_in_3d:
-                self.canvas.array_copy_selection(
-                    dx,
-                    dy,
-                    repeat_field.value(),
-                    copy_node_attributes=copy_node_cb.isChecked(),
-                    copy_element_loads=copy_element_cb.isChecked(),
+            else:
+                self.canvas.transform_selected_nodes(
+                    "copy", dx, dy, self.element_translate_repeat.value(), **kwargs
                 )
-                return
-            self.canvas.array_copy_selection(
-                dx,
-                dy,
-                repeat_field.value(),
-                dz=dz,
-                copy_node_attributes=copy_node_cb.isChecked(),
-                copy_element_loads=copy_element_cb.isChecked(),
-            )
 
-        apply_button.clicked.connect(_apply)
-        root.addWidget(apply_button)
+        self.element_translate_copy_mode.toggled.connect(_sync_mode)
+        self.element_translate_apply_button.clicked.connect(_apply)
+        root.addWidget(self.element_translate_apply_button)
+        self.element_translate_copy_mode.setChecked(True)
+        _sync_mode()
         root.addStretch(1)
         return section
 
@@ -5898,122 +5853,100 @@ class ModelingInterfacePage(QFrame):
         return section
 
     def _build_node_translate_section(self) -> QWidget:
-        """Node tab's own Translate page - the node-only counterpart of
-        ``_build_element_translate_section``. Same canvas call
-        (``transform_selected_nodes``), different selection scope: the Node
-        subcategory combo narrows ``selection_filter`` to "nodes" before
-        showing this page, so a member can never be dragged along by
-        accident here - picking it up (with its member) is what the Element
-        tab's Translate is for."""
+        """Node-only MIDAS-style Translate page with Copy/Move modes."""
         section, root = self._section("Node Translate", show_title=False)
-        hint = QLabel("선택한 노드를 지정한 만큼 이동합니다.")
+        hint = QLabel("선택한 노드를 지정한 간격으로 복사합니다.")
         if self._start_in_3d:
             hint.setText(
-                "선택한 노드를 지정한 만큼 이동합니다. dZ는 현재 작업평면의 "
+                "선택한 노드를 지정한 간격으로 복사합니다. dZ는 현재 작업평면의 "
                 "법선(수직) 축입니다."
             )
         hint.setWordWrap(True)
         hint.setObjectName("setupSectionHint")
         root.addWidget(hint)
+
+        root.addWidget(QLabel("Mode"))
+        mode_row = QWidget()
+        mode_layout = QHBoxLayout(mode_row)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        self.node_translate_copy_mode = QRadioButton("Copy")
+        self.node_translate_move_mode = QRadioButton("Move")
+        self.node_translate_mode_group = QButtonGroup(section)
+        self.node_translate_mode_group.addButton(self.node_translate_copy_mode)
+        self.node_translate_mode_group.addButton(self.node_translate_move_mode)
+        mode_layout.addWidget(self.node_translate_copy_mode)
+        mode_layout.addWidget(self.node_translate_move_mode)
+        mode_layout.addStretch(1)
+        root.addWidget(mode_row)
+
         form, offset_field = self._build_offset_line_form()
+        self.node_translate_offset = offset_field
+        self.node_translate_repeat = SafeSpinBox()
+        self.node_translate_repeat.setRange(1, 1000)
+        form.addRow("Number of Times", self.node_translate_repeat)
         root.addLayout(form)
-        apply_button = QPushButton("선택 항목에 적용")
+        self.node_translate_copy_node_attributes = QCheckBox(
+            "Copy Node Attributes (지점·절점하중)"
+        )
+        root.addWidget(self.node_translate_copy_node_attributes)
+        self.node_translate_apply_button = QPushButton("선택 노드 복사")
+
+        def _sync_mode() -> None:
+            is_copy = self.node_translate_copy_mode.isChecked()
+            axis_note = (
+                " dZ는 현재 작업평면의 법선(수직) 축입니다."
+                if self._start_in_3d
+                else ""
+            )
+            form.setRowVisible(self.node_translate_repeat, is_copy)
+            self.node_translate_copy_node_attributes.setVisible(is_copy)
+            self.node_translate_apply_button.setText(
+                "선택 노드 복사" if is_copy else "선택 노드 이동"
+            )
+            hint.setText(
+                (
+                    (
+                        "선택한 노드를 지정한 간격으로 Number of Times만큼 반복 복사합니다."
+                    )
+                    if is_copy
+                    else "선택한 노드를 지정한 만큼 이동합니다."
+                )
+                + axis_note
+            )
 
         def _apply() -> None:
             dx, dy, dz = self._parse_offset_line(
                 offset_field.text(), include_z=self._start_in_3d
             )
-            if not self._start_in_3d:
-                self.canvas.transform_selected_nodes("move", dx, dy)
+            if self.node_translate_move_mode.isChecked():
+                if not self._start_in_3d:
+                    self.canvas.transform_selected_nodes("move", dx, dy)
+                    return
+                self.canvas.transform_selected_nodes("move", dx, dy, dz=dz)
                 return
-            self.canvas.transform_selected_nodes("move", dx, dy, dz=dz)
-
-        apply_button.clicked.connect(_apply)
-        root.addWidget(apply_button)
-        root.addStretch(1)
-        return section
-
-    def _build_node_duplicate_section(self) -> QWidget:
-        section, root = self._section("Node Duplicate", show_title=False)
-        hint = QLabel("선택한 노드를 지정한 만큼 떨어진 위치에 복사합니다.")
-        hint.setWordWrap(True)
-        hint.setObjectName("setupSectionHint")
-        root.addWidget(hint)
-        form, offset_field = self._build_offset_line_form()
-        repeat_field = SafeSpinBox()
-        repeat_field.setRange(1, 1000)
-        form.addRow("복사 개수", repeat_field)
-        root.addLayout(form)
-        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
-        apply_button = QPushButton("선택 항목에 적용")
-
-        def _apply() -> None:
-            dx, dy, dz = self._parse_offset_line(
-                offset_field.text(), include_z=self._start_in_3d
-            )
             if not self._start_in_3d:
                 self.canvas.transform_selected_nodes(
                     "copy",
                     dx,
                     dy,
-                    repeat_field.value(),
-                    copy_node_attributes=copy_node_cb.isChecked(),
-                    copy_element_loads=copy_element_cb.isChecked(),
+                    self.node_translate_repeat.value(),
+                    copy_node_attributes=self.node_translate_copy_node_attributes.isChecked(),
                 )
                 return
             self.canvas.transform_selected_nodes(
                 "copy",
                 dx,
                 dy,
-                repeat_field.value(),
+                self.node_translate_repeat.value(),
                 dz=dz,
-                copy_node_attributes=copy_node_cb.isChecked(),
-                copy_element_loads=copy_element_cb.isChecked(),
+                copy_node_attributes=self.node_translate_copy_node_attributes.isChecked(),
             )
 
-        apply_button.clicked.connect(_apply)
-        root.addWidget(apply_button)
-        root.addStretch(1)
-        return section
-
-    def _build_node_array_copy_section(self) -> QWidget:
-        section, root = self._section("Node Array Copy", show_title=False)
-        hint = QLabel("선택한 노드를 일정 간격으로 반복 복사합니다.")
-        hint.setWordWrap(True)
-        hint.setObjectName("setupSectionHint")
-        root.addWidget(hint)
-        form, offset_field = self._build_offset_line_form()
-        repeat_field = SafeSpinBox()
-        repeat_field.setRange(1, 1000)
-        form.addRow("배열 개수", repeat_field)
-        root.addLayout(form)
-        copy_node_cb, copy_element_cb = self._build_transform_copy_option_checkboxes(root)
-        apply_button = QPushButton("선택 항목에 적용")
-
-        def _apply() -> None:
-            dx, dy, dz = self._parse_offset_line(
-                offset_field.text(), include_z=self._start_in_3d
-            )
-            if not self._start_in_3d:
-                self.canvas.array_copy_selection(
-                    dx,
-                    dy,
-                    repeat_field.value(),
-                    copy_node_attributes=copy_node_cb.isChecked(),
-                    copy_element_loads=copy_element_cb.isChecked(),
-                )
-                return
-            self.canvas.array_copy_selection(
-                dx,
-                dy,
-                repeat_field.value(),
-                dz=dz,
-                copy_node_attributes=copy_node_cb.isChecked(),
-                copy_element_loads=copy_element_cb.isChecked(),
-            )
-
-        apply_button.clicked.connect(_apply)
-        root.addWidget(apply_button)
+        self.node_translate_copy_mode.toggled.connect(_sync_mode)
+        self.node_translate_apply_button.clicked.connect(_apply)
+        root.addWidget(self.node_translate_apply_button)
+        self.node_translate_copy_mode.setChecked(True)
+        _sync_mode()
         root.addStretch(1)
         return section
 
@@ -7644,7 +7577,7 @@ class ModelingInterfacePage(QFrame):
 
     def _activate_node_transform_tool(self) -> None:
         self.select_tool.setChecked(True)
-        # Move/copy/array/rotate/mirror all understand a selected member -
+        # Translate/rotate/mirror all understand a selected member -
         # picking "부재만" and clicking a member carries both its endpoints
         # along, MIDAS's separate Node/Element move-copy mode - but if the
         # 지점 tool ran right before this one, the filter it narrowed to
@@ -7656,7 +7589,7 @@ class ModelingInterfacePage(QFrame):
         # still right there to narrow it back down once inside this tool.
         self.selection_filter.setCurrentIndex(self.selection_filter.findData("all"))
         self._set_mode(
-            "select", "이동·복사·배열할 노드 또는 부재를 선택한 뒤 오른쪽 패널에서 적용하세요."
+            "select", "이동하거나 복사할 노드 또는 부재를 선택한 뒤 오른쪽 패널에서 적용하세요."
         )
         self._sync_property_panel()
         self._show_category("move")
@@ -8265,23 +8198,16 @@ class ModelingInterfacePage(QFrame):
         the one genuinely new field, shown only for that operation."""
         operation = self.node_transform_operation.currentData()
         is_rotate = operation == "rotate"
-        is_copy = operation in {"copy", "array", "rotate"}
+        is_copy = operation in {"copy", "rotate"}
         self.node_transform_dx_label.setText("중심 X" if is_rotate else "dX")
         self.node_transform_dy_label.setText("중심 Y" if is_rotate else "dY")
         self.node_transform_form.setRowVisible(self.node_transform_angle, is_rotate)
-        self.node_transform_repeat.setEnabled(is_copy)
+        self.node_transform_form.setRowVisible(self.node_transform_repeat, is_copy)
+        self.copy_node_attributes.setVisible(is_copy)
+        self.copy_element_loads.setVisible(is_copy)
 
     def _apply_node_transform(self) -> None:
         operation = self.node_transform_operation.currentData()
-        if operation == "array":
-            self.canvas.array_copy_selection(
-                self.node_transform_dx.value(),
-                self.node_transform_dy.value(),
-                self.node_transform_repeat.value(),
-                copy_node_attributes=self.copy_node_attributes.isChecked(),
-                copy_element_loads=self.copy_element_loads.isChecked(),
-            )
-            return
         if operation == "rotate":
             self.canvas.rotate_copy_selection(
                 self.node_transform_dx.value(),

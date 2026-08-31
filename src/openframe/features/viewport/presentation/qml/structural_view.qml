@@ -30,6 +30,11 @@ Item {
     property real cameraYaw: 45
     property real cameraPitch: -25
     property real cameraDistance: Math.max(bridgeExtent * 2.8, 4.0)
+    // Preserve the section proportions carried by width_b/width_h while
+    // making the rendered member clearly subordinate to the node sphere.
+    // Python keeps the unscaled dimensions for geometry, picking and node
+    // sizing; this is deliberately a presentation-only reduction.
+    readonly property real memberCrossSectionScale: 0.72
     property real panX: 0
     property real panY: 0
     property real lastMouseX: 0
@@ -491,9 +496,9 @@ Item {
                         sceneBridge.deformationRevision
                     }
                     return Qt.vector3d(
-                        modelData.width_b / 100,
+                        modelData.width_b * root.memberCrossSectionScale / 100,
                         modelData.length / 100,
-                        modelData.width_h / 100
+                        modelData.width_h * root.memberCrossSectionScale / 100
                     )
                 }
                 materials: [
@@ -548,9 +553,9 @@ Item {
                         sceneBridge.deformationRevision
                     }
                     return Qt.vector3d(
-                        modelData.width_b * 1.35 / 100,
+                        modelData.width_b * root.memberCrossSectionScale * 1.35 / 100,
                         modelData.length / 100,
-                        modelData.width_h * 1.35 / 100
+                        modelData.width_h * root.memberCrossSectionScale * 1.35 / 100
                     )
                 }
                 materials: [
@@ -1023,6 +1028,47 @@ Item {
                 ]
                 castsShadows: false
                 receivesShadows: false
+            }
+        }
+    }
+
+    Item {
+        // MIDAS-style result numbers: 2D billboards, not 3D meshes, so a
+        // value stays readable while the camera orbits. enabled:false so a
+        // click through a label still orbits / picks the View3D underneath
+        // rather than being swallowed by the Text.
+        id: resultValueOverlay
+        objectName: "resultValueOverlay"
+        anchors.fill: parent
+        z: 12
+        enabled: false
+
+        Repeater {
+            model: bridgeReady ? sceneBridge.resultLabels : []
+            delegate: Text {
+                objectName: "resultValueLabel"
+                property var screenPoint: {
+                    root.cameraYaw
+                    root.cameraPitch
+                    root.cameraDistance
+                    root.panX
+                    root.panY
+                    if (!root.bridgeReady)
+                        return Qt.vector3d(-10000, -10000, 0)
+                    return view3d.mapFrom3DScene(
+                        Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                    )
+                }
+                visible: isFinite(screenPoint.x) && isFinite(screenPoint.y)
+                x: screenPoint.x - implicitWidth / 2
+                y: screenPoint.y - implicitHeight - 2
+                text: modelData.text
+                color: modelData.color
+                font.family: "Segoe UI"
+                font.pixelSize: 11
+                font.weight: Font.DemiBold
+                style: Text.Outline
+                styleColor: "#fffffff0"
             }
         }
     }

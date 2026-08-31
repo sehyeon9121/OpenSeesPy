@@ -214,6 +214,8 @@ def test_node_and_element_tabs_separate_node_tools_from_element_translation() ->
     assert page.node_subcategory_combo.currentData() == "add"
     assert page.canvas.mode == "select"
     assert page.node_subcategory_combo.findData("move") == -1
+    assert page.node_subcategory_combo.findData("duplicate_node") == -1
+    assert page.node_subcategory_combo.findData("array_node") == -1
 
     page.node_subcategory_combo.setCurrentIndex(
         page.node_subcategory_combo.findData("arch")
@@ -237,6 +239,8 @@ def test_node_and_element_tabs_separate_node_tools_from_element_translation() ->
     assert page.element_subcategory_row.isVisible() is True
     assert page.element_subcategory_combo.currentData() == "element_picker"
     assert page.canvas.mode == "select", "drawing stays locked until properties are applied"
+    assert page.element_subcategory_combo.findData("duplicate") == -1
+    assert page.element_subcategory_combo.findData("array") == -1
 
     page.element_subcategory_combo.setCurrentIndex(
         page.element_subcategory_combo.findData("move")
@@ -1046,16 +1050,16 @@ def test_the_mirror_controls_reach_the_canvas() -> None:
     assert len(page.canvas.elements) == 2
 
 
-def test_the_array_copy_operation_reaches_the_canvas_and_reproduces_members() -> None:
+def test_translate_copy_repeat_reaches_the_canvas_and_reproduces_members() -> None:
     page = _page()
     left = page.canvas.add_node(0.0, 0.0)
     right = page.canvas.add_node(2.0, 0.0)
-    page.canvas.add_member(left, right)
-    page.canvas.selected_nodes = {left, right}
+    member = page.canvas.add_member(left, right)
+    page.canvas.selected_elements = {member}
     page.canvas.selection_changed.emit()
 
     page.node_transform_operation.setCurrentIndex(
-        page.node_transform_operation.findData("array")
+        page.node_transform_operation.findData("copy")
     )
     page.node_transform_dx.setValue(2.0)
     page.node_transform_dy.setValue(0.0)

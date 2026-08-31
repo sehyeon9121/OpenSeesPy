@@ -43,6 +43,7 @@ from openframe.features.results.deformation import (
 )
 from openframe.features.results.diagrams import DiagramKind, spatial_diagram_strips
 from openframe.features.results.magnitudes import magnitude_range, member_magnitudes
+from openframe.features.results.overlay_labels import result_overlay_labels
 from openframe.features.results.presentation.frame_diagram_renderer import (
     FrameDiagramRenderer,
 )
@@ -630,6 +631,7 @@ class ResultViewport(QFrame):
                 self.show_undeformed.isChecked() and not force_diagram,
                 member_magnitudes=member_colors,
                 force_diagrams=self._force_diagram_payload() if force_diagram else [],
+                overlay_labels=self._overlay_label_payload(scale),
             )
         else:
             self.quick3d_view.clear_result()
@@ -784,6 +786,32 @@ class ResultViewport(QFrame):
                 self._result,
                 kind,
                 self.deformation_scale.value(),
+            )
+        ]
+
+    def _overlay_label_payload(self, deformation_scale: float) -> list[dict[str, object]]:
+        """Structural-space numbers for the Quick3D billboard overlay.
+
+        Qt-free values from ``result_overlay_labels``, converted to dicts so
+        the viewport bridge never imports the results overlay package.
+        """
+        if self._model is None or self._result is None:
+            return []
+        return [
+            {
+                "text": label.text,
+                "x": label.x,
+                "y": label.y,
+                "z": label.z,
+                "color": label.color,
+            }
+            for label in result_overlay_labels(
+                self._model,
+                self._result,
+                self._result_type,
+                self._unit_system,
+                scale_percent=self.deformation_scale.value(),
+                deformation_scale=deformation_scale,
             )
         ]
 

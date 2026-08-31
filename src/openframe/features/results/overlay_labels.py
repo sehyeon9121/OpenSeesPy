@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from openframe.core.domain import (
     AnalysisResult,
+    Node,
     StructuralModel,
     UnitSystem,
 )
@@ -154,7 +155,7 @@ def _reaction_labels(
         raw.append((tag, node.x, node.y, node.z, magnitude))
     peak = max((item[4] for item in raw), default=0.0)
     labels: list[OverlayLabel] = []
-    for tag, x, y, z, magnitude in raw:
+    for _tag, x, y, z, magnitude in raw:
         if magnitude <= peak * _RELATIVE_NOISE:
             continue
         labels.append(
@@ -179,6 +180,11 @@ def _force_labels(
     for strip in spatial_diagram_strips(model, result, kind, scale_percent):
         start, end = strip.end_values
         maximum = max(abs(start), abs(end), 1.0e-30)
+        prefix = symbol
+        if kind == DiagramKind.SHEAR:
+            prefix = "Vy" if strip.color == "#7254a8" else "Vz"
+        elif kind == DiagramKind.MOMENT:
+            prefix = "Mz" if strip.color == "#7254a8" else "My"
         if math.isclose(start, end, rel_tol=1.0e-6, abs_tol=maximum * _RELATIVE_NOISE):
             if abs(start) <= maximum * _RELATIVE_NOISE:
                 continue
@@ -186,7 +192,7 @@ def _force_labels(
             point = strip.curve[mid]
             labels.append(
                 OverlayLabel(
-                    f"{symbol} {start:.4g} {unit_text}",
+                    f"{prefix} {start:.4g} {unit_text}",
                     point[0],
                     point[1],
                     point[2],
@@ -196,13 +202,9 @@ def _force_labels(
             )
             continue
         for value, point in ((start, strip.curve[0]), (end, strip.curve[-1])):
-            if abs(value) <= maximum * _RELATIVE_NOISE:
-                continue
-            prefix = symbol
-            if kind == DiagramKind.SHEAR:
-                prefix = "Vy" if strip.color == "#7254a8" else "Vz"
-            elif kind == DiagramKind.MOMENT:
-                prefix = "Mz" if strip.color == "#7254a8" else "My"
+            # Keep a printed 0 at the free end of a cantilever: that zero is
+            # the answer, not noise. Noise-only strips never reach here
+            # because spatial_diagram_strips already dropped them.
             labels.append(
                 OverlayLabel(
                     f"{prefix} {value:.4g} {unit_text}",
@@ -223,7 +225,6 @@ def _stress_labels(
     *,
     deformation_scale: float,
 ) -> list[OverlayLabel]:
-    del deformation_scale
     labels: list[OverlayLabel] = []
     for element in model.elements.values():
         element_result = result.element_results.get(element.tag)
@@ -234,14 +235,12 @@ def _stress_labels(
         peak = peak_member_stress(element, element_result, ndm=model.ndm)
         if peak is None or peak <= 0.0:
             continue
-        mid = (
-            0.5 * (node_i.x + node_j.x),
-            0.5 * (node_i.y + node_j.y),
-            0.5 * (node_i.z + node_j.z),
-        )
+        pi = _displaced(node_i, result, deformation_scale)
+        pj = _displaced(node_j, result, deformation_scale)
+        mid = tuple(0.5 * (pi[k] + pj[k]) for k in range(3))
         labels.append(
             OverlayLabel(
-                f"σ {peak:.4g} {unit.stress()}",
+                f"σ {peak:.4g} {unit.stress}",
                 mid[0],
                 mid[1],
                 mid[2],
@@ -261,7 +260,7 @@ def _translation(result: AnalysisResult, node_tag: int) -> float:
     return math.sqrt(ux * ux + uy * uy + uz * uz)
 
 
-def _displaced(node, result: AnalysisResult, scale: float) -> tuple[float, float, float]:
+def _displaced(node: Node, result: AnalysisResult, scale: float) -> tuple[float, float, float]:
     node_result = result.node_results.get(node.tag)
     values = (*(node_result.displacement if node_result is not None else ()), 0.0, 0.0, 0.0)
     return (

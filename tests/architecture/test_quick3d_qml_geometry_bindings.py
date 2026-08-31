@@ -36,3 +36,10 @@ def test_geometry_revision_in_each_modeling_delegate_block() -> None:
         next_rep = text.find("Repeater3D {", start + 1)
         block = text[start:] if next_rep == -1 else text[start:next_rep]
         assert "geometryRevision" in block, f"{model_binding} block lacks geometryRevision binding"
+
+
+def test_member_cross_sections_use_the_presentation_scale() -> None:
+    text = QML.read_text(encoding="utf-8")
+    assert "readonly property real memberCrossSectionScale: 0.72" in text
+    assert text.count("modelData.width_b * root.memberCrossSectionScale") == 2
+    assert text.count("modelData.width_h * root.memberCrossSectionScale") == 2

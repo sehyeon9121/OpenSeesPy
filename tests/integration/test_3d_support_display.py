@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from openframe.core.domain import (
     BoundaryCondition,
+    Element,
     Node,
     StructuralModel,
     SupportKind,
@@ -46,6 +49,45 @@ def test_imported_3d_fixed_support_is_rendered_as_an_anchored_socket() -> None:
     assert bridge.supportSymbols
 
 
+def test_support_is_separated_below_section_aware_node_sphere() -> None:
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 0.0, 0.0, 3.0, 6),
+        },
+        elements={
+            1: Element(
+                1,
+                1,
+                2,
+                "elasticBeamColumn",
+                properties={
+                    "behavior": "general_beam",
+                    "section_shape": "Rectangle",
+                    "width": 0.4,
+                    "height": 0.6,
+                },
+            )
+        },
+        boundaries=[BoundaryCondition(1, (True,) * 6)],
+    )
+    bridge = Quick3DSceneBridge()
+    bridge.set_model(model)
+
+    node = next(item for item in bridge.nodes if item["tag"] == 1)
+    socket = next(
+        item for item in bridge.supportSymbols if item["role"] == "fixed_socket"
+    )
+    socket_top = float(socket["y"]) + float(socket["scale_y"]) / 2.0
+    node_bottom = float(node["y"]) - float(node["radius"])
+
+    assert float(node["radius"]) > bridge._node_radius
+    gap = node_bottom - socket_top
+    assert gap == pytest.approx(float(node["radius"]) * 0.30)
+
+
 def test_fixed_pin_and_custom_restraints_use_distinct_mechanical_glyphs() -> None:
     model = StructuralModel(
         ndm=3,
@@ -86,6 +128,13 @@ def test_fixed_pin_and_custom_restraints_use_distinct_mechanical_glyphs() -> Non
     assert {part["color"] for part in by_tag[1]} == {"#00856a", "#d7f7f0"}
     assert {part["color"] for part in by_tag[2]} == {"#00a6a6"}
     assert {part["color"] for part in by_tag[3]} == {"#f59e0b"}
+    nodes_by_tag = {int(node["tag"]): node for node in bridge.nodes}
+    for tag, role in ((2, "pin_joint"), (3, "custom_joint")):
+        joint = next(part for part in by_tag[tag] if part["role"] == role)
+        joint_top = float(joint["y"]) + float(joint["scale_y"]) / 2.0
+        node = nodes_by_tag[tag]
+        expected_top = float(node["y"]) - float(node["radius"]) * 1.30
+        assert joint_top == pytest.approx(expected_top)
 
 
 def test_each_3d_roller_aligns_its_cylinders_with_the_free_axis() -> None:
@@ -126,6 +175,11 @@ def test_each_3d_roller_aligns_its_cylinders_with_the_free_axis() -> None:
         }
         assert sum(part["role"] == cylinder_role for part in support_parts) == 2
         assert {part["color"] for part in support_parts} == {"#6366f1"}
+        joint = next(part for part in support_parts if part["role"] == "roller_joint")
+        node = next(item for item in bridge.nodes if int(item["tag"]) == tag)
+        joint_top = float(joint["y"]) + float(joint["scale_y"]) / 2.0
+        expected_top = float(node["y"]) - float(node["radius"]) * 1.30
+        assert joint_top == pytest.approx(expected_top)
 
 
 def test_elastic_restraints_render_translation_coil_and_rotation_marker() -> None:

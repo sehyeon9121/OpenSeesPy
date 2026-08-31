@@ -238,6 +238,7 @@ class Quick3DViewport(QFrame):
         show_undeformed: bool = True,
         member_magnitudes: dict[int, float] | None = None,
         force_diagrams: list[dict[str, object]] | None = None,
+        overlay_labels: list[dict[str, object]] | None = None,
     ) -> None:
         self._ensure_bridge_current()
         self.bridge.set_result(
@@ -247,6 +248,7 @@ class Quick3DViewport(QFrame):
             show_undeformed,
             member_magnitudes=member_magnitudes,
             force_diagrams=force_diagrams,
+            overlay_labels=overlay_labels,
         )
 
     def begin_time_history_deformation(

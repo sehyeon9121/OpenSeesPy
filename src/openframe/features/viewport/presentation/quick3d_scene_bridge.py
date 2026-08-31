@@ -104,6 +104,10 @@ _SUPPORT_COLORS = {
     SupportKind.CUSTOM: "#f59e0b",
 }
 _SPRING_SUPPORT_COLOR = "#a855f7"
+#: Supports are annotation glyphs rather than physical member geometry.  A
+#: small air gap keeps the complete socket/cone/roller silhouette readable
+#: instead of letting the node sphere hide its mechanically useful top half.
+_SUPPORT_NODE_GAP_RATIO = 0.30
 #: Each ``BoundaryCondition.angle_axis`` structural axis, mapped through
 #: ``_view_coordinates`` once - see ``_build_support_parts``'s own comment
 #: for why conjugating the rotation this way (angle unchanged, axis mapped)
@@ -235,6 +239,9 @@ class Quick3DSceneBridge(QObject):
         #: Result-viewport N/V/M overlay (cylinders + fill cubes). Empty outside
         #: a force-diagram result type so the modeling canvas never inherits it.
         self._force_diagram_parts: list[dict[str, float | int | str]] = []
+        #: Billboard numbers for the active result type (MIDAS-style values on
+        #: members / nodes). Structural xyz is converted to view coords here.
+        self._result_labels: list[dict[str, float | int | str]] = []
         self._default_thickness = 0.025
         self._node_radius = 0.018
         self._last_model: StructuralModel | None = None
@@ -391,6 +398,7 @@ class Quick3DSceneBridge(QObject):
         show_undeformed: bool,
         member_magnitudes: dict[int, float] | None = None,
         force_diagrams: list[dict[str, object]] | None = None,
+        overlay_labels: list[dict[str, object]] | None = None,
     ) -> None:
         """Overlay analysis displacements: deformed + colour-mapped geometry, an
         optional translucent undeformed ghost, and arrows at loaded nodes."""
@@ -486,6 +494,7 @@ class Quick3DSceneBridge(QObject):
 
         self._load_arrows = self._build_all_load_arrows(model, deformed_points)
         self._force_diagram_parts = self._build_force_diagram_parts(force_diagrams or [])
+        self._result_labels = self._build_result_labels(overlay_labels or [])
         self._cached_topology_fingerprint = None
         self._emit_topology_changed()
         self._emit_loads_changed()
@@ -497,6 +506,7 @@ class Quick3DSceneBridge(QObject):
         self._ghost_nodes = []
         self._ghost_members = []
         self._force_diagram_parts = []
+        self._result_labels = []
         if self._last_model is not None and self._points:
             self._rebuild_default_geometry(self._last_model)
             self._load_arrows = self._build_all_load_arrows(self._last_model, self._points)
@@ -1057,6 +1067,15 @@ class Quick3DSceneBridge(QObject):
         """
         return self._force_diagram_parts
 
+    @Property("QVariantList", notify=topology_changed)
+    def resultLabels(self) -> list[dict[str, float | int | str]]:
+        """Screen-projected result numbers (text + view-space xyz + color).
+
+        Bound to ``topology_changed`` because the list is rebuilt with the
+        rest of the result overlay in ``set_result``, never updated in place.
+        """
+        return self._result_labels
+
     @Property(bool, notify=visibility_changed)
     def loadsVisible(self) -> bool:
         return self._loads_visible
@@ -1240,6 +1259,7 @@ class Quick3DSceneBridge(QObject):
         self._ghost_nodes = []
         self._ghost_members = []
         self._force_diagram_parts = []
+        self._result_labels = []
         self._load_arrows = self._build_all_load_arrows(model, points)
         self._support_parts = self._build_support_parts(model, points)
         self._rebuild_load_entry_parts()
@@ -1287,9 +1307,18 @@ class Quick3DSceneBridge(QObject):
             support_height = max(self._extent * 0.05, 0.055)
             support_plate = max(support_height * 0.16, 0.012)
             ground_thickness = max(self._extent * 0.012, 0.01)
+            supported_sphere_bottoms = [
+                points[boundary.node_tag][1]
+                - self._display_node_radius(boundary.node_tag)
+                * (1.0 + _SUPPORT_NODE_GAP_RATIO)
+                for boundary in model.boundaries
+                if boundary.node_tag in points
+            ]
+            lowest_attachment = min(
+                [min(y_values) - self._node_radius, *supported_sphere_bottoms]
+            )
             self._ground_y = (
-                min(y_values)
-                - self._node_radius
+                lowest_attachment
                 - support_height
                 - support_plate
                 - ground_thickness / 2
@@ -1723,6 +1752,7 @@ class Quick3DSceneBridge(QObject):
                 "previewMembers": 0 if self._preview_member is None else 1,
                 "floorBoundaryOutline": len(self._floor_outline_parts),
                 "forceDiagrams": len(self._force_diagram_parts),
+                "resultLabels": len(self._result_labels),
             }
         )
         recorder.record_list_identities(
@@ -1877,6 +1907,12 @@ class Quick3DSceneBridge(QObject):
             point = points.get(boundary.node_tag)
             if point is None:
                 continue
+            # Support glyphs are offset from the visible surface of the node
+            # marker, not from the old global fallback radius. Section-aware
+            # nodes can be much larger at beam-column joints; the extra air
+            # gap keeps the whole mechanical glyph readable below the sphere.
+            node_radius = self._display_node_radius(boundary.node_tag)
+            support_clearance = node_radius * (1.0 + _SUPPORT_NODE_GAP_RATIO)
             kind = glyph_kind(boundary)
             color = _SUPPORT_COLORS[kind]
             # Conjugating a structural-space rotation by ``_view_coordinates``
@@ -1942,8 +1978,8 @@ class Quick3DSceneBridge(QObject):
 
             if kind == SupportKind.FIXED:
                 socket_height = height * 0.62
-                socket_center_y = -self._node_radius - socket_height / 2.0
-                plate_center_y = -self._node_radius - socket_height - plate_height / 2.0
+                socket_center_y = -support_clearance - socket_height / 2.0
+                plate_center_y = -support_clearance - socket_height - plate_height / 2.0
                 add_local_part(
                     "fixed_socket",
                     "#Cylinder",
@@ -1975,12 +2011,12 @@ class Quick3DSceneBridge(QObject):
 
             if kind == SupportKind.PINNED:
                 joint_diameter = width * 0.32
-                cone_center_y = -self._node_radius - height * 0.52
-                plate_center_y = -self._node_radius - height - plate_height / 2.0
+                cone_center_y = -support_clearance - height * 0.52
+                plate_center_y = -support_clearance - height - plate_height / 2.0
                 add_local_part(
                     "pin_joint",
                     "#Sphere",
-                    (0.0, -self._node_radius - joint_diameter * 0.18, 0.0),
+                    (0.0, -support_clearance - joint_diameter / 2.0, 0.0),
                     (joint_diameter, joint_diameter, joint_diameter),
                 )
                 add_local_part(
@@ -2000,9 +2036,9 @@ class Quick3DSceneBridge(QObject):
             free_axis = roller_free_axes.get(kind)
             if free_axis is not None:
                 joint_diameter = width * 0.30
-                cone_center_y = -self._node_radius - height * 0.48
+                cone_center_y = -support_clearance - height * 0.48
                 roller_radius = width * 0.14
-                roller_center_y = -self._node_radius - height - roller_radius
+                roller_center_y = -support_clearance - height - roller_radius
                 roller_length = width * 0.96
                 # Offset the pair perpendicular to the rolling direction in
                 # plan. For the unusual vertical-free ROLLER_Z preset, use X
@@ -2016,7 +2052,7 @@ class Quick3DSceneBridge(QObject):
                 add_local_part(
                     "roller_joint",
                     "#Sphere",
-                    (0.0, -self._node_radius - joint_diameter * 0.18, 0.0),
+                    (0.0, -support_clearance - joint_diameter / 2.0, 0.0),
                     (joint_diameter, joint_diameter, joint_diameter),
                 )
                 add_local_part(
@@ -2050,8 +2086,10 @@ class Quick3DSceneBridge(QObject):
             # not by another anonymous box.  The boundary quaternion rotates
             # the local support axes before each bar/cone is placed, so an
             # inclined restraint remains mechanically readable in 3D.
-            joint = world_from_local((0.0, -self._node_radius - width * 0.13, 0.0))
             joint_diameter = width * 0.28
+            joint = world_from_local(
+                (0.0, -support_clearance - joint_diameter / 2.0, 0.0)
+            )
             add_part(
                 common,
                 "custom_joint",
@@ -2502,10 +2540,23 @@ class Quick3DSceneBridge(QObject):
             return []
         length, old_scalar, old_qx, old_qy, old_qz = orientation
         direction = tuple((end[k] - start[k]) / length for k in range(3))
+        # The analysis member still connects node centre to node centre, but
+        # the rendered solid stops at each sphere's outer surface.  Keeping
+        # the true endpoints in ``_box_part`` preserves box selection and
+        # solver geometry while removing the half-buried, Boolean-union look
+        # at joints.  The 45% caps keep a very short member visible even when
+        # two unusually large markers nearly meet.
+        start_inset = min(self._display_node_radius(element.node_i), length * 0.45)
+        end_inset = min(self._display_node_radius(element.node_j), length * 0.45)
+        rendered_length = length - start_inset - end_inset
+        rendered_start = tuple(
+            start[k] + direction[k] * start_inset for k in range(3)
+        )
+        rendered_end = tuple(end[k] - direction[k] * end_inset for k in range(3))
         mid = (
-            0.5 * (start[0] + end[0]),
-            0.5 * (start[1] + end[1]),
-            0.5 * (start[2] + end[2]),
+            0.5 * (rendered_start[0] + rendered_end[0]),
+            0.5 * (rendered_start[1] + rendered_end[1]),
+            0.5 * (rendered_start[2] + rendered_end[2]),
         )
 
         is_truss = element.element_type.lower() in _TRUSS_ELEMENT_TYPES
@@ -2528,7 +2579,7 @@ class Quick3DSceneBridge(QObject):
             truss_source = "#Cylinder" if truss_shape in {"Circle", "Pipe"} else "#Cube"
             return [
                 self._box_part(
-                    element.tag, start, end, mid, length, size, size,
+                    element.tag, start, end, mid, rendered_length, size, size,
                     old_scalar, old_qx, old_qy, old_qz, color, opacity,
                     source=truss_source,
                 )
@@ -2542,7 +2593,7 @@ class Quick3DSceneBridge(QObject):
             local_z_world = self._rotate_by_quaternion((0.0, 0.0, 1.0), scalar, qx, qy, qz)
             parts = [
                 self._box_part(
-                    element.tag, start, end, mid, length,
+                    element.tag, start, end, mid, rendered_length,
                     visual["web_thickness"], visual["web_height"],
                     scalar, qx, qy, qz, color, opacity,
                 )
@@ -2553,7 +2604,7 @@ class Quick3DSceneBridge(QObject):
                 )
                 parts.append(
                     self._box_part(
-                        element.tag, start, end, flange_position, length,
+                        element.tag, start, end, flange_position, rendered_length,
                         visual["width_b"], visual["flange_thickness"],
                         scalar, qx, qy, qz, color, opacity,
                     )
@@ -2563,7 +2614,7 @@ class Quick3DSceneBridge(QObject):
         source = "#Cylinder" if visual["shape"] in {"Circle", "Pipe"} else "#Cube"
         return [
             self._box_part(
-                element.tag, start, end, mid, length,
+                element.tag, start, end, mid, rendered_length,
                 visual["width_b"], visual["width_h"],
                 scalar, qx, qy, qz, color, opacity, source=source,
             )
@@ -3314,6 +3365,40 @@ class Quick3DSceneBridge(QObject):
                     parts.append(part)
         return parts
 
+    def _build_result_labels(
+        self,
+        labels: list[dict[str, object]],
+    ) -> list[dict[str, float | int | str]]:
+        """Map structural-space overlay numbers into view coordinates.
+
+        QML billboards with ``mapFrom3DScene``, so these must be the same
+        (x, z, -y) frame the rest of the scene already lives in. Text stays
+        a 2D overlay rather than a 3D mesh so orbiting never turns a value
+        edge-on.
+        """
+        parts: list[dict[str, float | int | str]] = []
+        for item in labels:
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+            try:
+                x = float(item["x"])
+                y = float(item["y"])
+                z = float(item["z"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            view = self._view_coordinates(x, y, z)
+            parts.append(
+                {
+                    "text": text,
+                    "x": view[0],
+                    "y": view[1],
+                    "z": view[2],
+                    "color": str(item.get("color", "#334155")),
+                }
+            )
+        return parts
+
     def _force_diagram_cylinder(
         self,
         start: tuple[float, float, float],
@@ -3586,6 +3671,7 @@ class Quick3DSceneBridge(QObject):
         self._local_axis_gizmos = []
         self._load_entry_parts = []
         self._force_diagram_parts = []
+        self._result_labels = []
         self._center = (0.0, 0.0, 0.0)
         self._extent = 1.0
         self._ground_y = 0.0

@@ -594,7 +594,7 @@ def test_3d_box_selection_ignores_narrowed_selection_filter() -> None:
     right = page.canvas._add_node_at((4.0, 0.0, 0.0))
     member = page.canvas.add_member(left, right)
 
-    page._element_subcategory_clicked("duplicate")
+    page._element_subcategory_clicked("move")
     assert page.canvas.selection_filter == "elements"
 
     page._on_3d_box_selected({left, right}, {member}, False)
@@ -602,7 +602,7 @@ def test_3d_box_selection_ignores_narrowed_selection_filter() -> None:
     assert page.canvas.selected_nodes == {left, right}
     assert page.canvas.selected_elements == {member}
 
-    page._node_subcategory_clicked("duplicate_node")
+    page._node_subcategory_clicked("translate_node")
     assert page.canvas.selection_filter == "nodes"
 
     page._on_3d_box_selected({left, right}, {member}, False)
@@ -881,13 +881,7 @@ def _section_label_texts(section) -> list[str]:
 def test_2d_transform_panels_do_not_expose_or_apply_a_z_offset() -> None:
     page = _page(start_in_3d=False)
 
-    for key in (
-        "translate_node",
-        "duplicate_node",
-        "array_node",
-        "duplicate",
-        "array",
-    ):
+    for key in ("translate_node",):
         section = page.category_stack.widget(page.category_pages[key])
         offset_field = _find_offset_line(section)
         assert offset_field.text() == "0, 0"
@@ -901,6 +895,7 @@ def test_2d_transform_panels_do_not_expose_or_apply_a_z_offset() -> None:
     node = page.canvas._add_node_at((1.0, 2.0))
     page.canvas.selected_nodes = {node}
     section = page.category_stack.widget(page.category_pages["translate_node"])
+    page.node_translate_move_mode.setChecked(True)
     offset_field = _find_offset_line(section)
     offset_field.setText("3, -1, 99")
     QTest.mouseClick(_find_apply_button(section), Qt.MouseButton.LeftButton)
@@ -914,14 +909,7 @@ def test_2d_transform_panels_do_not_expose_or_apply_a_z_offset() -> None:
 def test_3d_transform_panels_keep_three_axis_inputs() -> None:
     page = _page(start_in_3d=True)
 
-    for key in (
-        "move",
-        "duplicate",
-        "array",
-        "translate_node",
-        "duplicate_node",
-        "array_node",
-    ):
+    for key in ("move", "translate_node"):
         section = page.category_stack.widget(page.category_pages[key])
         offset_field = _find_offset_line(section)
         assert offset_field.text() == "0, 0, 0"
@@ -930,6 +918,49 @@ def test_3d_transform_panels_keep_three_axis_inputs() -> None:
     for key in ("rotate_node", "rotate"):
         section = page.category_stack.widget(page.category_pages[key])
         assert "반복당 dZ" in _section_label_texts(section)
+
+
+def test_node_and_element_translate_panels_use_midas_copy_move_modes() -> None:
+    page = _page(start_in_3d=True)
+
+    assert page.node_translate_copy_mode.isChecked() is True
+    assert page.node_translate_repeat.isHidden() is False
+    assert page.node_translate_copy_node_attributes.isHidden() is False
+    assert page.node_translate_apply_button.text() == "선택 노드 복사"
+
+    page.node_translate_move_mode.setChecked(True)
+    assert page.node_translate_repeat.isHidden() is True
+    assert page.node_translate_copy_node_attributes.isHidden() is True
+    assert page.node_translate_apply_button.text() == "선택 노드 이동"
+
+    assert page.element_translate_copy_mode.isChecked() is True
+    assert page.element_translate_repeat.isHidden() is False
+    assert page.element_translate_copy_element_loads.isHidden() is False
+    assert page.element_translate_apply_button.text() == "선택 부재 복사"
+
+    page.element_translate_move_mode.setChecked(True)
+    assert page.element_translate_repeat.isHidden() is True
+    assert page.element_translate_copy_node_attributes.isHidden() is True
+    assert page.element_translate_copy_element_loads.isHidden() is True
+    assert page.element_translate_apply_button.text() == "선택 부재 이동"
+
+
+def test_element_translate_copy_mode_repeats_the_selected_member() -> None:
+    page = _page(start_in_3d=True)
+    left = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    right = page.canvas._add_node_at((2.0, 0.0, 0.0))
+    member = page.canvas.add_member(left, right)
+    page.canvas.selected_elements = {member}
+
+    page.element_translate_offset.setText("4, 0, 0")
+    page.element_translate_repeat.setValue(2)
+    page.element_translate_apply_button.click()
+
+    assert len(page.canvas.nodes) == 6
+    assert len(page.canvas.elements) == 3
+    assert sorted(node.x for node in page.canvas.nodes.values()) == pytest.approx(
+        [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]
+    )
 
 
 def test_element_translate_panel_parses_a_single_dx_dy_dz_line() -> None:
@@ -943,6 +974,7 @@ def test_element_translate_panel_parses_a_single_dx_dy_dz_line() -> None:
 
     section = page.category_stack.widget(page.category_pages["move"])
     page.category_stack.setCurrentWidget(section)
+    page.element_translate_move_mode.setChecked(True)
     offset_field = _find_offset_line(section)
     assert offset_field.text() == "0, 0, 0"
     offset_field.setText("3, -1, 5")
@@ -954,19 +986,19 @@ def test_element_translate_panel_parses_a_single_dx_dy_dz_line() -> None:
     assert moved.z == pytest.approx(5.0)
 
 
-def test_node_array_copy_panel_accepts_a_dz_offset() -> None:
-    """Same single-line input, for the Node tab's Array Copy page - repeat
-    count together with a dZ offset must step a copy up in Z each time."""
+def test_node_translate_copy_mode_accepts_repeat_count_and_a_dz_offset() -> None:
+    """Translate Copy replaces the separate Duplicate/Array Copy pages."""
     page = _page(start_in_3d=True)
     left = page.canvas._add_node_at((0.0, 0.0, 0.0))
     right = page.canvas._add_node_at((4.0, 0.0, 0.0))
     page.canvas.add_member(left, right)
     page.canvas.selected_nodes = {left, right}
 
-    section = page.category_stack.widget(page.category_pages["array_node"])
+    section = page.category_stack.widget(page.category_pages["translate_node"])
     page.category_stack.setCurrentWidget(section)
     offset_field = _find_offset_line(section)
     offset_field.setText("0, 0, 3")
+    page.node_translate_repeat.setValue(1)
     QTest.mouseClick(_find_apply_button(section), Qt.MouseButton.LeftButton)
 
     heights = sorted(
