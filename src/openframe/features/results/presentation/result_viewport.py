@@ -5,8 +5,8 @@ import math
 from PySide6.QtCore import QPoint, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
-    QCheckBox,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFrame,
     QGraphicsItem,
@@ -41,7 +41,7 @@ from openframe.features.results.deformation import (
     member_deflection,
     nodal_displacements,
 )
-from openframe.features.results.diagrams import DiagramKind
+from openframe.features.results.diagrams import DiagramKind, spatial_diagram_strips
 from openframe.features.results.magnitudes import magnitude_range, member_magnitudes
 from openframe.features.results.presentation.frame_diagram_renderer import (
     FrameDiagramRenderer,
@@ -611,15 +611,25 @@ class ResultViewport(QFrame):
         if self._model is None:
             return
         if self._result is not None:
+            force_diagram = self._result_type in {"axial", "shear", "moment"}
             member_colors = (
-                self._member_magnitudes() if self._result_type == "stress" else None
+                self._member_magnitudes()
+                if force_diagram or self._result_type == "stress"
+                else None
             )
+            # Diagrams are drawn on the undeformed centreline, the same way the
+            # 2D QGraphics overlay is. The DIAGRAM SCALE slider is the same
+            # widget as DEFORM SCALE; feeding that value as a displacement
+            # multiplier would slide the coloured members out from under the
+            # ribbon. Keep the frame still and let the slider change amplitude.
+            scale = 0.0 if force_diagram else self._deformation_multiplier()
             self.quick3d_view.show_result(
                 self._model,
                 self._result,
-                self._deformation_multiplier(),
-                self.show_undeformed.isChecked(),
+                scale,
+                self.show_undeformed.isChecked() and not force_diagram,
                 member_magnitudes=member_colors,
+                force_diagrams=self._force_diagram_payload() if force_diagram else [],
             )
         else:
             self.quick3d_view.clear_result()
@@ -748,11 +758,34 @@ class ResultViewport(QFrame):
     def _member_magnitudes(self) -> dict[int, float]:
         if self._model is None or self._result is None:
             return {}
-        # 3D N/V/M still have no diagram overlay here; Stress is the member
-        # colour-map view for both 2D and 3D.
-        if self._model.ndm == 3 and self._result_type in {"axial", "shear", "moment"}:
-            return {}
         return member_magnitudes(self._model, self._result, self._result_type)
+
+    def _force_diagram_payload(self) -> list[dict[str, object]]:
+        """Structural-space strips for the Quick3D overlay - Qt-free geometry
+        from ``spatial_diagram_strips``, converted to plain dicts so the
+        viewport bridge never imports the results diagram package.
+        """
+        kinds = {
+            "axial": DiagramKind.AXIAL,
+            "shear": DiagramKind.SHEAR,
+            "moment": DiagramKind.MOMENT,
+        }
+        kind = kinds.get(self._result_type)
+        if kind is None or self._model is None or self._result is None:
+            return []
+        return [
+            {
+                "color": strip.color,
+                "axis": list(strip.axis),
+                "curve": list(strip.curve),
+            }
+            for strip in spatial_diagram_strips(
+                self._model,
+                self._result,
+                kind,
+                self.deformation_scale.value(),
+            )
+        ]
 
     def _draw_deformed_shape(self) -> None:
         if self._model is None or self._result is None:

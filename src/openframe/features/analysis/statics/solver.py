@@ -12,10 +12,13 @@ Iz) for a 3D one, (E, A) for a truss/cable/tension-only/compression-only member
 (all of which share the "truss" element family - see ``_element_family``), the
 same key convention model_inspector_panel.py's readiness check already expects.
 
-A mixed frame+truss model is still rejected: this solver has no combined
-stiffness assembly for that case. Pure trusses (2D and 3D) with a valid E and A
-on every member are solved with that real EA, including 1+ degree indeterminate
-ones.
+A model whose members are a genuine mix of frame and truss families (e.g. a
+fixed-base mast braced by a diagonal guy cable) is also solved - see
+``MaterialFreeStaticsSolver._build_mixed`` - but always with real stiffness on
+every element, never the unit-placeholder determinate shortcut pure truss/frame
+systems get: a mixed system's exact redundancy degree is never computed (see
+``check_determinacy``'s "mixed" branch), so it is always treated as needing real
+properties, regardless of whether the structure happens to be determinate.
 """
 
 import math
@@ -137,11 +140,18 @@ def check_determinacy(model: StructuralModel) -> DeterminacyCheck:
 
     kinds = {_element_family(element.element_type) for element in model.elements.values()}
     if len(kinds) != 1:
+        # A mixed frame+truss model's exact redundancy degree is not computed
+        # here - solve() instead always requires real per-element stiffness
+        # for it (see its own "mixed" branch), which gives correct results
+        # regardless of the structure's true determinacy (the displacement
+        # method reduces to plain equilibrium on a determinate structure
+        # anyway), just without the unit-stiffness convenience a pure
+        # determinate truss/frame gets.
         return DeterminacyCheck(
             "mixed",
             1,
-            "프레임과 트러스가 혼합된 모델은 이 솔버에서 강성해석을 지원하지 않습니다. "
-            "프레임만 또는 트러스만으로 모델을 구성하세요.",
+            "프레임과 트러스가 혼합된 모델입니다. 모든 부재에 실제 재료·단면 물성이 "
+            "있어야 해석할 수 있습니다.",
         )
 
     system = kinds.pop()
@@ -268,12 +278,35 @@ class MaterialFreeStaticsSolver:
                     )
                 truss_unit_stiffness = True
                 displacement_stiffness = DisplacementStiffnessKind.UNIT_STIFFNESS
+        elif check.system == "mixed":
+            # Unlike pure truss/frame, a mixed model never gets the unit-
+            # stiffness determinate shortcut - its exact redundancy degree
+            # is not computed (see check_determinacy), so real stiffness is
+            # always required, on every element, regardless of whether the
+            # structure happens to be determinate.
+            if geometric_nonlinearity != "Linear":
+                return AnalysisResult(
+                    status=AnalysisStatus.FAILED,
+                    messages=[
+                        check.message,
+                        "트러스·케이블이 포함된 모델의 P-Delta(기하비선형) 해석은 "
+                        "아직 지원하지 않습니다.",
+                    ],
+                )
+            if not self._has_material_everywhere(model, "mixed", model.ndm):
+                return AnalysisResult(
+                    status=AnalysisStatus.FAILED,
+                    messages=[
+                        check.message,
+                        "혼합(프레임+트러스) 모델은 모든 부재에 실제 재료·단면이 필요합니다 "
+                        "(프레임: E/A/I 또는 E/A/G/J/Iy/Iz, 트러스·케이블: E/A).",
+                    ],
+                )
         elif needs_material:
             if check.system != "frame":
-                # empty / unsupported / mixed: still no silent unit-stiffness
-                # shortcut. Mixed is rejected even when every member happens
-                # to carry properties - this solver has no combined frame+
-                # truss stiffness path.
+                # empty / unsupported: still no silent unit-stiffness
+                # shortcut ("mixed" no longer reaches here - it has its own
+                # branch above).
                 if geometric_nonlinearity != "Linear":
                     return AnalysisResult(
                         status=AnalysisStatus.FAILED,
@@ -594,6 +627,21 @@ class MaterialFreeStaticsSolver:
                 MaterialFreeStaticsSolver._element_material_truss(element) is not None
                 for element in model.elements.values()
             )
+        if system == "mixed":
+            frame_reader = (
+                MaterialFreeStaticsSolver._element_material_3d
+                if ndm == 3
+                else MaterialFreeStaticsSolver._element_material
+            )
+            return all(
+                (
+                    MaterialFreeStaticsSolver._element_material_truss(element)
+                    if _element_family(element.element_type) == "truss"
+                    else frame_reader(element)
+                )
+                is not None
+                for element in model.elements.values()
+            )
         if system != "frame":
             return False
         reader = (
@@ -668,6 +716,10 @@ class MaterialFreeStaticsSolver:
                     area,
                     element_material_tag,
                 )
+            return
+
+        if system == "mixed":
+            MaterialFreeStaticsSolver._build_mixed(model, ndm, ndf, material)
             return
 
         if ndm == 2:
@@ -758,6 +810,138 @@ class MaterialFreeStaticsSolver:
                 end_j_tag = MaterialFreeStaticsSolver._build_plastic_hinge(
                     element.tag, "j", node_i, node_j, my_capacity, mz_capacity, hardening_ratio,
                     element.local_axis_angle,
+                )
+            elastic, area, shear, torsion, inertia_y, inertia_z = (
+                MaterialFreeStaticsSolver._resolve_material_3d(element)
+            )
+            ops.element(
+                "elasticBeamColumn",
+                element.tag,
+                end_i_tag,
+                end_j_tag,
+                area,
+                elastic,
+                shear,
+                torsion,
+                inertia_y,
+                inertia_z,
+                transf_tag,
+            )
+
+    @staticmethod
+    def _build_mixed(
+        model: StructuralModel,
+        ndm: int,
+        ndf: int,
+        material: tuple[float, float, float] | None,
+    ) -> None:
+        """Assemble a model whose members are a genuine mix of frame
+        (moment-continuous) and truss/cable/tension-only/compression-only
+        (axial-only, pinned at both ends) elements sharing the same node set
+        - e.g. a fixed-base mast braced by a diagonal guy cable. Every node
+        already got the full frame ``ndf`` (3 in 2D / 6 in 3D) from
+        ``_build``'s own ``ops.model(...)`` call, regardless of which family
+        actually touches it, since OpenSees allows only one ndf per model.
+
+        A truss element never couples anything into the rotational DOFs, so
+        a node touched ONLY by truss/cable members ends up with an orphaned
+        rotation - a zero pivot in the global stiffness matrix - exactly the
+        problem the pure-3D-frame path below already solves for a fully-
+        released hinge joint (``_orphan_joint_nodes_for_rotation_pin``), just
+        caused by a member family that structurally never carries rotation
+        instead of a released frame end. ``_mixed_orphan_rotation_nodes``
+        generalises that same detection to also count every truss-family end
+        as "released", and pins 2D's one rotation (Mz) or 3D's all three
+        (Rx/Ry/Rz - a truss provides no torsional stiffness either, unlike a
+        released frame end which still keeps torsion rigid).
+
+        ``solve()`` has already required real (E, A[, I] / E, A, G, J, Iy,
+        Iz) on EVERY element before this runs (see ``_has_material_
+        everywhere``'s "mixed" branch) - there is no unit-stiffness
+        placeholder here the way a pure determinate truss/frame system falls
+        back to, since a mixed system's exact redundancy degree is never
+        computed (``check_determinacy``'s "mixed" branch) and is always
+        treated as needing real stiffness.
+        """
+        orphan_nodes = _mixed_orphan_rotation_nodes(model)
+        frame_elements = [
+            element
+            for element in model.elements.values()
+            if _element_family(element.element_type) != "truss"
+        ]
+        needs_hinge_material = bool(orphan_nodes) or any(
+            element.release_count for element in frame_elements
+        )
+        if needs_hinge_material:
+            ops.uniaxialMaterial("Elastic", _HINGE_MATERIAL_TAG, _HINGE_STIFFNESS)
+        for node_tag in orphan_nodes:
+            ops.fix(node_tag, *_orphan_joint_rotation_fix_pattern(ndf))
+
+        for element in model.elements.values():
+            if _element_family(element.element_type) != "truss":
+                continue
+            elastic, area = MaterialFreeStaticsSolver._element_material_truss(element)
+            element_material_tag = _TRUSS_ELEMENT_MATERIAL_TAG_OFFSET + element.tag
+            ops.uniaxialMaterial("Elastic", element_material_tag, elastic)
+            ops.element(
+                "truss",
+                element.tag,
+                element.node_i,
+                element.node_j,
+                area,
+                element_material_tag,
+            )
+
+        if ndm == 2:
+            ops.geomTransf("Linear", 1)
+            trapezoid_loads = {
+                load.element_tag: load for load in model.element_loads if not load.is_uniform
+            }
+            for element in frame_elements:
+                elastic, area, inertia = MaterialFreeStaticsSolver._resolve_material(
+                    element, material
+                )
+                trapezoid = trapezoid_loads.get(element.tag)
+                if trapezoid is not None:
+                    MaterialFreeStaticsSolver._build_discretized_member(
+                        model, element, area, elastic, inertia
+                    )
+                    continue
+                arguments: list[object] = [
+                    "elasticBeamColumn",
+                    element.tag,
+                    element.node_i,
+                    element.node_j,
+                    area,
+                    elastic,
+                    inertia,
+                    1,
+                ]
+                release_code = int(element.moment_release_i) + 2 * int(element.moment_release_j)
+                if release_code:
+                    arguments += ["-release", release_code]
+                ops.element(*arguments)
+            return
+
+        for element in frame_elements:
+            node_i = model.nodes[element.node_i]
+            node_j = model.nodes[element.node_j]
+            transf_tag = element.tag
+            transf_args: list[object] = list(
+                _reference_vector(node_i, node_j, element.local_axis_angle)
+            )
+            if any(element.offset_i) or any(element.offset_j):
+                transf_args += ["-jntOffset", *element.offset_i, *element.offset_j]
+            ops.geomTransf("Linear", transf_tag, *transf_args)
+            end_i_tag = element.node_i
+            end_j_tag = element.node_j
+            if element.moment_release_i:
+                end_i_tag = MaterialFreeStaticsSolver._build_hinge(
+                    element.tag, "i", node_i, node_j, element.local_axis_angle
+                )
+            if element.moment_release_j:
+                end_j_tag = MaterialFreeStaticsSolver._build_hinge(
+                    element.tag, "j", node_i, node_j, element.local_axis_angle
                 )
             elastic, area, shear, torsion, inertia_y, inertia_z = (
                 MaterialFreeStaticsSolver._resolve_material_3d(element)
@@ -1067,6 +1251,30 @@ class MaterialFreeStaticsSolver:
             ops.load(load.node_tag, *values)
         if system == "truss" and (model.element_loads or model.point_loads):
             raise ValueError("트러스 부재의 등분포하중은 절점하중으로 변환해 입력하세요.")
+        if system == "mixed" and (model.element_loads or model.point_loads):
+            # A mixed model's own truss-family members are exactly as
+            # incapable of a distributed/point load as a pure-truss system's
+            # (see the check just above) - only its frame members can carry
+            # one, so the same rejection applies, scoped to whichever
+            # elements actually are truss-family here.
+            truss_tags = {
+                element.tag
+                for element in model.elements.values()
+                if _element_family(element.element_type) == "truss"
+            }
+            offending = sorted(
+                {load.element_tag for load in model.element_loads if load.element_tag in truss_tags}
+                | {
+                    load.element_tag
+                    for load in model.point_loads
+                    if load.element_tag in truss_tags
+                }
+            )
+            if offending:
+                listed = ", ".join(str(tag) for tag in offending)
+                raise ValueError(
+                    f"트러스·케이블 부재({listed})의 분포하중은 절점하중으로 변환해 입력하세요."
+                )
         if ndm == 3 and any(not load.is_uniform for load in model.element_loads):
             # A linearly-varying (trapezoidal) load needs _build's discretized-
             # member sub-elements (see _build_discretized_member), which only
@@ -1218,7 +1426,8 @@ class MaterialFreeStaticsSolver:
                 + (node_j.y - node_i.y) ** 2
                 + (node_j.z - node_i.z) ** 2
             )
-            if system == "truss":
+            element_family = _element_family(element.element_type)
+            if element_family == "truss":
                 axial_response = ops.eleResponse(tag, "axialForce")
                 axial = float(axial_response[0]) if axial_response else 0.0
                 local_force = (
@@ -1249,7 +1458,7 @@ class MaterialFreeStaticsSolver:
             real_material = MaterialFreeStaticsSolver._element_material(element) or material
             flexural_rigidity = (
                 real_material[0] * real_material[2]
-                if real_material is not None and system != "truss"
+                if real_material is not None and element_family != "truss"
                 else 0.0
             )
             element_results[tag] = ElementResult(
@@ -1306,6 +1515,42 @@ def _released_and_rigid_nodes(model: StructuralModel) -> tuple[dict[int, int], s
         ):
             rigid_nodes.add(condition.node_tag)
     return released_ends_by_node, rigid_nodes
+
+
+def _mixed_orphan_rotation_nodes(model: StructuralModel) -> list[int]:
+    """Nodes in a mixed frame+truss model whose rotational DOF(s) (Mz in 2D,
+    Rx/Ry/Rz in 3D) never receive stiffness from any element or support.
+
+    A truss/cable/tension-only/compression-only member carries no rotational
+    stiffness at all - so a node touched only by truss-family members (and/
+    or fully-released frame ends), with no support restraining rotation
+    there either, would otherwise leave that rotation entirely unconnected -
+    a zero pivot in the global stiffness matrix. This is
+    ``_orphan_joint_nodes_for_rotation_pin``'s same idea, extended to a
+    member family that structurally never carries rotation rather than a
+    released frame end, and checking all three 3D rotations (a truss also
+    carries no torsion, unlike a released frame end which keeps torsion
+    rigid - see ``_build_hinge``).
+    """
+    rigid_nodes: set[int] = set()
+    touched_nodes: set[int] = set()
+    for element in model.elements.values():
+        is_truss = _element_family(element.element_type) == "truss"
+        for node_tag, released in (
+            (element.node_i, is_truss or element.moment_release_i),
+            (element.node_j, is_truss or element.moment_release_j),
+        ):
+            touched_nodes.add(node_tag)
+            if not released:
+                rigid_nodes.add(node_tag)
+    rotation_dof_indices = (2,) if model.ndm == 2 else (3, 4, 5)
+    for condition in model.boundaries:
+        if any(
+            index < len(condition.restraints) and condition.restraints[index]
+            for index in rotation_dof_indices
+        ):
+            rigid_nodes.add(condition.node_tag)
+    return sorted(touched_nodes - rigid_nodes)
 
 
 def _hinge_condition_equations(model: StructuralModel) -> int:

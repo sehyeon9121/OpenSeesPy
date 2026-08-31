@@ -8,7 +8,7 @@ so these tests pin the internal-force convention rather than whatever the engine
 import pytest
 
 from openframe.core.domain import ElementResult
-from openframe.features.results.diagrams import max_abs_value, member_diagrams
+from openframe.features.results.diagrams import max_abs_value, member_diagrams, member_diagrams_3d
 
 
 def _values(diagram) -> list[float]:
@@ -57,6 +57,55 @@ def test_rejects_non_beam_column_force_shape() -> None:
 
     with pytest.raises(ValueError):
         member_diagrams(element)
+
+
+def test_3d_cantilever_tip_load_gives_hogging_moment() -> None:
+    # Same textbook cantilever as the 2D case (L=1, P=1 at the tip), stored as
+    # OpenSees 3D localForce (N, Vy, Vz, T, My, Mz) at i then j. Load is in
+    # local y, so Vz/My stay zero and the in-plane pair (Vy, Mz) must match 2D.
+    element = ElementResult(
+        element_tag=1,
+        local_forces=(0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0),
+    )
+
+    diagrams = member_diagrams_3d(element)
+
+    assert _values(diagrams.axial) == pytest.approx([0.0, 0.0])
+    assert _values(diagrams.shear_y) == pytest.approx([1.0, 1.0])
+    assert _values(diagrams.shear_z) == pytest.approx([0.0, 0.0])
+    assert _values(diagrams.moment_y) == pytest.approx([0.0, 0.0])
+    assert _values(diagrams.moment_z) == pytest.approx([-1.0, 0.0])
+
+
+def test_3d_cantilever_out_of_plane_load_gives_hogging_my() -> None:
+    # L=1, P=1 in -local z at the tip. OpenSees reports Vz_i=+1, My_i=-1
+    # (dMy/dx = -Vz, opposite Mz). Internal My must still be hogging-negative
+    # so the tension-side ribbon lands on the +z face, like hogging Mz on +y.
+    element = ElementResult(
+        element_tag=1,
+        local_forces=(0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0),
+    )
+
+    diagrams = member_diagrams_3d(element)
+
+    assert _values(diagrams.shear_z) == pytest.approx([1.0, 1.0])
+    assert _values(diagrams.moment_y) == pytest.approx([-1.0, 0.0])
+
+
+def test_3d_tension_member_reports_positive_axial_force() -> None:
+    element = ElementResult(
+        element_tag=1,
+        local_forces=(-10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+
+    assert _values(member_diagrams_3d(element).axial) == pytest.approx([10.0, 10.0])
+
+
+def test_3d_rejects_2d_force_shape() -> None:
+    element = ElementResult(element_tag=2, local_forces=(0.0, 1.0, 1.0, 0.0, -1.0, 0.0))
+
+    with pytest.raises(ValueError):
+        member_diagrams_3d(element)
 
 
 def test_max_abs_value_across_multiple_diagrams() -> None:

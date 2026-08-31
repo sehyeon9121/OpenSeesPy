@@ -229,3 +229,37 @@ def test_view_selector_and_zoom_buttons_actually_move_the_3d_camera() -> None:
     assert (root.property("cameraYaw"), root.property("cameraPitch")) == (90.0, 0.0)
 
     viewport.close()
+
+
+def test_3d_force_diagram_overlay_appears_for_moment_and_clears_afterwards() -> None:
+    """3D N/V/M used to colour nothing and draw no ribbon; the overlay must
+    show up for a force type and disappear when leaving it, the same way
+    the 2D QGraphics diagrams do.
+    """
+    application = _application()
+    model = OpenSeesModelImporter(timeout_seconds=10).load(EXAMPLE_MODEL)
+    result = OpenSeesProcessRunner(timeout_seconds=20).run(
+        AnalysisRequest(source_path=EXAMPLE_MODEL)
+    )
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+
+    viewport = _result_viewport()
+    viewport.set_model(model)
+    viewport.show_result(result)
+    application.processEvents()
+
+    bridge = viewport.quick3d_view.bridge
+    assert bridge.forceDiagrams == []
+
+    viewport.set_result_type("moment")
+    application.processEvents()
+    assert bridge.forceDiagrams
+    shapes = {part["shape"] for part in bridge.forceDiagrams}
+    assert "#Cylinder" in shapes
+    assert "#Cube" in shapes
+
+    viewport.set_result_type("overview")
+    application.processEvents()
+    assert bridge.forceDiagrams == []
+
+    viewport.close()

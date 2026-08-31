@@ -266,7 +266,96 @@ def test_real_ea_clears_the_unit_stiffness_flag() -> None:
     assert UNIT_STIFFNESS_DISPLACEMENT_WARNING not in assigned.messages
 
 
-def test_mixed_frame_and_truss_is_rejected_even_when_every_member_has_stiffness() -> None:
+def _mixed_frame_and_two_cables() -> StructuralModel:
+    """node1/node2 fixed; a frame member ties them together (both ends
+    rigid, no member load - trivially zero force, present only to make this
+    a genuine mixed model); node3 hangs off BOTH by cable, braced in two
+    non-parallel directions so it is kinematically stable without needing
+    node1/node2's own frame connection.
+
+    Load (5, -10) at node3 happens to point exactly along cable(1,3)'s own
+    axis (unit vector (-0.4472, 0.8944) from node3 to node1, scaled by
+    5*sqrt(5)) - by design, so both the cable tension and the (zero) force
+    in cable(2,3) are hand-checkable without solving the stiffness matrix:
+    cable(1,3) alone equilibrates the load, cable(2,3) carries nothing.
+    """
+    E = 2.1e8
+    return StructuralModel(
+        ndm=2,
+        nodes={1: Node(1, 0.0, 0.0), 2: Node(2, 5.0, 0.0), 3: Node(3, 2.5, -5.0)},
+        elements={
+            1: Element(1, 1, 2, "frame", properties={"E": E, "A": 0.01, "I": 0.0001}),
+            2: Element(2, 1, 3, "truss", properties={"E": E, "A": 0.0001}),
+            3: Element(3, 2, 3, "truss", properties={"E": E, "A": 0.0001}),
+        },
+        boundaries=[
+            BoundaryCondition(1, (True, True, True)),
+            BoundaryCondition(2, (True, True, True)),
+        ],
+        nodal_loads=[NodalLoad(3, (5.0, -10.0, 0.0))],
+    )
+
+
+def test_stable_mixed_frame_and_cable_model_solves_with_real_stiffness() -> None:
+    """A frame member and truss/cable members sharing nodes now solves (this
+    used to be an outright rejection - see the mast+guy-cable use case this
+    feature exists for) as long as every element carries real stiffness."""
+    model = _mixed_frame_and_two_cables()
+
+    assert check_determinacy(model).system == "mixed"
+    result = MaterialFreeStaticsSolver().solve(model)
+
+    assert result.status == AnalysisStatus.COMPLETED
+
+    # Global equilibrium holds regardless of member stiffness: reactions sum
+    # to minus the applied load.
+    total_reaction = [
+        sum(result.node_results[tag].reaction[axis] for tag in (1, 2)) for axis in (0, 1)
+    ]
+    assert total_reaction[0] == pytest.approx(-5.0, abs=1e-9)
+    assert total_reaction[1] == pytest.approx(10.0, abs=1e-9)
+
+    # Hand-checked: cable(1,3) alone equilibrates the load (T = 5*sqrt(5)),
+    # cable(2,3) carries nothing, and the frame member (both ends fixed, no
+    # member load) carries nothing either.
+    cable_13 = result.element_results[2].local_forces
+    cable_23 = result.element_results[3].local_forces
+    frame_12 = result.element_results[1].local_forces
+    assert cable_13[3] == pytest.approx(5.0 * math.sqrt(5.0), abs=1e-9)
+    assert cable_23[3] == pytest.approx(0.0, abs=1e-9)
+    assert all(value == pytest.approx(0.0, abs=1e-9) for value in frame_12)
+
+    # The whole point of supporting mixed models: a truss/cable element can
+    # never report a nonzero moment, unlike the frame member it shares a
+    # node with (see moment slots - index 2/5 in this 2D 6-value shape).
+    assert cable_13[2] == pytest.approx(0.0, abs=1e-9)
+    assert cable_13[5] == pytest.approx(0.0, abs=1e-9)
+    assert cable_23[2] == pytest.approx(0.0, abs=1e-9)
+    assert cable_23[5] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_mixed_model_missing_stiffness_on_any_element_is_rejected() -> None:
+    model = _mixed_frame_and_two_cables()
+    # Strip the cable's own A - a mixed model gets no unit-stiffness
+    # fallback the way a determinate pure truss/frame does (see
+    # check_determinacy's "mixed" branch), so this must fail, not silently
+    # solve with a placeholder.
+    model.elements[2] = Element(2, 1, 3, "truss", properties={"E": 2.1e8})
+
+    result = MaterialFreeStaticsSolver().solve(model)
+
+    assert result.status == AnalysisStatus.FAILED
+    joined = " ".join(result.messages)
+    assert "혼합" in joined
+
+
+def test_kinematically_unstable_mixed_model_fails_as_unstable_not_as_rejected() -> None:
+    """A single cable can only resist force along its own axis - bracing a
+    free joint with just one (no second, non-parallel cable, and no frame
+    member reaching it either) leaves it a mechanism in every other
+    direction. This must fail as a genuinely unstable structure now that
+    mixed models are actually solved, not with the old blanket "mixed is
+    unsupported" message."""
     model = StructuralModel(
         ndm=2,
         nodes={1: Node(1, 0.0, 0.0), 2: Node(2, 4.0, 0.0), 3: Node(3, 4.0, 3.0)},
@@ -283,5 +372,5 @@ def test_mixed_frame_and_truss_is_rejected_even_when_every_member_has_stiffness(
 
     assert result.status == AnalysisStatus.FAILED
     joined = " ".join(result.messages)
-    assert "혼합" in joined
-    assert "지원하지 않습니다" in joined
+    assert "불안정" in joined
+    assert "혼합" not in joined

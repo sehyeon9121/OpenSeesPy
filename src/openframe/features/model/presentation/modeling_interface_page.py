@@ -539,6 +539,11 @@ class ModelingInterfacePage(QFrame):
             self.workbench_group.addButton(button, index)
             self.workbench_buttons[key] = button
             layout.addWidget(button)
+            # In 2D, material and section authoring is part of Element itself.
+            # Keeping a second Properties destination made the same member
+            # assignment look like a multi-step save/select/apply workflow.
+            if not self._start_in_3d and key == "properties":
+                button.hide()
         layout.addStretch(1)
 
         # 선택/Member (Node 탭이 그리기 모드로 자동 전환하는 것과 별개로) stay
@@ -1868,7 +1873,14 @@ class ModelingInterfacePage(QFrame):
             )
 
     def _build_element_category(self) -> QWidget:
-        """Create/translate actions only; property authoring lives in Properties."""
+        """Create members and own the complete current-property workflow.
+
+        In 2D the values in this page are the active pen: Space-drawn members
+        receive them automatically, while the same values can be applied to
+        an existing selection with one explicit button. 3D retains the saved
+        library-pair selector because its staged creation workflow depends on
+        reusable work-tree definitions.
+        """
         section = QWidget()
         section.setObjectName("elementCreatePanel")
         root = QVBoxLayout(section)
@@ -1895,11 +1907,13 @@ class ModelingInterfacePage(QFrame):
         type_root.addWidget(self.element_type_selector)
         root.addWidget(type_card)
 
-        properties_card, properties_root = self._section("Material & Section")
+        properties_card, properties_root = self._section(
+            "현재 부재 설정" if not self._start_in_3d else "Material & Section"
+        )
         self.element_properties_card = properties_card
         property_hint = QLabel(
-            "Properties에서 저장한 Material과 Section을 선택하면 새 부재에 적용됩니다. "
-            "2D에서는 선택하지 않아도 기본 물성으로 그릴 수 있습니다."
+            "여기 입력된 물성과 단면이 현재 설정입니다. Space로 새로 그리는 부재에는 "
+            "자동 적용되고, 기존 부재는 선택 후 아래 적용 버튼을 누르면 됩니다."
             if not self._start_in_3d
             else "Properties에서 저장한 Material과 Section을 모두 선택하세요."
         )
@@ -1907,7 +1921,14 @@ class ModelingInterfacePage(QFrame):
         property_hint.setObjectName("setupSectionHint")
         properties_root.addWidget(property_hint)
 
-        property_form = QFormLayout()
+        saved_property_picker = QWidget() if not self._start_in_3d else None
+        self.element_saved_property_picker = saved_property_picker
+        property_form = (
+            QFormLayout(saved_property_picker)
+            if saved_property_picker is not None
+            else QFormLayout()
+        )
+        property_form.setContentsMargins(0, 0, 0, 0)
         self.element_property_form = property_form
         self.element_material_selector = QComboBox()
         self.element_material_selector.setObjectName("elementMaterialSelector")
@@ -1921,22 +1942,78 @@ class ModelingInterfacePage(QFrame):
             self._element_property_selection_changed
         )
         property_form.addRow("Section", self.element_section_selector)
-        properties_root.addLayout(property_form)
+        if saved_property_picker is None:
+            properties_root.addLayout(property_form)
+        else:
+            properties_root.addWidget(saved_property_picker)
+            saved_property_picker.hide()
 
         self.active_element_status = QLabel(
-            "Element Type을 고르고 Material과 Section을 선택하세요."
+            "현재 입력값을 확인하는 중입니다."
+            if not self._start_in_3d
+            else "Element Type을 고르고 Material과 Section을 선택하세요."
         )
         self.active_element_status.setWordWrap(True)
         self.active_element_status.setObjectName("setupSectionHint")
         properties_root.addWidget(self.active_element_status)
+
+        if not self._start_in_3d:
+            self.element_current_property_panel = SectionMaterialPanel()
+            self.element_current_property_panel.set_streamlined_assignment_mode()
+            # This panel is the live current setting, not a library editor.
+            # Saving a pair is therefore unnecessary and would recreate the
+            # exact two-stage workflow this page is replacing.
+            self.element_current_property_panel.streamlined_assignment_hint.setText(
+                "입력값을 바꾸면 즉시 '현재 설정'이 됩니다. 별도로 저장할 필요가 없습니다."
+            )
+            self.element_current_property_panel.property_set_save_button.hide()
+            self.element_current_property_panel.property_set_save_status.hide()
+            self.element_current_property_panel.apply_button.setText(
+                "선택 부재에 현재 설정 적용"
+            )
+            self.element_current_property_panel.apply_button.setObjectName(
+                "elementApplyCurrentPropertiesButton"
+            )
+            self.element_current_property_panel.apply_requested.connect(
+                self._apply_current_element_properties_to_selection
+            )
+            self.element_current_property_panel.edited.connect(
+                self._element_current_properties_edited
+            )
+            properties_root.addWidget(self.element_current_property_panel)
+
+            self.load_selected_element_properties_button = QPushButton(
+                "선택 부재의 설정 불러오기"
+            )
+            self.load_selected_element_properties_button.setObjectName(
+                "direct2DSecondaryButton"
+            )
+            self.load_selected_element_properties_button.setToolTip(
+                "부재 하나를 선택한 뒤 누르면 실제 적용되어 있는 물성과 단면을 위 입력창에 불러옵니다."
+            )
+            self.load_selected_element_properties_button.clicked.connect(
+                self._load_selected_element_properties
+            )
+            properties_root.addWidget(self.load_selected_element_properties_button)
+
+            self.element_assignment_selection_status = QLabel()
+            self.element_assignment_selection_status.setObjectName("setupSectionHint")
+            self.element_assignment_selection_status.setWordWrap(True)
+            properties_root.addWidget(self.element_assignment_selection_status)
         root.addWidget(properties_card)
 
-        self.start_element_drawing_button = QPushButton("Create Element 시작")
+        self.start_element_drawing_button = QPushButton(
+            "현재 설정으로 부재 그리기 (Space)"
+            if not self._start_in_3d
+            else "Create Element 시작"
+        )
         self.start_element_drawing_button.setEnabled(not self._start_in_3d)
         self.start_element_drawing_button.clicked.connect(self._activate_draw_tool)
         root.addWidget(self.start_element_drawing_button)
         root.addStretch(1)
         self._refresh_element_property_selectors()
+        if not self._start_in_3d:
+            self._sync_element_assignment_selection_state()
         return section
 
     def _element_type_selection_changed(self, _index: int | None = None) -> None:
@@ -2218,6 +2295,9 @@ class ModelingInterfacePage(QFrame):
             None,
         )
         if material is None or section is None:
+            if not self._start_in_3d and hasattr(self, "element_current_property_panel"):
+                self._element_current_properties_edited(clear_saved_selection=False)
+                return
             self._active_element_kwargs = None
             self.start_element_drawing_button.setEnabled(not self._start_in_3d)
             property_hint = (
@@ -2243,18 +2323,132 @@ class ModelingInterfacePage(QFrame):
                 "material_id": material_id,
                 "material_category": material.get("category"),
                 "material_grade": material.get("grade"),
-            }
+            },
+            material_label=str(material.get("name") or material_id),
+            section_label=str(section.get("name") or section_id),
         )
 
-    def _set_active_element_properties(self, properties: dict[str, object]) -> None:
+    def _set_active_element_properties(
+        self,
+        properties: dict[str, object],
+        *,
+        material_label: str | None = None,
+        section_label: str | None = None,
+    ) -> None:
         self._active_element_kwargs = dict(properties)
-        material_label = self.element_material_selector.currentText()
-        section_label = self.element_section_selector.currentText()
+        material_label = material_label or self.element_material_selector.currentText()
+        section_label = section_label or self.element_section_selector.currentText()
+        elastic = float(properties.get("elastic", 0.0))
+        area = float(properties.get("area", 0.0))
+        inertia = float(properties.get("iy", 0.0))
         self.active_element_status.setText(
-            f"현재 생성 속성: {material_label} / {section_label} — "
-            "새 부재에 이 물성·단면이 적용됩니다."
+            f"현재 설정: {material_label} / {section_label}\n"
+            f"E {elastic:g} {self._unit_system.stress} · "
+            f"A {area:g} {self._unit_system.length}² · "
+            f"I {inertia:g} {self._unit_system.length}⁴\n"
+            "✓ 새 부재에 자동 적용됩니다."
         )
         self.start_element_drawing_button.setEnabled(True)
+
+    def _element_current_properties_edited(
+        self, *, clear_saved_selection: bool = True
+    ) -> None:
+        """Promote the 2D Element editor's live values to the drawing pen."""
+        panel = getattr(self, "element_current_property_panel", None)
+        if panel is None:
+            return
+        properties = panel.current_edit_kwargs()
+        if properties is None:
+            self._active_element_kwargs = None
+            self.active_element_status.setText(
+                "⚠ 단면 치수를 확인하세요. 유효한 A/I가 계산되면 현재 설정으로 사용됩니다."
+            )
+            return
+        if clear_saved_selection:
+            for combo in (self.element_material_selector, self.element_section_selector):
+                combo.blockSignals(True)
+                combo.setCurrentIndex(0)
+                combo.blockSignals(False)
+        material_label = panel.material_grade_combo.currentText().strip() or "직접 입력 물성"
+        section_label = (
+            panel.designation_combo.currentText().strip()
+            if panel.source_database.isChecked()
+            else panel.section_name.text().strip()
+        ) or panel.shape_combo.currentText().strip()
+        self._set_active_element_properties(
+            properties,
+            material_label=material_label,
+            section_label=section_label,
+        )
+
+    def _apply_current_element_properties_to_selection(self) -> None:
+        """Apply the same current pen values to already-drawn 2D members."""
+        panel = self.element_current_property_panel
+        properties = panel.current_edit_kwargs()
+        if properties is None:
+            self.active_element_status.setText(
+                "⚠ 단면 치수가 유효하지 않아 적용하지 못했습니다."
+            )
+            return
+        if not self.canvas.selected_elements:
+            self.element_assignment_selection_status.setText(
+                "⚠ 적용할 기존 부재를 먼저 선택하세요. 새 부재에는 현재 설정이 자동 적용됩니다."
+            )
+            return
+        count = len(self.canvas.selected_elements)
+        self._element_current_properties_edited()
+        self.canvas.apply_full_section_to_selection(**properties)
+        self.element_assignment_selection_status.setText(
+            f"✓ 선택 부재 {count}개에 현재 물성·단면(E/A/I)을 적용했습니다."
+        )
+        self.selection_summary.setText(
+            f"✓ 부재 {count}개에 현재 물성·단면(E/A/I)을 적용했습니다."
+        )
+        self._sync_selection_status()
+
+    def _load_selected_element_properties(self) -> None:
+        """Explicitly inspect one member without silently replacing the pen."""
+        if self.canvas.selected_nodes or len(self.canvas.selected_elements) != 1:
+            self.element_assignment_selection_status.setText(
+                "⚠ 설정을 불러올 부재 하나만 선택하세요."
+            )
+            return
+        member_tag = next(iter(self.canvas.selected_elements))
+        self.element_current_property_panel.load_from_element(
+            self.canvas.elements[member_tag]
+        )
+        if self.element_current_property_panel.current_edit_kwargs() is None:
+            self._active_element_kwargs = None
+            self.active_element_status.setText(
+                f"부재 M-{member_tag}에는 아직 유효한 물성·단면이 없습니다. 위에서 입력하세요."
+            )
+        else:
+            self._element_current_properties_edited()
+            self.element_assignment_selection_status.setText(
+                f"✓ 부재 M-{member_tag}에 실제 적용된 설정을 불러왔습니다."
+            )
+
+    def _sync_element_assignment_selection_state(self) -> None:
+        """Keep the Element card explicit about what Apply will affect."""
+        button = getattr(self, "load_selected_element_properties_button", None)
+        status = getattr(self, "element_assignment_selection_status", None)
+        if button is None or status is None:
+            return
+        count = len(self.canvas.selected_elements)
+        button.setEnabled(not self.canvas.selected_nodes and count == 1)
+        if count == 0:
+            status.setText(
+                "선택 부재 없음 · 새로 그리는 부재에는 위 현재 설정이 자동 적용됩니다."
+            )
+        elif self.canvas.selected_nodes:
+            status.setText("부재만 선택하면 현재 설정을 적용하거나 불러올 수 있습니다.")
+        elif count == 1:
+            member_tag = next(iter(self.canvas.selected_elements))
+            status.setText(
+                f"부재 M-{member_tag} 선택됨 · 적용 또는 실제 설정 불러오기를 선택하세요."
+            )
+        else:
+            status.setText(f"부재 {count}개 선택됨 · 현재 설정을 한 번에 적용할 수 있습니다.")
 
     def _apply_active_element_to_new_members(self, new_element_tags: set[int]) -> None:
         """Give a just-drawn member the Element tab's selected definitions.
@@ -2270,6 +2464,11 @@ class ModelingInterfacePage(QFrame):
         self.canvas.selected_elements = set(new_element_tags)
         self.canvas.apply_full_section_to_selection(**self._active_element_kwargs)
         self.canvas.selected_elements = previous_selection | new_element_tags
+        if not self._start_in_3d and hasattr(self, "element_assignment_selection_status"):
+            count = len(new_element_tags)
+            self.element_assignment_selection_status.setText(
+                f"✓ 새 부재 {count}개에 현재 물성·단면을 자동 적용했습니다."
+            )
 
     def _apply_active_properties_to_new_2d_members(self) -> None:
         """Give newly drawn 2D members the optional Element-tab definition.
@@ -6595,6 +6794,9 @@ class ModelingInterfacePage(QFrame):
             combo.blockSignals(False)
         self._load_target_changed()
         self.section_material_panel.set_unit_system(unit_system)
+        if hasattr(self, "element_current_property_panel"):
+            self.element_current_property_panel.set_unit_system(unit_system)
+            self._element_current_properties_edited(clear_saved_selection=False)
         self._refresh_load3d_unit_labels()
         self._refresh_support_spring_unit_labels()
         self._refresh_member_offset_unit_labels()
@@ -7532,6 +7734,7 @@ class ModelingInterfacePage(QFrame):
         nodes = len(self.canvas.selected_nodes)
         elements = len(self.canvas.selected_elements)
         member_tag = self._selected_member_tag()
+        self._sync_element_assignment_selection_state()
         self._refresh_create_section_hint()
         self._update_member_info_card(member_tag)
         if member_tag is not None:

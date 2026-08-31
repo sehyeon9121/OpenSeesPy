@@ -1,6 +1,7 @@
 """Convert structural-domain objects into renderer-neutral Qt Quick 3D data."""
 
 import math
+from itertools import pairwise
 
 from PySide6.QtCore import Property, QObject, Signal
 
@@ -165,6 +166,20 @@ def _color_for_ratio(ratio: float) -> str:
     return f"#{red:02x}{green:02x}{blue:02x}"
 
 
+def _as_point_list(value: object) -> list[tuple[float, float, float]]:
+    """Accept the axis/curve payload ``spatial_diagram_strips`` produces
+    (tuples of xyz) without dragging that type into this module.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    points: list[tuple[float, float, float]] = []
+    for item in value:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        points.append((float(item[0]), float(item[1]), float(item[2])))
+    return points
+
+
 class Quick3DSceneBridge(QObject):
     #: Full topology rebuild - Repeater3D model lists replaced.  Kept as an
     #: alias of ``topology_changed`` for any legacy binding; incremental paths
@@ -217,6 +232,9 @@ class Quick3DSceneBridge(QObject):
         self._points: dict[int, tuple[float, float, float]] = {}
         self._preview_member: dict[str, float | int | str] | None = None
         self._floor_outline_parts: list[dict[str, float | int | str]] = []
+        #: Result-viewport N/V/M overlay (cylinders + fill cubes). Empty outside
+        #: a force-diagram result type so the modeling canvas never inherits it.
+        self._force_diagram_parts: list[dict[str, float | int | str]] = []
         self._default_thickness = 0.025
         self._node_radius = 0.018
         self._last_model: StructuralModel | None = None
@@ -372,6 +390,7 @@ class Quick3DSceneBridge(QObject):
         scale: float,
         show_undeformed: bool,
         member_magnitudes: dict[int, float] | None = None,
+        force_diagrams: list[dict[str, object]] | None = None,
     ) -> None:
         """Overlay analysis displacements: deformed + colour-mapped geometry, an
         optional translucent undeformed ghost, and arrows at loaded nodes."""
@@ -466,6 +485,7 @@ class Quick3DSceneBridge(QObject):
             self._ghost_members = []
 
         self._load_arrows = self._build_all_load_arrows(model, deformed_points)
+        self._force_diagram_parts = self._build_force_diagram_parts(force_diagrams or [])
         self._cached_topology_fingerprint = None
         self._emit_topology_changed()
         self._emit_loads_changed()
@@ -476,6 +496,7 @@ class Quick3DSceneBridge(QObject):
         self._end_torsion_marker_mode(notify=False)
         self._ghost_nodes = []
         self._ghost_members = []
+        self._force_diagram_parts = []
         if self._last_model is not None and self._points:
             self._rebuild_default_geometry(self._last_model)
             self._load_arrows = self._build_all_load_arrows(self._last_model, self._points)
@@ -1027,6 +1048,15 @@ class Quick3DSceneBridge(QObject):
         ``set_floor_boundary_outline``."""
         return self._floor_outline_parts
 
+    @Property("QVariantList", notify=topology_changed)
+    def forceDiagrams(self) -> list[dict[str, float | int | str]]:
+        """N/V/M overlay parts (outline cylinders, fill cubes, end connectors).
+
+        Bound to ``topology_changed`` because the list is rebuilt with the
+        rest of the result overlay in ``set_result``, never updated in place.
+        """
+        return self._force_diagram_parts
+
     @Property(bool, notify=visibility_changed)
     def loadsVisible(self) -> bool:
         return self._loads_visible
@@ -1209,6 +1239,7 @@ class Quick3DSceneBridge(QObject):
         self._rebuild_default_geometry(model)
         self._ghost_nodes = []
         self._ghost_members = []
+        self._force_diagram_parts = []
         self._load_arrows = self._build_all_load_arrows(model, points)
         self._support_parts = self._build_support_parts(model, points)
         self._rebuild_load_entry_parts()
@@ -1691,6 +1722,7 @@ class Quick3DSceneBridge(QObject):
                 "loadEntryGlyphs": len(self._load_entry_parts),
                 "previewMembers": 0 if self._preview_member is None else 1,
                 "floorBoundaryOutline": len(self._floor_outline_parts),
+                "forceDiagrams": len(self._force_diagram_parts),
             }
         )
         recorder.record_list_identities(
@@ -3228,6 +3260,160 @@ class Quick3DSceneBridge(QObject):
             parts.extend(self._connector_segments(tails, shaft_thickness * 0.42, common))
         return parts
 
+    def _build_force_diagram_parts(
+        self,
+        strips: list[dict[str, object]],
+    ) -> list[dict[str, float | int | str]]:
+        """Turn structural-space axis/curve polylines into the same flat
+        cylinder/cube parts every other overlay here already uses.
+
+        A custom triangle mesh would need a GPU buffer rebuild every time
+        the DIAGRAM SCALE slider moves; Repeater3D over plain #Cylinder /
+        #Cube entries does not. End connectors only (not every station) so
+        a sampled member does not become a picket fence.
+        """
+        outline_thickness = max(self._default_thickness * 0.5, 0.008)
+        fill_thickness = max(self._default_thickness * 0.35, 0.006)
+        connector_thickness = max(self._default_thickness * 0.28, 0.005)
+        parts: list[dict[str, float | int | str]] = []
+        for strip in strips:
+            color = str(strip.get("color", "#7254a8"))
+            axis = _as_point_list(strip.get("axis"))
+            curve = _as_point_list(strip.get("curve"))
+            if len(axis) < 2 or len(axis) != len(curve):
+                continue
+            for start, end in pairwise(curve):
+                part = self._force_diagram_cylinder(
+                    start, end, color=color, opacity=0.95, thickness=outline_thickness
+                )
+                if part is not None:
+                    parts.append(part)
+            for start_axis, end_axis, start_curve, end_curve in zip(
+                axis, axis[1:], curve, curve[1:]
+            ):
+                part = self._force_diagram_fill(
+                    start_axis,
+                    end_axis,
+                    start_curve,
+                    end_curve,
+                    color=color,
+                    opacity=0.28,
+                    thickness=fill_thickness,
+                )
+                if part is not None:
+                    parts.append(part)
+            for base, tip in ((axis[0], curve[0]), (axis[-1], curve[-1])):
+                part = self._force_diagram_cylinder(
+                    base,
+                    tip,
+                    color=color,
+                    opacity=0.55,
+                    thickness=connector_thickness,
+                )
+                if part is not None:
+                    parts.append(part)
+        return parts
+
+    def _force_diagram_cylinder(
+        self,
+        start: tuple[float, float, float],
+        end: tuple[float, float, float],
+        *,
+        color: str,
+        opacity: float,
+        thickness: float,
+    ) -> dict[str, float | int | str] | None:
+        view_start = self._view_coordinates(*start)
+        view_end = self._view_coordinates(*end)
+        orientation = self._member_orientation(view_start, view_end)
+        if orientation is None:
+            return None
+        length, scalar, qx, qy, qz = orientation
+        mid = tuple(0.5 * (view_start[index] + view_end[index]) for index in range(3))
+        return {
+            "shape": "#Cylinder",
+            "x": mid[0],
+            "y": mid[1],
+            "z": mid[2],
+            "length": length,
+            "width": thickness,
+            "thickness": thickness,
+            "qscalar": scalar,
+            "qx": qx,
+            "qy": qy,
+            "qz": qz,
+            "color": color,
+            "opacity": opacity,
+        }
+
+    def _force_diagram_fill(
+        self,
+        axis_i: tuple[float, float, float],
+        axis_j: tuple[float, float, float],
+        curve_i: tuple[float, float, float],
+        curve_j: tuple[float, float, float],
+        *,
+        color: str,
+        opacity: float,
+        thickness: float,
+    ) -> dict[str, float | int | str] | None:
+        """One cube spanning a trapezoid slice of the ribbon.
+
+        Local +Y follows the member, local +X the offset (axis toward curve),
+        so ``scale.x`` is the diagram amplitude and ``scale.y`` the station
+        spacing. A sign-change slice (offsets pointing opposite ways) is
+        skipped; the outline still crosses zero.
+        """
+        view_axis_i = self._view_coordinates(*axis_i)
+        view_axis_j = self._view_coordinates(*axis_j)
+        view_curve_i = self._view_coordinates(*curve_i)
+        view_curve_j = self._view_coordinates(*curve_j)
+        member_dir = self._normalized(
+            tuple(view_axis_j[index] - view_axis_i[index] for index in range(3))
+        )
+        offset_i = tuple(view_curve_i[index] - view_axis_i[index] for index in range(3))
+        offset_j = tuple(view_curve_j[index] - view_axis_j[index] for index in range(3))
+        if sum(offset_i[index] * offset_j[index] for index in range(3)) < 0.0:
+            return None
+        offset_dir = self._normalized(
+            tuple(offset_i[index] + offset_j[index] for index in range(3))
+        )
+        if member_dir is None or offset_dir is None:
+            return None
+        col_z = self._normalized(self._cross(offset_dir, member_dir))
+        if col_z is None:
+            return None
+        col_x = self._normalized(self._cross(member_dir, col_z))
+        if col_x is None:
+            return None
+        height_i = math.sqrt(sum(value * value for value in offset_i))
+        height_j = math.sqrt(sum(value * value for value in offset_j))
+        avg_height = 0.5 * (height_i + height_j)
+        length = math.sqrt(
+            sum((view_axis_j[index] - view_axis_i[index]) ** 2 for index in range(3))
+        )
+        if avg_height <= 1.0e-12 or length <= 1.0e-12:
+            return None
+        mid_axis = tuple(0.5 * (view_axis_i[index] + view_axis_j[index]) for index in range(3))
+        mid_curve = tuple(0.5 * (view_curve_i[index] + view_curve_j[index]) for index in range(3))
+        center = tuple(0.5 * (mid_axis[index] + mid_curve[index]) for index in range(3))
+        scalar, qx, qy, qz = self._quaternion_from_columns(col_x, member_dir, col_z)
+        return {
+            "shape": "#Cube",
+            "x": center[0],
+            "y": center[1],
+            "z": center[2],
+            "length": length,
+            "width": avg_height,
+            "thickness": thickness,
+            "qscalar": scalar,
+            "qx": qx,
+            "qy": qy,
+            "qz": qz,
+            "color": color,
+            "opacity": opacity,
+        }
+
     def _connector_segments(
         self,
         points_sequence: list[tuple[float, float, float]],
@@ -3399,6 +3585,7 @@ class Quick3DSceneBridge(QObject):
         self._support_parts = []
         self._local_axis_gizmos = []
         self._load_entry_parts = []
+        self._force_diagram_parts = []
         self._center = (0.0, 0.0, 0.0)
         self._extent = 1.0
         self._ground_y = 0.0

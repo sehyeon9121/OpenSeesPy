@@ -1,6 +1,7 @@
 """Build per-element force diagrams from raw local end forces."""
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 from openframe.core.domain import ElementResult
 from openframe.features.results.diagrams import axial, moment, shear
@@ -19,6 +20,8 @@ from openframe.features.results.diagrams.base import (
 #   shear   V = +V_i = -V_j
 #   moment  M = -M_i = +M_j   (sagging positive)
 _LOCAL_FORCE_COUNT = 6
+#: OpenSees 3D elasticBeamColumn ``localForce``: (N, Vy, Vz, T, My, Mz) at i, then j.
+_LOCAL_FORCE_COUNT_3D = 12
 
 # With a distributed load the internal forces are rebuilt from equilibrium along the
 # member, not just interpolated between the two end values, or a span maximum between
@@ -80,6 +83,69 @@ def member_diagrams(element: ElementResult) -> tuple[MemberDiagram, MemberDiagra
             lambda x: -moment_i + shear_i * x + load_y_i * x * x / 2.0 + slope_y * x ** 3 / 6.0,
             length,
         ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MemberDiagrams3D:
+    """Internal N / Vy / Vz / My / Mz along a 3D beam-column, same sign
+    convention as the 2D ``member_diagrams`` pair (tension, sagging positive).
+
+    Torsion is omitted on purpose: the result viewport's three force buttons
+    are still N / V / M, and a 3D T diagram would need its own control.
+    """
+
+    axial: MemberDiagram
+    shear_y: MemberDiagram
+    shear_z: MemberDiagram
+    moment_y: MemberDiagram
+    moment_z: MemberDiagram
+
+
+def member_diagrams_3d(element: ElementResult) -> MemberDiagrams3D:
+    """Internal N/V/M along a 3D beam-column from OpenSees ``localForce``.
+
+    N, Vy, Vz, Mz use the same end-force flip as the 2D 6-tuple (tension and
+    sagging positive; hogging Mz at a fixed end is negative). My cannot use
+    that same flip. OpenSees' 3D equilibrium is ``dMz/dx = Vy`` but
+    ``dMy/dx = -Vz`` (right-hand pair: a tip load in -local y produces
+    ``Mz_i = +PL``, the analogous load in -local z produces ``My_i = -PL``).
+    Flipping My the way Mz is flipped would make hogging in the x-z plane
+    read as sagging and draw the tension-side ribbon on the compression
+    face. So My is ``+My_i = -My_j``.
+
+    3D ``ElementResult.uniform_load`` is still the 2D ``(wx, wy, wx_j, wy_j)``
+    tuple - there is no wz to rebuild a Vz/My parabola from - so this only
+    interpolates the two ends. That is exact for nodal-load-only members,
+    which is every 3D model the material-free solver currently emits.
+    """
+    forces = element.local_forces
+    if len(forces) != _LOCAL_FORCE_COUNT_3D:
+        raise ValueError(
+            f"부재 {element.element_tag}: 3D elasticBeamColumn 형식의 단부력"
+            f"({_LOCAL_FORCE_COUNT_3D}개 값)이 아닙니다."
+        )
+    (
+        axial_i,
+        shear_y_i,
+        shear_z_i,
+        _torsion_i,
+        moment_y_i,
+        moment_z_i,
+        axial_j,
+        shear_y_j,
+        shear_z_j,
+        _torsion_j,
+        moment_y_j,
+        moment_z_j,
+    ) = forces
+    tag = element.element_tag
+    return MemberDiagrams3D(
+        axial=axial.from_end_forces(tag, -axial_i, axial_j),
+        shear_y=shear.from_end_forces(tag, shear_y_i, -shear_y_j),
+        shear_z=shear.from_end_forces(tag, shear_z_i, -shear_z_j),
+        moment_y=moment.from_end_forces(tag, moment_y_i, -moment_y_j),
+        moment_z=moment.from_end_forces(tag, -moment_z_i, moment_z_j),
     )
 
 

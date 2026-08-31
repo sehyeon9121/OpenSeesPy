@@ -601,6 +601,40 @@ Item {
         }
 
         Repeater3D {
+            // 3D N/V/M diagrams: each list entry is already a self-positioned
+            // #Cylinder (outline / end connector) or #Cube (filled ribbon
+            // slice) - same flat-parts scheme as loadArrows. Never pickable,
+            // so a click through the ribbon still hits the member underneath.
+            model: bridgeReady ? sceneBridge.forceDiagrams : []
+            delegate: Model {
+                source: modelData.shape
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                rotation: Qt.quaternion(
+                    modelData.qscalar,
+                    modelData.qx,
+                    modelData.qy,
+                    modelData.qz
+                )
+                scale: Qt.vector3d(
+                    modelData.width / 100,
+                    modelData.length / 100,
+                    modelData.thickness / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        lighting: PrincipledMaterial.NoLighting
+                        cullMode: Material.NoCulling
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                pickable: false
+            }
+        }
+
+        Repeater3D {
             // Floor-boundary click-picking's live yellow outline - one edge
             // per picked pair of boundary nodes plus a trailing edge that
             // follows the cursor, see Quick3DSceneBridge.
