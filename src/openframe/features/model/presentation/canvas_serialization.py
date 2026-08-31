@@ -92,6 +92,7 @@ class _SerializationMixin:
                     "restraints": list(boundary.restraints),
                     "angle": boundary.angle,
                     "spring_stiffnesses": list(boundary.spring_stiffnesses),
+                    "angle_axis": boundary.angle_axis,
                 }
                 for tag, boundary in self.boundaries.items()
             ],
@@ -213,6 +214,7 @@ class _SerializationMixin:
                 tuple(b["restraints"]),
                 float(b.get("angle", 0.0)),
                 tuple(b.get("spring_stiffnesses", ())),
+                str(b.get("angle_axis", "z")),
             )
             for b in data.get("boundaries", [])
         }

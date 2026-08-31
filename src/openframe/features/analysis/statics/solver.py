@@ -23,7 +23,11 @@ from dataclasses import dataclass
 
 import openseespy.opensees as ops
 
-from openframe.core.domain.geometric_transform import auto_reference_vector, rotate_about_axis
+from openframe.core.domain.geometric_transform import (
+    auto_reference_vector,
+    boundary_local_axes,
+    rotate_about_axis,
+)
 from openframe.core.domain.model import BoundaryCondition, Element, StructuralModel
 from openframe.core.domain.results import (
     UNIT_STIFFNESS_DISPLACEMENT_WARNING,
@@ -973,27 +977,34 @@ class MaterialFreeStaticsSolver:
         OpenSees can only ``fix`` a node's global degrees of freedom, so a support
         whose restrained direction is not along X or Y needs a small trick: a fully
         fixed dummy node at the same point, connected to the real node by a
-        zero-length element whose local axes are rotated to the support's angle.
-        Giving that element a material only in the restrained local direction(s)
-        restrains exactly that direction and leaves the others free to slide, which
-        is what a roller resting on an inclined surface actually does.
+        zero-length element whose local axes are rotated to the support's angle
+        about ``condition.angle_axis``. Giving that element a material only in the
+        restrained local direction(s) restrains exactly that direction and leaves
+        the others free to slide, which is what a roller resting on an inclined
+        surface actually does.
+
+        ``restraints[i]`` maps straight onto zeroLength local direction ``i + 1``
+        for every ``i`` up to ``ndf`` - direction 1-3 are the rotated local
+        x'/y'/z' translations, 4-6 (3D only) the same local frame's rotations,
+        since a single ``-orient`` applies to all six uniformly. This is a strict
+        generalisation of the old 2D-only ``min(2, ndf)`` + separate "index 2 is
+        always global direction 3" special case: for ndf in {2, 3} the two are
+        identical (verify: index 0,1 -> directions 1,2 either way; ndf == 3's
+        index 2 -> direction 3 either way), so no existing 2D model's behaviour
+        changes.
         """
         node = model.nodes[condition.node_tag]
         ground_tag = _INCLINED_SUPPORT_TAG_OFFSET + condition.node_tag
-        ops.node(ground_tag, node.x, node.y)
+        ground_coordinates = (node.x, node.y) if model.ndm == 2 else (node.x, node.y, node.z)
+        ops.node(ground_tag, *ground_coordinates)
         ops.fix(ground_tag, *((1,) * ndf))
-        radians = math.radians(condition.angle)
-        vector_x = (math.cos(radians), math.sin(radians), 0.0)
-        vector_y = (-math.sin(radians), math.cos(radians), 0.0)
+        vector_x, vector_y = boundary_local_axes(condition.angle, condition.angle_axis)
         materials: list[int] = []
         directions: list[int] = []
-        for index in range(min(2, ndf)):
+        for index in range(min(len(condition.restraints), ndf)):
             if condition.restraints[index]:
                 materials.append(_INCLINED_SUPPORT_MATERIAL_TAG)
                 directions.append(index + 1)
-        if ndf > 2 and len(condition.restraints) > 2 and condition.restraints[2]:
-            materials.append(_INCLINED_SUPPORT_MATERIAL_TAG)
-            directions.append(3)
         if not directions:
             return
         ops.element(

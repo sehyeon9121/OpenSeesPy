@@ -48,6 +48,22 @@ def test_geometry_group_counts_track_the_model() -> None:
     assert page.work_tree_supports.text(1) == "0"
 
 
+def test_2d_modeling_window_uses_the_same_right_work_tree() -> None:
+    page = ModelingInterfacePage(start_in_3d=False)
+    page.resize(1400, 900)
+    page.show()
+
+    first = page.canvas.add_node(0.0, 0.0)
+    second = page.canvas.add_node(4.0, 0.0)
+    page.canvas.add_member(first, second)
+
+    assert page.work_tree_title.text() == "워크트리"
+    assert page.work_tree_nodes.text(1) == "2"
+    assert page.work_tree_members.text(1) == "1"
+    page.work_tree_nodes.setExpanded(True)
+    assert page.work_tree_nodes.child(0).text(1) == "0, 0, 0"
+
+
 def test_children_are_built_only_once_a_group_is_opened() -> None:
     """_refresh_work_tree runs on every model_changed - i.e. once per node
     added - so a collapsed group must not pay to build rows nobody is

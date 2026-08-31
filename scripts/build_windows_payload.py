@@ -106,6 +106,37 @@ def _install_dependencies() -> None:
         ],
         check=True,
     )
+    _verify_bundled_ground_motions(site_packages)
+
+
+#: Matches ``test_ground_motion_catalog.py``'s assertion and the PEER
+#: records under ``infrastructure/ground_motions/data/``. A payload with
+#: fewer files produces an empty Built-in picker in the installed app,
+#: which looks identical to "the installer dropped the earthquake data".
+_EXPECTED_GROUND_MOTION_COUNT = 65
+
+
+def _verify_bundled_ground_motions(site_packages: Path) -> None:
+    """Fail the payload build if pip omitted the bundled .AT2 records.
+
+    ``pyproject.toml`` already lists them in package-data, but a stale
+    ``build/lib``, a missed glob, or an incomplete wheel still produces a
+    runnable ``pythonw.exe -m openframe`` whose Built-in catalog is empty.
+    Catch that here rather than after Inno Setup has already packaged it.
+    """
+    data_dir = (
+        site_packages / "openframe" / "infrastructure" / "ground_motions" / "data"
+    )
+    at2_files = sorted(data_dir.glob("*.AT2")) if data_dir.is_dir() else []
+    if len(at2_files) < _EXPECTED_GROUND_MOTION_COUNT:
+        raise SystemExit(
+            "Payload is missing built-in ground-motion records: "
+            f"found {len(at2_files)} .AT2 files in {data_dir}, "
+            f"expected {_EXPECTED_GROUND_MOTION_COUNT}. "
+            "Refusing to produce an installer that would open the "
+            "Built-in picker empty."
+        )
+    print(f"Bundled ground motions: {len(at2_files)} .AT2 files")
 
 
 def main() -> None:

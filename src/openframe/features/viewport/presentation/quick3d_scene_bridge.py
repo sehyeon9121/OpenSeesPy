@@ -6,6 +6,7 @@ from PySide6.QtCore import Property, QObject, Signal
 
 from openframe.core.domain import (
     AnalysisResult,
+    BoundaryCondition,
     Element,
     FloorLoadEntry,
     LoadCase,
@@ -94,15 +95,22 @@ _SUPPORT_COLORS = {
     SupportKind.PINNED: "#00a6a6",
     SupportKind.ROLLER_VERTICAL: "#6366f1",
     SupportKind.ROLLER_HORIZONTAL: "#6366f1",
-    # No dedicated glyph shape yet - _support_symbol_parts falls through to
-    # the generic "custom_block" cube for these (same as CUSTOM), so this
-    # entry only needs to exist so the color lookup below doesn't KeyError.
-    # Reusing the roller indigo keeps them visually grouped with the other
-    # rollers rather than reading as an arbitrary/unrecognized restraint.
+    # Axis-specific rollers share a family colour; their cylinder direction
+    # (rather than three arbitrary colours) communicates the free axis.
     SupportKind.ROLLER_X: "#6366f1",
     SupportKind.ROLLER_Y: "#6366f1",
     SupportKind.ROLLER_Z: "#6366f1",
     SupportKind.CUSTOM: "#f59e0b",
+}
+_SPRING_SUPPORT_COLOR = "#a855f7"
+#: Each ``BoundaryCondition.angle_axis`` structural axis, mapped through
+#: ``_view_coordinates`` once - see ``_build_support_parts``'s own comment
+#: for why conjugating the rotation this way (angle unchanged, axis mapped)
+#: is correct, not just a Z-axis special case.
+_VIEW_ROTATION_AXIS: dict[str, tuple[float, float, float]] = {
+    "x": (1.0, 0.0, 0.0),
+    "y": (0.0, 0.0, -1.0),
+    "z": (0.0, 1.0, 0.0),
 }
 #: A 3D member's local y/z axis gizmo (a preview of ``Element.local_axis_angle``'s
 #: effect) - colours chosen to not collide with any load/support/result colour
@@ -346,6 +354,14 @@ class Quick3DSceneBridge(QObject):
             if perf_enabled():
                 recorder.counters.set_model_full += 1
             self._emit_topology_changed()
+            # loadArrows/loadEntryGlyphs notify=loads_changed, not
+            # topology_changed. A full rebuild replaces those lists (first
+            # nodal load, load deleted, …) but used to leave the Repeater3D
+            # bound to the empty model it saw on first show - reported as
+            # "apply a node load, no arrow; undo, the arrow appears", because
+            # undo's load_state_changed finally emitted loads_changed against
+            # the already-populated Python list.
+            self._emit_loads_changed()
             self._emit_scene_metrics_changed()
             self._record_bridge_state()
 
@@ -452,6 +468,7 @@ class Quick3DSceneBridge(QObject):
         self._load_arrows = self._build_all_load_arrows(model, deformed_points)
         self._cached_topology_fingerprint = None
         self._emit_topology_changed()
+        self._emit_loads_changed()
 
     def clear_result(self) -> None:
         """Drop the result overlay and go back to the plain undeformed model."""
@@ -465,6 +482,7 @@ class Quick3DSceneBridge(QObject):
             self._rebuild_load_entry_parts()
         self._cached_topology_fingerprint = None
         self._emit_topology_changed()
+        self._emit_loads_changed()
 
     def begin_time_history_deformation(
         self,
@@ -1342,6 +1360,7 @@ class Quick3DSceneBridge(QObject):
         self._cached_topology_fingerprint = self._compute_topology_fingerprint(model)
         self._cached_geometry_signature = self._model_geometry_signature(model)
         self._emit_topology_changed()
+        self._emit_loads_changed()
         self._emit_scene_metrics_changed()
 
     @staticmethod
@@ -1507,6 +1526,7 @@ class Quick3DSceneBridge(QObject):
                     boundary.support_kind.value,
                     tuple(boundary.restraints),
                     round(boundary.angle, 9),
+                    boundary.angle_axis,
                     tuple(boundary.spring_stiffnesses),
                 )
                 for boundary in model.boundaries
@@ -1541,7 +1561,12 @@ class Quick3DSceneBridge(QObject):
             sorted(
                 (
                     entry.id,
-                    entry.kind.value,
+                    # LoadEntry.kind is a LoadEntryKind Literal[str], not an
+                    # Enum. `.value` was copied from SupportKind fingerprints
+                    # above and AttributeError'd on every set_load_entries
+                    # call - glyphs were built in Python, then loads_changed
+                    # never fired, so the Loads-tab Repeater3D stayed empty.
+                    entry.kind,
                     entry.target,
                     entry.case_id,
                     entry.hidden,
@@ -1588,14 +1613,16 @@ class Quick3DSceneBridge(QObject):
 
         ``set_model()`` often finishes while the viewport still has
         ``WA_DontShowOnScreen`` set, so the first ``topology_changed`` /
-        ``geometry_changed`` can fire with no Repeater3D listening yet.
-        Re-emit once the scene graph exists so nodes and members actually
-        appear instead of leaving an empty view until the next edit.
+        ``geometry_changed`` / ``loads_changed`` can fire with no Repeater3D
+        listening yet. Re-emit once the scene graph exists so nodes, members
+        and load arrows actually appear instead of leaving an empty view
+        until the next edit.
         """
         if not self._nodes:
             return
         self._emit_topology_changed()
         self._emit_geometry_changed()
+        self._emit_loads_changed()
         self._emit_scene_metrics_changed()
 
     def _emit_topology_changed(self) -> None:
@@ -1680,116 +1707,428 @@ class Quick3DSceneBridge(QObject):
         model: StructuralModel,
         points: dict[int, tuple[float, float, float]],
     ) -> list[dict[str, float | int | str]]:
-        """Build MIDAS-like 3D support glyphs beneath restrained nodes."""
+        """Build mechanically descriptive 3D support glyphs.
+
+        A support used to collapse to a coloured cube for fixed, directional
+        roller and arbitrary restraint cases.  Colour alone is not enough in
+        a dense model (and is especially poor for colour-vision deficiencies),
+        so every family now has a recognisable silhouette:
+
+        * fixed: socket, base plate and four anchor bolts;
+        * pinned: spherical pin, cone and ground plate;
+        * roller: pin/cone over two cylinders aligned with the free axis;
+        * custom: a joint plus one bar/cone per restrained translation/rotation;
+        * spring: a real zig-zag spring along each elastically restrained DOF.
+
+        Parts remain a flat list because Qt Quick 3D's ``Repeater3D`` updates
+        that form reliably during incremental geometry edits.
+        """
         parts: list[dict[str, float | int | str]] = []
         width = max(self._extent * 0.055, 0.06)
         height = max(self._extent * 0.05, 0.055)
         plate_height = max(height * 0.16, 0.012)
-        identity = {"qscalar": 1.0, "qx": 0.0, "qy": 0.0, "qz": 0.0}
 
-        for boundary in model.boundaries:
-            point = points.get(boundary.node_tag)
-            if point is None:
-                continue
-            kind = boundary.support_kind
-            color = _SUPPORT_COLORS[kind]
-            common = {
-                "tag": boundary.node_tag,
-                "kind": kind.value,
-                "color": color,
-                "restraints": "".join("1" if value else "0" for value in boundary.restraints),
-                **identity,
+        def add_part(
+            common: dict[str, float | int | str],
+            role: str,
+            shape: str,
+            position: tuple[float, float, float],
+            scale: tuple[float, float, float],
+            *,
+            color: str | None = None,
+            rotation: tuple[float, float, float, float] | None = None,
+        ) -> None:
+            item = {
+                **common,
+                "role": role,
+                "shape": shape,
+                "x": position[0],
+                "y": position[1],
+                "z": position[2],
+                "scale_x": scale[0],
+                "scale_y": scale[1],
+                "scale_z": scale[2],
             }
-            node_bottom = point[1] - self._node_radius
-
-            if kind == SupportKind.FIXED:
-                parts.append(
+            if color is not None:
+                item["color"] = color
+            if rotation is not None:
+                item.update(
                     {
-                        **common,
-                        "role": "fixed_block",
-                        "shape": "#Cube",
-                        "x": point[0],
-                        "y": node_bottom - height / 2,
-                        "z": point[2],
-                        "scale_x": width,
-                        "scale_y": height,
-                        "scale_z": width,
-                    }
-                )
-                continue
-
-            if kind in {SupportKind.PINNED, SupportKind.ROLLER_HORIZONTAL}:
-                cone_base_y = node_bottom - height
-                parts.append(
-                    {
-                        **common,
-                        "role": "pin_cone",
-                        "shape": "#Cone",
-                        "x": point[0],
-                        "y": cone_base_y,
-                        "z": point[2],
-                        "scale_x": width,
-                        "scale_y": height,
-                        "scale_z": width,
-                    }
-                )
-                base_y = cone_base_y - plate_height / 2
-                if kind == SupportKind.PINNED:
-                    parts.append(
-                        {
-                            **common,
-                            "role": "ground_plate",
-                            "shape": "#Cube",
-                            "x": point[0],
-                            "y": base_y,
-                            "z": point[2],
-                            "scale_x": width * 1.35,
-                            "scale_y": plate_height,
-                            "scale_z": width * 1.35,
-                        }
-                    )
-                else:
-                    roller_radius = width * 0.13
-                    rotation = self._rotation_from_y_axis((0.0, 0.0, 1.0))
-                    roller_q = {
                         "qscalar": rotation[0],
                         "qx": rotation[1],
                         "qy": rotation[2],
                         "qz": rotation[3],
                     }
-                    for offset in (-width * 0.28, width * 0.28):
-                        parts.append(
-                            {
-                                **common,
-                                **roller_q,
-                                "role": "roller",
-                                "shape": "#Cylinder",
-                                "x": point[0] + offset,
-                                "y": cone_base_y - roller_radius,
-                                "z": point[2],
-                                "scale_x": roller_radius * 2,
-                                "scale_y": width * 0.9,
-                                "scale_z": roller_radius * 2,
-                            }
+                )
+            parts.append(item)
+
+        def add_cylinder_between(
+            common: dict[str, float | int | str],
+            role: str,
+            start: tuple[float, float, float],
+            end: tuple[float, float, float],
+            diameter: float,
+            *,
+            color: str | None = None,
+        ) -> None:
+            orientation = self._member_orientation(start, end)
+            if orientation is None:
+                return
+            length, scalar, qx, qy, qz = orientation
+            midpoint = tuple((start[index] + end[index]) / 2.0 for index in range(3))
+            add_part(
+                common,
+                role,
+                "#Cylinder",
+                midpoint,
+                (diameter, length, diameter),
+                color=color,
+                rotation=(scalar, qx, qy, qz),
+            )
+
+        # Structural Ux/Uy/Uz directions expressed in Qt Quick 3D view space.
+        translation_axes = (
+            self._view_coordinates(1.0, 0.0, 0.0),
+            self._view_coordinates(0.0, 1.0, 0.0),
+            self._view_coordinates(0.0, 0.0, 1.0),
+        )
+        dof_labels = ("ux", "uy", "uz", "rx", "ry", "rz")
+        roller_free_axes = {
+            SupportKind.ROLLER_HORIZONTAL: translation_axes[0],
+            SupportKind.ROLLER_VERTICAL: translation_axes[1],
+            SupportKind.ROLLER_X: translation_axes[0],
+            SupportKind.ROLLER_Y: translation_axes[1],
+            SupportKind.ROLLER_Z: translation_axes[2],
+        }
+
+        def glyph_kind(boundary: BoundaryCondition) -> SupportKind:
+            """Classify the mechanical glyph without treating rotation as CUSTOM.
+
+            ``BoundaryCondition.support_kind`` intentionally returns CUSTOM
+            for an inclined boundary because the solver must transform its
+            DOFs. Rendering has a different need: a rotated fixed/pin/roller
+            must keep its original silhouette and rotate as one assembly.
+            """
+            restraints = tuple(boundary.restraints)
+            if len(restraints) >= 6:
+                normalized = restraints[:6]
+                return {
+                    (True, True, True, True, True, True): SupportKind.FIXED,
+                    (True, True, True, False, False, False): SupportKind.PINNED,
+                    (False, True, True, False, False, False): SupportKind.ROLLER_X,
+                    (True, False, True, False, False, False): SupportKind.ROLLER_Y,
+                    (True, True, False, False, False, False): SupportKind.ROLLER_Z,
+                }.get(normalized, SupportKind.CUSTOM)
+            normalized = restraints[:3]
+            return {
+                (True, True, True): SupportKind.FIXED,
+                (True, True, False): SupportKind.PINNED,
+                (True, False, False): SupportKind.ROLLER_VERTICAL,
+                (False, True, False): SupportKind.ROLLER_HORIZONTAL,
+            }.get(normalized, SupportKind.CUSTOM)
+
+        def multiply_quaternions(
+            parent: tuple[float, float, float, float],
+            local: tuple[float, float, float, float],
+        ) -> tuple[float, float, float, float]:
+            """Compose a local part rotation under the support rotation."""
+            pw, px, py, pz = parent
+            lw, lx, ly, lz = local
+            return (
+                pw * lw - px * lx - py * ly - pz * lz,
+                pw * lx + px * lw + py * lz - pz * ly,
+                pw * ly - px * lz + py * lw + pz * lx,
+                pw * lz + px * ly - py * lx + pz * lw,
+            )
+
+        for boundary in model.boundaries:
+            point = points.get(boundary.node_tag)
+            if point is None:
+                continue
+            kind = glyph_kind(boundary)
+            color = _SUPPORT_COLORS[kind]
+            # Conjugating a structural-space rotation by ``_view_coordinates``
+            # (a proper, determinant +1 map) gives another rotation of the
+            # exact same angle, just about the axis ``_view_coordinates``
+            # itself sends the original axis to - a general fact of rotation
+            # conjugation, not something special to Z. ``_VIEW_ROTATION_AXIS``
+            # is exactly that: each structural axis run through
+            # ``_view_coordinates`` once. 'z' -> (0, 1, 0) reproduces the
+            # original Z-only closed-form quaternion exactly; 'x'/'y' extend
+            # the same construction. (A tempting-looking alternative -
+            # transplanting ``boundary_local_axes``'s structural frame
+            # straight into view space as this quaternion's basis - is
+            # subtly wrong: it does not reduce to identity at angle=0, since
+            # the structural and view frames are not the same frame to begin
+            # with.)
+            half_angle = math.radians(boundary.angle) / 2.0
+            sin_half = math.sin(half_angle)
+            axis_x, axis_y, axis_z = _VIEW_ROTATION_AXIS[boundary.angle_axis]
+            rotation = (
+                math.cos(half_angle),
+                sin_half * axis_x,
+                sin_half * axis_y,
+                sin_half * axis_z,
+            )
+            common = {
+                "tag": boundary.node_tag,
+                "kind": kind.value,
+                "color": color,
+                "restraints": "".join("1" if value else "0" for value in boundary.restraints),
+                "qscalar": rotation[0],
+                "qx": rotation[1],
+                "qy": rotation[2],
+                "qz": rotation[3],
+            }
+            def world_from_local(
+                offset: tuple[float, float, float],
+            ) -> tuple[float, float, float]:
+                rotated = self._rotate_by_quaternion(offset, *rotation)
+                return tuple(point[index] + rotated[index] for index in range(3))
+
+            def add_local_part(
+                role: str,
+                shape: str,
+                offset: tuple[float, float, float],
+                scale: tuple[float, float, float],
+                *,
+                color: str | None = None,
+                local_rotation: tuple[float, float, float, float] | None = None,
+            ) -> None:
+                part_rotation = rotation
+                if local_rotation is not None:
+                    part_rotation = multiply_quaternions(rotation, local_rotation)
+                add_part(
+                    common,
+                    role,
+                    shape,
+                    world_from_local(offset),
+                    scale,
+                    color=color,
+                    rotation=part_rotation,
+                )
+
+            if kind == SupportKind.FIXED:
+                socket_height = height * 0.62
+                socket_center_y = -self._node_radius - socket_height / 2.0
+                plate_center_y = -self._node_radius - socket_height - plate_height / 2.0
+                add_local_part(
+                    "fixed_socket",
+                    "#Cylinder",
+                    (0.0, socket_center_y, 0.0),
+                    (width * 0.62, socket_height, width * 0.62),
+                )
+                add_local_part(
+                    "fixed_base_plate",
+                    "#Cube",
+                    (0.0, plate_center_y, 0.0),
+                    (width * 1.55, plate_height, width * 1.55),
+                )
+                anchor_diameter = max(width * 0.10, 0.008)
+                anchor_height = plate_height * 1.55
+                for anchor_x in (-width * 0.52, width * 0.52):
+                    for anchor_z in (-width * 0.52, width * 0.52):
+                        add_local_part(
+                            "fixed_anchor",
+                            "#Cylinder",
+                            (
+                                anchor_x,
+                                plate_center_y + (anchor_height - plate_height) / 2.0,
+                                anchor_z,
+                            ),
+                            (anchor_diameter, anchor_height, anchor_diameter),
+                            color="#d7f7f0",
                         )
                 continue
 
-            # Horizontal rollers and arbitrary partial restraints are rendered as an
-            # amber/indigo restraint block; the exact active DOFs remain available in
-            # the model tree and inspector instead of being hidden by a generic pin.
-            parts.append(
-                {
-                    **common,
-                    "role": "custom_block",
-                    "shape": "#Cube",
-                    "x": point[0],
-                    "y": node_bottom - height * 0.32,
-                    "z": point[2],
-                    "scale_x": width * 0.72,
-                    "scale_y": height * 0.64,
-                    "scale_z": width * 0.72,
-                }
+            if kind == SupportKind.PINNED:
+                joint_diameter = width * 0.32
+                cone_center_y = -self._node_radius - height * 0.52
+                plate_center_y = -self._node_radius - height - plate_height / 2.0
+                add_local_part(
+                    "pin_joint",
+                    "#Sphere",
+                    (0.0, -self._node_radius - joint_diameter * 0.18, 0.0),
+                    (joint_diameter, joint_diameter, joint_diameter),
+                )
+                add_local_part(
+                    "pin_cone",
+                    "#Cone",
+                    (0.0, cone_center_y, 0.0),
+                    (width, height, width),
+                )
+                add_local_part(
+                    "ground_plate",
+                    "#Cube",
+                    (0.0, plate_center_y, 0.0),
+                    (width * 1.42, plate_height, width * 1.42),
+                )
+                continue
+
+            free_axis = roller_free_axes.get(kind)
+            if free_axis is not None:
+                joint_diameter = width * 0.30
+                cone_center_y = -self._node_radius - height * 0.48
+                roller_radius = width * 0.14
+                roller_center_y = -self._node_radius - height - roller_radius
+                roller_length = width * 0.96
+                # Offset the pair perpendicular to the rolling direction in
+                # plan. For the unusual vertical-free ROLLER_Z preset, use X
+                # as the separation axis so the two vertical guides remain
+                # visible rather than coincident.
+                if abs(free_axis[1]) > 0.8:
+                    separation_axis = (1.0, 0.0, 0.0)
+                else:
+                    separation_axis = (-free_axis[2], 0.0, free_axis[0])
+                roller_rotation = self._rotation_from_y_axis(free_axis)
+                add_local_part(
+                    "roller_joint",
+                    "#Sphere",
+                    (0.0, -self._node_radius - joint_diameter * 0.18, 0.0),
+                    (joint_diameter, joint_diameter, joint_diameter),
+                )
+                add_local_part(
+                    "roller_saddle",
+                    "#Cone",
+                    (0.0, cone_center_y, 0.0),
+                    (width, height * 0.90, width),
+                )
+                for sign in (-1.0, 1.0):
+                    offset = tuple(sign * width * 0.27 * value for value in separation_axis)
+                    add_local_part(
+                        f"{kind.value}_cylinder",
+                        "#Cylinder",
+                        (
+                            offset[0],
+                            roller_center_y + offset[1],
+                            offset[2],
+                        ),
+                        (roller_radius * 2.0, roller_length, roller_radius * 2.0),
+                        local_rotation=roller_rotation,
+                    )
+                add_local_part(
+                    "roller_base_plate",
+                    "#Cube",
+                    (0.0, roller_center_y - roller_radius - plate_height / 2.0, 0.0),
+                    (width * 1.48, plate_height, width * 1.48),
+                )
+                continue
+
+            # Arbitrary and inclined restraints are expressed by their DOFs,
+            # not by another anonymous box.  The boundary quaternion rotates
+            # the local support axes before each bar/cone is placed, so an
+            # inclined restraint remains mechanically readable in 3D.
+            joint = world_from_local((0.0, -self._node_radius - width * 0.13, 0.0))
+            joint_diameter = width * 0.28
+            add_part(
+                common,
+                "custom_joint",
+                "#Sphere",
+                joint,
+                (joint_diameter, joint_diameter, joint_diameter),
             )
+            boundary_rotation = (
+                common["qscalar"],
+                common["qx"],
+                common["qy"],
+                common["qz"],
+            )
+            padded_restraints = (*boundary.restraints, False, False, False, False, False, False)[:6]
+            padded_springs = (*boundary.spring_stiffnesses, None, None, None, None, None, None)[:6]
+            for index, axis in enumerate(translation_axes):
+                oriented_axis = self._rotate_by_quaternion(axis, *boundary_rotation)
+                if padded_restraints[index]:
+                    end = tuple(
+                        joint[coordinate] + oriented_axis[coordinate] * height * 0.92
+                        for coordinate in range(3)
+                    )
+                    add_cylinder_between(
+                        common,
+                        f"constraint_{dof_labels[index]}",
+                        joint,
+                        end,
+                        width * 0.16,
+                    )
+                    add_part(
+                        common,
+                        f"constraint_{dof_labels[index]}_cap",
+                        "#Cube",
+                        end,
+                        (width * 0.30, plate_height, width * 0.30),
+                        rotation=self._rotation_from_y_axis(oriented_axis),
+                    )
+
+                stiffness = padded_springs[index]
+                if stiffness is None or math.isclose(float(stiffness), 0.0, abs_tol=1.0e-12):
+                    continue
+                reference = (0.0, 1.0, 0.0)
+                if abs(sum(reference[i] * oriented_axis[i] for i in range(3))) > 0.85:
+                    reference = (1.0, 0.0, 0.0)
+                side = self._normalized(self._cross(oriented_axis, reference)) or (1.0, 0.0, 0.0)
+                spring_points = [joint]
+                spring_length = height * 1.18
+                for step in range(1, 7):
+                    fraction = step / 6.0
+                    wobble = 0.0 if step == 6 else (width * 0.18 if step % 2 else -width * 0.18)
+                    spring_points.append(
+                        tuple(
+                            joint[coordinate]
+                            + oriented_axis[coordinate] * spring_length * fraction
+                            + side[coordinate] * wobble
+                            for coordinate in range(3)
+                        )
+                    )
+                for segment in range(len(spring_points) - 1):
+                    start, end = spring_points[segment], spring_points[segment + 1]
+                    add_cylinder_between(
+                        common,
+                        f"spring_{dof_labels[index]}_{segment}",
+                        start,
+                        end,
+                        width * 0.075,
+                        color=_SPRING_SUPPORT_COLOR,
+                    )
+
+            for index, axis in enumerate(translation_axes, start=3):
+                oriented_axis = self._rotate_by_quaternion(axis, *boundary_rotation)
+                lock_rotation = self._rotation_from_y_axis(oriented_axis)
+                lock_center = tuple(
+                    joint[coordinate] + oriented_axis[coordinate] * width * 0.42
+                    for coordinate in range(3)
+                )
+                if padded_restraints[index]:
+                    add_part(
+                        common,
+                        f"rotation_lock_{dof_labels[index]}",
+                        "#Cone",
+                        lock_center,
+                        (width * 0.28, width * 0.48, width * 0.28),
+                        rotation=lock_rotation,
+                    )
+                    continue
+                stiffness = padded_springs[index]
+                if stiffness is None or math.isclose(float(stiffness), 0.0, abs_tol=1.0e-12):
+                    continue
+                # A compact opposing-cone torsion marker is used for a
+                # rotational spring: it reads differently from both the
+                # solid lock cone and the translational zig-zag coil while
+                # staying legible at normal model zoom levels.
+                for sign in (-1.0, 1.0):
+                    signed_axis = tuple(sign * value for value in oriented_axis)
+                    spring_rotation = self._rotation_from_y_axis(signed_axis)
+                    spring_center = tuple(
+                        joint[coordinate] + signed_axis[coordinate] * width * 0.31
+                        for coordinate in range(3)
+                    )
+                    add_part(
+                        common,
+                        f"rotational_spring_{dof_labels[index]}",
+                        "#Cone",
+                        spring_center,
+                        (width * 0.22, width * 0.34, width * 0.22),
+                        color=_SPRING_SUPPORT_COLOR,
+                        rotation=spring_rotation,
+                    )
         return parts
 
     def _local_axis_gizmo_parts(
@@ -2142,7 +2481,9 @@ class Quick3DSceneBridge(QObject):
             # A truss carries no bending orientation at all (matches
             # _build_local_axis_preview's own truss exclusion) - render it
             # as the old uniform sqrt(area) square with the old rotation,
-            # unchanged, regardless of any section_shape it happens to carry.
+            # but still honor a circular section's shape (previously this
+            # unconditionally dropped straight to a #Cube regardless of
+            # section_shape).
             area = self._number_property(element.properties, "A")
             size = min(
                 max(
@@ -2151,10 +2492,13 @@ class Quick3DSceneBridge(QObject):
                 ),
                 length * 0.45,
             )
+            truss_shape = element.properties.get("section_shape")
+            truss_source = "#Cylinder" if truss_shape in {"Circle", "Pipe"} else "#Cube"
             return [
                 self._box_part(
                     element.tag, start, end, mid, length, size, size,
                     old_scalar, old_qx, old_qy, old_qz, color, opacity,
+                    source=truss_source,
                 )
             ]
 
@@ -3066,6 +3410,7 @@ class Quick3DSceneBridge(QObject):
         self._node_by_tag = {}
         self._geometry_member_records = []
         self._emit_topology_changed()
+        self._emit_loads_changed()
         self._emit_scene_metrics_changed()
 
     @staticmethod

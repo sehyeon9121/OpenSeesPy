@@ -1116,12 +1116,12 @@ def test_reselecting_a_member_restores_its_stored_value_not_an_unapplied_edit() 
 # -- Editor / selection layout -------------------------------------------------
 
 
-def test_2d_editor_and_selection_panels_are_independent_fixed_width_columns() -> None:
-    """The category editor and the read-only Selection Status inspector used
+def test_2d_editor_and_work_tree_are_independent_fixed_width_columns() -> None:
+    """The category editor and the Work Tree/Selection Status inspector used
     to share one vertical splitter on the right, which read as a single
     cluttered panel for something as simple as 노드 이동·복사/아치. They are
-    now two separate columns - editor on the left of the canvas, Selection
-    Status on the right - each its own independent scroll area, mirroring
+    now two separate columns - editor on the left of the canvas, Work Tree
+    inspector on the right - each its own independent scroll area, mirroring
     the 3D workbench's tools-left/status-right split."""
     application = QApplication.instance() or QApplication([])
     page = ModelingInterfacePage()
@@ -1141,9 +1141,11 @@ def test_2d_editor_and_selection_panels_are_independent_fixed_width_columns() ->
     assert isinstance(status, QScrollArea)
     assert editor is not status
     assert editor.width() == 320
-    assert status.width() == 320
+    assert status.width() == 330
     assert editor.verticalScrollBar() is not status.verticalScrollBar()
-    assert status.widget() is page.selection_status_panel
+    assert status.widget() is page.right_panel_stack
+    assert page.work_tree_title.text() == "워크트리"
+    assert page.work_tree.parentWidget() is not None
     assert application is QApplication.instance()
 
 

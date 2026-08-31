@@ -490,10 +490,16 @@ def test_load_add_and_delete_trigger_topology_rebuild() -> None:
     model.nodal_loads = [NodalLoad(1, (0.0, 0.0, -1.0), case_type=LoadCaseKind.DEAD)]
     bridge.set_model(model)
     assert counts["topology"] == 1
+    # loadArrows notify=loads_changed; a topology rebuild that replaces the
+    # arrow list has to tell that Repeater3D too, or the first applied load
+    # stays invisible until some later loads_changed (undo used to be that
+    # later signal - arrows appeared after reverting).
+    assert counts["loads"] == 1
 
     counts = _signal_counts(bridge)
     bridge.set_model(replace(model, nodal_loads=[]))
     assert counts["topology"] == 1
+    assert counts["loads"] == 1
 
 
 def test_length_mismatch_falls_back_to_topology_rebuild() -> None:

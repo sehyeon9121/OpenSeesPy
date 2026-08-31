@@ -117,6 +117,35 @@ def rotate_about_axis(
     )
 
 
+#: Unit vector for each ``BoundaryCondition.angle_axis`` choice.
+_BOUNDARY_ROTATION_AXES: dict[str, tuple[float, float, float]] = {
+    "x": (1.0, 0.0, 0.0),
+    "y": (0.0, 1.0, 0.0),
+    "z": (0.0, 0.0, 1.0),
+}
+
+
+def boundary_local_axes(
+    angle_degrees: float, axis: str
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """``(local_x, local_y)`` for a rotated ``BoundaryCondition``: global X and
+    Y rotated ``angle_degrees`` (right-hand rule) about the named global axis
+    ('x'/'y'/'z' - see ``BoundaryCondition.angle_axis``). The implied local z
+    (not returned - an OpenSees ``zeroLength`` ``-orient`` derives it from
+    these two) is global Z rotated the same way.
+
+    ``axis="z"`` reduces to exactly the original 2D-only formula (local_x =
+    (cosθ, sinθ, 0), local_y = (-sinθ, cosθ, 0)) - rotating about Z leaves
+    global Z itself unaffected and only mixes X/Y - so every caller written
+    before 3D supports could choose an axis keeps working unchanged.
+    """
+    rotation_axis = _BOUNDARY_ROTATION_AXES[axis]
+    angle_rad = math.radians(angle_degrees)
+    local_x = rotate_about_axis((1.0, 0.0, 0.0), rotation_axis, angle_rad)
+    local_y = rotate_about_axis((0.0, 1.0, 0.0), rotation_axis, angle_rad)
+    return local_x, local_y
+
+
 def local_y_z_axes(
     axis: tuple[float, float, float],
     reference_vector: tuple[float, float, float],

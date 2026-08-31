@@ -521,7 +521,13 @@ class ModelInspectorPanel(QFrame):
                 if absent:
                     missing.append(f"Element {element.tag} ({'/'.join(absent)})")
             elif element.element_type.lower() in {"truss", "corottruss"}:
-                absent = [key for key in ("A", "material_tag") if key not in element.properties]
+                # "E"/"A" is what apply_full_section_to_selection actually
+                # writes (canvas_property_application.py) - "material_tag"
+                # is never a key on the domain Element, only ever a live
+                # OpenSees tag assigned during _build, so checking for it
+                # here always reported a fully-assigned truss/cable member as
+                # missing stiffness.
+                absent = [key for key in ("E", "A") if key not in element.properties]
                 if absent:
                     missing.append(f"Element {element.tag} ({'/'.join(absent)})")
         return missing

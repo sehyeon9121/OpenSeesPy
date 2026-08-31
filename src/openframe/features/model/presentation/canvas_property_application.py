@@ -55,6 +55,7 @@ class _PropertyApplicationMixin:
         restraints: tuple[bool, ...],
         angle: float = 0.0,
         spring_stiffnesses: tuple[float | None, ...] = (),
+        angle_axis: str = "z",
     ) -> None:
         """Assign a support, or remove it entirely when nothing is restrained
         and no DOF is sprung either."""
@@ -64,7 +65,7 @@ class _PropertyApplicationMixin:
         for node_tag in self.selected_nodes:
             if any(restraints) or any(spring_stiffnesses):
                 self.boundaries[node_tag] = BoundaryCondition(
-                    node_tag, restraints, angle, spring_stiffnesses
+                    node_tag, restraints, angle, spring_stiffnesses, angle_axis
                 )
             else:
                 self.boundaries.pop(node_tag, None)

@@ -380,6 +380,39 @@ def test_2d_element_can_optionally_apply_saved_properties_to_new_members() -> No
     assert page.canvas.elements[member].properties["A"] == pytest.approx(0.1)
 
 
+def test_2d_properties_make_direct_apply_primary_and_save_a_pair_in_one_click() -> None:
+    page = _page(start_in_3d=False)
+    first = page.canvas.add_node(0.0, 0.0)
+    second = page.canvas.add_node(4.0, 0.0)
+    member = page.canvas.add_member(first, second)
+    page.canvas.selected_elements = {member}
+    page.canvas.selection_changed.emit()
+
+    panel = page.section_material_panel
+    assert panel.apply_button.text() == "선택 부재에 바로 적용 (저장 불필요)"
+    assert panel.material_save_button.isHidden()
+    assert panel.section_save_button.isHidden()
+    assert panel.property_set_save_button.isHidden() is False
+
+    panel.shape_combo.setCurrentText("Rectangle")
+    panel.source_custom.setChecked(True)
+    panel._dimension_spinboxes["b"].setValue(0.25)
+    panel._dimension_spinboxes["h"].setValue(0.4)
+    panel.material_e.setValue(210_000.0)
+    panel.material_name.setText("2D Steel")
+    panel.section_name.setText("2D Column")
+
+    panel.apply_button.click()
+    assert page.canvas.elements[member].properties["E"] == pytest.approx(210_000.0)
+    assert page.canvas.elements[member].properties["A"] == pytest.approx(0.1)
+
+    panel.property_set_save_button.click()
+    assert len(page._user_materials) == 1
+    assert len(page._user_sections) == 1
+    assert page.element_material_selector.currentData() == "MAT-001"
+    assert page.element_section_selector.currentData() == "SEC-001"
+
+
 def test_3d_properties_can_reassign_material_and_section_to_selected_members() -> None:
     page = _page(start_in_3d=True)
     first = page.canvas._add_node_at((0.0, 0.0, 0.0))

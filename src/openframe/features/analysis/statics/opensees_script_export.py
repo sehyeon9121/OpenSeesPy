@@ -7,22 +7,21 @@ buckling, time history and response spectrum for the 3D canvas all live only in
 the "OpenSeesPy 파일 불러오기" pipeline (``infrastructure/opensees/*_solver.py``),
 which expects a plain ``.py`` script it can execute in a subprocess. This module
 is the bridge: it writes the exact same model - nodes, supports (including
-inclined ones in 2D, springs, 3D rigid diaphragms), sections, hinges, rigid end
-offsets, loads (including trapezoidal ones in 2D), and optionally lumped mass -
-as script text, reusing the already-validated techniques ``solver.py`` uses
-in-process (inclined-support zero-length springs, trapezoid discretization,
-hinge releases, 3D ``-jntOffset``/``vecxz`` geomTransf) instead of re-deriving
-them. Every 3D technique here is ported 1:1 from ``MaterialFreeStaticsSolver``'s
-own ``ndm == 3`` branches - see ``tests/integration/test_opensees_script_export.py``,
-which round-trips the exported script through a real subprocess and checks it
-against that same in-process solver's own result.
+inclined ones in 2D or 3D, springs, 3D rigid diaphragms), sections, hinges,
+rigid end offsets, loads (including trapezoidal ones in 2D), and optionally
+lumped mass - as script text, reusing the already-validated techniques
+``solver.py`` uses in-process (inclined-support zero-length springs, trapezoid
+discretization, hinge releases, 3D ``-jntOffset``/``vecxz`` geomTransf) instead
+of re-deriving them. Every 3D technique here is ported 1:1 from
+``MaterialFreeStaticsSolver``'s own ``ndm == 3`` branches - see
+``tests/integration/test_opensees_script_export.py``, which round-trips the
+exported script through a real subprocess and checks it against that same
+in-process solver's own result.
 
 3D lumped-plasticity (pushover) hinges are deliberately NOT ported here - Pushover
 keeps running entirely in-process (``MaterialFreeStaticsSolver.solve_nonlinear_
 static``), so this exporter only ever emits the elastic release form of a 3D
-hinge. 3D inclined (rotated) supports are also not supported, matching
-``MaterialFreeStaticsSolver`` itself, which never builds one for ndm == 3 either
-(see ``_write_boundaries``'s own comment).
+hinge.
 
 The generated script only *builds* the model - no analysis commands - matching
 what ``run_model_script`` (script_execution.py) expects and needs: it suppresses
@@ -32,6 +31,7 @@ keeps the file honest about what it does.
 
 import math
 
+from openframe.core.domain.geometric_transform import boundary_local_axes
 from openframe.core.domain.model import (
     BoundaryCondition,
     Element,
@@ -163,19 +163,7 @@ def _num(value: float) -> str:
 def _write_boundaries(lines: list[str], model: StructuralModel) -> None:
     ndm = model.ndm
     ndf = model.ndf
-    # Inclined (rotated) supports are 2D-only, matching the in-process solver
-    # exactly: MaterialFreeStaticsSolver._build only ever populates its own
-    # `inclined` list when ndm == 2 (its _fix_inclined always writes a
-    # 2-coordinate ground node, which would be wrong for a 3D model anyway).
-    # A 3D BoundaryCondition with is_inclined=True is therefore silently left
-    # unfixed here too - reproducing that existing limitation exactly rather
-    # than half-supporting a rotated 3D support with no verified technique
-    # behind it.
-    inclined = (
-        [condition for condition in model.boundaries if condition.is_inclined]
-        if ndm == 2
-        else []
-    )
+    inclined = [condition for condition in model.boundaries if condition.is_inclined]
     plain = [condition for condition in model.boundaries if not condition.is_inclined]
     for condition in plain:
         restraints = tuple(int(value) for value in condition.restraints[:ndf])
@@ -199,25 +187,26 @@ def _write_inclined_support(
 ) -> None:
     """Text form of ``MaterialFreeStaticsSolver._fix_inclined``: a fully-fixed
     dummy ground node plus a zero-length spring rotated to the support's own
-    angle, so only the restrained local direction(s) actually resist motion.
-    2D only - see ``_write_boundaries``'s own comment."""
+    angle (about ``condition.angle_axis``), so only the restrained local
+    direction(s) actually resist motion. ``restraints[i]`` maps onto
+    zeroLength local direction ``i + 1`` for every ``i`` up to ``ndf`` - see
+    ``_fix_inclined``'s own docstring for why this is a strict
+    generalisation of the original 2D-only special case."""
     node = model.nodes[condition.node_tag]
     ground_tag = 9_000_000 + condition.node_tag
-    radians = math.radians(condition.angle)
-    vector_x = (math.cos(radians), math.sin(radians), 0.0)
-    vector_y = (-math.sin(radians), math.cos(radians), 0.0)
+    vector_x, vector_y = boundary_local_axes(condition.angle, condition.angle_axis)
     materials: list[int] = []
     directions: list[int] = []
-    for index in range(min(2, ndf)):
+    for index in range(min(len(condition.restraints), ndf)):
         if condition.restraints[index]:
             materials.append(_INCLINED_SUPPORT_MATERIAL_TAG)
             directions.append(index + 1)
-    if ndf > 2 and len(condition.restraints) > 2 and condition.restraints[2]:
-        materials.append(_INCLINED_SUPPORT_MATERIAL_TAG)
-        directions.append(3)
     if not directions:
         return
-    lines.append(f"ops.node({ground_tag}, {_num(node.x)}, {_num(node.y)})")
+    ground_coordinates = (
+        (_num(node.x), _num(node.y)) if model.ndm == 2 else (_num(node.x), _num(node.y), _num(node.z))
+    )
+    lines.append(f"ops.node({ground_tag}, {', '.join(ground_coordinates)})")
     lines.append(f"ops.fix({ground_tag}, {', '.join('1' for _ in range(ndf))})")
     material_args = ", ".join(str(tag) for tag in materials)
     direction_args = ", ".join(str(value) for value in directions)

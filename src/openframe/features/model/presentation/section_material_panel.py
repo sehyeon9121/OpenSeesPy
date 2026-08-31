@@ -537,6 +537,7 @@ class SectionMaterialPanel(QWidget):
     apply_requested = Signal()
     material_saved = Signal(dict)
     section_saved = Signal(dict)
+    property_set_saved = Signal(str, str)
     #: Fires whenever any field that feeds ``current_application_kwargs()``
     #: changes *by the user's own typing* - never while ``load_from_element``
     #: is repopulating the panel from a freshly (re)selected member. The
@@ -778,6 +779,25 @@ class SectionMaterialPanel(QWidget):
         self.apply_button.clicked.connect(self._apply_clicked)
         root.addWidget(self.apply_button)
 
+        self.streamlined_assignment_hint = QLabel(
+            "저장하지 않아도 현재 값을 선택 부재에 바로 적용할 수 있습니다. "
+            "여러 부재나 다음 부재에 다시 쓸 때만 세트로 저장하세요."
+        )
+        self.streamlined_assignment_hint.setObjectName("setupSectionHint")
+        self.streamlined_assignment_hint.setWordWrap(True)
+        self.streamlined_assignment_hint.hide()
+        root.addWidget(self.streamlined_assignment_hint)
+        self.property_set_save_button = QPushButton("현재 물성·단면 세트 저장")
+        self.property_set_save_button.setObjectName("direct2DSecondaryButton")
+        self.property_set_save_button.clicked.connect(self._save_property_set_clicked)
+        self.property_set_save_button.hide()
+        root.addWidget(self.property_set_save_button)
+        self.property_set_save_status = QLabel()
+        self.property_set_save_status.setObjectName("setupSectionHint")
+        self.property_set_save_status.setWordWrap(True)
+        self.property_set_save_status.hide()
+        root.addWidget(self.property_set_save_status)
+
         self._populate_material_categories()
         self._shape_changed(self.shape_combo.currentText())
         self._refresh_unit_suffixes()
@@ -832,6 +852,32 @@ class SectionMaterialPanel(QWidget):
         self.material_group.set_expanded(not compact)
         self.section_group.set_expanded(not compact)
         self.properties_group.set_expanded(not compact)
+
+    def set_streamlined_assignment_mode(self, enabled: bool = True) -> None:
+        """Make direct assignment the obvious 2D workflow.
+
+        Library persistence remains available, but material and section are
+        saved together as one reusable set instead of looking like two
+        mandatory steps before the actual member assignment.
+        """
+        self.material_save_button.setVisible(not enabled)
+        self.material_save_status.setVisible(not enabled)
+        self.section_save_button.setVisible(not enabled)
+        self.section_save_status.setVisible(not enabled)
+        self.streamlined_assignment_hint.setVisible(enabled)
+        self.property_set_save_button.setVisible(enabled)
+        self.property_set_save_status.setVisible(enabled)
+        if enabled:
+            self.apply_button.setText("선택 부재에 바로 적용 (저장 불필요)")
+            self.apply_button.setToolTip(
+                "현재 입력값을 선택한 모든 부재에 즉시 적용합니다. 라이브러리 저장은 필요하지 않습니다."
+            )
+            # Keep the primary action above whichever MATERIAL/SECTION card
+            # is currently open, rather than below a potentially long form.
+            self._root_layout.removeWidget(self.apply_button)
+            self._root_layout.insertWidget(0, self.apply_button)
+            self._root_layout.removeWidget(self.streamlined_assignment_hint)
+            self._root_layout.insertWidget(1, self.streamlined_assignment_hint)
 
     def set_visible_groups(self, *, material: bool = True, section: bool = True) -> None:
         """Hide whichever whole card(s) a narrower-purpose caller has no use
@@ -905,6 +951,33 @@ class SectionMaterialPanel(QWidget):
         }
         self.section_saved.emit(section)
         self.section_save_status.setText(f"{name} 섹션을 워크트리에 저장했습니다.")
+
+    def _save_property_set_clicked(self) -> None:
+        """Save the visible material and section together for later reuse."""
+        material_name = (
+            self.material_name.text().strip()
+            or self.material_grade_combo.currentText().strip()
+        )
+        if not material_name:
+            self.property_set_save_status.setText("물성 이름을 입력하세요.")
+            return
+        if self.material_e.value() <= 0.0:
+            self.property_set_save_status.setText("탄성계수 E는 0보다 커야 합니다.")
+            return
+        if self._properties is None:
+            self.property_set_save_status.setText("유효한 섹션 치수를 입력하세요.")
+            return
+        section_name = (
+            self.section_name.text().strip()
+            or self.designation_combo.currentText().strip()
+            or self.shape_combo.currentText().strip()
+        )
+        self._save_material_clicked()
+        self._save_section_clicked()
+        self.property_set_saved.emit(material_name, section_name)
+        self.property_set_save_status.setText(
+            f"{material_name} / {section_name} 세트를 저장하고 다음 부재의 기본값으로 지정했습니다."
+        )
 
     # -- unit system ------------------------------------------------------
     def set_unit_system(self, unit_system: UnitSystem) -> None:

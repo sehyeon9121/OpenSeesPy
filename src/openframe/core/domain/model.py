@@ -115,11 +115,16 @@ class Element:
 class BoundaryCondition:
     """A support whose restrained directions may be rotated away from the global axes.
 
-    ``restraints[0]`` and ``[1]`` constrain translation along a local frame rotated
-    ``angle`` degrees counter-clockwise from global +X: local x' runs along the
-    support surface, local y' is normal to it.  ``angle=0`` reduces exactly to the
-    ordinary global-axis support this project always had, which is why every caller
-    that never mentions ``angle`` keeps working unchanged.
+    ``restraints[i]`` constrains translation (i=0,1,2) or rotation (i=3,4,5,
+    3D only) along a local frame - global X/Y/Z each rotated ``angle``
+    degrees (right-hand rule) about the global axis named by ``angle_axis``
+    ('x'/'y'/'z') - see ``geometric_transform.boundary_local_axes``.
+    ``angle_axis="z"`` (the default) reduces exactly to this project's
+    original 2D-only convention: local x' runs along the support surface,
+    local y' is normal to it, rotated within the global XY plane.
+    ``angle=0`` reduces exactly to the ordinary global-axis support this
+    project always had, which is why every caller that never mentions
+    ``angle``/``angle_axis`` keeps working unchanged.
     """
 
     node_tag: int
@@ -133,6 +138,13 @@ class BoundaryCondition:
     #: (the default) means "no springs at all", reproducing every existing
     #: support exactly.
     spring_stiffnesses: tuple[float | None, ...] = ()
+    #: Which global axis ``angle`` rotates about - 'x', 'y', or 'z'. Only 'z'
+    #: is meaningful for a 2D (XY-plane) model, which is why it is the
+    #: default and sits last (added after ``spring_stiffnesses``, which
+    #: several callers already pass positionally); a 3D model may need 'x'
+    #: or 'y' too, e.g. a support on a sloped surface whose normal is not in
+    #: the XY plane.
+    angle_axis: str = "z"
 
     @property
     def is_inclined(self) -> bool:

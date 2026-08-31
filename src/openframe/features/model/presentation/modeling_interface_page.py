@@ -3,7 +3,7 @@
 The layout keeps the canvas dominant: a narrow tool rail on the left (only
 선택/그리기 — the two modes a click on the canvas can mean), a coordinate
 entry strip under the canvas, a category editor column further left
-(``_build_2d_editor_panel``), and a read-only Selection Status column on
+(``_build_2d_editor_panel``), and a Work Tree/Selection Status inspector on
 the right (``_build_selection_panel``). A single-row category bar above
 the canvas (``_build_category_bar`` — 노드 추가/이동·복사·배열/노드
 분할/지점/노드 유형/부재/하중) picks which category's settings the
@@ -233,8 +233,8 @@ class ModelingInterfacePage(QFrame):
         self.canvas.model_changed.connect(self._refresh_status)
         if not self._start_in_3d:
             self.canvas.model_changed.connect(self._apply_active_properties_to_new_2d_members)
+        self.canvas.model_changed.connect(self._refresh_work_tree)
         if self._start_in_3d:
-            self.canvas.model_changed.connect(self._refresh_work_tree)
             # Every Load Case/Load Entry/Load Combination mutation emits this
             # signal (canvas_load_entries.py) - not just the add/update path
             # _commit_load3d_entry already refreshes directly, but also
@@ -666,10 +666,13 @@ class ModelingInterfacePage(QFrame):
         )
         return tree
 
-    def _build_3d_selection_panel(self) -> QScrollArea:
-        """MIDAS-style work tree plus selection status on the right - swapped
+    def _build_selection_panel(self) -> QScrollArea:
+        """Shared MIDAS-style work tree plus selection status on the right - swapped
         for a Loads-only ``Load Inspector`` page while the Loads workbench
         tab is active (``_activate_workbench_tab``), via ``right_panel_stack``.
+
+        Both the 2D and 3D modeling windows use this same inspector so their
+        model navigation, entity selection, and load browsing stay consistent.
         """
         panel = QFrame()
         panel.setObjectName("modelingInspectorPanel")
@@ -1297,22 +1300,6 @@ class ModelingInterfacePage(QFrame):
                 "   ·   모델 설정"
             )
 
-    def _build_selection_panel(self) -> QScrollArea:
-        """The 2D right dock: selection context only, authoring tools live
-        left (``_build_2d_editor_panel``). 3D uses its own inspector
-        (``_build_3d_inspector_panel``), which folds this same
-        ``SelectionStatusPanel`` in alongside the category forms and 모델
-        설정 cards instead of giving it a whole column to itself.
-        """
-        self.selection_status_panel = SelectionStatusPanel()
-        scroll = QScrollArea()
-        scroll.setObjectName("modelingSelectionInspector")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setFixedWidth(320)
-        scroll.setWidget(self.selection_status_panel)
-        return scroll
-
     def _build_modeling_workspace(self) -> QWidget:
         page = QWidget()
         page.setObjectName("direct2DModelingWorkspace")
@@ -1337,7 +1324,7 @@ class ModelingInterfacePage(QFrame):
             self.left_dock_divider.setFixedWidth(1)
             layout.addWidget(self.left_dock_divider)
             layout.addWidget(self._build_canvas_panel(), 1)
-            layout.addWidget(self._build_3d_selection_panel())
+            layout.addWidget(self._build_selection_panel())
         else:
             # Same divider as the 3D branch above, for the same reason: the
             # editor panel and the selection panel are both QScrollAreas
@@ -2447,6 +2434,27 @@ class ModelingInterfacePage(QFrame):
         self.support_angle.editingFinished.connect(self._apply_support)
         angle_row.addWidget(self.support_angle, 1)
         root.addLayout(angle_row)
+        self.support_angle_axis: QComboBox | None = None
+        if self._start_in_3d:
+            # Only a 3D model can need an incline that isn't in the XY plane
+            # - 2D always rotates about Z (this combo's default), matching
+            # this project's original 2D-only convention exactly, so the 2D
+            # workspace never shows this row at all.
+            axis_row = QHBoxLayout()
+            axis_row.addWidget(QLabel("회전축"))
+            self.support_angle_axis = QComboBox()
+            self.support_angle_axis.setObjectName("supportAngleAxisSelector")
+            for key, label in (("x", "X축"), ("y", "Y축"), ("z", "Z축(수직)")):
+                self.support_angle_axis.addItem(label, key)
+            self.support_angle_axis.setCurrentIndex(self.support_angle_axis.findData("z"))
+            self.support_angle_axis.setToolTip(
+                "경사각(°)이 어느 전역축을 기준으로 회전하는지 선택합니다."
+            )
+            self.support_angle_axis.currentIndexChanged.connect(
+                lambda _index: self._apply_support()
+            )
+            axis_row.addWidget(self.support_angle_axis, 1)
+            root.addLayout(axis_row)
         rotate_row = QHBoxLayout()
         cw_button = QPushButton("↻ 시계 30°")
         cw_button.setToolTip("경사각을 시계 방향으로 30°씩 돌리고 바로 적용합니다.")
@@ -5279,6 +5287,11 @@ class ModelingInterfacePage(QFrame):
         self.support_angle.blockSignals(True)
         self.support_angle.setValue(boundary.angle if boundary else 0.0)
         self.support_angle.blockSignals(False)
+        if self.support_angle_axis is not None:
+            axis_index = self.support_angle_axis.findData(boundary.angle_axis if boundary else "z")
+            self.support_angle_axis.blockSignals(True)
+            self.support_angle_axis.setCurrentIndex(axis_index if axis_index != -1 else self.support_angle_axis.findData("z"))
+            self.support_angle_axis.blockSignals(False)
 
         dof = 6 if self.canvas.ndm == 3 else 3
         restraints = tuple(boundary.restraints[:dof]) if boundary else ()
@@ -5324,8 +5337,13 @@ class ModelingInterfacePage(QFrame):
                 self.support_spring_fields[dof].value() or None
                 for dof in ("Ux", "Uy", "Uz", "Rx", "Ry", "Rz")
             )
+        angle_axis = (
+            self.support_angle_axis.currentData()
+            if self.support_angle_axis is not None
+            else "z"
+        )
         self.canvas.apply_support_to_selection(
-            restraints, self.support_angle.value(), spring_stiffnesses
+            restraints, self.support_angle.value(), spring_stiffnesses, angle_axis
         )
         self._sync_selection_status()
 
@@ -5955,8 +5973,14 @@ class ModelingInterfacePage(QFrame):
         self.section_material_panel.set_visible_groups(material=True, section=True)
         self.section_material_panel.material_saved.connect(self._save_user_material)
         self.section_material_panel.section_saved.connect(self._save_user_section)
+        self.section_material_panel.property_set_saved.connect(
+            self._activate_saved_property_set
+        )
         self.section_material_panel.apply_button.setVisible(True)
-        self.section_material_panel.apply_button.setText("선택 부재에 물성·단면 적용")
+        if not self._start_in_3d:
+            self.section_material_panel.set_streamlined_assignment_mode()
+        else:
+            self.section_material_panel.apply_button.setText("선택 부재에 물성·단면 적용")
         self.section_material_panel.apply_requested.connect(self._apply_member_section)
         self.section_material_panel.edited.connect(self._selection_status_edited)
         # A single selector owns which card is visible in both dimensions.
@@ -6704,8 +6728,8 @@ class ModelingInterfacePage(QFrame):
         self._sync_property_panel()
         self._refresh_status()
         self._refresh_model_settings_summary()
+        self._refresh_work_tree()
         if self._start_in_3d:
-            self._refresh_work_tree()
             self._restore_load_generator_settings(data.get("load_generator_settings"))
 
     def save_to_file(self, path: Path) -> None:
@@ -7618,6 +7642,25 @@ class ModelingInterfacePage(QFrame):
             f"✓ 부재 {count}개에 단면·재료(E/A/I)와 단위중량을 적용했습니다."
         )
         self._sync_selection_status()
+
+    def _activate_saved_property_set(self, material_name: str, section_name: str) -> None:
+        """Use a newly saved 2D pair automatically for members drawn next."""
+        material = next(
+            (item for item in self._user_materials if item.get("name") == material_name),
+            None,
+        )
+        section = next(
+            (item for item in self._user_sections if item.get("name") == section_name),
+            None,
+        )
+        if material is None or section is None:
+            return
+        material_index = self.element_material_selector.findData(material.get("id"))
+        section_index = self.element_section_selector.findData(section.get("id"))
+        if material_index >= 0:
+            self.element_material_selector.setCurrentIndex(material_index)
+        if section_index >= 0:
+            self.element_section_selector.setCurrentIndex(section_index)
 
     def _apply_member_end_release(self, end: str, released: bool) -> None:
         member_tag = self._selected_member_tag()

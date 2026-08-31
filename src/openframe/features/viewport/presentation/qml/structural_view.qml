@@ -401,7 +401,8 @@ Item {
         // themselves relative to ground_y.
 
         Repeater3D {
-            // MIDAS-style support glyphs: block=fixed, cone=pin, cone+rollers=roller.
+            // Mechanically descriptive support assemblies: anchored socket=fixed,
+            // cone+joint=pin, aligned cylinders=roller, DOF bars/coils=custom/spring.
             model: bridgeReady ? sceneBridge.supportSymbols : []
             delegate: Model {
                 property int supportNodeTag: modelData.tag
