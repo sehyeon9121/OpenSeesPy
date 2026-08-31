@@ -13,7 +13,7 @@
 ; Build). Output goes to installer/output/ (not tracked in git).
 
 #define MyAppName "OpenFrame Studio"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppExeDir "{app}"
 #define PayloadDir "..\build\payload"
 
