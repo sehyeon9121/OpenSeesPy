@@ -30,16 +30,24 @@ Item {
     property real cameraYaw: 45
     property real cameraPitch: -25
     property real cameraDistance: Math.max(bridgeExtent * 2.8, 4.0)
-    // Preserve the section proportions carried by width_b/width_h while
-    // making the rendered member clearly subordinate to the node sphere.
-    // Python keeps the unscaled dimensions for geometry, picking and node
-    // sizing; this is deliberately a presentation-only reduction.
-    readonly property real memberCrossSectionScale: 0.72
+    // Member boxes use the model-unit B/H from Python as-is. A presentation
+    // scale used to shrink them under the node spheres; that fought the
+    // drawing scale and made every assigned section look fatter or thinner
+    // than the coordinates it was drawn between.
+    // Nodes stay a separate CAD marker: constant screen pixels so a true
+    // 400 mm column cannot swallow the joint, and so zoom does not turn
+    // the marker into a giant ball.
+    readonly property real nodeMarkerRadiusPixels: 8
+    readonly property real selectedNodeMarkerRadiusPixels: 10
+    readonly property real nodePickRadiusPixels: 18
     property real panX: 0
     property real panY: 0
     property real lastMouseX: 0
     property real lastMouseY: 0
     property bool panning: false
+    property bool navigationActive: false
+    property real navigationCursorX: 0
+    property real navigationCursorY: 0
     property bool pickingEnabled: false
     property int hoveredNodeTag: -1
     property real snapScreenX: 0
@@ -102,12 +110,12 @@ Item {
     }
 
     // view3d.pick() only ever hits the exact rendered pixel, so a node whose
-    // on-screen radius shrinks to a couple of pixels at any real zoom level
-    // was effectively unpickable without landing dead-center - no magnet
-    // effect at all, unlike the 2D canvas's generous pixel-radius snap
-    // (StaticsDrawingCanvas._SNAP_PIXELS). Probing a small ring of nearby
-    // points and taking the first node hit reproduces that same forgiving
-    // snap here.
+    // on-screen marker is a few pixels was unpickable without landing
+    // dead-center - no magnet, unlike the 2D canvas's pixel-radius snap
+    // (StaticsDrawingCanvas._SNAP_PIXELS). A ring of extra GPU rays used to
+    // fake that magnet, but a true-scale section occludes every one of
+    // those rays. pickNearestNode now searches projected node positions
+    // first (see its own comment) and only then falls through to pick().
     function tagIsSelected(tagList, tag) {
         for (let i = 0; i < tagList.length; ++i)
             if (tagList[i] === tag)
@@ -144,37 +152,26 @@ Item {
     }
 
     function pickNearestNode(mx, my) {
-        let exact = view3d.pick(mx, my)
-        if (exact.objectHit && exact.objectHit.nodeTag !== undefined)
-            return exact
-        const radii = [4, 8, 14]
-        const steps = 8
-        for (let r = 0; r < radii.length; ++r) {
-            for (let i = 0; i < steps; ++i) {
-                const angle = (Math.PI * 2 * i) / steps
-                const hit = view3d.pick(
-                    mx + radii[r] * Math.cos(angle),
-                    my + radii[r] * Math.sin(angle)
-                )
-                if (hit.objectHit && hit.objectHit.nodeTag !== undefined)
-                    return hit
-            }
-        }
-        // The ray-cast probes above are still occluded by whatever geometry
-        // sits in front of the node along that particular ray - a member's
-        // cross-section can render several times wider on screen than the
-        // node's own marker, so a big section can block every one of those
-        // rays too, at any real zoom level. Nodes are the anchors members
-        // attach to (not the reverse), so fall back to a depth-blind
-        // nearest-node-by-screen-position search: if a node's projected
-        // position really is this close to the cursor, it wins regardless
-        // of what is rendered on top of it.
+        // True-scale sections are several times wider on screen than the
+        // node marker, so a GPU ray through the cursor hits the member that
+        // buries the joint. Nodes are the anchors members attach to, so a
+        // depth-blind nearest-node-by-screen-position search runs first: if
+        // a node's projected position is inside the pick radius, it wins
+        // regardless of what is rendered on top of it. view3d.pick() is
+        // only the fallback for members / the work plane.
         if (root.bridgeReady) {
             let bestTag = -1
-            let bestDistance = 16
+            let bestDistance = root.nodePickRadiusPixels
             for (let index = 0; index < sceneBridge.nodes.length; ++index) {
                 const node = sceneBridge.nodes[index]
+                if (!root.nodeVisible(node.tag))
+                    continue
+                if (sceneBridge.timeHistoryDeformationActive
+                        && !sceneBridge.timeHistoryShowDeformed)
+                    continue
                 const point = view3d.mapFrom3DScene(Qt.vector3d(node.x, node.y, node.z))
+                if (!isFinite(point.x) || !isFinite(point.y))
+                    continue
                 const dx = point.x - mx
                 const dy = point.y - my
                 const distance = Math.sqrt(dx * dx + dy * dy)
@@ -186,7 +183,7 @@ Item {
             if (bestTag !== -1)
                 return { objectHit: { nodeTag: bestTag } }
         }
-        return exact
+        return view3d.pick(mx, my)
     }
 
     function pointInSelection(point, left, top, right, bottom) {
@@ -496,9 +493,9 @@ Item {
                         sceneBridge.deformationRevision
                     }
                     return Qt.vector3d(
-                        modelData.width_b * root.memberCrossSectionScale / 100,
+                        modelData.width_b / 100,
                         modelData.length / 100,
-                        modelData.width_h * root.memberCrossSectionScale / 100
+                        modelData.width_h / 100
                     )
                 }
                 materials: [
@@ -553,9 +550,9 @@ Item {
                         sceneBridge.deformationRevision
                     }
                     return Qt.vector3d(
-                        modelData.width_b * root.memberCrossSectionScale * 1.35 / 100,
+                        modelData.width_b / 100,
                         modelData.length / 100,
-                        modelData.width_h * root.memberCrossSectionScale * 1.35 / 100
+                        modelData.width_h / 100
                     )
                 }
                 materials: [
@@ -689,10 +686,11 @@ Item {
                         sceneBridge.selectionRevision
                     return root.tagIsSelected(sceneBridge.selectedNodeTags, nodeTag)
                 }
-                visible: (!bridgeReady
-                    || !sceneBridge.timeHistoryDeformationActive
-                    || sceneBridge.timeHistoryShowDeformed)
-                    && root.nodeVisible(nodeTag)
+                // The drawable node is nodeMarkerOverlay (constant screen
+                // pixels). A 3D sphere sized from member length sits inside a
+                // true-scale section and used to steal GPU picks from the
+                // joint it was meant to mark, so it stays off.
+                visible: false
                 source: "#Sphere"
                 position: {
                     if (bridgeReady) {
@@ -719,7 +717,7 @@ Item {
                 ]
                 castsShadows: false
                 receivesShadows: false
-                pickable: true
+                pickable: false
             }
         }
 
@@ -1069,6 +1067,96 @@ Item {
                 font.weight: Font.DemiBold
                 style: Text.Outline
                 styleColor: "#fffffff0"
+            }
+        }
+    }
+
+    Canvas {
+        id: nodeMarkerOverlay
+        objectName: "nodeMarkerOverlay"
+        anchors.fill: parent
+        z: 10
+        enabled: false
+
+        // Canvas is not a Repeater binding, so explicitly track every state
+        // that moves, recolours or filters a projected node marker.
+        property real trackedYaw: root.cameraYaw
+        property real trackedPitch: root.cameraPitch
+        property real trackedDistance: root.cameraDistance
+        property real trackedPanX: root.panX
+        property real trackedPanY: root.panY
+        property real trackedCenterX: root.bridgeCenterX
+        property real trackedCenterY: root.bridgeCenterY
+        property real trackedCenterZ: root.bridgeCenterZ
+        property int trackedGeometryRevision: root.bridgeReady
+            ? sceneBridge.geometryRevision : 0
+        property int trackedDeformationRevision: root.bridgeReady
+            ? sceneBridge.deformationRevision : 0
+        property int trackedSelectionRevision: root.bridgeReady
+            ? sceneBridge.selectionRevision : 0
+        property int trackedVisibilityRevision: root.bridgeReady
+            ? sceneBridge.visibilityRevision : 0
+        property bool trackedTimeHistoryActive: root.bridgeReady
+            ? sceneBridge.timeHistoryDeformationActive : false
+        property bool trackedTimeHistoryShowDeformed: root.bridgeReady
+            ? sceneBridge.timeHistoryShowDeformed : false
+        property var trackedNodes: root.bridgeReady ? sceneBridge.nodes : []
+        property int trackedNodeCount: root.bridgeReady ? sceneBridge.nodes.length : 0
+
+        function schedulePaint() {
+            requestPaint()
+        }
+
+        onTrackedYawChanged: schedulePaint()
+        onTrackedPitchChanged: schedulePaint()
+        onTrackedDistanceChanged: schedulePaint()
+        onTrackedPanXChanged: schedulePaint()
+        onTrackedPanYChanged: schedulePaint()
+        onTrackedCenterXChanged: schedulePaint()
+        onTrackedCenterYChanged: schedulePaint()
+        onTrackedCenterZChanged: schedulePaint()
+        onTrackedGeometryRevisionChanged: schedulePaint()
+        onTrackedDeformationRevisionChanged: schedulePaint()
+        onTrackedSelectionRevisionChanged: schedulePaint()
+        onTrackedVisibilityRevisionChanged: schedulePaint()
+        onTrackedTimeHistoryActiveChanged: schedulePaint()
+        onTrackedTimeHistoryShowDeformedChanged: schedulePaint()
+        onTrackedNodesChanged: schedulePaint()
+        onTrackedNodeCountChanged: schedulePaint()
+        onWidthChanged: schedulePaint()
+        onHeightChanged: schedulePaint()
+        Component.onCompleted: schedulePaint()
+
+        onPaint: {
+            const context = getContext("2d")
+            context.clearRect(0, 0, width, height)
+            if (!root.bridgeReady)
+                return
+
+            const selectedTags = sceneBridge.selectedNodeTags
+            for (let index = 0; index < sceneBridge.nodes.length; ++index) {
+                const node = sceneBridge.nodes[index]
+                if (!root.nodeVisible(node.tag))
+                    continue
+                if (sceneBridge.timeHistoryDeformationActive
+                        && !sceneBridge.timeHistoryShowDeformed)
+                    continue
+                const point = view3d.mapFrom3DScene(
+                    Qt.vector3d(node.x, node.y, node.z)
+                )
+                if (!isFinite(point.x) || !isFinite(point.y))
+                    continue
+                const selected = root.tagIsSelected(selectedTags, node.tag)
+                const radius = selected
+                    ? root.selectedNodeMarkerRadiusPixels
+                    : root.nodeMarkerRadiusPixels
+                context.beginPath()
+                context.arc(point.x, point.y, radius, 0, Math.PI * 2)
+                context.fillStyle = selected ? "#ef4444" : node.color
+                context.fill()
+                context.strokeStyle = "rgba(255, 255, 255, 0.96)"
+                context.lineWidth = selected ? 2.2 : 1.6
+                context.stroke()
             }
         }
     }
@@ -1429,10 +1517,85 @@ Item {
         }
     }
 
+    Canvas {
+        // Gesture-only cursor feedback. The normal pointer remains available
+        // for node/member picking; pressing the middle button replaces it
+        // with an orbit glyph, or a horizontal pan glyph when Shift is held.
+        id: navigationCursorFeedback
+        objectName: "navigationCursorFeedback"
+        z: 30
+        width: 44
+        height: 44
+        x: root.navigationCursorX - width / 2
+        y: root.navigationCursorY - height / 2
+        visible: root.navigationActive
+        enabled: false
+        property bool panMode: root.panning
+
+        function drawOrbit(context, color, lineWidth) {
+            context.strokeStyle = color
+            context.lineWidth = lineWidth
+            context.lineCap = "round"
+            context.lineJoin = "round"
+            context.beginPath()
+            // Horizontal and vertical curved arrows communicate free orbit
+            // without the distracting "360" text from the reference icon.
+            context.moveTo(6, 23)
+            context.bezierCurveTo(10, 12, 31, 12, 37, 21)
+            context.moveTo(31, 15)
+            context.lineTo(37, 21)
+            context.lineTo(31, 27)
+            context.moveTo(22, 6)
+            context.bezierCurveTo(34, 10, 34, 31, 23, 38)
+            context.moveTo(29, 31)
+            context.lineTo(23, 38)
+            context.lineTo(17, 32)
+            context.stroke()
+        }
+
+        function drawPan(context, color, lineWidth) {
+            context.strokeStyle = color
+            context.lineWidth = lineWidth
+            context.lineCap = "round"
+            context.lineJoin = "round"
+            context.beginPath()
+            context.moveTo(7, 22)
+            context.lineTo(37, 22)
+            context.moveTo(14, 14)
+            context.lineTo(6, 22)
+            context.lineTo(14, 30)
+            context.moveTo(30, 14)
+            context.lineTo(38, 22)
+            context.lineTo(30, 30)
+            context.stroke()
+        }
+
+        onPaint: {
+            const context = getContext("2d")
+            context.clearRect(0, 0, width, height)
+            if (panMode) {
+                drawPan(context, "rgba(255, 255, 255, 0.98)", 6.0)
+                drawPan(context, "#263442", 2.6)
+            } else {
+                drawOrbit(context, "rgba(255, 255, 255, 0.98)", 6.0)
+                drawOrbit(context, "#263442", 2.6)
+            }
+        }
+        onPanModeChanged: requestPaint()
+        onVisibleChanged: {
+            if (visible)
+                requestPaint()
+        }
+        Component.onCompleted: requestPaint()
+    }
+
     MouseArea {
+        id: viewportMouseArea
+        objectName: "viewportMouseArea"
         anchors.fill: parent
         acceptedButtons: Qt.MiddleButton | Qt.LeftButton
         hoverEnabled: true
+        cursorShape: root.navigationActive ? Qt.BlankCursor : Qt.ArrowCursor
         onExited: {
             if (root.planePickingEnabled) {
                 root.clearSnapFeedback()
@@ -1471,7 +1634,12 @@ Item {
         onPressed: function(mouse) {
             root.lastMouseX = mouse.x
             root.lastMouseY = mouse.y
-            root.panning = Boolean(mouse.modifiers & Qt.ShiftModifier)
+            if (mouse.button === Qt.MiddleButton) {
+                root.panning = Boolean(mouse.modifiers & Qt.ShiftModifier)
+                root.navigationCursorX = mouse.x
+                root.navigationCursorY = mouse.y
+                root.navigationActive = true
+            }
             if (mouse.button === Qt.LeftButton && root.pickingEnabled) {
                 root.selectionStartX = mouse.x
                 root.selectionStartY = mouse.y
@@ -1483,6 +1651,10 @@ Item {
             }
         }
         onPositionChanged: function(mouse) {
+            if (mouse.buttons & Qt.MiddleButton) {
+                root.navigationCursorX = mouse.x
+                root.navigationCursorY = mouse.y
+            }
             if (root.planePickingEnabled && !(mouse.buttons & Qt.MiddleButton)) {
                 // Pure hover (no button held) while the draw tool is active -
                 // resolve what the cursor is over so the caller can snap the
@@ -1529,6 +1701,13 @@ Item {
             root.cameraModeChanged("free")
         }
         onReleased: function(mouse) {
+            if (mouse.button === Qt.MiddleButton) {
+                root.navigationCursorX = mouse.x
+                root.navigationCursorY = mouse.y
+                root.navigationActive = false
+                root.panning = false
+                return
+            }
             if (mouse.button !== Qt.LeftButton || !root.selectionCandidate)
                 return
             root.selectionCurrentX = mouse.x
@@ -1541,6 +1720,8 @@ Item {
             root.selectionDragging = false
         }
         onCanceled: {
+            root.navigationActive = false
+            root.panning = false
             root.selectionCandidate = false
             root.selectionDragging = false
         }

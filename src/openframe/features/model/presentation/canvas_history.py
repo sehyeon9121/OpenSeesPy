@@ -4,6 +4,9 @@ See ``canvas_work_planes.py`` for why this is a mixin rather than a
 standalone class.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 
 class _HistoryMixin:
     def begin_history_group(self) -> None:
@@ -31,6 +34,23 @@ class _HistoryMixin:
             self._redraw()
             self.model_changed.emit()
 
+    @contextmanager
+    def pause_history(self) -> Iterator[None]:
+        """Mutate the model without pushing a new undo snapshot.
+
+        Used when a follow-on mutation is part of an action that already
+        recorded its restore point. Stamping the Element tab's current
+        section onto a just-drawn member is the case that made Ctrl+Z look
+        broken: the first undo only stripped the section, leaving a thin
+        unassigned stick, and a second undo was needed to remove the member
+        the user thought they had just cancelled.
+        """
+        self._history_paused = True
+        try:
+            yield
+        finally:
+            self._history_paused = False
+
     def undo(self) -> None:
         if not self._undo_stack:
             return
@@ -44,7 +64,7 @@ class _HistoryMixin:
         self._restore(self._redo_stack.pop())
 
     def _record_history(self) -> None:
-        if self._history_group_depth:
+        if self._history_group_depth or self._history_paused:
             return
         self._undo_stack.append(self._snapshot())
         self._redo_stack.clear()

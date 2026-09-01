@@ -150,16 +150,15 @@ def test_repeat_set_selection_is_noop() -> None:
     assert counts["selection"] == 0
 
 
-def test_node_marker_radius_never_shrinks_below_global_fallback() -> None:
-    """A slender member's section bulge must not replace the default node
-    sphere with a sub-pixel radius - reported as nodes vanishing in 3D."""
+def test_node_marker_radius_can_shrink_below_global_fallback_for_a_short_member() -> None:
+    """Small structures keep the same node/member ratio instead of overlapping."""
     _app()
     bridge = Quick3DSceneBridge()
     model = StructuralModel(
         ndm=3,
         nodes={
             1: Node(1, 0.0, 0.0, 0.0, 6),
-            2: Node(2, 4.0, 0.0, 0.0, 6),
+            2: Node(2, 0.1, 0.0, 0.0, 6),
         },
         elements={
             1: Element(1, 1, 2, "elasticBeamColumn", properties={"width": 0.01, "height": 0.01}),
@@ -169,7 +168,8 @@ def test_node_marker_radius_never_shrinks_below_global_fallback() -> None:
 
     fallback = bridge._node_radius
     for node in bridge.nodes:
-        assert node["radius"] >= fallback
+        assert node["radius"] == pytest.approx(0.1 * 0.018)
+        assert node["radius"] < fallback
 
 
 def test_selected_member_highlight_lists_only_selected_parts() -> None:

@@ -2452,7 +2452,11 @@ class ModelingInterfacePage(QFrame):
             return
         previous_selection = set(self.canvas.selected_elements)
         self.canvas.selected_elements = set(new_element_tags)
-        self.canvas.apply_full_section_to_selection(**self._active_element_kwargs)
+        # Drawing already recorded "before this member existed". A second
+        # snapshot here restored to a section-less stick on the first
+        # Ctrl+Z - the thin leftover that needed another undo to vanish.
+        with self.canvas.pause_history():
+            self.canvas.apply_full_section_to_selection(**self._active_element_kwargs)
         self.canvas.selected_elements = previous_selection | new_element_tags
         if not self._start_in_3d and hasattr(self, "element_assignment_selection_status"):
             count = len(new_element_tags)

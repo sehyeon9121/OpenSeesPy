@@ -60,6 +60,15 @@ _TRUSS_MATERIAL_TAG = 9_000_002
 # varies per element, unlike the unit placeholder above) - offset by the
 # element's own tag, same scheme as every other *_TAG_OFFSET here.
 _TRUSS_ELEMENT_MATERIAL_TAG_OFFSET = 9_600_000
+# tension_only/cable use ElasticPPGap with a zero gap (elastic once strain
+# goes positive/tension, zero stiffness in compression); compression_only
+# uses ENT (the mirror - elastic in compression, zero in tension). Both are
+# OpenSeesPy's own verified one-directional materials - confirmed directly
+# against ops.setStrain/getStress, not a custom formulation - see
+# _define_truss_material. ElasticPPGap's Fy is set to this many times the
+# member's own E so it is never actually reached for any realistic strain:
+# these members are meant to go slack, not yield.
+_UNIDIRECTIONAL_FY_STRAIN_MULTIPLE = 1.0e6
 
 # OpenSeesPy's own eleLoad has no linearly-varying ("trapezoidal") transverse load
 # type - only a constant -beamUniform. A member carrying one (wx != wx_j or
@@ -248,6 +257,17 @@ class MaterialFreeStaticsSolver:
         needs_material = not check.can_solve_without_materials or geometric_nonlinearity != "Linear"
         truss_unit_stiffness = False
         displacement_stiffness = DisplacementStiffnessKind.PHYSICAL
+        # A tension-only/compression-only/cable member's axial resistance
+        # depends on the sign of the force it ends up carrying (see
+        # _define_truss_material) - equilibrium alone cannot tell whether
+        # the structure stays stable once that member goes slack, so it
+        # never qualifies for the determinate unit-stiffness shortcut below
+        # (real E/A is always required) and always needs Newton iteration
+        # to actually converge on that state, even for an otherwise-Linear
+        # request (see _analyze's force_iterative).
+        has_directional_truss = any(
+            _is_directional_truss(element) for element in model.elements.values()
+        )
         if check.system == "truss":
             # Pure truss policy (2D and 3D share this): real E/A on every
             # member → physical stiffness, including indeterminate systems.
@@ -273,6 +293,18 @@ class MaterialFreeStaticsSolver:
                         messages=[
                             check.message,
                             "다음 부재에 유효한 재료·단면(E>0, A>0)이 필요합니다.",
+                            *gaps,
+                        ],
+                    )
+                if has_directional_truss:
+                    return AnalysisResult(
+                        status=AnalysisStatus.FAILED,
+                        messages=[
+                            check.message,
+                            "인장전담·압축전담·케이블 부재가 포함된 모델은 정정구조라도 "
+                            "실제 재료·단면(E>0, A>0)이 필요합니다 - 부재가 저항하지 "
+                            "못하는 방향으로 힘을 받으면 평형조건만으로는 이를 알 수 "
+                            "없습니다.",
                             *gaps,
                         ],
                     )
@@ -345,7 +377,11 @@ class MaterialFreeStaticsSolver:
                 truss_unit_stiffness=truss_unit_stiffness,
             )
             self._apply_loads(model, check.system)
-            self._analyze(geometric_nonlinearity, has_multipoint_constraints=bool(model.rigid_diaphragms))
+            self._analyze(
+                geometric_nonlinearity,
+                has_multipoint_constraints=bool(model.rigid_diaphragms),
+                force_iterative=has_directional_truss,
+            )
             return self._collect(
                 model,
                 check.system,
@@ -540,6 +576,45 @@ class MaterialFreeStaticsSolver:
         return (float(element.properties["E"]), float(element.properties["A"]))
 
     @staticmethod
+    def _define_truss_material(tag: int, elastic: float, behavior: str) -> None:
+        """One ``uniaxialMaterial`` per truss/cable/tension-only/compression-
+        only member, matching ``behavior`` (see ``_element_behavior``):
+        ``compression_only`` gets OpenSeesPy's own ``ENT`` (elastic in
+        compression, zero stiffness in tension); ``tension_only`` and
+        ``cable`` share ``ElasticPPGap`` with a zero gap (elastic in
+        tension, zero stiffness in compression - the mirror of ``ENT``);
+        anything else keeps the plain bidirectional ``Elastic`` every truss
+        member has always used. See ``_UNIDIRECTIONAL_FY_STRAIN_MULTIPLE``
+        for why ``ElasticPPGap``'s Fy is set so high.
+        """
+        if behavior == "compression_only":
+            ops.uniaxialMaterial("ENT", tag, elastic)
+        elif behavior in ("tension_only", "cable"):
+            huge_fy = elastic * _UNIDIRECTIONAL_FY_STRAIN_MULTIPLE
+            ops.uniaxialMaterial("ElasticPPGap", tag, elastic, huge_fy, 0.0)
+        else:
+            ops.uniaxialMaterial("Elastic", tag, elastic)
+
+    @staticmethod
+    def _truss_element_command(behavior: str) -> str:
+        """Every behaviour (including ``cable``) builds the ordinary linear
+        ``truss`` element here, not ``corotTruss``. A real cable's sag/large-
+        displacement behaviour needs both ``corotTruss`` AND a nonzero
+        ``InitStrainMaterial``-wrapped prestress together - ``corotTruss``
+        alone, on an otherwise-slack one-directional material with no other
+        lateral restraint, admits an unphysical "flip-through" large-
+        displacement equilibrium (confirmed directly: a vertical cable asked
+        to resist a disallowed compression demand converges to the member
+        stretching back out on the *other* side of its own anchor node,
+        instead of failing as the mechanism it actually is). ``element.
+        prestress`` is not wired into this solver at all yet (only
+        ``opensees_script_export.py``'s script-export path reads it) - until
+        it is, ``cable`` stays numerically identical to ``tension_only``
+        here.
+        """
+        return "truss"
+
+    @staticmethod
     def _truss_stiffness_gap(element: Element) -> str | None:
         """Human-readable reason this truss member cannot use real EA, or None."""
         problems: list[str] = []
@@ -695,9 +770,11 @@ class MaterialFreeStaticsSolver:
                     if truss_unit_stiffness
                     else MaterialFreeStaticsSolver._element_material_truss(element)
                 )
+                behavior = _element_behavior(element)
+                element_command = MaterialFreeStaticsSolver._truss_element_command(behavior)
                 if real_material is None:
                     ops.element(
-                        "truss",
+                        element_command,
                         element.tag,
                         element.node_i,
                         element.node_j,
@@ -707,9 +784,11 @@ class MaterialFreeStaticsSolver:
                     continue
                 elastic, area = real_material
                 element_material_tag = _TRUSS_ELEMENT_MATERIAL_TAG_OFFSET + element.tag
-                ops.uniaxialMaterial("Elastic", element_material_tag, elastic)
+                MaterialFreeStaticsSolver._define_truss_material(
+                    element_material_tag, elastic, behavior
+                )
                 ops.element(
-                    "truss",
+                    element_command,
                     element.tag,
                     element.node_i,
                     element.node_j,
@@ -882,9 +961,12 @@ class MaterialFreeStaticsSolver:
                 continue
             elastic, area = MaterialFreeStaticsSolver._element_material_truss(element)
             element_material_tag = _TRUSS_ELEMENT_MATERIAL_TAG_OFFSET + element.tag
-            ops.uniaxialMaterial("Elastic", element_material_tag, elastic)
+            behavior = _element_behavior(element)
+            MaterialFreeStaticsSolver._define_truss_material(
+                element_material_tag, elastic, behavior
+            )
             ops.element(
-                "truss",
+                MaterialFreeStaticsSolver._truss_element_command(behavior),
                 element.tag,
                 element.node_i,
                 element.node_j,
@@ -1355,7 +1437,10 @@ class MaterialFreeStaticsSolver:
 
     @staticmethod
     def _analyze(
-        geometric_nonlinearity: str = "Linear", has_multipoint_constraints: bool = False
+        geometric_nonlinearity: str = "Linear",
+        has_multipoint_constraints: bool = False,
+        *,
+        force_iterative: bool = False,
     ) -> None:
         ops.system("BandGeneral")
         ops.numberer("Plain")
@@ -1369,13 +1454,20 @@ class MaterialFreeStaticsSolver:
         # ever exercised - never risked - by a model with no diaphragm.
         ops.constraints("Transformation" if has_multipoint_constraints else "Plain")
         ops.integrator("LoadControl", 1.0)
-        if geometric_nonlinearity == "Linear":
+        if geometric_nonlinearity == "Linear" and not force_iterative:
             ops.algorithm("Linear")
         else:
-            # P-Delta is a genuine geometric nonlinearity - unlike the ordinary
-            # linear case, equilibrium depends on the (unknown) deformed shape,
-            # so a single un-iterated pass is not enough; Newton needs to
-            # actually converge on it, even for a "single step" analysis.
+            # P-Delta is a genuine geometric nonlinearity - unlike the
+            # ordinary linear case, equilibrium depends on the (unknown)
+            # deformed shape, so a single un-iterated pass is not enough.
+            # A tension-only/compression-only/cable member's material is
+            # exactly as history-dependent (force_iterative - see solve()):
+            # a single un-iterated Linear pass can commit a strain state the
+            # material's own law would never have produced (confirmed
+            # directly - an ENT truss loaded in tension under a bare Linear
+            # pass "resists" fully instead of going slack). Either way,
+            # Newton needs to actually converge, even for a nominally
+            # "single step" analysis.
             ops.test("NormDispIncr", 1.0e-8, 30)
             ops.algorithm("Newton")
         ops.analysis("Static")
@@ -1383,6 +1475,11 @@ class MaterialFreeStaticsSolver:
             message = "구조가 불안정하거나 지점 조건이 충분하지 않습니다."
             if geometric_nonlinearity != "Linear":
                 message += " P-Delta 해석이 수렴하지 않았다면 축력이 좌굴하중에 가까울 수 있습니다."
+            elif force_iterative:
+                message += (
+                    " 인장전담·압축전담 부재가 모두 슬랙 상태가 되어 구조가 "
+                    "메커니즘이 되었을 수 있습니다."
+                )
             raise RuntimeError(message)
         ops.reactions()
 
@@ -1485,6 +1582,31 @@ class MaterialFreeStaticsSolver:
 
 def _element_family(element_type: str) -> str:
     return "truss" if "truss" in element_type.lower() else "frame"
+
+
+def _element_behavior(element: Element) -> str:
+    """The fine-grained structural intent behind ``element_type``'s collapsed
+    "truss" family - one of "truss"/"tension_only"/"compression_only"/"cable"
+    (see ``modeling_interface_page.py``'s ``_ELEMENT_TYPE_OPTIONS`` and
+    ``canvas_geometry.py``'s ``add_member``, which stamps this onto every
+    newly drawn member's ``properties["behavior"]``). Missing on any element
+    built before this property existed (older saved models, templates,
+    imports) - "truss" (today's only behaviour before this existed) is the
+    correct default for those.
+    """
+    behavior = element.properties.get("behavior", "truss")
+    return behavior if isinstance(behavior, str) else "truss"
+
+
+def _is_directional_truss(element: Element) -> bool:
+    """True for a tension-only/compression-only/cable member - the three
+    truss-family behaviours whose axial resistance depends on the sign of
+    the force it ends up carrying, unlike a plain truss's bidirectional
+    ``Elastic`` material. See ``_define_truss_material``."""
+    return (
+        _element_family(element.element_type) == "truss"
+        and _element_behavior(element) in ("tension_only", "compression_only", "cable")
+    )
 
 
 def _released_and_rigid_nodes(model: StructuralModel) -> tuple[dict[int, int], set[int]]:

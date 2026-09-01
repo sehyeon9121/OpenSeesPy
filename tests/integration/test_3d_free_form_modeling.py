@@ -46,6 +46,49 @@ def _enable_element_drawing(page: ModelingInterfacePage) -> None:
     assert page.canvas.mode == "draw"
 
 
+def test_one_undo_removes_a_drawn_member_instead_of_leaving_a_thin_stick() -> None:
+    """Creating a member also stamps the Element tab section onto it.
+
+    Those used to be two undo steps: the first Ctrl+Z only stripped the
+    section, so a thin unassigned stick stayed on screen until a second undo
+    removed the member. One drawing action is one undo.
+    """
+    page = _page(start_in_3d=True)
+    _enable_element_drawing(page)
+    start = page.canvas.place_point(0.0, 0.0)
+    page.canvas.end_chain()
+    end = page.canvas.place_point(4.0, 0.0)
+    page.canvas.end_chain()
+    page.canvas.set_mode("draw")
+    page.canvas.continue_chain_to_node(start)
+    page._on_3d_node_picked(end, 0, 0)
+
+    assert len(page.canvas.elements) == 1
+    member = next(iter(page.canvas.elements.values()))
+    assert member.properties.get("section_shape")
+
+    page.canvas.undo()
+
+    assert page.canvas.elements == {}
+    assert set(page.canvas.nodes) == {start, end}
+
+
+def test_2d_auto_applied_section_undoes_with_the_member() -> None:
+    page = _page()
+    _enable_element_drawing(page)
+    page.canvas.place_point(0.0, 0.0)
+    page.canvas.place_point(4.0, 0.0)
+
+    assert len(page.canvas.elements) == 1
+    member = next(iter(page.canvas.elements.values()))
+    assert member.properties.get("section_shape")
+
+    page.canvas.undo()
+
+    assert page.canvas.elements == {}
+    assert len(page.canvas.nodes) == 1
+
+
 def test_entering_3d_mode_does_not_disturb_geometry_already_drawn_in_2d() -> None:
     canvas = _canvas()
     canvas.place_point(0.0, 0.0)

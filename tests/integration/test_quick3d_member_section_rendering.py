@@ -58,7 +58,7 @@ def _member_parts(
     properties: dict[str, float | str], *, start=(0.0, 0.0, 0.0), end=(4.0, 0.0, 0.0)
 ) -> list[dict[str, float | int | str]]:
     """Every rendered part for a single 3D beam-column member, rendered
-    through a full set_model() so extent-based clamping matches real usage."""
+    through a full set_model() so scene metrics match real usage."""
     model = StructuralModel(
         ndm=3,
         nodes={1: Node(1, *start), 2: Node(2, *end)},
@@ -77,12 +77,10 @@ def _member(properties: dict[str, float | str], *, start=(0.0, 0.0, 0.0), end=(4
     return parts[0]
 
 
-#: Deliberately small relative to every test member's span below (the
-#: renderer caps a section's visual size at extent * 0.055 so one absurd
-#: input can never swallow the whole scene - extent here is a lone 2-node
-#: model's own span, as low as 3 in the inclined-member test, so these must
-#: comfortably clear 3 * 0.055 = 0.165 to avoid the cap distorting the shape
-#: this test is actually trying to check).
+#: Small relative to every test member's span below, so a leftover visual
+#: clamp (historically ``extent * 0.055``) cannot hide a swapped B/H. The
+#: renderer now uses the stored B/H as-is; these stay small so orientation
+#: tests remain readable next to a 4 m span.
 _RECT_PROPERTIES = {
     "section_shape": "Rectangle",
     "width": 0.06,
@@ -90,9 +88,9 @@ _RECT_PROPERTIES = {
     "A": 0.0072,
 }
 
-#: tw/tf deliberately well above the 8%-of-envelope visibility floor (see
-#: test_h_section_thin_web_and_flange_are_floored_to_stay_visible below), so
-#: this fixture exercises the plain pass-through path, not the floor.
+#: tw/tf are the real millimetre-scale thicknesses of a small H-section
+#: (relative to a 4 m span) so the true-scale path is the one under test,
+#: not a leftover visibility floor.
 _H_PROPERTIES = {
     "section_shape": "H/I Section",
     "dim_H": 0.12,
@@ -161,19 +159,17 @@ def test_h_section_renders_as_three_parts_reading_dim_keys() -> None:
     assert math.sqrt(sum(c * c for c in delta)) == pytest.approx(2.0 * expected_offset, abs=1e-6)
 
 
-def test_h_section_thin_web_and_flange_are_floored_to_stay_visible() -> None:
-    """A real steel H-beam's web/flange (millimetres) would be an
-    imperceptible hairline next to a member several metres long if rendered
-    strictly to scale - both must be floored at a visible fraction (8%) of
-    the section's own outer envelope, and the flange offset must be derived
-    from that *same* floored value so the three parts still meet exactly
-    (no gap, no overlap) instead of the web silently reverting to its
-    unfloored, thinner true thickness."""
+def test_h_section_uses_true_web_and_flange_thickness() -> None:
+    """A real steel H-beam's web/flange is millimetres next to a member
+    several metres long. Visibility floors used to fatten tw/tf to 8 % of
+    the envelope; the drawing scale is the node's coordinates, so the
+    stored thicknesses must be used as stored.
+    """
     thin = {
         "section_shape": "H/I Section",
         "dim_H": 0.12,
         "dim_B": 0.06,
-        "dim_tw": 0.001,  # 1mm - genuinely tiny next to a 4m member
+        "dim_tw": 0.001,
         "dim_tf": 0.0015,
         "A": 0.0006,
     }
@@ -181,18 +177,35 @@ def test_h_section_thin_web_and_flange_are_floored_to_stay_visible() -> None:
     assert len(parts) == 3
     web = max(parts, key=lambda part: part["width_h"])
     flanges = [part for part in parts if part is not web]
-    outer_h = web["width_h"] + 2.0 * flanges[0]["width_h"]  # unclamped at this extent: 0.12
-    expected_floor = pytest.approx(max(outer_h, 0.06) * 0.08)
-    assert flanges[0]["width_h"] == expected_floor
-    assert flanges[1]["width_h"] == expected_floor
-    assert web["width_b"] == expected_floor
+    assert flanges[0]["width_h"] == pytest.approx(0.0015)
+    assert flanges[1]["width_h"] == pytest.approx(0.0015)
+    assert web["width_b"] == pytest.approx(0.001)
+    assert web["width_h"] == pytest.approx(0.12 - 2.0 * 0.0015)
 
 
-def test_h_section_web_stays_inside_a_clamped_outer_height() -> None:
-    """A section large enough to hit the visual-size clamp must scale tw/tf
-    down by the same ratio as H/B, or the web/flange parts would stay sized
-    for the real (unclamped) H and the flanges would land outside the
-    clamped outer footprint - regression coverage for that exact bug."""
+def test_assigned_section_is_not_clamped_to_member_length() -> None:
+    """A short stub with a real 0.4 x 0.6 column must still draw 0.4 x 0.6,
+    not 0.45 * length. The nodes are 0.5 m apart in the same unit as B/H.
+    """
+    member = _member(
+        {
+            "section_shape": "Rectangle",
+            "width": 0.4,
+            "height": 0.6,
+            "A": 0.24,
+        },
+        start=(0.0, 0.0, 0.0),
+        end=(0.0, 0.0, 0.5),
+    )
+    assert member["width_b"] == pytest.approx(0.4)
+    assert member["width_h"] == pytest.approx(0.6)
+
+
+def test_h_section_outer_size_matches_true_dimensions_even_when_large() -> None:
+    """A section comparable to the member length still draws at its stored
+    H x B. The old length-relative cap shrank it so a 4 m deep beam on a
+    4 m span looked like a different member.
+    """
     huge = {
         "section_shape": "H/I Section",
         "dim_H": 4.0,
@@ -205,7 +218,8 @@ def test_h_section_web_stays_inside_a_clamped_outer_height() -> None:
     web = max(parts, key=lambda part: part["width_h"])
     flanges = [part for part in parts if part is not web]
     outer_h = web["width_h"] + 2.0 * flanges[0]["width_h"]
-    assert outer_h < 4.0  # actually clamped, or this test proves nothing
+    assert outer_h == pytest.approx(4.0)
+    assert flanges[0]["width_b"] == pytest.approx(2.0)
     mid = (2.0, 0.0, 0.0)
     offsets = [
         math.sqrt(sum((flange[axis] - mid[i]) ** 2 for i, axis in enumerate("xyz")))
@@ -233,11 +247,11 @@ def test_user_defined_section_without_dimensions_falls_back_to_the_old_square() 
     assert member["width_b"] == pytest.approx(0.05, rel=0.05)  # sqrt(0.0025)
 
 
-def test_truss_member_ignores_section_shape_and_keeps_the_old_square() -> None:
-    """A truss has no bending orientation at all (matches
-    _build_local_axis_preview's own truss exclusion) - even if it somehow
-    carries an H/I section_shape, it must render as one plain square part,
-    never the three-part split."""
+def test_truss_member_uses_outer_section_as_one_part() -> None:
+    """A truss has no bending orientation, so an H/I section_shape must not
+    split into web+flanges - but the outer B x H is still the assigned
+    section, not a sqrt(A) square that ignored the drawing scale.
+    """
     model = StructuralModel(
         ndm=3,
         nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 4.0, 0.0, 0.0)},
@@ -247,7 +261,8 @@ def test_truss_member_ignores_section_shape_and_keeps_the_old_square() -> None:
     bridge.set_model(model)
     assert len(bridge.members) == 1
     member = bridge.members[0]
-    assert member["width_b"] == pytest.approx(member["width_h"])
+    assert member["width_b"] == pytest.approx(0.06)
+    assert member["width_h"] == pytest.approx(0.12)
 
 
 def test_horizontal_member_at_zero_angle_orients_height_along_the_vertical_screen_axis() -> None:

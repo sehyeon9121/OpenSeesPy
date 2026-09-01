@@ -67,10 +67,11 @@ def _member_box(bridge: Quick3DSceneBridge, tag: int) -> tuple[float, float]:
 def test_section_size_is_unchanged_by_growing_the_model() -> None:
     """Copying an element must not resize the members already drawn.
 
-    The clamp used to be ``extent * 0.055``: on a small model it pinned a
-    0.4 x 0.6 column well below its real size, and the moment a copy pushed
+    The previous bbox clamp ``extent * 0.055`` pinned a 0.4 x 0.6 column
+    well below its real size on a small model, and the moment a copy pushed
     the bounding box out the clamp released and every member on screen
-    jumped thicker.
+    jumped thicker. Assigned B/H must stay the stored values regardless of
+    how large the rest of the model becomes.
     """
     _app()
     sizes = []
@@ -106,27 +107,76 @@ def test_section_size_scales_with_the_member_not_the_bounding_box() -> None:
     assert lone_beam(False) == lone_beam(True)
 
 
-def test_node_marker_clears_the_section_box_corners() -> None:
-    """At an interior beam-column joint the node sphere has to poke out past
-    the *corners* of every incident section box, not just its flat faces -
-    sized off the half-width it stayed buried inside the members and the node
-    read as missing from a multi-storey frame."""
+def test_node_marker_is_a_constant_fraction_of_the_shortest_incident_member() -> None:
+    """Section size and longer framing members must not inflate a node."""
     _app()
     bridge = Quick3DSceneBridge()
     model = _storey_frame(3)
     bridge.set_model(model)
 
     radii = {node["tag"]: node["radius"] for node in bridge.nodes}
+    incident_lengths: dict[int, list[float]] = {}
     for element in model.elements.values():
-        width_b, width_h = _member_box(bridge, element.tag)
-        half_diagonal = 0.5 * math.hypot(width_b, width_h)
-        for tag in (element.node_i, element.node_j):
-            assert radii[tag] > half_diagonal
+        length = math.dist(bridge._points[element.node_i], bridge._points[element.node_j])
+        incident_lengths.setdefault(element.node_i, []).append(length)
+        incident_lengths.setdefault(element.node_j, []).append(length)
+    for tag, lengths in incident_lengths.items():
+        assert radii[tag] == pytest.approx(min(lengths) * 0.018)
 
 
-def test_rendered_member_stops_at_node_sphere_surfaces() -> None:
-    """Visual solids leave the centre-to-centre analysis line untouched in
-    their selection endpoints, but no longer pass through either node."""
+def test_node_marker_scale_is_independent_of_section_and_distant_members() -> None:
+    _app()
+
+    def radius(section_width: float, *, add_distant_member: bool) -> float:
+        model = StructuralModel(ndm=3, ndf=6)
+        model.nodes[1] = Node(1, 0.0, 0.0, 0.0, 6)
+        model.nodes[2] = Node(2, 5.0, 0.0, 0.0, 6)
+        model.elements[1] = Element(
+            1,
+            1,
+            2,
+            "elasticBeamColumn",
+            properties={
+                "section_shape": "Rectangle",
+                "width": section_width,
+                "height": section_width,
+            },
+        )
+        if add_distant_member:
+            model.nodes[3] = Node(3, 100.0, 0.0, 0.0, 6)
+            model.nodes[4] = Node(4, 120.0, 0.0, 0.0, 6)
+            model.elements[2] = Element(2, 3, 4, "elasticBeamColumn", properties={})
+        bridge = Quick3DSceneBridge()
+        bridge.set_model(model)
+        return float(next(node["radius"] for node in bridge.nodes if node["tag"] == 1))
+
+    expected = 5.0 * 0.018
+    assert radius(0.05, add_distant_member=False) == pytest.approx(expected)
+    assert radius(1.0, add_distant_member=False) == pytest.approx(expected)
+    assert radius(1.0, add_distant_member=True) == pytest.approx(expected)
+
+
+def test_small_structure_scales_node_markers_down_without_overlap() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 0.05, 0.0, 0.0, 6),
+        },
+        elements={1: Element(1, 1, 2, "elasticBeamColumn", properties={})},
+    )
+    bridge.set_model(model)
+
+    radii = [float(node["radius"]) for node in bridge.nodes]
+    assert radii == pytest.approx([0.05 * 0.018, 0.05 * 0.018])
+    assert sum(radii) < 0.05
+
+
+def test_rendered_member_uses_the_full_center_to_center_length() -> None:
+    """Node markers must never shorten the visual member."""
     _app()
     bridge = Quick3DSceneBridge()
     model = _storey_frame(1)
@@ -134,9 +184,6 @@ def test_rendered_member_stops_at_node_sphere_surfaces() -> None:
 
     element = model.elements[1]
     part = next(item for item in bridge.members if item["tag"] == element.tag)
-    node_radii = {item["tag"]: float(item["radius"]) for item in bridge.nodes}
     true_length = math.dist(bridge._points[element.node_i], bridge._points[element.node_j])
 
-    assert float(part["length"]) == pytest.approx(
-        true_length - node_radii[element.node_i] - node_radii[element.node_j]
-    )
+    assert float(part["length"]) == pytest.approx(true_length)

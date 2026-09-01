@@ -7,7 +7,8 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QObject, QPoint
+from PySide6.QtCore import QObject, QPoint, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from openframe.core.domain import Element, Node, StructuralModel
@@ -219,6 +220,73 @@ def test_world_origin_axes_are_attached_to_structural_zero() -> None:
     assert 'objectName: "worldOriginAxes"' in qml
     assert "return view3d.mapFrom3DScene(Qt.vector3d(x, z, -y))" in qml
     assert 'context.strokeText("0,0,0"' in qml
+
+
+def test_nodes_have_a_non_interactive_screen_space_marker_overlay() -> None:
+    """The marker stays readable above member solids without blocking input."""
+    viewport = _viewport()
+    root = viewport.quick_widget.rootObject()
+    assert root is not None
+
+    overlay = root.findChild(QObject, "nodeMarkerOverlay")
+    assert overlay is not None
+    assert overlay.property("enabled") is False
+    assert root.property("nodeMarkerRadiusPixels") == pytest.approx(8.0)
+    assert root.property("selectedNodeMarkerRadiusPixels") == pytest.approx(10.0)
+    assert root.property("nodePickRadiusPixels") == pytest.approx(18.0)
+
+
+def test_navigation_cursor_feedback_loads_and_switches_to_pan_mode() -> None:
+    viewport = _viewport()
+    viewport.setFixedSize(640, 480)
+    root = viewport.quick_widget.rootObject()
+    assert root is not None
+
+    feedback = root.findChild(QObject, "navigationCursorFeedback")
+    mouse_area = root.findChild(QObject, "viewportMouseArea")
+    assert feedback is not None
+    assert mouse_area is not None
+    assert feedback.property("visible") is False
+    assert feedback.property("enabled") is False
+
+    point = QPoint(240, 180)
+    QTest.mousePress(
+        viewport.quick_widget,
+        Qt.MouseButton.MiddleButton,
+        Qt.KeyboardModifier.NoModifier,
+        point,
+    )
+    QApplication.processEvents()
+    assert feedback.property("visible") is True
+    assert feedback.property("panMode") is False
+
+    QTest.mouseRelease(
+        viewport.quick_widget,
+        Qt.MouseButton.MiddleButton,
+        Qt.KeyboardModifier.NoModifier,
+        point,
+    )
+    QApplication.processEvents()
+    assert feedback.property("visible") is False
+
+    QTest.mousePress(
+        viewport.quick_widget,
+        Qt.MouseButton.MiddleButton,
+        Qt.KeyboardModifier.ShiftModifier,
+        point,
+    )
+    QApplication.processEvents()
+    assert feedback.property("visible") is True
+    assert feedback.property("panMode") is True
+
+    QTest.mouseRelease(
+        viewport.quick_widget,
+        Qt.MouseButton.MiddleButton,
+        Qt.KeyboardModifier.ShiftModifier,
+        point,
+    )
+    QApplication.processEvents()
+    assert feedback.property("visible") is False
 
 
 def test_orientation_axis_actions_change_to_the_matching_orthographic_view() -> None:

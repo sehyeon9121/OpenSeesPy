@@ -175,6 +175,8 @@ class StaticsDrawingCanvas(
         self._redo_stack: list[dict[str, object]] = []
         self._history_group_depth = 0
         self._history_group_snapshot: dict[str, object] | None = None
+        #: Skip _record_history without opening a group (see pause_history).
+        self._history_paused = False
         #: Set by _changed() while a history group is open, so end_history_
         #: group() can fire exactly one model_changed at the very end instead
         #: of once per node/member created mid-operation - see _changed()'s

@@ -91,6 +91,17 @@ _LOAD_CASE_COLORS = {
 _SELECTED_NODE_COLOR = "#ef4444"
 _SELECTED_MEMBER_COLOR = "#ef4444"
 _SELECTED_MEMBER_THICKNESS_SCALE = 1.35
+#: A node is a modeling marker, not a physical ball.  Its radius follows the
+#: shortest member framing into that node so uniformly scaling a structure
+#: preserves exactly the same visual proportion.  Using the shortest incident
+#: length also prevents markers from colliding across a short member merely
+#: because a much longer member or a large section exists elsewhere.
+_NODE_RADIUS_TO_MEMBER_LENGTH = 0.018
+#: Stick thickness for a member that has never been given a section, as a
+#: fraction of that member's own length. Length-relative so a millimetre
+#: model and a metre model draw the same proportion; not used as a floor
+#: on a real B/H/D, which would silently fatten the section the user typed.
+_UNASSIGNED_SECTION_TO_LENGTH = 0.0024
 _SUPPORT_COLORS = {
     SupportKind.FIXED: "#00856a",
     SupportKind.PINNED: "#00a6a6",
@@ -248,10 +259,10 @@ class Quick3DSceneBridge(QObject):
         self._selected_node_tags: set[int] = set()
         self._selected_member_tags: set[int] = set()
         self._selection_revision = 0
-        #: Per-node bulge radius (see _compute_node_radii) - a large section's
-        #: box can be several times wider than the old flat, section-agnostic
-        #: node radius, swallowing the node both visually and for picking.
-        #: Falls back to _node_radius for any tag missing from this dict.
+        #: Per-node modeling-marker radius (see _compute_node_radii), derived
+        #: from the shortest incident member rather than section size or the
+        #: whole model's bounding box. Falls back to _node_radius only for an
+        #: isolated node with no member.
         self._node_radii: dict[int, float] = {}
         #: MIDAS-style "Active Only" view filter (F2 to isolate the current
         #: selection, Ctrl+A to show everything again) - see set_isolate.
@@ -1178,30 +1189,15 @@ class Quick3DSceneBridge(QObject):
         model: StructuralModel,
         points: dict[int, tuple[float, float, float]],
     ) -> dict[int, float]:
-        """Per-node marker radius, large enough to poke out past the
-        cross-section of every member framing into that node.
+        """Return a constant local node-to-member proportion.
 
-        A single section-agnostic radius let a big W-section's box fully
-        swallow the node sphere, both visually and for click-picking, at a
-        beam-column joint - the node read as buried inside the member
-        instead of the member framing into the node. Radius is per-node (not
-        one global bump) so a slender brace elsewhere in the same model
-        doesn't get an oversized ball for no reason.
-
-        Sized off the box's corner-to-corner **half diagonal**, not its
-        half-width. Half-width only clears the box's four flat faces; every
-        corner still sticks out past the sphere, and at an interior joint of
-        a multi-storey frame - a column running straight through, beams
-        framing in from all four sides - those corners are exactly what is
-        left uncovered, so the marker disappeared into the members entirely.
-        The half diagonal clears the section in every radial direction, and
-        the small 1.06x margin keeps the sphere reading as flush with the
-        member rather than a ball floating above it. The remaining cap is
-        relative to the member's own length (like
-        ``_section_visual_dimensions``' clamps) so it, too, stays put when
-        the model grows.
+        Section-driven spheres made a 5 m member with a 1 x 1 m section lose
+        1.5 m to two giant endpoint balls. Bounding-box-driven spheres had the
+        opposite instability: adding a distant floor resized nodes that had
+        not changed. The shortest incident member is the only scale that both
+        stays local and guarantees two endpoint markers remain far apart.
         """
-        radii: dict[int, float] = {}
+        shortest_lengths: dict[int, float] = {}
         for element in model.elements.values():
             start, end = points.get(element.node_i), points.get(element.node_j)
             if start is None or end is None:
@@ -1209,20 +1205,16 @@ class Quick3DSceneBridge(QObject):
             length = math.dist(start, end)
             if length <= 1.0e-12:
                 continue
-            visual = self._section_visual_dimensions(element.properties, length)
-            half_diagonal = 0.5 * math.hypot(visual["width_b"], visual["width_h"])
-            bulge = min(half_diagonal * 1.06, length * 0.3)
             for tag in (element.node_i, element.node_j):
-                # Only enlarge past the section-agnostic fallback - storing a
-                # bulge smaller than ``_node_radius`` used to shrink the
-                # marker at that joint and could make nodes vanish on screen.
-                if bulge > self._node_radius and bulge > radii.get(tag, 0.0):
-                    radii[tag] = bulge
-        return radii
+                shortest_lengths[tag] = min(shortest_lengths.get(tag, length), length)
+        return {
+            tag: length * _NODE_RADIUS_TO_MEMBER_LENGTH
+            for tag, length in shortest_lengths.items()
+        }
 
     def _display_node_radius(self, tag: int) -> float:
-        """On-screen node marker radius - never below the global fallback."""
-        return max(self._node_radii.get(tag, 0.0), self._node_radius)
+        """Local marker radius, with a fallback for an isolated node."""
+        return self._node_radii.get(tag, self._node_radius)
 
     def _rebuild_default_geometry(self, model: StructuralModel) -> None:
         self._local_axis_gizmos = self._local_axis_gizmo_parts(model, self._points)
@@ -1544,10 +1536,10 @@ class Quick3DSceneBridge(QObject):
     def _h_section_has_three_parts(properties: dict[str, float | str]) -> bool:
         """Extent-independent H/I section part layout - raw dim_* only.
 
-        ``_section_visual_dimensions`` clamps to the current model extent,
-        so reusing ``self._extent`` here would make part-count fingerprints
-        depend on stale metrics from the *previous* model after a large
-        scale change.
+        Part count must not consult the rendered (and previously clamped)
+        visual sizes: a fingerprint that depended on ``self._extent`` went
+        stale after a large scale change and rebuilt the wrong number of
+        boxes.
         """
         if properties.get("section_shape") != "H/I Section":
             return False
@@ -2270,6 +2262,16 @@ class Quick3DSceneBridge(QObject):
                 )
         return parts
 
+    def _unassigned_section_size(self, member_length: float) -> float:
+        """Placeholder stick for a member with no usable section dimensions.
+
+        Never applied as a floor on a real B/H/D: that was the exaggeration
+        that made a typed 400 mm column look thicker than the coordinates it
+        was drawn between.
+        """
+        reference = member_length if member_length > 0.0 else self._extent
+        return max(reference * _UNASSIGNED_SECTION_TO_LENGTH, 1.0e-6)
+
     def _section_visual_dimensions(
         self, properties: dict[str, float | str], member_length: float
     ) -> dict[str, float | str]:
@@ -2289,30 +2291,14 @@ class Quick3DSceneBridge(QObject):
         predates this feature and only ever got A/Iy/Iz/J) falls back to the
         old uniform sqrt(area) square, unchanged.
 
-        Both clamp bounds come from the member's **own length**, never from
-        the model bounding box. A bbox-relative clamp silently re-sized every
-        member already on screen the moment the model grew - copy one element,
-        or stack a second storey, and the extent jumped, un-clamping sections
-        that had been pinned at ``extent * 0.055`` so every member suddenly
-        rendered thicker with nothing about those members having changed.
-        Length is local to the member, so a copy always draws exactly like the
-        member it was copied from, and it is still the units-sanity net the
-        extent clamp was there for (a section entered in millimetres inside a
-        metre model stays bounded).
-
-        ``minimum`` keeps the same 0.24%-of-reference ratio the old
-        ``default_thickness``-derived floor worked out to (``extent * 0.012
-        * 0.2`` for a lone member, where ``extent`` and this member's own
-        length are the same number) - just anchored to the member instead of
-        the whole model, and with an absolute 5 mm floor under that so a
-        very short member's own clamp cannot collapse to zero.
+        Dimensions are the model's own length unit, the same unit the nodes
+        were drawn in. Previous revisions clamped every size to a fraction
+        of member length (and floored an H-section's tw/tf to 8 % of the
+        envelope) so a steel web would stay visible; that also fattened
+        every assigned section relative to the frame the user sketched.
+        True B/H/D/tw/tf are used as stored. A member with no section at all
+        still gets a thin length-relative stick so it does not vanish.
         """
-        reference = member_length if member_length > 0.0 else self._extent
-        maximum = reference * 0.45
-        minimum = min(max(reference * 0.0024, 0.005), maximum)
-
-        def clamp(value: float) -> float:
-            return min(max(value, minimum), maximum)
 
         def dim(key: str) -> float | None:
             return self._number_property(properties, f"dim_{key}")
@@ -2322,16 +2308,15 @@ class Quick3DSceneBridge(QObject):
         if shape in {"Circle", "Pipe"}:
             diameter = dim("D")
             if diameter is not None and diameter > 0.0:
-                size = clamp(diameter)
-                return {"shape": shape, "width_b": size, "width_h": size}
+                return {"shape": shape, "width_b": diameter, "width_h": diameter}
 
         if shape in {"H/I Section", "Box", "Channel", "Angle"}:
             overall_h, overall_b = dim("H"), dim("B")
             if overall_h is not None and overall_b is not None and overall_h > 0.0 and overall_b > 0.0:
                 result: dict[str, float | str] = {
                     "shape": shape,
-                    "width_b": clamp(overall_b),
-                    "width_h": clamp(overall_h),
+                    "width_b": overall_b,
+                    "width_h": overall_h,
                 }
                 if shape == "H/I Section":
                     web_thickness, flange_thickness = dim("tw"), dim("tf")
@@ -2341,27 +2326,10 @@ class Quick3DSceneBridge(QObject):
                         and 0.0 < flange_thickness < overall_h / 2.0
                         and 0.0 < web_thickness < overall_b
                     ):
-                        # tw/tf must shrink by the same ratio a clamped H/B
-                        # just did, or the web/flange sub-boxes would still be
-                        # sized for the *real* H/B and no longer fit inside
-                        # the clamped outer footprint above.
-                        ratio = min(result["width_h"] / overall_h, result["width_b"] / overall_b)
-                        # A real steel section's web/flange (millimetres) is
-                        # imperceptibly thin next to a member several metres
-                        # long when drawn strictly to scale - it renders as a
-                        # near-invisible hairline, not a recognisable H-shape.
-                        # Floor both at a visible fraction of the section's
-                        # own outer envelope instead - the same exaggeration
-                        # trade-off architectural visualisation tools make
-                        # for thin walls/plates - and derive web_height/
-                        # flange_offset from that same floored value so the
-                        # three boxes still meet exactly with no gap/overlap.
-                        visible_floor = max(result["width_h"], result["width_b"]) * 0.08
-                        visible_flange = max(flange_thickness * ratio, visible_floor)
-                        result["web_thickness"] = max(web_thickness * ratio, visible_floor)
-                        result["web_height"] = max(result["width_h"] - 2.0 * visible_flange, minimum)
-                        result["flange_thickness"] = visible_flange
-                        result["flange_offset"] = (result["width_h"] - visible_flange) / 2.0
+                        result["web_thickness"] = web_thickness
+                        result["web_height"] = overall_h - 2.0 * flange_thickness
+                        result["flange_thickness"] = flange_thickness
+                        result["flange_offset"] = (overall_h - flange_thickness) / 2.0
                 return result
 
         width = self._number_property(properties, "width")
@@ -2369,10 +2337,14 @@ class Quick3DSceneBridge(QObject):
         if width is not None and height is not None and width > 0.0 and height > 0.0:
             # Rectangle, or any custom section that only ever stored plain
             # width/height (e.g. an RC member via apply_section_to_selection).
-            return {"shape": shape or "Rectangle", "width_b": clamp(width), "width_h": clamp(height)}
+            return {"shape": shape or "Rectangle", "width_b": width, "width_h": height}
 
         area = self._number_property(properties, "A")
-        fallback = clamp(math.sqrt(area)) if area is not None and area > 0.0 else minimum
+        fallback = (
+            math.sqrt(area)
+            if area is not None and area > 0.0
+            else self._unassigned_section_size(member_length)
+        )
         return {"shape": shape or "", "width_b": fallback, "width_h": fallback}
 
     @staticmethod
@@ -2540,46 +2512,30 @@ class Quick3DSceneBridge(QObject):
             return []
         length, old_scalar, old_qx, old_qy, old_qz = orientation
         direction = tuple((end[k] - start[k]) / length for k in range(3))
-        # The analysis member still connects node centre to node centre, but
-        # the rendered solid stops at each sphere's outer surface.  Keeping
-        # the true endpoints in ``_box_part`` preserves box selection and
-        # solver geometry while removing the half-buried, Boolean-union look
-        # at joints.  The 45% caps keep a very short member visible even when
-        # two unusually large markers nearly meet.
-        start_inset = min(self._display_node_radius(element.node_i), length * 0.45)
-        end_inset = min(self._display_node_radius(element.node_j), length * 0.45)
-        rendered_length = length - start_inset - end_inset
-        rendered_start = tuple(
-            start[k] + direction[k] * start_inset for k in range(3)
-        )
-        rendered_end = tuple(end[k] - direction[k] * end_inset for k in range(3))
+        # A member is shown at its true centre-to-centre analysis length. Node
+        # spheres are annotation markers layered at the endpoints; subtracting
+        # their diameter from the member made a 5 m element look only 3.5 m
+        # long when a large section inflated those markers.
+        rendered_length = length
         mid = (
-            0.5 * (rendered_start[0] + rendered_end[0]),
-            0.5 * (rendered_start[1] + rendered_end[1]),
-            0.5 * (rendered_start[2] + rendered_end[2]),
+            0.5 * (start[0] + end[0]),
+            0.5 * (start[1] + end[1]),
+            0.5 * (start[2] + end[2]),
         )
 
         is_truss = element.element_type.lower() in _TRUSS_ELEMENT_TYPES
         if is_truss:
-            # A truss carries no bending orientation at all (matches
-            # _build_local_axis_preview's own truss exclusion) - render it
-            # as the old uniform sqrt(area) square with the old rotation,
-            # but still honor a circular section's shape (previously this
-            # unconditionally dropped straight to a #Cube regardless of
-            # section_shape).
-            area = self._number_property(element.properties, "A")
-            size = min(
-                max(
-                    math.sqrt(area) if area is not None and area > 0.0 else 0.0,
-                    max(length * 0.0024, 0.005),
-                ),
-                length * 0.45,
-            )
-            truss_shape = element.properties.get("section_shape")
-            truss_source = "#Cylinder" if truss_shape in {"Circle", "Pipe"} else "#Cube"
+            # A truss carries no bending orientation (matches
+            # _build_local_axis_preview's own truss exclusion), so it is
+            # always one part - never an H-section split - but the outer
+            # B/H/D still come from the assigned section rather than a
+            # length-clamped sqrt(A) square that ignored the drawing scale.
+            visual = self._section_visual_dimensions(element.properties, length)
+            truss_source = "#Cylinder" if visual["shape"] in {"Circle", "Pipe"} else "#Cube"
             return [
                 self._box_part(
-                    element.tag, start, end, mid, rendered_length, size, size,
+                    element.tag, start, end, mid, rendered_length,
+                    visual["width_b"], visual["width_h"],
                     old_scalar, old_qx, old_qy, old_qz, color, opacity,
                     source=truss_source,
                 )
