@@ -231,6 +231,51 @@ def test_load_visibility_does_not_rebuild_topology() -> None:
     assert counts["loads"] == 2
 
 
+def test_display_visibility_flags_are_independent_and_visibility_only() -> None:
+    _app()
+    bridge = Quick3DSceneBridge()
+    bridge.set_model(_grid_model(3, 3))
+    nodes_id = id(bridge._nodes)
+    members_id = id(bridge._members)
+
+    assert bridge.nodesVisible is True
+    assert bridge.nodeNumbersVisible is False
+    assert bridge.membersVisible is True
+    assert bridge.memberNumbersVisible is False
+    assert bridge.nodalLoadsVisible is True
+    assert bridge.memberLoadsVisible is True
+    assert bridge.floorLoadsVisible is True
+    assert bridge.selfWeightLoadsVisible is True
+
+    counts = {"topology": 0, "geometry": 0, "visibility": 0, "loads": 0}
+    bridge.topology_changed.connect(lambda: counts.__setitem__("topology", counts["topology"] + 1))
+    bridge.geometry_changed.connect(lambda: counts.__setitem__("geometry", counts["geometry"] + 1))
+    bridge.visibility_changed.connect(lambda: counts.__setitem__("visibility", counts["visibility"] + 1))
+    bridge.loads_changed.connect(lambda: counts.__setitem__("loads", counts["loads"] + 1))
+
+    bridge.set_nodes_visible(False)
+    bridge.set_node_numbers_visible(True)
+    bridge.set_members_visible(False)
+    bridge.set_member_numbers_visible(True)
+    bridge.set_nodal_loads_visible(False)
+    bridge.set_member_loads_visible(False)
+    bridge.set_floor_loads_visible(False)
+    bridge.set_self_weight_loads_visible(False)
+    bridge.set_self_weight_loads_visible(False)
+
+    assert bridge.nodesVisible is False
+    assert bridge.nodeNumbersVisible is True
+    assert bridge.membersVisible is False
+    assert bridge.memberNumbersVisible is True
+    assert bridge.nodalLoadsVisible is False
+    assert bridge.memberLoadsVisible is False
+    assert bridge.floorLoadsVisible is False
+    assert bridge.selfWeightLoadsVisible is False
+    assert counts == {"topology": 0, "geometry": 0, "visibility": 8, "loads": 0}
+    assert id(bridge._nodes) == nodes_id
+    assert id(bridge._members) == members_id
+
+
 def test_isolate_uses_visibility_not_topology() -> None:
     _app()
     bridge = Quick3DSceneBridge()

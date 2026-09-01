@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick3D
+import QtQuick.Controls
 
 Item {
     id: root
@@ -36,10 +37,14 @@ Item {
     // than the coordinates it was drawn between.
     // Nodes stay a separate CAD marker: constant screen pixels so a true
     // 400 mm column cannot swallow the joint, and so zoom does not turn
-    // the marker into a giant ball.
-    readonly property real nodeMarkerRadiusPixels: 8
-    readonly property real selectedNodeMarkerRadiusPixels: 10
+    // the marker into a giant ball. The old 8 px blue disc with a white
+    // halo covered the section at the joint; a 3.75 px yellow point is
+    // enough to mark the node while the 18 px pick radius still lets you
+    // grab it.
+    readonly property real nodeMarkerRadiusPixels: 3.75
+    readonly property real selectedNodeMarkerRadiusPixels: 5.25
     readonly property real nodePickRadiusPixels: 18
+    readonly property color nodeMarkerColor: "#eab308"
     property real panX: 0
     property real panY: 0
     property real lastMouseX: 0
@@ -52,18 +57,27 @@ Item {
     property var cylinderColors: []
     property var cubePaintHex: []
     property var cylinderPaintHex: []
+    property var cubePaintWidthB: []
     property var _cubeEntryPool: []
     property var _cylinderEntryPool: []
-    // Touched whenever member transforms, visibility or topology change so
-    // the InstanceList tables below stay in sync without a Repeater3D
-    // Model+Material per part.
-    readonly property int memberSyncKey: {
+    // Must include every part's B/H, not just members[0]. Drawing a beam
+    // onto an already-sectioned frame (columns first, then the girder)
+    // leaves the new member at the end of the list; the first part's
+    // dimensions do not change, so a first-only key never fired and the
+    // new span stayed a hairline until the next add bumped the count.
+    readonly property string memberSyncKey: {
         if (!bridgeReady)
-            return 0
-        sceneBridge.geometryRevision
-        sceneBridge.deformationRevision
-        sceneBridge.visibilityRevision
-        return sceneBridge.members.length
+            return "0"
+        const members = sceneBridge.members
+        let parts = ""
+        for (let index = 0; index < members.length; ++index) {
+            const part = members[index]
+            parts += part.tag + ":" + part.width_b + ":" + part.width_h + ":" + part.length + ";"
+        }
+        return sceneBridge.geometryRevision
+            + ":" + sceneBridge.deformationRevision
+            + ":" + sceneBridge.visibilityRevision
+            + ":" + parts
     }
     // Selection used to be a same-size red Model stacked on the member.
     // After instancing that overlay sat at identical depth as the instance
@@ -115,6 +129,7 @@ Item {
     //: nor a member - the 3D-view equivalent of clicking empty space on the
     //: 2D canvas, which clears the current selection there.
     signal emptySpaceClicked()
+    signal displayVisibilityRequested(string item, bool visible)
 
     onPlanePickingEnabledChanged: {
         if (!planePickingEnabled)
@@ -170,6 +185,14 @@ Item {
         return root.tagIsSelected(sceneBridge.isolateMemberTags, tag)
     }
 
+    function nodeModelVisible(tag) {
+        return bridgeReady && sceneBridge.nodesVisible && root.nodeVisible(tag)
+    }
+
+    function memberModelVisible(tag) {
+        return bridgeReady && sceneBridge.membersVisible && root.memberVisible(tag)
+    }
+
     function loadArrowVisible(part) {
         if (!bridgeReady || !sceneBridge.loadsVisible)
             return false
@@ -179,7 +202,23 @@ Item {
             return false
         if (sceneBridge.loadCaseFilter !== "all" && part.case_type !== sceneBridge.loadCaseFilter)
             return false
+        if (part.kind === "nodal" && !sceneBridge.nodalLoadsVisible)
+            return false
+        if (part.kind === "element" && !sceneBridge.memberLoadsVisible)
+            return false
         return true
+    }
+
+    function loadEntryVisible(part) {
+        if (!bridgeReady || !sceneBridge.loadsVisible)
+            return false
+        if (part.entry_kind === "nodal")
+            return sceneBridge.nodalLoadsVisible
+        if (part.entry_kind === "floor")
+            return sceneBridge.floorLoadsVisible
+        if (part.entry_kind === "self_weight")
+            return sceneBridge.selfWeightLoadsVisible
+        return sceneBridge.memberLoadsVisible
     }
 
     function pickNearestNode(mx, my) {
@@ -195,7 +234,7 @@ Item {
             let bestDistance = root.nodePickRadiusPixels
             for (let index = 0; index < sceneBridge.nodes.length; ++index) {
                 const node = sceneBridge.nodes[index]
-                if (!root.nodeVisible(node.tag))
+                if (!root.nodeModelVisible(node.tag))
                     continue
                 if (sceneBridge.timeHistoryDeformationActive
                         && !sceneBridge.timeHistoryShowDeformed)
@@ -291,18 +330,23 @@ Item {
         }
         cubePaintHex = hexes(_cubeEntryPool, cubeTags)
         cylinderPaintHex = hexes(_cylinderEntryPool, cylinderTags)
+        const widths = []
+        for (let index = 0; index < cubeTags.length; ++index)
+            widths.push(_cubeEntryPool[index].scale.x * 100)
+        cubePaintWidthB = widths
     }
 
     function syncMemberInstances() {
         if (typeof cubeInstanceList === "undefined")
             return
-        if (!bridgeReady || !membersShouldRender()) {
+        if (!bridgeReady || !sceneBridge.membersVisible || !membersShouldRender()) {
             cubeTags = []
             cylinderTags = []
             cubeColors = []
             cylinderColors = []
             cubePaintHex = []
             cylinderPaintHex = []
+            cubePaintWidthB = []
             cubeInstanceList.instances = []
             cylinderInstanceList.instances = []
             return
@@ -312,7 +356,7 @@ Item {
         const members = sceneBridge.members
         for (let index = 0; index < members.length; ++index) {
             const part = members[index]
-            if (!root.memberVisible(part.tag))
+            if (!root.memberModelVisible(part.tag))
                 continue
             if (part.source === "#Cylinder")
                 cylinders.push(part)
@@ -408,15 +452,21 @@ Item {
         const crossing = selectionCurrentY < selectionStartY - 4
         let nodeTags = []
         let memberTags = []
-        for (let index = 0; index < sceneBridge.nodes.length; ++index) {
-            const node = sceneBridge.nodes[index]
-            const point = view3d.mapFrom3DScene(Qt.vector3d(node.x, node.y, node.z))
-            if (pointInSelection(point, left, top, right, bottom))
-                nodeTags.push(node.tag)
+        if (sceneBridge.nodesVisible) {
+            for (let index = 0; index < sceneBridge.nodes.length; ++index) {
+                const node = sceneBridge.nodes[index]
+                if (!root.nodeVisible(node.tag))
+                    continue
+                const point = view3d.mapFrom3DScene(Qt.vector3d(node.x, node.y, node.z))
+                if (pointInSelection(point, left, top, right, bottom))
+                    nodeTags.push(node.tag)
+            }
         }
-        if (crossing) {
+        if (crossing && sceneBridge.membersVisible) {
             for (let index = 0; index < sceneBridge.members.length; ++index) {
                 const member = sceneBridge.members[index]
+                if (!root.memberVisible(member.tag))
+                    continue
                 const start = view3d.mapFrom3DScene(
                     Qt.vector3d(member.start_x, member.start_y, member.start_z)
                 )
@@ -769,9 +819,11 @@ Item {
             // members. It is deliberately non-pickable.
             model: bridgeReady ? sceneBridge.selectedNodeHalo : []
             delegate: Model {
-                visible: !bridgeReady
-                    || !sceneBridge.timeHistoryDeformationActive
-                    || sceneBridge.timeHistoryShowDeformed
+                // The joint is the screen-space yellow point. This 3D
+                // halo used to inflate around the node in model units, so a
+                // selected joint looked like a red balloon sitting on the
+                // section. Selection is the overlay colour instead.
+                visible: false
                 source: "#Sphere"
                 position: {
                     if (bridgeReady) {
@@ -812,9 +864,10 @@ Item {
             // low-opacity backdrop behind the actual deformed member.
             model: bridgeReady ? sceneBridge.ghostMembers : []
             delegate: Model {
-                visible: !bridgeReady
-                    || !sceneBridge.timeHistoryDeformationActive
-                    || sceneBridge.timeHistoryShowOriginal
+                visible: bridgeReady
+                    && sceneBridge.membersVisible
+                    && (!sceneBridge.timeHistoryDeformationActive
+                        || sceneBridge.timeHistoryShowOriginal)
                 source: modelData.source
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 rotation: Qt.quaternion(
@@ -844,9 +897,10 @@ Item {
         Repeater3D {
             model: bridgeReady ? sceneBridge.ghostNodes : []
             delegate: Model {
-                visible: !bridgeReady
-                    || !sceneBridge.timeHistoryDeformationActive
-                    || sceneBridge.timeHistoryShowOriginal
+                visible: bridgeReady
+                    && sceneBridge.nodesVisible
+                    && (!sceneBridge.timeHistoryDeformationActive
+                        || sceneBridge.timeHistoryShowOriginal)
                 source: "#Sphere"
                 position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
                 scale: Qt.vector3d(
@@ -990,7 +1044,7 @@ Item {
             // Quick3DSceneBridge.loadEntryGlyphs.
             model: bridgeReady ? sceneBridge.loadEntryGlyphs : []
             delegate: Model {
-                visible: bridgeReady && sceneBridge.loadsVisible
+                visible: root.loadEntryVisible(modelData)
                 source: modelData.shape
                 position: {
                     if (bridgeReady)
@@ -1120,8 +1174,8 @@ Item {
         z: 10
         enabled: false
 
-        // Canvas is not a Repeater binding, so explicitly track every state
-        // that moves, recolours or filters a projected node marker.
+        // Node markers and entity numbers share one projected overlay pass.
+        // Explicitly track every state that moves, recolours or filters it.
         property real trackedYaw: root.cameraYaw
         property real trackedPitch: root.cameraPitch
         property real trackedDistance: root.cameraDistance
@@ -1170,6 +1224,18 @@ Item {
             overlaySettleTimer.restart()
         }
 
+        function drawNumber(context, text, x, y, color) {
+            context.font = "600 11px Segoe UI"
+            context.textAlign = "left"
+            context.textBaseline = "middle"
+            context.lineJoin = "round"
+            context.strokeStyle = "rgba(255, 255, 255, 0.96)"
+            context.lineWidth = 3.2
+            context.strokeText(text, x, y)
+            context.fillStyle = color
+            context.fillText(text, x, y)
+        }
+
         onTrackedYawChanged: debounceCameraPaint()
         onTrackedPitchChanged: debounceCameraPaint()
         onTrackedDistanceChanged: debounceCameraPaint()
@@ -1201,6 +1267,8 @@ Item {
                 return
 
             const selectedTags = sceneBridge.selectedNodeTags
+            const drawNodeMarkers = sceneBridge.nodesVisible
+            const drawNodeNumbers = sceneBridge.nodeNumbersVisible
             for (let index = 0; index < sceneBridge.nodes.length; ++index) {
                 const node = sceneBridge.nodes[index]
                 if (!root.nodeVisible(node.tag))
@@ -1213,17 +1281,413 @@ Item {
                 )
                 if (!isFinite(point.x) || !isFinite(point.y))
                     continue
+                if (!drawNodeMarkers && !drawNodeNumbers)
+                    continue
                 const selected = root.tagIsSelected(selectedTags, node.tag)
                 const radius = selected
                     ? root.selectedNodeMarkerRadiusPixels
                     : root.nodeMarkerRadiusPixels
-                context.beginPath()
-                context.arc(point.x, point.y, radius, 0, Math.PI * 2)
-                context.fillStyle = selected ? "#ef4444" : node.color
-                context.fill()
-                context.strokeStyle = "rgba(255, 255, 255, 0.96)"
-                context.lineWidth = selected ? 2.2 : 1.6
-                context.stroke()
+                if (drawNodeMarkers) {
+                    context.beginPath()
+                    context.arc(point.x, point.y, radius, 0, Math.PI * 2)
+                    context.fillStyle = selected ? "#ef4444" : root.nodeMarkerColor
+                    context.fill()
+                    context.strokeStyle = selected
+                        ? "rgba(127, 29, 29, 0.95)"
+                        : "rgba(113, 63, 18, 0.95)"
+                    context.lineWidth = 1
+                    context.stroke()
+                }
+                if (drawNodeNumbers) {
+                    const offset = drawNodeMarkers ? radius + 4 : 4
+                    drawNumber(
+                        context,
+                        String(node.tag),
+                        point.x + offset,
+                        point.y - offset,
+                        selected ? "#b91c1c" : "#1f5f8b"
+                    )
+                }
+            }
+
+            if (!sceneBridge.memberNumbersVisible
+                    || (sceneBridge.timeHistoryDeformationActive
+                        && !sceneBridge.timeHistoryShowDeformed))
+                return
+            const seenTags = ({})
+            for (let partIndex = 0; partIndex < sceneBridge.members.length; ++partIndex) {
+                const member = sceneBridge.members[partIndex]
+                const key = String(member.tag)
+                if (seenTags[key] || !root.memberVisible(member.tag))
+                    continue
+                seenTags[key] = true
+                const midpoint = view3d.mapFrom3DScene(
+                    Qt.vector3d(member.x, member.y, member.z)
+                )
+                if (!isFinite(midpoint.x) || !isFinite(midpoint.y))
+                    continue
+                drawNumber(
+                    context,
+                    key,
+                    midpoint.x + 5,
+                    midpoint.y - 6,
+                    root.tagIsSelected(sceneBridge.selectedMemberTags, member.tag)
+                        ? "#b91c1c" : "#334155"
+                )
+            }
+        }
+    }
+
+    component DisplayCheck: Item {
+        id: displayCheck
+        property string text: ""
+        property int checkState: Qt.Unchecked
+        readonly property bool checked: checkState === Qt.Checked
+        property var toggleAction: function(checked) {}
+        implicitWidth: 180
+        implicitHeight: 28
+        height: implicitHeight
+
+        Rectangle {
+            x: 6
+            anchors.verticalCenter: parent.verticalCenter
+            width: 15
+            height: 15
+            radius: 2
+            color: displayCheck.checkState === Qt.Checked ? "#2979b8" : "#ffffff"
+            border.color: displayCheck.checkState === Qt.Unchecked ? "#8795a3" : "#2979b8"
+            border.width: 1
+            Rectangle {
+                anchors.centerIn: parent
+                width: 9
+                height: 3
+                radius: 1.5
+                color: "#2979b8"
+                visible: displayCheck.checkState === Qt.PartiallyChecked
+            }
+            Canvas {
+                anchors.fill: parent
+                visible: displayCheck.checkState === Qt.Checked
+                onPaint: {
+                    const context = getContext("2d")
+                    context.clearRect(0, 0, width, height)
+                    context.beginPath()
+                    context.moveTo(3.2, 7.8)
+                    context.lineTo(6.2, 10.7)
+                    context.lineTo(11.8, 4.5)
+                    context.strokeStyle = "#ffffff"
+                    context.lineWidth = 2
+                    context.lineCap = "round"
+                    context.lineJoin = "round"
+                    context.stroke()
+                }
+            }
+        }
+        Text {
+            x: 29
+            width: parent.width - x
+            height: parent.height
+            text: displayCheck.text
+            color: "#263442"
+            font.family: "Segoe UI"
+            font.pixelSize: 12
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: displayCheck.toggleAction(displayCheck.checkState !== Qt.Checked)
+        }
+    }
+
+    Button {
+        id: displayOptionsButton
+        objectName: "displayOptionsButton"
+        z: 40
+        x: 12
+        y: 12
+        width: 104
+        height: 34
+        text: "◉  Display  ▾"
+        font.family: "Segoe UI"
+        font.pixelSize: 12
+        onClicked: displayOptionsPopup.opened
+            ? displayOptionsPopup.close() : displayOptionsPopup.open()
+        background: Rectangle {
+            radius: 5
+            color: displayOptionsButton.down ? "#e7edf3" : "#ffffff"
+            border.color: "#b9c5d1"
+            border.width: 1
+        }
+        contentItem: Text {
+            text: displayOptionsButton.text
+            color: "#263442"
+            font: displayOptionsButton.font
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    Popup {
+        id: displayOptionsPopup
+        objectName: "displayOptionsPopup"
+        parent: root
+        z: 41
+        x: 12
+        y: displayOptionsButton.y + displayOptionsButton.height + 4
+        width: 242
+        height: Math.max(120, Math.min(
+            displayOptionsColumn.implicitHeight + topPadding + bottomPadding,
+            root.height - y - 12
+        ))
+        padding: 8
+        modal: false
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+        background: Rectangle {
+            radius: 6
+            color: "#ffffff"
+            border.color: "#b9c5d1"
+            border.width: 1
+        }
+
+        contentItem: Flickable {
+            id: displayOptionsScroll
+            clip: true
+            contentWidth: width
+            contentHeight: displayOptionsColumn.implicitHeight
+            boundsBehavior: Flickable.StopAtBounds
+
+            Column {
+                id: displayOptionsColumn
+                width: displayOptionsScroll.width
+                spacing: 2
+
+                Text {
+                    text: "표시 항목"
+                    color: "#607080"
+                    font.family: "Segoe UI"
+                    font.pixelSize: 11
+                    font.weight: Font.DemiBold
+                    leftPadding: 7
+                    height: 27
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                Row {
+                    width: parent.width
+                    height: 34
+                    DisplayCheck {
+                        id: nodesDisplayParent
+                        objectName: "nodesDisplayParent"
+                        width: parent.width - 34
+                        height: parent.height
+                        text: "노드"
+                        checkState: {
+                            if (!root.bridgeReady)
+                                return Qt.Unchecked
+                            if (sceneBridge.nodesVisible && sceneBridge.nodeNumbersVisible)
+                                return Qt.Checked
+                            if (!sceneBridge.nodesVisible && !sceneBridge.nodeNumbersVisible)
+                                return Qt.Unchecked
+                            return Qt.PartiallyChecked
+                        }
+                        toggleAction: function(visible) {
+                            root.displayVisibilityRequested("nodes", visible)
+                            root.displayVisibilityRequested("node_numbers", visible)
+                        }
+                    }
+                    ToolButton {
+                        width: 34
+                        height: 34
+                        text: nodeDisplayChildren.visible ? "▾" : "▸"
+                        onClicked: nodeDisplayChildren.visible = !nodeDisplayChildren.visible
+                    }
+                }
+                Column {
+                    id: nodeDisplayChildren
+                    width: parent.width
+                    leftPadding: 24
+                    DisplayCheck {
+                        objectName: "nodesVisibleOption"
+                        width: parent.width - 24
+                        text: "노드 표시"
+                        checkState: root.bridgeReady && sceneBridge.nodesVisible
+                            ? Qt.Checked : Qt.Unchecked
+                        toggleAction: function(visible) {
+                            root.displayVisibilityRequested("nodes", visible)
+                        }
+                    }
+                    DisplayCheck {
+                        objectName: "nodeNumbersVisibleOption"
+                        width: parent.width - 24
+                        text: "노드 번호"
+                        checkState: root.bridgeReady && sceneBridge.nodeNumbersVisible
+                            ? Qt.Checked : Qt.Unchecked
+                        toggleAction: function(visible) {
+                            root.displayVisibilityRequested("node_numbers", visible)
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: "#e1e7ed"
+                }
+
+                Row {
+                    width: parent.width
+                    height: 34
+                    DisplayCheck {
+                        id: membersDisplayParent
+                        objectName: "membersDisplayParent"
+                        width: parent.width - 34
+                        height: parent.height
+                        text: "부재"
+                        checkState: {
+                            if (!root.bridgeReady)
+                                return Qt.Unchecked
+                            if (sceneBridge.membersVisible && sceneBridge.memberNumbersVisible)
+                                return Qt.Checked
+                            if (!sceneBridge.membersVisible && !sceneBridge.memberNumbersVisible)
+                                return Qt.Unchecked
+                            return Qt.PartiallyChecked
+                        }
+                        toggleAction: function(visible) {
+                            root.displayVisibilityRequested("members", visible)
+                            root.displayVisibilityRequested("member_numbers", visible)
+                        }
+                    }
+                    ToolButton {
+                        width: 34
+                        height: 34
+                        text: memberDisplayChildren.visible ? "▾" : "▸"
+                        onClicked: memberDisplayChildren.visible = !memberDisplayChildren.visible
+                    }
+                }
+                Column {
+                    id: memberDisplayChildren
+                    width: parent.width
+                    leftPadding: 24
+                    DisplayCheck {
+                        objectName: "membersVisibleOption"
+                        width: parent.width - 24
+                        text: "부재 표시"
+                        checkState: root.bridgeReady && sceneBridge.membersVisible
+                            ? Qt.Checked : Qt.Unchecked
+                        toggleAction: function(visible) {
+                            root.displayVisibilityRequested("members", visible)
+                        }
+                    }
+                    DisplayCheck {
+                        objectName: "memberNumbersVisibleOption"
+                        width: parent.width - 24
+                        text: "부재 번호"
+                        checkState: root.bridgeReady && sceneBridge.memberNumbersVisible
+                            ? Qt.Checked : Qt.Unchecked
+                        toggleAction: function(visible) {
+                            root.displayVisibilityRequested("member_numbers", visible)
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: "#e1e7ed"
+                }
+
+                Row {
+                    width: parent.width
+                    height: 34
+                    DisplayCheck {
+                        id: loadsDisplayParent
+                        objectName: "loadsDisplayParent"
+                        width: parent.width - 34
+                        height: parent.height
+                        text: "하중"
+                        checkState: {
+                            if (!root.bridgeReady || !sceneBridge.loadsVisible)
+                                return Qt.Unchecked
+                            const count = Number(sceneBridge.nodalLoadsVisible)
+                                + Number(sceneBridge.memberLoadsVisible)
+                                + Number(sceneBridge.floorLoadsVisible)
+                                + Number(sceneBridge.selfWeightLoadsVisible)
+                            if (count === 4)
+                                return Qt.Checked
+                            if (count === 0)
+                                return Qt.Unchecked
+                            return Qt.PartiallyChecked
+                        }
+                        toggleAction: function(visible) {
+                            root.displayVisibilityRequested("loads", visible)
+                            root.displayVisibilityRequested("nodal_loads", visible)
+                            root.displayVisibilityRequested("member_loads", visible)
+                            root.displayVisibilityRequested("floor_loads", visible)
+                            root.displayVisibilityRequested("self_weight_loads", visible)
+                        }
+                    }
+                    ToolButton {
+                        width: 34
+                        height: 34
+                        text: loadDisplayChildren.visible ? "▾" : "▸"
+                        onClicked: loadDisplayChildren.visible = !loadDisplayChildren.visible
+                    }
+                }
+                Column {
+                    id: loadDisplayChildren
+                    width: parent.width
+                    leftPadding: 24
+                    DisplayCheck {
+                        objectName: "nodalLoadsVisibleOption"
+                        width: parent.width - 24
+                        text: "절점 하중"
+                        checkState: root.bridgeReady
+                            && sceneBridge.loadsVisible && sceneBridge.nodalLoadsVisible
+                            ? Qt.Checked : Qt.Unchecked
+                        toggleAction: function(visible) {
+                            if (visible) root.displayVisibilityRequested("loads", true)
+                            root.displayVisibilityRequested("nodal_loads", visible)
+                        }
+                    }
+                    DisplayCheck {
+                        objectName: "memberLoadsVisibleOption"
+                        width: parent.width - 24
+                        text: "부재 하중"
+                        checkState: root.bridgeReady
+                            && sceneBridge.loadsVisible && sceneBridge.memberLoadsVisible
+                            ? Qt.Checked : Qt.Unchecked
+                        toggleAction: function(visible) {
+                            if (visible) root.displayVisibilityRequested("loads", true)
+                            root.displayVisibilityRequested("member_loads", visible)
+                        }
+                    }
+                    DisplayCheck {
+                        objectName: "floorLoadsVisibleOption"
+                        width: parent.width - 24
+                        text: "바닥 하중"
+                        checkState: root.bridgeReady
+                            && sceneBridge.loadsVisible && sceneBridge.floorLoadsVisible
+                            ? Qt.Checked : Qt.Unchecked
+                        toggleAction: function(visible) {
+                            if (visible) root.displayVisibilityRequested("loads", true)
+                            root.displayVisibilityRequested("floor_loads", visible)
+                        }
+                    }
+                    DisplayCheck {
+                        objectName: "selfWeightLoadsVisibleOption"
+                        width: parent.width - 24
+                        text: "자중"
+                        checkState: root.bridgeReady
+                            && sceneBridge.loadsVisible && sceneBridge.selfWeightLoadsVisible
+                            ? Qt.Checked : Qt.Unchecked
+                        toggleAction: function(visible) {
+                            if (visible) root.displayVisibilityRequested("loads", true)
+                            root.displayVisibilityRequested("self_weight_loads", visible)
+                        }
+                    }
+                }
             }
         }
     }

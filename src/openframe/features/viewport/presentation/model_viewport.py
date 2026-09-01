@@ -392,7 +392,13 @@ class ModelViewport(QFrame):
         )
 
     def _set_item_kind_visible(self, item_kind: str, visible: bool) -> None:
-        if item_kind == "load":
+        if item_kind == "node":
+            self.quick3d_view.set_nodes_visible(visible)
+        elif item_kind == "node_label":
+            self.quick3d_view.set_node_numbers_visible(visible)
+        elif item_kind == "element":
+            self.quick3d_view.set_members_visible(visible)
+        elif item_kind == "load":
             self.quick3d_view.set_loads_visible(visible)
         elif item_kind == "support":
             self.quick3d_view.set_supports_visible(visible)

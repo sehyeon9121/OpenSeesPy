@@ -74,6 +74,10 @@ class Quick3DViewport(QFrame):
         self._model_coalesce_timer = QTimer(self)
         self._model_coalesce_timer.setSingleShot(True)
         self._model_coalesce_timer.timeout.connect(self._flush_coalesced_model)
+        self._pending_display_visibility: dict[str, bool] = {}
+        self._display_visibility_timer = QTimer(self)
+        self._display_visibility_timer.setSingleShot(True)
+        self._display_visibility_timer.timeout.connect(self._flush_display_visibility)
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -102,6 +106,7 @@ class Quick3DViewport(QFrame):
             root.hoverCleared.connect(self.hover_cleared.emit)
             root.selectionBoxFinished.connect(self._on_selection_box_finished)
             root.emptySpaceClicked.connect(self.empty_space_clicked.emit)
+            root.displayVisibilityRequested.connect(self._queue_display_visibility)
             if self._pending_camera_preset is not None:
                 root.setPreset(self._pending_camera_preset)
             if self._pending_plane is not None:
@@ -148,6 +153,31 @@ class Quick3DViewport(QFrame):
         self.selection_box_finished.emit(
             parse_tags(node_tags), parse_tags(member_tags), additive
         )
+
+    def _queue_display_visibility(self, item: str, visible: bool) -> None:
+        """Apply QML display clicks after its pointer callback has returned."""
+        self._pending_display_visibility[str(item)] = bool(visible)
+        if not self._display_visibility_timer.isActive():
+            self._display_visibility_timer.start(0)
+
+    def _flush_display_visibility(self) -> None:
+        pending = self._pending_display_visibility
+        self._pending_display_visibility = {}
+        setters = {
+            "nodes": self.bridge.set_nodes_visible,
+            "node_numbers": self.bridge.set_node_numbers_visible,
+            "members": self.bridge.set_members_visible,
+            "member_numbers": self.bridge.set_member_numbers_visible,
+            "loads": self.bridge.set_loads_visible,
+            "nodal_loads": self.bridge.set_nodal_loads_visible,
+            "member_loads": self.bridge.set_member_loads_visible,
+            "floor_loads": self.bridge.set_floor_loads_visible,
+            "self_weight_loads": self.bridge.set_self_weight_loads_visible,
+        }
+        for item, visible in pending.items():
+            setter = setters.get(item)
+            if setter is not None:
+                setter(visible)
 
     def set_preview_segment(
         self,
@@ -298,6 +328,18 @@ class Quick3DViewport(QFrame):
     def clear_result(self) -> None:
         self._ensure_bridge_current()
         self.bridge.clear_result()
+
+    def set_nodes_visible(self, visible: bool) -> None:
+        self.bridge.set_nodes_visible(visible)
+
+    def set_node_numbers_visible(self, visible: bool) -> None:
+        self.bridge.set_node_numbers_visible(visible)
+
+    def set_members_visible(self, visible: bool) -> None:
+        self.bridge.set_members_visible(visible)
+
+    def set_member_numbers_visible(self, visible: bool) -> None:
+        self.bridge.set_member_numbers_visible(visible)
 
     def set_loads_visible(self, visible: bool) -> None:
         self._ensure_bridge_current()

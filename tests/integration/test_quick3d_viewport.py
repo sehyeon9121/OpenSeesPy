@@ -7,7 +7,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QObject, QPoint, Qt
+from PySide6.QtCore import QObject, QPoint, QPointF, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtQml import QJSValue
 from PySide6.QtTest import QTest
@@ -56,6 +56,99 @@ def test_qml_is_not_loaded_until_first_visible_show() -> None:
     viewport.show()
     assert not viewport.quick_widget.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     assert viewport.quick_widget.rootObject() is not None
+
+
+def test_display_panel_opens_and_tracks_bridge_visibility() -> None:
+    viewport = _viewport()
+    viewport.setFixedSize(640, 480)
+    QApplication.processEvents()
+    root = viewport.quick_widget.rootObject()
+    assert root is not None
+
+    button = root.findChild(QObject, "displayOptionsButton")
+    popup = root.findChild(QObject, "displayOptionsPopup")
+    assert button is not None
+    assert popup is not None
+    assert popup.property("opened") is False
+
+    QTest.mouseClick(
+        viewport.quick_widget,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(52, 29),
+    )
+    QApplication.processEvents()
+    assert popup.property("opened") is True
+
+    option_names = (
+        "nodesVisibleOption",
+        "nodeNumbersVisibleOption",
+        "membersVisibleOption",
+        "memberNumbersVisibleOption",
+        "nodalLoadsVisibleOption",
+        "memberLoadsVisibleOption",
+        "floorLoadsVisibleOption",
+        "selfWeightLoadsVisibleOption",
+    )
+    options = {name: root.findChild(QObject, name) for name in option_names}
+    assert all(option is not None for option in options.values())
+
+    def click_display_item(name: str) -> None:
+        item = root.findChild(QObject, name)
+        assert item is not None
+        point = item.mapToItem(root, QPointF(8, item.height() / 2))
+        QTest.mouseClick(
+            viewport.quick_widget,
+            Qt.MouseButton.LeftButton,
+            pos=QPoint(round(point.x()), round(point.y())),
+        )
+        QApplication.processEvents()
+
+    # Parent rows turn every child on from mixed state, then all off.
+    click_display_item("nodesDisplayParent")
+    assert viewport.bridge.nodesVisible is True
+    assert viewport.bridge.nodeNumbersVisible is True
+    click_display_item("nodesDisplayParent")
+    assert viewport.bridge.nodesVisible is False
+    assert viewport.bridge.nodeNumbersVisible is False
+
+    click_display_item("loadsDisplayParent")
+    assert viewport.bridge.loadsVisible is False
+    assert viewport.bridge.nodalLoadsVisible is False
+    assert viewport.bridge.memberLoadsVisible is False
+    assert viewport.bridge.floorLoadsVisible is False
+    assert viewport.bridge.selfWeightLoadsVisible is False
+    click_display_item("loadsDisplayParent")
+    assert viewport.bridge.loadsVisible is True
+    assert viewport.bridge.nodalLoadsVisible is True
+    assert viewport.bridge.memberLoadsVisible is True
+    assert viewport.bridge.floorLoadsVisible is True
+    assert viewport.bridge.selfWeightLoadsVisible is True
+
+    click_display_item("floorLoadsVisibleOption")
+    assert viewport.bridge.loadsVisible is True
+    assert viewport.bridge.floorLoadsVisible is False
+    assert viewport.bridge.nodalLoadsVisible is True
+    click_display_item("floorLoadsVisibleOption")
+    assert viewport.bridge.floorLoadsVisible is True
+
+    viewport.set_nodes_visible(False)
+    viewport.set_node_numbers_visible(True)
+    viewport.set_members_visible(False)
+    viewport.set_member_numbers_visible(True)
+    viewport.bridge.set_nodal_loads_visible(False)
+    viewport.bridge.set_floor_loads_visible(False)
+    QApplication.processEvents()
+
+    assert options["nodesVisibleOption"].property("checked") is False
+    assert options["nodeNumbersVisibleOption"].property("checked") is True
+    assert options["membersVisibleOption"].property("checked") is False
+    assert options["memberNumbersVisibleOption"].property("checked") is True
+    assert options["nodalLoadsVisibleOption"].property("checked") is False
+    assert options["memberLoadsVisibleOption"].property("checked") is True
+    assert options["floorLoadsVisibleOption"].property("checked") is False
+    assert options["selfWeightLoadsVisibleOption"].property("checked") is True
+    assert bool(root.nodeModelVisible(1)) is False
+    assert bool(root.memberModelVisible(1)) is False
 
 
 def test_plane_picked_inverts_the_view_coordinate_mapping() -> None:
@@ -241,9 +334,10 @@ def test_nodes_have_a_non_interactive_screen_space_marker_overlay() -> None:
     overlay = root.findChild(QObject, "nodeMarkerOverlay")
     assert overlay is not None
     assert overlay.property("enabled") is False
-    assert root.property("nodeMarkerRadiusPixels") == pytest.approx(8.0)
-    assert root.property("selectedNodeMarkerRadiusPixels") == pytest.approx(10.0)
+    assert root.property("nodeMarkerRadiusPixels") == pytest.approx(3.75)
+    assert root.property("selectedNodeMarkerRadiusPixels") == pytest.approx(5.25)
     assert root.property("nodePickRadiusPixels") == pytest.approx(18.0)
+    assert QColor(root.property("nodeMarkerColor")).name() == "#eab308"
 
 
 def test_members_are_drawn_as_one_instanced_model_instead_of_one_model_each() -> None:
@@ -337,6 +431,117 @@ def test_selecting_a_member_recolors_its_instance_without_a_second_mesh() -> Non
     hexes = [QColor(value).name() for value in _qml_list(root.property("cubePaintHex"))]
     assert hexes[0] != "#ef4444"
     assert hexes[1] != "#ef4444"
+
+
+def test_applying_a_section_to_the_only_member_updates_instance_scale() -> None:
+    """Drawing a beam then stamping the Element-tab section used to leave a
+    hairline until the *next* member was created. Instance sync keyed off
+    member count, and applying a section keeps that count at 1, so the
+    InstanceList kept the unassigned stick until a later add bumped it.
+    """
+    from dataclasses import replace
+
+    viewport = _viewport()
+    unassigned = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 4.0, 0.0, 0.0, 6),
+        },
+        elements={
+            1: Element(1, 1, 2, "elasticBeamColumn", properties={}),
+        },
+    )
+    _set_model(viewport, unassigned)
+    root = viewport.quick_widget.rootObject()
+    stick = _qml_list(root.property("cubePaintWidthB"))
+    assert len(stick) == 1
+    assert stick[0] < 0.05
+
+    assigned = replace(
+        unassigned,
+        elements={
+            1: replace(
+                unassigned.elements[1],
+                properties={
+                    "section_shape": "Rectangle",
+                    "width": 0.3,
+                    "height": 0.5,
+                },
+            ),
+        },
+    )
+    _set_model(viewport, assigned)
+    widths = _qml_list(root.property("cubePaintWidthB"))
+    assert len(widths) == 1
+    assert widths[0] == pytest.approx(0.3, rel=1e-4)
+
+
+def test_section_on_a_new_beam_updates_even_when_older_members_keep_their_size() -> None:
+    """The ramen case: columns already have a section, then the next two
+    nodes create a girder. The instance key used to look only at members[0],
+    so the new span stayed a hairline until another member changed the count.
+    """
+    from dataclasses import replace
+
+    viewport = _viewport()
+    columns = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 4.0, 0.0, 0.0, 6),
+            3: Node(3, 0.0, 0.0, 3.0, 6),
+            4: Node(4, 4.0, 0.0, 3.0, 6),
+        },
+        elements={
+            1: Element(
+                1,
+                1,
+                3,
+                "elasticBeamColumn",
+                properties={"section_shape": "Rectangle", "width": 0.3, "height": 0.5},
+            ),
+            2: Element(
+                2,
+                2,
+                4,
+                "elasticBeamColumn",
+                properties={"section_shape": "Rectangle", "width": 0.3, "height": 0.5},
+            ),
+        },
+    )
+    _set_model(viewport, columns)
+    with_stick = replace(
+        columns,
+        elements={
+            **columns.elements,
+            3: Element(3, 3, 4, "elasticBeamColumn", properties={}),
+        },
+    )
+    _set_model(viewport, with_stick)
+    root = viewport.quick_widget.rootObject()
+    widths = _qml_list(root.property("cubePaintWidthB"))
+    assert len(widths) == 3
+    assert widths[0] == pytest.approx(0.3, rel=1e-4)
+    assert widths[1] == pytest.approx(0.3, rel=1e-4)
+    assert widths[2] < 0.05
+
+    sectioned = replace(
+        with_stick,
+        elements={
+            **with_stick.elements,
+            3: replace(
+                with_stick.elements[3],
+                properties={"section_shape": "Rectangle", "width": 0.3, "height": 0.5},
+            ),
+        },
+    )
+    _set_model(viewport, sectioned)
+    widths = _qml_list(root.property("cubePaintWidthB"))
+    assert len(widths) == 3
+    assert widths[2] == pytest.approx(0.3, rel=1e-4)
 
 
 def test_navigation_cursor_feedback_loads_and_switches_to_pan_mode() -> None:

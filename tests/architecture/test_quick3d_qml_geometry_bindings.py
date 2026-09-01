@@ -68,9 +68,10 @@ def test_nodes_have_a_depth_independent_screen_marker_and_pick_radius() -> None:
     text = QML.read_text(encoding="utf-8")
 
     assert 'objectName: "nodeMarkerOverlay"' in text
-    assert "readonly property real nodeMarkerRadiusPixels: 8" in text
-    assert "readonly property real selectedNodeMarkerRadiusPixels: 10" in text
+    assert "readonly property real nodeMarkerRadiusPixels: 3.75" in text
+    assert "readonly property real selectedNodeMarkerRadiusPixels: 5.25" in text
     assert "readonly property real nodePickRadiusPixels: 18" in text
+    assert 'readonly property color nodeMarkerColor: "#eab308"' in text
     assert "view3d.mapFrom3DScene(" in text
     assert "let bestDistance = root.nodePickRadiusPixels" in text
     assert "if (!root.nodeVisible(node.tag))" in text
@@ -80,6 +81,9 @@ def test_nodes_have_a_depth_independent_screen_marker_and_pick_radius() -> None:
     assert "function debounceCameraPaint()" in text
     assert "if (listObj.instanceCount !== needed)" in text
     assert "hoverPickTimer.start()" in text
+    assert "readonly property string memberSyncKey:" in text
+    assert 'part.tag + ":" + part.width_b' in text
+    assert "return sceneBridge.members.length" not in text
 
 
 def test_middle_drag_has_orbit_and_shift_pan_cursor_feedback() -> None:
@@ -98,3 +102,28 @@ def test_middle_drag_has_orbit_and_shift_pan_cursor_feedback() -> None:
     assert "root.navigationActive = true" in text
     assert "root.navigationActive = false" in text
     assert "return view3d.pick(mx, my)" in text
+
+
+def test_display_panel_has_hierarchical_geometry_number_and_load_controls() -> None:
+    text = QML.read_text(encoding="utf-8")
+
+    assert 'objectName: "displayOptionsButton"' in text
+    assert 'objectName: "displayOptionsPopup"' in text
+    assert 'objectName: "nodesDisplayParent"' in text
+    assert 'objectName: "membersDisplayParent"' in text
+    assert 'objectName: "loadsDisplayParent"' in text
+    for option_name in (
+        "nodesVisibleOption",
+        "nodeNumbersVisibleOption",
+        "membersVisibleOption",
+        "memberNumbersVisibleOption",
+        "nodalLoadsVisibleOption",
+        "memberLoadsVisibleOption",
+        "floorLoadsVisibleOption",
+        "selfWeightLoadsVisibleOption",
+    ):
+        assert f'objectName: "{option_name}"' in text
+    assert "return Qt.PartiallyChecked" in text
+    assert "function loadEntryVisible(part)" in text
+    assert "sceneBridge.nodeNumbersVisible" in text
+    assert "sceneBridge.memberNumbersVisible" in text

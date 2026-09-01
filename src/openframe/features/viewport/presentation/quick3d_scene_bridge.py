@@ -231,6 +231,18 @@ class Quick3DSceneBridge(QObject):
         self._load_arrows: list[dict[str, float | int | str]] = []
         self._support_parts: list[dict[str, float | int | str]] = []
         self._local_axis_gizmos: list[dict[str, float | int | str]] = []
+        # Display panel state lives on the bridge rather than in QML so it
+        # survives scene reloads and stays in sync with Python-side viewers.
+        # Geometry stays on by default; number overlays stay off to preserve
+        # the uncluttered viewport users had before the panel existed.
+        self._nodes_visible = True
+        self._node_numbers_visible = False
+        self._members_visible = True
+        self._member_numbers_visible = False
+        self._nodal_loads_visible = True
+        self._member_loads_visible = True
+        self._floor_loads_visible = True
+        self._self_weight_loads_visible = True
         self._loads_visible = True
         self._supports_visible = True
         #: Off by default: this is an authoring aid for the free-form 3D
@@ -787,7 +799,39 @@ class Quick3DSceneBridge(QObject):
             existing.update(updated)
         return True
 
+    def _set_display_visibility(self, attribute: str, visible: bool) -> None:
+        visible = bool(visible)
+        if getattr(self, attribute) == visible:
+            return
+        setattr(self, attribute, visible)
+        self._emit_visibility_changed()
+
+    def set_nodes_visible(self, visible: bool) -> None:
+        self._set_display_visibility("_nodes_visible", visible)
+
+    def set_node_numbers_visible(self, visible: bool) -> None:
+        self._set_display_visibility("_node_numbers_visible", visible)
+
+    def set_members_visible(self, visible: bool) -> None:
+        self._set_display_visibility("_members_visible", visible)
+
+    def set_member_numbers_visible(self, visible: bool) -> None:
+        self._set_display_visibility("_member_numbers_visible", visible)
+
+    def set_nodal_loads_visible(self, visible: bool) -> None:
+        self._set_display_visibility("_nodal_loads_visible", visible)
+
+    def set_member_loads_visible(self, visible: bool) -> None:
+        self._set_display_visibility("_member_loads_visible", visible)
+
+    def set_floor_loads_visible(self, visible: bool) -> None:
+        self._set_display_visibility("_floor_loads_visible", visible)
+
+    def set_self_weight_loads_visible(self, visible: bool) -> None:
+        self._set_display_visibility("_self_weight_loads_visible", visible)
+
     def set_loads_visible(self, visible: bool) -> None:
+        visible = bool(visible)
         if self._loads_visible == visible:
             return
         self._loads_visible = visible
@@ -1088,6 +1132,38 @@ class Quick3DSceneBridge(QObject):
         return self._result_labels
 
     @Property(bool, notify=visibility_changed)
+    def nodesVisible(self) -> bool:
+        return self._nodes_visible
+
+    @Property(bool, notify=visibility_changed)
+    def nodeNumbersVisible(self) -> bool:
+        return self._node_numbers_visible
+
+    @Property(bool, notify=visibility_changed)
+    def membersVisible(self) -> bool:
+        return self._members_visible
+
+    @Property(bool, notify=visibility_changed)
+    def memberNumbersVisible(self) -> bool:
+        return self._member_numbers_visible
+
+    @Property(bool, notify=visibility_changed)
+    def nodalLoadsVisible(self) -> bool:
+        return self._nodal_loads_visible
+
+    @Property(bool, notify=visibility_changed)
+    def memberLoadsVisible(self) -> bool:
+        return self._member_loads_visible
+
+    @Property(bool, notify=visibility_changed)
+    def floorLoadsVisible(self) -> bool:
+        return self._floor_loads_visible
+
+    @Property(bool, notify=visibility_changed)
+    def selfWeightLoadsVisible(self) -> bool:
+        return self._self_weight_loads_visible
+
+    @Property(bool, notify=visibility_changed)
     def loadsVisible(self) -> bool:
         return self._loads_visible
 
@@ -1109,11 +1185,19 @@ class Quick3DSceneBridge(QObject):
 
     @Property("QVariantList", notify=loads_changed)
     def loadArrows(self) -> list[dict[str, float | int | str]]:
-        return self._load_arrows
+        if not self._loads_visible:
+            return []
+        return [
+            part
+            for part in self._load_arrows
+            if (self._load_filter == "all" or part["kind"] == self._load_filter)
+        ]
 
     @Property("QVariantList", notify=loads_changed)
     def loadEntryGlyphs(self) -> list[dict[str, float | int | str]]:
         """Glyphs for the Loads tab's case-based store."""
+        if not self._loads_visible:
+            return []
         return self._load_entry_parts
 
     @Property("QVariantList", notify=topology_changed)
