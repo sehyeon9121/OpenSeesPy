@@ -95,12 +95,14 @@ class _RenderingMixin:
             a = self._projected_node(self.nodes[element.node_i])
             b = self._projected_node(self.nodes[element.node_j])
             selected = tag in self.selected_elements or self._selected == ("element", tag)
+            is_drop_target = tag == self._drop_target_element
+            color = "#eab308" if is_drop_target else ("#ef4444" if selected else "#174ea6")
             item = self.scene_model.addLine(
                 a.x * scale,
                 -a.y * scale,
                 b.x * scale,
                 -b.y * scale,
-                QPen(QColor("#ef4444" if selected else "#174ea6"), 4),
+                QPen(QColor(color), 6 if is_drop_target else 4),
             )
             item.setData(0, ("element", tag))
             if element.moment_release_i:

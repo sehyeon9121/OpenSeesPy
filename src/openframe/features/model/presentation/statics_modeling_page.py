@@ -79,6 +79,11 @@ class StaticsDrawingCanvas(
     #: refresh, kept separate from ``load_state_changed`` for the same
     #: reason that one is separate from ``model_changed``.
     story_state_changed = Signal()
+    #: Fired by dropEvent (canvas_input_events.py) when a 물성/섹션 Work Tree
+    #: row is dropped onto a member - (kind, definition_id, element_tag).
+    #: The page owns ``_user_materials``/``_user_sections``, so resolving the
+    #: id and actually applying it happens there, not on the canvas itself.
+    property_drop_requested = Signal(str, str, int)
     _DRAW_SCALE = 40.0
     _SNAP_PIXELS = 14.0
 
@@ -92,6 +97,7 @@ class StaticsDrawingCanvas(
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSceneRect(-100_000, -100_000, 200_000, 200_000)
+        self.setAcceptDrops(True)
         self.nodes: dict[int, Node] = {}
         self.elements: dict[int, Element] = {}
         self.boundaries: dict[int, BoundaryCondition] = {}
@@ -136,6 +142,10 @@ class StaticsDrawingCanvas(
         self._selected: tuple[str, int] | None = None
         self.selected_nodes: set[int] = set()
         self.selected_elements: set[int] = set()
+        #: Member currently under a 물성/섹션 drag-and-drop hover, drawn in
+        #: yellow by _redraw() as drop feedback - separate from
+        #: selected_elements so hovering never disturbs the actual selection.
+        self._drop_target_element: int | None = None
         self.hinge_nodes: set[int] = set()
         self._drag_start: QPointF | None = None
         self._drag_current: QPointF | None = None

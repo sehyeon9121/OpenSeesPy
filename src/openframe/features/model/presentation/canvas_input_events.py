@@ -8,9 +8,28 @@ how/when Qt calls them.
 """
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPen, QWheelEvent
+from PySide6.QtGui import (
+    QColor,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QKeyEvent,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QWheelEvent,
+)
 
 from openframe.features.model.drawing import SnapResult, apply_ortho
+
+#: MIME type a Work Tree 물성/섹션 row's drag payload carries (see
+#: modeling_interface_page.py's ``_WorkTree.startDrag``) - the payload body
+#: is ``"material:<id>"`` or ``"section:<id>"``, resolved against the page's
+#: own ``_user_materials``/``_user_sections`` in ``_apply_property_drop``
+#: since the canvas itself has no notion of those saved definitions.
+PROPERTY_DRAG_MIME_TYPE = "application/x-openframe-property"
 
 
 class _InputEventsMixin:
@@ -143,6 +162,47 @@ class _InputEventsMixin:
             self._selection_changed()
             return
         super().mouseReleaseEvent(event)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasFormat(PROPERTY_DRAG_MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if not event.mimeData().hasFormat(PROPERTY_DRAG_MIME_TYPE):
+            super().dragMoveEvent(event)
+            return
+        member = self._member_at_view(event.position().toPoint())
+        if member != self._drop_target_element:
+            self._drop_target_element = member
+            self._redraw()
+        if member is None:
+            event.ignore()
+        else:
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
+        if self._drop_target_element is not None:
+            self._drop_target_element = None
+            self._redraw()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if not event.mimeData().hasFormat(PROPERTY_DRAG_MIME_TYPE):
+            super().dropEvent(event)
+            return
+        member = self._drop_target_element
+        self._drop_target_element = None
+        self._redraw()
+        if member is None:
+            event.ignore()
+            return
+        payload = bytes(event.mimeData().data(PROPERTY_DRAG_MIME_TYPE)).decode("utf-8")
+        kind, _, definition_id = payload.partition(":")
+        if kind and definition_id:
+            self.property_drop_requested.emit(kind, definition_id, member)
+        event.acceptProposedAction()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Zoom in/out keeping the point under the cursor fixed on screen.

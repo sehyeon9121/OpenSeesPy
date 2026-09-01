@@ -462,6 +462,16 @@ class _GeometryMixin:
         self.boundaries[node_tag] = BoundaryCondition(node_tag, restraints, angle)
         self._changed()
 
+    def remove_support(self, node_tag: int) -> None:
+        """Clear a node's boundary condition without deleting the node
+        itself - unlike ``delete_selected``, which drops the node (and every
+        member it touches) along with its boundary."""
+        if node_tag not in self.boundaries:
+            return
+        self._record_history()
+        self.boundaries.pop(node_tag, None)
+        self._changed()
+
     def set_nodal_load(self, node_tag: int, values: tuple[float, float, float]) -> None:
         self._record_history()
         self.nodal_loads[node_tag] = NodalLoad(node_tag, values)

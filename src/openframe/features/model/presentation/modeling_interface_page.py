@@ -24,8 +24,8 @@ import tempfile
 from pathlib import Path
 from typing import ClassVar, NamedTuple
 
-from PySide6.QtCore import QEvent, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QMimeData, QSize, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QDrag, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -112,6 +112,7 @@ from openframe.features.model.presentation.canvas_glyphs import (
     _render_glyph_icon,
     _render_load_diagram,
 )
+from openframe.features.model.presentation.canvas_input_events import PROPERTY_DRAG_MIME_TYPE
 from openframe.features.model.presentation.current_page_only_stack import _CurrentPageOnlyStack
 from openframe.features.model.presentation.floor_load_type_manager_dialog import (
     FloorLoadTypeManagerDialog,
@@ -140,6 +141,34 @@ from openframe.features.viewport.presentation.quick3d_viewport import Quick3DVie
 #: already claim for their entry id - keeping them apart lets one click
 #: handler serve both without having to guess which kind of row it got.
 _TREE_ENTITY_ROLE = Qt.ItemDataRole.UserRole + 1
+
+#: Item-data role carrying a Work Tree 물성/섹션 row's ``("material" | "section",
+#: id)`` pair, so its context menu can look the definition up without
+#: colliding with ``_TREE_ENTITY_ROLE`` (canvas node/element/support rows) or
+#: plain ``UserRole`` (load-entry rows).
+_TREE_DEFINITION_ROLE = Qt.ItemDataRole.UserRole + 2
+
+
+class _WorkTree(QTreeWidget):
+    """A QTreeWidget that only ever starts a real Qt drag for a 물성/섹션 row
+    (one carrying ``_TREE_DEFINITION_ROLE``) - every other row (절점/부재/
+    지점/하중조합/load entries) is not a valid drop payload for anything, so
+    pressing-and-dragging one just does nothing rather than starting a drag
+    Qt has no drop target for. Shared by both the Work Tree and the Load
+    Inspector tree (``_new_load_tree``); the latter never has a definition
+    row, so this is a no-op there."""
+
+    def startDrag(self, supportedActions) -> None:
+        item = self.currentItem()
+        definition = item.data(0, _TREE_DEFINITION_ROLE) if item is not None else None
+        if not definition:
+            return
+        kind, definition_id = definition
+        mime = QMimeData()
+        mime.setData(PROPERTY_DRAG_MIME_TYPE, f"{kind}:{definition_id}".encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
 
 
 class _LoadTreeBinding(NamedTuple):
@@ -243,6 +272,7 @@ class ModelingInterfacePage(QFrame):
             self.canvas.load_state_changed.connect(self._refresh_load3d_viewport)
         self.canvas.draw_state_changed.connect(self._refresh_draw_readout)
         self.canvas.selection_changed.connect(self._selection_changed)
+        self.canvas.property_drop_requested.connect(self._apply_property_drop)
         self.canvas.escape_requested.connect(self._activate_select_tool)
         self.preview_3d.plane_point_picked.connect(self._on_3d_plane_picked)
         self.preview_3d.node_picked.connect(self._on_3d_node_picked)
@@ -654,7 +684,7 @@ class ModelingInterfacePage(QFrame):
         - tests call it directly - even though it now also serves the
         Load Inspector tree; its body only ever reads ``item``, never
         ``self.work_tree``, so sharing it is safe)."""
-        tree = QTreeWidget()
+        tree = _WorkTree()
         tree.setObjectName(object_name)
         tree.setHeaderHidden(True)
         tree.setColumnCount(2)
@@ -662,6 +692,10 @@ class ModelingInterfacePage(QFrame):
         tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         tree.setIndentation(15)
         tree.setRootIsDecorated(True)
+        # Only a 물성/섹션 row (_WorkTree.startDrag) ever actually starts a
+        # drag - see canvas_input_events.py's dragEnterEvent/dropEvent for
+        # where it lands (드래그하여 부재에 적용).
+        tree.setDragEnabled(True)
         tree.itemClicked.connect(self._on_work_tree_item_clicked)
         tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         tree.customContextMenuRequested.connect(
@@ -873,6 +907,7 @@ class ModelingInterfacePage(QFrame):
                 0,
                 f"E = {elastic:g} {self._unit_system.stress}",
             )
+            item.setData(0, _TREE_DEFINITION_ROLE, ("material", material.get("id")))
             self.work_tree_materials.addChild(item)
         self.work_tree_materials.setText(1, str(len(self._user_materials)))
 
@@ -882,6 +917,7 @@ class ModelingInterfacePage(QFrame):
                 [str(section.get("name", "사용자 섹션")), str(section.get("id", ""))]
             )
             item.setToolTip(0, str(section.get("shape", "")))
+            item.setData(0, _TREE_DEFINITION_ROLE, ("section", section.get("id")))
             self.work_tree_sections.addChild(item)
         self.work_tree_sections.setText(1, str(len(self._user_sections)))
         self.work_tree_materials.setExpanded(True)
@@ -5147,6 +5183,13 @@ class ModelingInterfacePage(QFrame):
             return
         entry_id = item.data(0, Qt.ItemDataRole.UserRole)
         if entry_id is None:
+            entity = item.data(0, _TREE_ENTITY_ROLE)
+            if entity is not None:
+                self._show_geometry_tree_context_menu(tree, position, entity)
+                return
+            definition = item.data(0, _TREE_DEFINITION_ROLE)
+            if definition is not None:
+                self._show_definition_tree_context_menu(tree, position, definition)
             return
         entry_id = int(entry_id)
         entry = self.canvas.load_entries.get(entry_id)
@@ -5179,6 +5222,66 @@ class ModelingInterfacePage(QFrame):
                 self._sync_selection_status()
         elif chosen in move_actions:
             self.canvas.move_load_entry_to_case(entry_id, move_actions[chosen])
+
+    def _show_geometry_tree_context_menu(
+        self, tree: QTreeWidget, position, entity: tuple[str, int]
+    ) -> None:
+        """Right-click menu for a Work Tree 절점/부재/지점 row - jumps to the
+        existing 부재/지점 category editor (so editing reuses the exact same
+        form ``_apply_member_section``/``_apply_support`` already write
+        through) or deletes the entity outright. No confirmation prompt:
+        the DELETE toolbar button already removes a selection with none,
+        Ctrl+Z is the same safety net either way.
+        """
+        kind, tag = entity
+        item = tree.itemAt(position)
+        is_support_row = kind == "node" and item is not None and item.parent() is self.work_tree_supports
+        menu = QMenu(tree)
+        edit_action = None
+        release_action = None
+        if kind == "element":
+            edit_action = menu.addAction("단면·재료 편집")
+            delete_action = menu.addAction("부재 삭제")
+        elif is_support_row:
+            edit_action = menu.addAction("구속조건 편집")
+            release_action = menu.addAction("지점 해제")
+            delete_action = menu.addAction("절점 삭제")
+        else:
+            delete_action = menu.addAction("절점 삭제")
+        chosen = menu.exec(tree.viewport().mapToGlobal(position))
+        if chosen is None:
+            return
+        self._select_entity_from_tree(kind, tag)
+        if edit_action is not None and chosen is edit_action:
+            self._show_category("member" if kind == "element" else "support")
+        elif release_action is not None and chosen is release_action:
+            self.canvas.remove_support(tag)
+        elif chosen is delete_action:
+            self.canvas.delete_selected()
+
+    def _show_definition_tree_context_menu(
+        self, tree: QTreeWidget, position, definition: tuple[str, str]
+    ) -> None:
+        """Right-click menu for a Work Tree 물성/섹션 row. Deleting a
+        definition only removes it from this picker list - members that
+        already had it applied keep their own copied E/A/I/... values (see
+        ``apply_full_section_to_selection``), so nothing already built breaks.
+        """
+        kind, definition_id = definition
+        menu = QMenu(tree)
+        delete_action = menu.addAction("삭제")
+        chosen = menu.exec(tree.viewport().mapToGlobal(position))
+        if chosen is not delete_action:
+            return
+        if kind == "material":
+            self._user_materials[:] = [
+                entry for entry in self._user_materials if entry.get("id") != definition_id
+            ]
+        else:
+            self._user_sections[:] = [
+                entry for entry in self._user_sections if entry.get("id") != definition_id
+            ]
+        self._refresh_work_tree()
 
     def _build_load_category(self) -> QWidget:
         section, root = self._section("하중", show_title=False)
@@ -7767,6 +7870,99 @@ class ModelingInterfacePage(QFrame):
             # a thin blank strip for each. Hide the whole card instead, so
             # only the one actually-selected card's frame ever shows.
             group.setVisible(active)
+
+    @staticmethod
+    def _section_kwargs_from_properties(properties: dict[str, float | str]) -> dict[str, object]:
+        """Reconstruct ``apply_full_section_to_selection``'s full kwarg set
+        from what a member's ``element.properties`` already carries, so a
+        물성-only or 섹션-only drag-and-drop (``_apply_property_drop``) can
+        overlay just the half that was dropped onto the untouched other half
+        instead of going through ``apply_full_section_to_selection``'s own
+        full-replace behaviour with zeros for whatever the drop didn't
+        supply. Dimensions only round-trip for Rectangle - every other shape
+        already drops them on write (see that method's own docstring)."""
+
+        def number(key: str, default: float = 0.0) -> float:
+            try:
+                return float(properties.get(key, default))
+            except (TypeError, ValueError):
+                return default
+
+        shape = str(properties.get("section_shape", "Rectangle"))
+        return {
+            "shape": shape,
+            "source": str(properties.get("section_source", "custom")),
+            "dimensions": (
+                {"b": number("width"), "h": number("height")} if shape == "Rectangle" else {}
+            ),
+            "area": number("A"),
+            "iy": number("Iy", number("I")),
+            "iz": number("Iz"),
+            "j": number("J"),
+            "elastic": number("E"),
+            "shear_modulus": properties.get("G"),
+            "density": number("density"),
+            "section_id": properties.get("section_id"),
+            "material_id": properties.get("material_id"),
+            "material_category": properties.get("material_category"),
+            "material_grade": properties.get("material_grade"),
+            "fy": number("Fy"),
+            "strain_hardening_ratio": number("StrainHardeningRatio", 0.02),
+            "zy": properties.get("Zy"),
+            "zz": properties.get("Zz"),
+        }
+
+    def _apply_property_drop(self, kind: str, definition_id: str, element_tag: int) -> None:
+        """A 물성/섹션 Work Tree row was dropped onto ``element_tag`` in the
+        2D canvas (``canvas_input_events.py``'s dropEvent). Only the dropped
+        half is overlaid onto the member's existing properties - dropping a
+        물성 keeps its current 단면(A/Iy/Iz/J/shape), dropping a 섹션 keeps its
+        current 물성(E/density/Fy) - see ``_section_kwargs_from_properties``.
+        """
+        element = self.canvas.elements.get(element_tag)
+        if element is None:
+            return
+        kwargs = self._section_kwargs_from_properties(element.properties)
+        if kind == "material":
+            material = next(
+                (item for item in self._user_materials if item.get("id") == definition_id), None
+            )
+            if material is None:
+                return
+            kwargs.update(
+                elastic=float(material.get("elastic", kwargs["elastic"]) or 0.0),
+                density=float(material.get("density", kwargs["density"]) or 0.0),
+                fy=float(material.get("fy", kwargs["fy"]) or 0.0),
+                # None, not the member's old G - a changed E must re-derive
+                # the shear modulus, not keep the previous material's.
+                shear_modulus=None,
+                material_category=material.get("category"),
+                material_grade=material.get("grade"),
+            )
+            label = str(material.get("name", "물성"))
+        elif kind == "section":
+            section = next(
+                (item for item in self._user_sections if item.get("id") == definition_id), None
+            )
+            if section is None:
+                return
+            kwargs.update(
+                shape=section.get("shape", kwargs["shape"]),
+                source=section.get("source", kwargs["source"]),
+                dimensions=dict(section.get("dimensions") or {}),
+                area=float(section.get("area", kwargs["area"]) or 0.0),
+                iy=float(section.get("iy", kwargs["iy"]) or 0.0),
+                iz=float(section.get("iz", kwargs["iz"]) or 0.0),
+                j=float(section.get("j", kwargs["j"]) or 0.0),
+                section_id=section.get("database_id"),
+            )
+            label = str(section.get("name", "섹션"))
+        else:
+            return
+        self._select_entity_from_tree("element", element_tag)
+        self.canvas.apply_full_section_to_selection(**kwargs)
+        self.selection_summary.setText(f"✓ 부재 {element_tag}에 '{label}'을(를) 드롭으로 적용했습니다.")
+        self._sync_selection_status()
 
     def _apply_member_section(self) -> None:
         """Apply the Properties editor values to selected existing members."""

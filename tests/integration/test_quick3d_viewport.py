@@ -8,6 +8,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QObject, QPoint, Qt
+from PySide6.QtGui import QColor
+from PySide6.QtQml import QJSValue
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -23,6 +25,14 @@ def _viewport() -> Quick3DViewport:
     # first, same as a real page becoming visible.
     viewport.show()
     return viewport
+
+
+def _qml_list(value: object) -> list:
+    if isinstance(value, QJSValue):
+        value = value.toVariant()
+    if value is None:
+        return []
+    return list(value)
 
 
 def _set_model(viewport: Quick3DViewport, model: StructuralModel, **kwargs) -> None:
@@ -234,6 +244,99 @@ def test_nodes_have_a_non_interactive_screen_space_marker_overlay() -> None:
     assert root.property("nodeMarkerRadiusPixels") == pytest.approx(8.0)
     assert root.property("selectedNodeMarkerRadiusPixels") == pytest.approx(10.0)
     assert root.property("nodePickRadiusPixels") == pytest.approx(18.0)
+
+
+def test_members_are_drawn_as_one_instanced_model_instead_of_one_model_each() -> None:
+    """Repeater3D used to build a Model+material per member part, which is
+    why adding storeys made orbiting and picking feel stuck. One cube model
+    plus an InstanceList keeps the same B/H while the draw-call count stays
+    at two (cube/cylinder) no matter how many members are in the frame.
+    """
+    viewport = _viewport()
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 4.0, 0.0, 0.0, 6),
+            3: Node(3, 4.0, 0.0, 3.0, 6),
+        },
+        elements={
+            1: Element(
+                1,
+                1,
+                2,
+                "elasticBeamColumn",
+                properties={"section_shape": "Rectangle", "width": 0.3, "height": 0.5},
+            ),
+            2: Element(
+                2,
+                2,
+                3,
+                "elasticBeamColumn",
+                properties={"section_shape": "Rectangle", "width": 0.3, "height": 0.5},
+            ),
+        },
+    )
+    _set_model(viewport, model)
+    QApplication.processEvents()
+
+    root = viewport.quick_widget.rootObject()
+    cubes = root.findChild(QObject, "cubeInstanceList")
+    cylinders = root.findChild(QObject, "cylinderInstanceList")
+    assert cubes is not None
+    assert cylinders is not None
+    assert cubes.property("instanceCount") == len(viewport.bridge.members)
+    assert cylinders.property("instanceCount") == 0
+    assert root.findChild(QObject, "cubeMemberModel") is not None
+
+
+def test_selecting_a_member_recolors_its_instance_without_a_second_mesh() -> None:
+    """The visible member is the instance cube. A duplicate red Model at
+    the same B/H used to z-fight it, so selection looked like a no-op.
+    """
+    viewport = _viewport()
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 4.0, 0.0, 0.0, 6),
+            3: Node(3, 4.0, 0.0, 3.0, 6),
+        },
+        elements={
+            1: Element(
+                1,
+                1,
+                2,
+                "elasticBeamColumn",
+                properties={"section_shape": "Rectangle", "width": 0.3, "height": 0.5},
+            ),
+            2: Element(
+                2,
+                2,
+                3,
+                "elasticBeamColumn",
+                properties={"section_shape": "Rectangle", "width": 0.3, "height": 0.5},
+            ),
+        },
+    )
+    _set_model(viewport, model)
+    viewport.set_selection(set(), {1})
+    QApplication.processEvents()
+
+    root = viewport.quick_widget.rootObject()
+    tags = _qml_list(root.property("cubeTags"))
+    hexes = [QColor(value).name() for value in _qml_list(root.property("cubePaintHex"))]
+    assert tags == [1, 2]
+    assert hexes[0] == "#ef4444"
+    assert hexes[1] != "#ef4444"
+
+    viewport.set_selection(set(), set())
+    QApplication.processEvents()
+    hexes = [QColor(value).name() for value in _qml_list(root.property("cubePaintHex"))]
+    assert hexes[0] != "#ef4444"
+    assert hexes[1] != "#ef4444"
 
 
 def test_navigation_cursor_feedback_loads_and_switches_to_pan_mode() -> None:

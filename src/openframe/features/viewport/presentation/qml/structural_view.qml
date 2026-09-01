@@ -46,6 +46,37 @@ Item {
     property real lastMouseY: 0
     property bool panning: false
     property bool navigationActive: false
+    property var cubeTags: []
+    property var cylinderTags: []
+    property var cubeColors: []
+    property var cylinderColors: []
+    property var cubePaintHex: []
+    property var cylinderPaintHex: []
+    property var _cubeEntryPool: []
+    property var _cylinderEntryPool: []
+    // Touched whenever member transforms, visibility or topology change so
+    // the InstanceList tables below stay in sync without a Repeater3D
+    // Model+Material per part.
+    readonly property int memberSyncKey: {
+        if (!bridgeReady)
+            return 0
+        sceneBridge.geometryRevision
+        sceneBridge.deformationRevision
+        sceneBridge.visibilityRevision
+        return sceneBridge.members.length
+    }
+    // Selection used to be a same-size red Model stacked on the member.
+    // After instancing that overlay sat at identical depth as the instance
+    // cube, so z-fighting hid the colour change. Recolour the instance
+    // itself instead - same visual as the old per-delegate baseColor, no
+    // extra mesh, and a click only walks the instance pool rather than
+    // every member Repeater binding.
+    readonly property color selectedMemberColor: "#ef4444"
+    readonly property int memberSelectionKey: {
+        if (!bridgeReady)
+            return 0
+        return sceneBridge.selectionRevision
+    }
     property real navigationCursorX: 0
     property real navigationCursorY: 0
     property bool pickingEnabled: false
@@ -186,6 +217,152 @@ Item {
         return view3d.pick(mx, my)
     }
 
+    function memberTagFromPick(result) {
+        if (!result || !result.objectHit)
+            return -1
+        if (result.objectHit === cubeMemberModel && result.instanceIndex >= 0) {
+            const tag = cubeTags[result.instanceIndex]
+            return tag === undefined ? -1 : tag
+        }
+        if (result.objectHit === cylinderMemberModel && result.instanceIndex >= 0) {
+            const tag = cylinderTags[result.instanceIndex]
+            return tag === undefined ? -1 : tag
+        }
+        if (result.objectHit.memberTag !== undefined)
+            return result.objectHit.memberTag
+        return -1
+    }
+
+    function membersShouldRender() {
+        return !bridgeReady
+            || !sceneBridge.timeHistoryDeformationActive
+            || sceneBridge.timeHistoryShowDeformed
+    }
+
+    function _fillInstancePool(listObj, pool, tags, colors, parts) {
+        const selected = bridgeReady ? sceneBridge.selectedMemberTags : []
+        while (pool.length < parts.length)
+            pool.push(instanceEntryComponent.createObject(listObj))
+        for (let index = 0; index < parts.length; ++index) {
+            const part = parts[index]
+            const entry = pool[index]
+            entry.position = Qt.vector3d(part.x, part.y, part.z)
+            entry.scale = Qt.vector3d(part.width_b / 100, part.length / 100, part.width_h / 100)
+            entry.rotation = Qt.quaternion(part.qscalar, part.qx, part.qy, part.qz)
+            colors[index] = part.color
+            tags[index] = part.tag
+            entry.color = root.tagIsSelected(selected, part.tag)
+                ? root.selectedMemberColor
+                : part.color
+        }
+        tags.length = parts.length
+        colors.length = parts.length
+        // InstanceListEntry writes already refresh the GPU buffer. Replacing
+        // `instances` on every geometry tick rebuilt the whole table (one
+        // QObject pointer per part) even when the member count had not
+        // changed - node drags and time-history frames paid that tax.
+        const needed = parts.length
+        if (listObj.instanceCount !== needed)
+            listObj.instances = needed === 0 ? [] : pool.slice(0, needed)
+    }
+
+    function applyMemberSelectionColors() {
+        if (typeof cubeInstanceList === "undefined")
+            return
+        const selected = bridgeReady ? sceneBridge.selectedMemberTags : []
+        function paint(pool, tags, colors) {
+            for (let index = 0; index < tags.length; ++index) {
+                pool[index].color = root.tagIsSelected(selected, tags[index])
+                    ? root.selectedMemberColor
+                    : colors[index]
+            }
+        }
+        paint(_cubeEntryPool, cubeTags, cubeColors)
+        paint(_cylinderEntryPool, cylinderTags, cylinderColors)
+        _refreshPaintHex()
+    }
+
+    function _refreshPaintHex() {
+        function hexes(pool, tags) {
+            const names = []
+            for (let index = 0; index < tags.length; ++index)
+                names.push("" + pool[index].color)
+            return names
+        }
+        cubePaintHex = hexes(_cubeEntryPool, cubeTags)
+        cylinderPaintHex = hexes(_cylinderEntryPool, cylinderTags)
+    }
+
+    function syncMemberInstances() {
+        if (typeof cubeInstanceList === "undefined")
+            return
+        if (!bridgeReady || !membersShouldRender()) {
+            cubeTags = []
+            cylinderTags = []
+            cubeColors = []
+            cylinderColors = []
+            cubePaintHex = []
+            cylinderPaintHex = []
+            cubeInstanceList.instances = []
+            cylinderInstanceList.instances = []
+            return
+        }
+        const cubes = []
+        const cylinders = []
+        const members = sceneBridge.members
+        for (let index = 0; index < members.length; ++index) {
+            const part = members[index]
+            if (!root.memberVisible(part.tag))
+                continue
+            if (part.source === "#Cylinder")
+                cylinders.push(part)
+            else
+                cubes.push(part)
+        }
+        const nextCubeTags = []
+        const nextCylinderTags = []
+        const nextCubeColors = []
+        const nextCylinderColors = []
+        _fillInstancePool(cubeInstanceList, _cubeEntryPool, nextCubeTags, nextCubeColors, cubes)
+        _fillInstancePool(
+            cylinderInstanceList, _cylinderEntryPool, nextCylinderTags, nextCylinderColors, cylinders
+        )
+        cubeTags = nextCubeTags
+        cylinderTags = nextCylinderTags
+        cubeColors = nextCubeColors
+        cylinderColors = nextCylinderColors
+        _refreshPaintHex()
+    }
+
+    onMemberSyncKeyChanged: syncMemberInstances()
+    onMemberSelectionKeyChanged: applyMemberSelectionColors()
+    Component.onCompleted: syncMemberInstances()
+
+    function applyHoverPick(mx, my) {
+        if (!root.planePickingEnabled)
+            return
+        let hover = root.pickNearestNode(mx, my)
+        if (hover.objectHit && hover.objectHit.nodeTag !== undefined) {
+            root.showSnapFeedback(hover.objectHit.nodeTag)
+            root.nodeHovered(hover.objectHit.nodeTag)
+        } else if (hover.objectHit === activePlaneModel) {
+            root.clearSnapFeedback()
+            root.planeHovered(hover.scenePosition.x, hover.scenePosition.y, hover.scenePosition.z)
+        } else {
+            root.clearSnapFeedback()
+            root.hoverCleared()
+        }
+    }
+
+    Timer {
+        id: hoverPickTimer
+        interval: 16
+        repeat: false
+        property real pendingX: 0
+        property real pendingY: 0
+        onTriggered: root.applyHoverPick(pendingX, pendingY)
+    }
+
     function pointInSelection(point, left, top, right, bottom) {
         return point.x >= left && point.x <= right
             && point.y >= top && point.y <= bottom
@@ -314,7 +491,10 @@ Item {
             backgroundMode: SceneEnvironment.Color
             clearColor: "#f4f6f8"
             antialiasingMode: SceneEnvironment.MSAA
-            antialiasingQuality: SceneEnvironment.High
+            // High MSAA with one Model per member was a fill-rate tax that
+            // grew with every added beam. Instanced members are one/two draw
+            // calls; Medium keeps edges clean without that per-object cost.
+            antialiasingQuality: SceneEnvironment.Medium
         }
 
         PerspectiveCamera {
@@ -343,22 +523,17 @@ Item {
             }
         }
 
-        // Three lights spaced 120 degrees apart in yaw (rather than one strong key
-        // light) so that orbiting the camera never turns a whole face of the model
-        // fully dark - each face is always lit by at least one of them.
+        // Two lights on opposite yaw so orbiting never leaves a face fully
+        // dark. A third light used to add fill at the cost of another shadow-
+        // free pass over every member; two is enough once members are instanced.
         DirectionalLight {
             eulerRotation: Qt.vector3d(-35, -30, 0)
-            brightness: 0.75
+            brightness: 0.85
             castsShadow: false
         }
         DirectionalLight {
-            eulerRotation: Qt.vector3d(-35, 90, 0)
-            brightness: 0.6
-            castsShadow: false
-        }
-        DirectionalLight {
-            eulerRotation: Qt.vector3d(-35, 210, 0)
-            brightness: 0.6
+            eulerRotation: Qt.vector3d(-35, 150, 0)
+            brightness: 0.55
             castsShadow: false
         }
 
@@ -447,126 +622,39 @@ Item {
             }
         }
 
-        Repeater3D {
-            // Each list entry is already a fully self-contained box/cylinder
-            // part (position, rotation, its own width_b x width_h) computed
-            // in Python - Quick3DSceneBridge._member_parts. A plain member
-            // is one part; an H/I section is three (web + two flanges),
-            // each its own independent entry rather than a Node group
-            // nesting several conditionally-visible children under one
-            // parent transform - the same flat-list-of-parts shape
-            // loadArrows/supportSymbols below already use, and Repeater3D
-            // keeps that in sync with model changes far more reliably than
-            // it does a nested multi-child delegate (a copied member
-            // intermittently rendered as a bare hairline instead of its
-            // real cross-section under the nested form).
-            model: bridgeReady ? sceneBridge.members : []
-            delegate: Model {
-                property int memberTag: modelData.tag
-                visible: (!bridgeReady
-                    || !sceneBridge.timeHistoryDeformationActive
-                    || sceneBridge.timeHistoryShowDeformed)
-                    && root.memberVisible(memberTag)
-                source: modelData.source
-                position: {
-                    if (bridgeReady) {
-                        sceneBridge.geometryRevision
-                        sceneBridge.deformationRevision
-                    }
-                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
-                }
-                rotation: {
-                    if (bridgeReady) {
-                        sceneBridge.geometryRevision
-                        sceneBridge.deformationRevision
-                    }
-                    return Qt.quaternion(
-                        modelData.qscalar,
-                        modelData.qx,
-                        modelData.qy,
-                        modelData.qz
-                    )
-                }
-                scale: {
-                    if (bridgeReady) {
-                        sceneBridge.geometryRevision
-                        sceneBridge.deformationRevision
-                    }
-                    return Qt.vector3d(
-                        modelData.width_b / 100,
-                        modelData.length / 100,
-                        modelData.width_h / 100
-                    )
-                }
-                materials: [
-                    PrincipledMaterial {
-                        baseColor: modelData.color
-                        opacity: modelData.opacity
-                        metalness: 0.0
-                        roughness: 0.55
-                    }
-                ]
-                castsShadows: false
-                receivesShadows: false
-                // Members participate in click picking only in selection
-                // mode.  Keeping them non-pickable while drawing lets the
-                // invisible work plane and nearby node snaps remain reachable.
-                pickable: root.pickingEnabled
-            }
+        Component {
+            id: instanceEntryComponent
+            InstanceListEntry {}
         }
-
-        Repeater3D {
-            // Red overlay for the few selected members only.  Coloring every
-            // member delegate via selectionRevision made a single click walk
-            // thousands of QML bindings on large models.
-            model: bridgeReady ? sceneBridge.selectedMemberHighlight : []
-            delegate: Model {
-                visible: !bridgeReady
-                    || !sceneBridge.timeHistoryDeformationActive
-                    || sceneBridge.timeHistoryShowDeformed
-                source: modelData.source
-                position: {
-                    if (bridgeReady) {
-                        sceneBridge.geometryRevision
-                        sceneBridge.deformationRevision
-                    }
-                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
-                }
-                rotation: {
-                    if (bridgeReady) {
-                        sceneBridge.geometryRevision
-                        sceneBridge.deformationRevision
-                    }
-                    return Qt.quaternion(
-                        modelData.qscalar,
-                        modelData.qx,
-                        modelData.qy,
-                        modelData.qz
-                    )
-                }
-                scale: {
-                    if (bridgeReady) {
-                        sceneBridge.geometryRevision
-                        sceneBridge.deformationRevision
-                    }
-                    return Qt.vector3d(
-                        modelData.width_b / 100,
-                        modelData.length / 100,
-                        modelData.width_h / 100
-                    )
-                }
-                materials: [
-                    PrincipledMaterial {
-                        baseColor: "#ef4444"
-                        opacity: modelData.opacity
-                        metalness: 0.0
-                        roughness: 0.55
-                    }
-                ]
-                castsShadows: false
-                receivesShadows: false
-                pickable: false
-            }
+        InstanceList { id: cubeInstanceList; objectName: "cubeInstanceList" }
+        InstanceList { id: cylinderInstanceList; objectName: "cylinderInstanceList" }
+        PrincipledMaterial {
+            id: memberInstanceMaterial
+            // White so the InstanceListEntry color is the member color
+            // (default materials multiply instance color with baseColor).
+            baseColor: "#ffffff"
+            metalness: 0.0
+            roughness: 0.55
+        }
+        Model {
+            id: cubeMemberModel
+            objectName: "cubeMemberModel"
+            source: "#Cube"
+            instancing: cubeInstanceList
+            materials: [memberInstanceMaterial]
+            castsShadows: false
+            receivesShadows: false
+            pickable: root.pickingEnabled && !root.navigationActive
+        }
+        Model {
+            id: cylinderMemberModel
+            objectName: "cylinderMemberModel"
+            source: "#Cylinder"
+            instancing: cylinderInstanceList
+            materials: [memberInstanceMaterial]
+            castsShadows: false
+            receivesShadows: false
+            pickable: root.pickingEnabled && !root.navigationActive
         }
 
         Repeater3D {
@@ -667,52 +755,6 @@ Item {
                     PrincipledMaterial {
                         baseColor: modelData.color
                         lighting: PrincipledMaterial.NoLighting
-                    }
-                ]
-                castsShadows: false
-                receivesShadows: false
-                pickable: false
-            }
-        }
-
-        Repeater3D {
-            model: bridgeReady ? sceneBridge.nodes : []
-            delegate: Model {
-                property int nodeTag: modelData.tag
-                property bool snapTarget: root.planePickingEnabled
-                    && root.hoveredNodeTag === nodeTag
-                property bool nodeSelected: {
-                    if (bridgeReady)
-                        sceneBridge.selectionRevision
-                    return root.tagIsSelected(sceneBridge.selectedNodeTags, nodeTag)
-                }
-                // The drawable node is nodeMarkerOverlay (constant screen
-                // pixels). A 3D sphere sized from member length sits inside a
-                // true-scale section and used to steal GPU picks from the
-                // joint it was meant to mark, so it stays off.
-                visible: false
-                source: "#Sphere"
-                position: {
-                    if (bridgeReady) {
-                        sceneBridge.geometryRevision
-                        sceneBridge.deformationRevision
-                    }
-                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
-                }
-                scale: {
-                    if (bridgeReady) {
-                        sceneBridge.geometryRevision
-                        sceneBridge.deformationRevision
-                    }
-                    const radiusScale = modelData.radius * 2 * (snapTarget ? 1.65 : 1) / 100
-                    return Qt.vector3d(radiusScale, radiusScale, radiusScale)
-                }
-                materials: [
-                    PrincipledMaterial {
-                        baseColor: snapTarget ? "#f59e0b" : (nodeSelected ? "#ef4444" : modelData.color)
-                        opacity: modelData.opacity
-                        metalness: 0.0
-                        roughness: 0.55
                     }
                 ]
                 castsShadows: false
@@ -1102,19 +1144,40 @@ Item {
             ? sceneBridge.timeHistoryShowDeformed : false
         property var trackedNodes: root.bridgeReady ? sceneBridge.nodes : []
         property int trackedNodeCount: root.bridgeReady ? sceneBridge.nodes.length : 0
+        property bool trackedNavigation: root.navigationActive
+        // Hidden while orbiting so the last projected dots do not drift off
+        // the joints. Wheel zoom never sets navigationActive, so camera-driven
+        // paints go through overlaySettleTimer instead of O(nodes) work on
+        // every wheel tick.
+        opacity: (trackedNavigation || overlaySettleTimer.running) ? 0 : 1
+
+        Timer {
+            id: overlaySettleTimer
+            interval: 40
+            repeat: false
+            onTriggered: nodeMarkerOverlay.requestPaint()
+        }
 
         function schedulePaint() {
+            if (root.navigationActive)
+                return
             requestPaint()
         }
 
-        onTrackedYawChanged: schedulePaint()
-        onTrackedPitchChanged: schedulePaint()
-        onTrackedDistanceChanged: schedulePaint()
-        onTrackedPanXChanged: schedulePaint()
-        onTrackedPanYChanged: schedulePaint()
-        onTrackedCenterXChanged: schedulePaint()
-        onTrackedCenterYChanged: schedulePaint()
-        onTrackedCenterZChanged: schedulePaint()
+        function debounceCameraPaint() {
+            if (root.navigationActive)
+                return
+            overlaySettleTimer.restart()
+        }
+
+        onTrackedYawChanged: debounceCameraPaint()
+        onTrackedPitchChanged: debounceCameraPaint()
+        onTrackedDistanceChanged: debounceCameraPaint()
+        onTrackedPanXChanged: debounceCameraPaint()
+        onTrackedPanYChanged: debounceCameraPaint()
+        onTrackedCenterXChanged: debounceCameraPaint()
+        onTrackedCenterYChanged: debounceCameraPaint()
+        onTrackedCenterZChanged: debounceCameraPaint()
         onTrackedGeometryRevisionChanged: schedulePaint()
         onTrackedDeformationRevisionChanged: schedulePaint()
         onTrackedSelectionRevisionChanged: schedulePaint()
@@ -1123,6 +1186,10 @@ Item {
         onTrackedTimeHistoryShowDeformedChanged: schedulePaint()
         onTrackedNodesChanged: schedulePaint()
         onTrackedNodeCountChanged: schedulePaint()
+        onTrackedNavigationChanged: {
+            if (!trackedNavigation)
+                requestPaint()
+        }
         onWidthChanged: schedulePaint()
         onHeightChanged: schedulePaint()
         Component.onCompleted: schedulePaint()
@@ -1532,24 +1599,34 @@ Item {
         enabled: false
         property bool panMode: root.panning
 
+        function addOrbitArrowHead(context, angle, size) {
+            const x = 22 + Math.cos(angle) * 14
+            const y = 22 + Math.sin(angle) * 14
+            const tangent = angle + Math.PI / 2
+            const backX = x - Math.cos(tangent) * size
+            const backY = y - Math.sin(tangent) * size
+            const normalX = -Math.sin(tangent) * size * 0.55
+            const normalY = Math.cos(tangent) * size * 0.55
+            context.moveTo(backX + normalX, backY + normalY)
+            context.lineTo(x, y)
+            context.lineTo(backX - normalX, backY - normalY)
+        }
+
         function drawOrbit(context, color, lineWidth) {
             context.strokeStyle = color
             context.lineWidth = lineWidth
             context.lineCap = "round"
             context.lineJoin = "round"
             context.beginPath()
-            // Horizontal and vertical curved arrows communicate free orbit
-            // without the distracting "360" text from the reference icon.
-            context.moveTo(6, 23)
-            context.bezierCurveTo(10, 12, 31, 12, 37, 21)
-            context.moveTo(31, 15)
-            context.lineTo(37, 21)
-            context.lineTo(31, 27)
-            context.moveTo(22, 6)
-            context.bezierCurveTo(34, 10, 34, 31, 23, 38)
-            context.moveTo(29, 31)
-            context.lineTo(23, 38)
-            context.lineTo(17, 32)
+            // Two true circular arcs stay visibly curved at cursor size. The
+            // small gaps and tangent arrowheads read as continuous 360-degree
+            // orbit without placing text in the pointer.
+            const firstEnd = Math.PI * 0.14
+            const secondEnd = Math.PI * 1.14
+            context.arc(22, 22, 14, -Math.PI * 0.78, firstEnd, false)
+            addOrbitArrowHead(context, firstEnd, 6.5)
+            context.arc(22, 22, 14, Math.PI * 0.22, secondEnd, false)
+            addOrbitArrowHead(context, secondEnd, 6.5)
             context.stroke()
         }
 
@@ -1625,10 +1702,12 @@ Item {
             let result = root.pickNearestNode(mouse.x, mouse.y)
             if (result.objectHit && result.objectHit.nodeTag !== undefined) {
                 root.nodePicked(result.objectHit.nodeTag, mouse.x, mouse.y)
-            } else if (result.objectHit && result.objectHit.memberTag !== undefined) {
-                root.memberPicked(result.objectHit.memberTag, mouse.x, mouse.y)
             } else {
-                root.emptySpaceClicked()
+                const memberTag = root.memberTagFromPick(result)
+                if (memberTag >= 0)
+                    root.memberPicked(memberTag, mouse.x, mouse.y)
+                else
+                    root.emptySpaceClicked()
             }
         }
         onPressed: function(mouse) {
@@ -1656,23 +1735,13 @@ Item {
                 root.navigationCursorY = mouse.y
             }
             if (root.planePickingEnabled && !(mouse.buttons & Qt.MiddleButton)) {
-                // Pure hover (no button held) while the draw tool is active -
-                // resolve what the cursor is over so the caller can snap the
-                // rubber-band preview onto an existing node, or follow the
-                // active plane otherwise. Mirrors onClicked's own pick logic
-                // exactly, so hover and click always agree on what counts as
-                // a hit.
-                let hover = root.pickNearestNode(mouse.x, mouse.y)
-                if (hover.objectHit && hover.objectHit.nodeTag !== undefined) {
-                    root.showSnapFeedback(hover.objectHit.nodeTag)
-                    root.nodeHovered(hover.objectHit.nodeTag)
-                } else if (hover.objectHit === activePlaneModel) {
-                    root.clearSnapFeedback()
-                    root.planeHovered(hover.scenePosition.x, hover.scenePosition.y, hover.scenePosition.z)
-                } else {
-                    root.clearSnapFeedback()
-                    root.hoverCleared()
-                }
+                // Pure hover while the draw tool is active. Clicks still pick
+                // immediately; hover is coalesced so a dense node list does
+                // not run mapFrom3DScene + view3d.pick on every mouse pixel.
+                hoverPickTimer.pendingX = mouse.x
+                hoverPickTimer.pendingY = mouse.y
+                if (!hoverPickTimer.running)
+                    hoverPickTimer.start()
             }
             if (root.selectionCandidate && (mouse.buttons & Qt.LeftButton)) {
                 root.selectionCurrentX = mouse.x
