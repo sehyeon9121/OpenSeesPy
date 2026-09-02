@@ -385,6 +385,46 @@ def test_members_are_drawn_as_one_instanced_model_instead_of_one_model_each() ->
     assert root.findChild(QObject, "cubeMemberModel") is not None
 
 
+def test_h_section_draws_three_cube_instances() -> None:
+    """An H/I member is web + two flanges. InstanceList used to look like a
+    solid stick when only one part made it into the GPU table, so the
+    viewport must actually host three cube instances, not just store three
+    dicts on the Python bridge.
+    """
+    viewport = _viewport()
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 4.0, 0.0, 0.0, 6),
+        },
+        elements={
+            1: Element(
+                1,
+                1,
+                2,
+                "elasticBeamColumn",
+                properties={
+                    "section_shape": "H/I Section",
+                    "dim_H": 0.3,
+                    "dim_B": 0.3,
+                    "dim_tw": 0.01,
+                    "dim_tf": 0.015,
+                },
+            ),
+        },
+    )
+    _set_model(viewport, model)
+    QApplication.processEvents()
+
+    root = viewport.quick_widget.rootObject()
+    cubes = root.findChild(QObject, "cubeInstanceList")
+    assert cubes is not None
+    assert len(viewport.bridge.members) == 3
+    assert cubes.property("instanceCount") == 3
+
+
 def test_selecting_a_member_recolors_its_instance_without_a_second_mesh() -> None:
     """The visible member is the instance cube. A duplicate red Model at
     the same B/H used to z-fight it, so selection looked like a no-op.

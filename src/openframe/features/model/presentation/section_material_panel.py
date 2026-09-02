@@ -1143,6 +1143,12 @@ class SectionMaterialPanel(QWidget):
         self.validation_label.setText("")
         self._refresh_property_display()
         self._refresh_preview()
+        # Custom dimension edits go through `_recompute_from_dimensions`,
+        # which already emits `edited`. A Database pick used to stop at the
+        # preview: the 2D Element-tab drawing pen kept the previous
+        # Rectangle, so a member drawn after choosing an H-beam came out
+        # without dim_tw/tf.
+        self._notify_edited()
 
     def _reset_to_db(self) -> None:
         if self._db_section is not None:

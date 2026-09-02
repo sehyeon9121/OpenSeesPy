@@ -142,11 +142,13 @@ def test_missing_service_reports_in_status_bar(app) -> None:
     assert "서비스" in page.determinacy_status.text()
 
 
+@patch("openframe.features.model.presentation.modeling_interface_page.QMessageBox.information")
 @patch("openframe.features.model.presentation.modeling_interface_page.AnalysisRunThread")
 @patch("openframe.features.model.presentation.modeling_interface_page.export_opensees_script")
 def test_completion_routes_to_results_workspace(
     export_mock: MagicMock,
     thread_cls: MagicMock,
+    information: MagicMock,
     app,
 ) -> None:
     page = _page(with_service=True)
@@ -163,6 +165,9 @@ def test_completion_routes_to_results_workspace(
     page._full_analysis_completed(completed, model, AnalysisKind.MODAL)
 
     page.results.show_result.assert_called_once_with(completed)
+    information.assert_called_once()
+    assert information.call_args.args[1] == "해석 완료"
+    assert "모드/고유치" in information.call_args.args[2]
 
 
 @patch("openframe.features.model.presentation.modeling_interface_page.AnalysisRunThread")
@@ -220,3 +225,70 @@ def test_normalize_time_history_paths_resolves_relative_paths(tmp_path: Path) ->
         os.chdir(original_cwd)
 
     assert Path(options["directions"][0]["path"]).resolve() == motion.resolve()
+
+
+@pytest.mark.parametrize(
+    ("kind", "label_fragment"),
+    [
+        (AnalysisKind.MODAL, "모드/고유치"),
+        (AnalysisKind.BUCKLING, "좌굴"),
+        (AnalysisKind.TIME_HISTORY, "시간이력"),
+        (AnalysisKind.RESPONSE_SPECTRUM, "응답스펙트럼"),
+    ],
+)
+@patch("openframe.features.model.presentation.modeling_interface_page.QMessageBox.information")
+def test_full_analysis_completion_dialog_covers_every_kind(
+    information: MagicMock,
+    kind: AnalysisKind,
+    label_fragment: str,
+    app,
+) -> None:
+    page = _page(with_service=True)
+    page.results.show_result = MagicMock()
+    model = page.canvas.build_model()
+    extra: dict[str, object] = {}
+    if kind == AnalysisKind.MODAL:
+        extra["mode_shapes"] = ()
+    elif kind == AnalysisKind.BUCKLING:
+        extra["buckling_modes"] = ()
+    elif kind == AnalysisKind.TIME_HISTORY:
+        extra["time_history"] = ()
+    completed = AnalysisResult(status=AnalysisStatus.COMPLETED, **extra)
+
+    page._full_analysis_completed(completed, model, kind)
+
+    information.assert_called_once()
+    assert information.call_args.args[1] == "해석 완료"
+    assert label_fragment in information.call_args.args[2]
+
+
+@patch("openframe.features.model.presentation.modeling_interface_page.QMessageBox.information")
+def test_in_canvas_solve_completion_shows_dialog(information: MagicMock, app) -> None:
+    from openframe.features.analysis.statics.solver import check_determinacy
+
+    page = _page()
+    page.results.show_result = MagicMock()
+    model = page.canvas.build_model()
+    result = AnalysisResult(status=AnalysisStatus.COMPLETED)
+
+    page._solve_completed(model, check_determinacy(model), result)
+
+    information.assert_called_once()
+    assert information.call_args.args[1] == "해석 완료"
+    assert "선형탄성" in information.call_args.args[2]
+
+
+@patch("openframe.features.model.presentation.modeling_interface_page.QMessageBox.information")
+def test_in_canvas_solve_failure_does_not_show_completion_dialog(
+    information: MagicMock, app
+) -> None:
+    from openframe.features.analysis.statics.solver import check_determinacy
+
+    page = _page()
+    model = page.canvas.build_model()
+    result = AnalysisResult(status=AnalysisStatus.FAILED, messages=["재료가 없습니다."])
+
+    page._solve_completed(model, check_determinacy(model), result)
+
+    information.assert_not_called()
+    assert "재료가 없습니다" in page.determinacy_status.text()

@@ -36,6 +36,28 @@ def _select_h_section(panel: SectionMaterialPanel) -> None:
     )
 
 
+def test_selecting_a_database_section_emits_edited_with_its_dimensions() -> None:
+    """A Database pick must fire `edited`, not only refresh the preview.
+
+    The drawing pen listens to that signal. Without it, choosing H-300
+    left the previous Rectangle (or nothing) as the pen, so the next
+    drawn member was a solid B×H box instead of web + flanges.
+    """
+    panel = _panel()
+    payloads: list[dict[str, object] | None] = []
+    panel.edited.connect(lambda: payloads.append(panel.current_edit_kwargs()))
+
+    _select_h_section(panel)
+
+    usable = [item for item in payloads if item is not None]
+    assert usable
+    last = usable[-1]
+    assert last["shape"] == "H/I Section"
+    assert last["dimensions"]["H"] == pytest.approx(0.3)
+    assert last["dimensions"]["tw"] == pytest.approx(0.01)
+    assert last["dimensions"]["tf"] == pytest.approx(0.015)
+
+
 def test_database_h_section_lookup_reflects_dimensions_and_properties() -> None:
     """DB H형강 조회 및 UI 반영."""
     panel = _panel()

@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -6991,8 +6992,9 @@ class ModelingInterfacePage(QFrame):
         number to compute — not a redundant check to relax, since removing it
         would mean silently reporting a stiffness-independent guess as if it
         were the real answer for a structure whose real answer depends on
-        stiffness. That failure (or any other) still only ever reaches the
-        status bar here, never a popup — see ``_solve_completed``.
+        stiffness. Failures still only reach the status bar here, never a
+        popup — see ``_solve_completed``. A completed run shows the same
+        「해석 완료」 dialog the import workspace already had.
 
         3D's own Analysis tab picks a method (``_ANALYSIS_METHOD_OPTIONS``)
         that this same button also triggers - Nonlinear Static routes to
@@ -7091,9 +7093,11 @@ class ModelingInterfacePage(QFrame):
                 f"정정성: {check.message}  ·  {' '.join(result.messages)}"
             )
             return
-        self.analysis_progress.show_completed(
-            f"절점 {len(result.node_results)}개, 부재 {len(result.element_results)}개 결과가 준비되었습니다."
+        summary = (
+            f"절점 {len(result.node_results)}개, 부재 {len(result.element_results)}개 "
+            "결과가 준비되었습니다."
         )
+        self.analysis_progress.show_completed(summary)
         self.results.set_model(model)
         self.results.show_result(result)
         self.results.set_result_type("reaction")
@@ -7101,6 +7105,7 @@ class ModelingInterfacePage(QFrame):
         if hasattr(self, "task_results_button"):
             self.task_results_button.setEnabled(True)
         self.workspace_stack.setCurrentIndex(1)
+        self._notify_analysis_completed(self._completed_analysis_label(), summary)
 
     @staticmethod
     def _normalize_full_analysis_options(
@@ -7194,6 +7199,40 @@ class ModelingInterfacePage(QFrame):
         self._analysis_run_thread = thread
         thread.start()
 
+    def _analysis_kind_label(self, kind: AnalysisKind) -> str:
+        """Korean selector label for ``kind`` - the English
+        ``_ANALYSIS_DISPLAY_NAMES`` stay on the status bar where they already
+        live; the completion dialog is UI-facing."""
+        for label, option_kind, _dialog_cls in self._ANALYSIS_METHOD_OPTIONS:
+            if option_kind == kind:
+                return label
+        return self._ANALYSIS_DISPLAY_NAMES.get(kind, "해석")
+
+    def _completed_analysis_label(self) -> str:
+        """Which method the in-canvas solver just finished.
+
+        2D has no method selector (always the header's 정정성 해석). 3D
+        reads the Analysis tab combo so Linear Static and Pushover do not
+        both read as the same generic '해석'."""
+        if self._start_in_3d and hasattr(self, "analysis_method_selector"):
+            _label, kind, _dialog_cls = self._current_analysis_method_option()
+            return self._analysis_kind_label(kind)
+        return "정정성"
+
+    def _notify_analysis_completed(self, analysis_name: str, summary: str) -> None:
+        """Modal 'done' notice for every successful analysis kind.
+
+        The canvas used to only flip to the results tab and update the
+        progress banner, so a long modal/buckling/time-history run could
+        finish with no blocking signal. Failures stay banner/status-bar
+        only - see ``_solve_completed``."""
+        QMessageBox.information(
+            self,
+            "해석 완료",
+            f"{analysis_name} 해석이 완료되었습니다.\n\n{summary}\n\n"
+            "결과 화면에서 확인할 수 있습니다.",
+        )
+
     def _full_analysis_completed(
         self, result: AnalysisResult, model: object, kind: AnalysisKind
     ) -> None:
@@ -7218,6 +7257,7 @@ class ModelingInterfacePage(QFrame):
             if hasattr(self, "task_results_button"):
                 self.task_results_button.setEnabled(True)
             self.workspace_stack.setCurrentIndex(1)
+            self._notify_analysis_completed(self._analysis_kind_label(kind), summary)
             return
         if result.status == AnalysisStatus.PARTIAL and result.buckling_modes:
             detail = " ".join(result.messages) or "요청한 모드 수보다 적은 유효 모드를 찾았습니다."

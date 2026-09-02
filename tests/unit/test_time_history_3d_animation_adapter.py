@@ -59,6 +59,19 @@ def _result(num_steps: int = 4) -> AnalysisResult:
     return AnalysisResult(status=AnalysisStatus.COMPLETED, time_history=steps)
 
 
+def test_animation_keeps_member_type_colors_instead_of_displacement_ramp() -> None:
+    QApplication.instance() or QApplication([])
+    adapter = TimeHistory3DAnimationAdapter()
+    adapter.viewport.show()
+    adapter.set_model(_model())
+    adapter.set_result(_result())
+    adapter.set_step(3)
+
+    bridge = adapter.viewport.bridge
+    assert {node["color"] for node in bridge.nodes} == {"#2877b7"}
+    assert {part["color"] for part in bridge.members} == {"#647789"}
+
+
 def test_adapter_uses_incremental_deformation_mode() -> None:
     QApplication.instance() or QApplication([])
     adapter = TimeHistory3DAnimationAdapter()

@@ -194,7 +194,6 @@ class TimeHistory3DAnimationAdapter:
             return
 
         deformed_points: dict[int, tuple[float, float, float]] = {}
-        magnitudes: dict[int, float] = {}
         for node in state.nodes:
             if node.valid:
                 deformed_points[node.node_tag] = Quick3DSceneBridge._view_coordinates(
@@ -202,35 +201,21 @@ class TimeHistory3DAnimationAdapter:
                     node.deformed_y,
                     node.deformed_z,
                 )
-                step_node = self._result.time_history[state.step_index].node_results.get(
-                    node.node_tag
-                )
-                if step_node is not None:
-                    displacement = step_node.displacement
-                    padded = (*displacement, 0.0, 0.0, 0.0)
-                    ux, uy, uz = padded[0], padded[1], padded[2]
-                    magnitudes[node.node_tag] = math.sqrt(ux * ux + uy * uy + uz * uz)
             else:
                 base = self._viewport.bridge._points.get(node.node_tag)
                 if base is not None:
                     deformed_points[node.node_tag] = base
 
-        peak = max(magnitudes.values(), default=0.0)
-        node_ratios = (
-            {
-                tag: 0.0 if peak <= 1.0e-12 else magnitude / peak
-                for tag, magnitude in magnitudes.items()
-            }
-            if magnitudes
-            else None
-        )
-
+        # Playback is the deformed shape, not a contour. Mapping displacement
+        # onto the blue-yellow-red ramp every step recoloured every member
+        # (and forced InstanceList to rebuild the GPU table on top of the
+        # transform upload). Static result views still use that ramp through
+        # set_result(); animation keeps the modeling member-type colours.
         self._ensure_deformation_mode()
         self._viewport.update_deformed_node_positions(
             deformed_points,
             show_original=self._show_original,
             show_deformed=self._show_deformed,
-            node_ratios=node_ratios,
         )
 
         torsion_state = build_member_torsion_state(

@@ -247,10 +247,12 @@ def test_user_defined_section_without_dimensions_falls_back_to_the_old_square() 
     assert member["width_b"] == pytest.approx(0.05, rel=0.05)  # sqrt(0.0025)
 
 
-def test_truss_member_uses_outer_section_as_one_part() -> None:
-    """A truss has no bending orientation, so an H/I section_shape must not
-    split into web+flanges - but the outer B x H is still the assigned
-    section, not a sqrt(A) square that ignored the drawing scale.
+def test_truss_h_section_renders_as_three_parts_like_a_beam() -> None:
+    """A truss still carries the assigned H/I shape on the canvas.
+
+    It has no bending / geomTransf, so the local-axis gizmo stays off, but
+    folding web+flanges into one B×H box made the same designation look
+    like a rectangle next to a general beam.
     """
     model = StructuralModel(
         ndm=3,
@@ -259,10 +261,33 @@ def test_truss_member_uses_outer_section_as_one_part() -> None:
     )
     bridge = _bridge()
     bridge.set_model(model)
+    parts = bridge.members
+    assert len(parts) == 3
+    by_width_h = sorted(parts, key=lambda part: part["width_h"])
+    flange_a, flange_b, web = by_width_h[0], by_width_h[1], by_width_h[2]
+    assert flange_a["width_h"] == pytest.approx(0.025)
+    assert flange_a["width_b"] == pytest.approx(0.06)
+    assert web["width_b"] == pytest.approx(0.02)
+    assert web["width_h"] == pytest.approx(0.12 - 2 * 0.025)
+
+
+def test_truss_circle_still_renders_as_one_cylinder() -> None:
+    """Only H/I gained the three-part split. A truss Circle stays one cylinder."""
+    model = StructuralModel(
+        ndm=3,
+        nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 4.0, 0.0, 0.0)},
+        elements={
+            1: Element(
+                1, 1, 2, "truss",
+                properties={"section_shape": "Circle", "dim_D": 0.1, "A": 0.00785},
+            )
+        },
+    )
+    bridge = _bridge()
+    bridge.set_model(model)
     assert len(bridge.members) == 1
-    member = bridge.members[0]
-    assert member["width_b"] == pytest.approx(0.06)
-    assert member["width_h"] == pytest.approx(0.12)
+    assert bridge.members[0]["source"] == "#Cylinder"
+    assert bridge.members[0]["width_b"] == pytest.approx(0.1)
 
 
 def test_horizontal_member_at_zero_angle_orients_height_along_the_vertical_screen_axis() -> None:

@@ -1647,8 +1647,6 @@ class Quick3DSceneBridge(QObject):
         self, element: Element, properties: dict[str, float | str] | None = None
     ) -> int:
         props = properties if properties is not None else element.properties
-        if element.element_type.lower() in _TRUSS_ELEMENT_TYPES:
-            return 1
         if self._h_section_has_three_parts(props):
             return 3
         return 1
@@ -2607,14 +2605,15 @@ class Quick3DSceneBridge(QObject):
             0.5 * (start[2] + end[2]),
         )
 
+        visual = self._section_visual_dimensions(element.properties, length)
+        h_section = visual["shape"] == "H/I Section" and visual.get("web_height", 0.0) > 0.0
         is_truss = element.element_type.lower() in _TRUSS_ELEMENT_TYPES
-        if is_truss:
-            # A truss carries no bending orientation (matches
-            # _build_local_axis_preview's own truss exclusion), so it is
-            # always one part - never an H-section split - but the outer
-            # B/H/D still come from the assigned section rather than a
-            # length-clamped sqrt(A) square that ignored the drawing scale.
-            visual = self._section_visual_dimensions(element.properties, length)
+        if is_truss and not h_section:
+            # Circle/Pipe stay a cylinder; Rectangle/Box/… a single envelope
+            # box. The local-axis gizmo is still off (a truss has no
+            # geomTransf), but an H/I assignment is still an H-shape on the
+            # canvas - folding it to B×H made a truss look like a different
+            # section than the same designation on a general beam.
             truss_source = "#Cylinder" if visual["shape"] in {"Circle", "Pipe"} else "#Cube"
             return [
                 self._box_part(
@@ -2625,10 +2624,9 @@ class Quick3DSceneBridge(QObject):
                 )
             ]
 
-        visual = self._section_visual_dimensions(element.properties, length)
         scalar, qx, qy, qz = self._member_frame_rotation(direction, element.local_axis_angle)
 
-        if visual["shape"] == "H/I Section" and visual.get("web_height", 0.0) > 0.0:
+        if h_section:
             flange_offset = visual["flange_offset"]
             local_z_world = self._rotate_by_quaternion((0.0, 0.0, 1.0), scalar, qx, qy, qz)
             parts = [

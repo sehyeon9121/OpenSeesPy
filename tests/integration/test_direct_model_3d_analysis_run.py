@@ -219,8 +219,9 @@ def test_validate_failure_without_starting_thread() -> None:
     assert "모드" in page.determinacy_status.text()
 
 
+@patch("openframe.features.model.presentation.modeling_interface_page.QMessageBox.information")
 @patch("openframe.features.model.presentation.modeling_interface_page.export_opensees_script")
-def test_full_analysis_completion_shows_result(export_mock: MagicMock) -> None:
+def test_full_analysis_completion_shows_result(export_mock: MagicMock, information: MagicMock) -> None:
     page = _page()
     page._show_category("analysis")
     export_mock.return_value = "# ok"
@@ -231,6 +232,8 @@ def test_full_analysis_completion_shows_result(export_mock: MagicMock) -> None:
     page._full_analysis_completed(completed, model, AnalysisKind.MODAL)
 
     page.results.show_result.assert_called_once_with(completed)
+    information.assert_called_once()
+    assert information.call_args.args[1] == "해석 완료"
 
 
 def test_exported_3d_modal_e2e_via_run_analysis_service(tmp_path: Path) -> None:

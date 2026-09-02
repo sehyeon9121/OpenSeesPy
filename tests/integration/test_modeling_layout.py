@@ -339,6 +339,14 @@ def test_element_tab_applied_section_is_picked_up_by_the_next_drawn_member() -> 
     assert member.properties["A"] == pytest.approx(0.15)
 
 
+def _select_database_h_section(panel) -> None:
+    panel.shape_combo.setCurrentText("H/I Section")
+    panel.source_database.setChecked(True)
+    index = panel.designation_combo.findText("H-300x300x10x15")
+    assert index >= 0
+    panel.designation_combo.setCurrentIndex(index)
+
+
 def test_3d_element_drawing_is_blocked_until_material_and_section_are_applied() -> None:
     page = _page(start_in_3d=True)
     first = page.canvas._add_node_at((0.0, 0.0, 0.0))
@@ -382,6 +390,26 @@ def test_2d_element_can_optionally_apply_saved_properties_to_new_members() -> No
     assert member is not None
     assert page.canvas.elements[member].properties["E"] == pytest.approx(210_000.0)
     assert page.canvas.elements[member].properties["A"] == pytest.approx(0.1)
+
+
+def test_2d_database_h_section_becomes_the_drawing_pen() -> None:
+    """Choosing a Database H-beam on the 2D Element panel must stamp
+    dim_H/B/tw/tf onto the next drawn member. `_load_db_section` used to
+    skip `edited`, so the pen stayed empty (or on the previous Rectangle)
+    while the preview already showed an I-shape."""
+    page = _page(start_in_3d=False)
+    _select_database_h_section(page.element_current_property_panel)
+    assert page._active_element_kwargs is not None
+    assert page._active_element_kwargs["shape"] == "H/I Section"
+    assert page._active_element_kwargs["dimensions"]["tw"] == pytest.approx(0.01)
+
+    page.start_element_drawing_button.click()
+    page.canvas.place_point(0.0, 0.0)
+    page.canvas.place_point(4.0, 0.0)
+    member = next(iter(page.canvas.elements.values()))
+    assert member.properties["section_shape"] == "H/I Section"
+    assert member.properties["dim_tw"] == pytest.approx(0.01)
+    assert member.properties["dim_tf"] == pytest.approx(0.015)
 
 
 def test_2d_properties_make_direct_apply_primary_and_save_a_pair_in_one_click() -> None:
