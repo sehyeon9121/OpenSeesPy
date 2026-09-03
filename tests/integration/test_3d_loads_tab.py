@@ -321,19 +321,19 @@ def test_properties_style_selector_keeps_load_command_hierarchy_in_each_label() 
     ]
 
     assert commands == [
-        ("load_cases", "[정의] 하중케이스"),
-        ("self_weight", "[직접 하중] 자중"),
-        ("nodal", "[직접 하중] 절점하중"),
-        ("member_point", "[직접 하중] 부재 집중하중"),
-        ("member_uniform", "[직접 하중] 부재 균등분포하중"),
-        ("member_linear", "[직접 하중] 부재 선형분포하중"),
-        ("member_partial", "[직접 하중] 부재 부분분포하중"),
-        ("member_moment", "[직접 하중] 부재 집중모멘트"),
-        ("floor", "[직접 하중] 바닥하중 할당"),
-        ("wind", "[자동 생성] 풍하중"),
-        ("seismic", "[자동 생성] 정적 지진하중"),
-        ("load_combinations", "[하중 조합] 하중조합"),
-        ("make_combination", "[하중 조합] 조합으로 케이스 생성"),
+        ("load_cases", "[Definitions] Load Cases"),
+        ("self_weight", "[Direct Loads] Self-Weight"),
+        ("nodal", "[Direct Loads] Nodal Load"),
+        ("member_point", "[Direct Loads] Member Point Load"),
+        ("member_uniform", "[Direct Loads] Uniform Member Load"),
+        ("member_linear", "[Direct Loads] Linearly Varying Member Load"),
+        ("member_partial", "[Direct Loads] Partial-Span Member Load"),
+        ("member_moment", "[Direct Loads] Member Point Moment"),
+        ("floor", "[Direct Loads] Assign Floor Load"),
+        ("wind", "[Load Generators] Wind Load"),
+        ("seismic", "[Load Generators] Static Seismic Load"),
+        ("load_combinations", "[Load Combinations] Load Combinations"),
+        ("make_combination", "[Load Combinations] Create Case from Combination"),
     ]
 
 

@@ -3028,38 +3028,38 @@ class ModelingInterfacePage(QFrame):
     #: Prefixes make the hierarchy explicit without spending two full rows
     #: on four category buttons before the actual load type can be chosen.
     _LOAD_CATEGORY_OPTIONS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("definitions", "정의"),
-        ("direct", "직접 하중"),
-        ("generators", "자동 생성"),
-        ("combinations", "하중 조합"),
+        ("definitions", "Definitions"),
+        ("direct", "Direct Loads"),
+        ("generators", "Load Generators"),
+        ("combinations", "Load Combinations"),
     )
 
     _LOAD_COMMAND_OPTIONS: ClassVar[
         tuple[tuple[str, tuple[tuple[str, str], ...]], ...]
     ] = (
-        ("definitions", (("load_cases", "하중케이스"),)),
+        ("definitions", (("load_cases", "Load Cases"),)),
         (
             "direct",
             (
-                ("self_weight", "자중"),
-                ("nodal", "절점하중"),
-                ("member_point", "부재 집중하중"),
-                ("member_uniform", "부재 균등분포하중"),
-                ("member_linear", "부재 선형분포하중"),
-                ("member_partial", "부재 부분분포하중"),
-                ("member_moment", "부재 집중모멘트"),
-                ("floor", "바닥하중 할당"),
+                ("self_weight", "Self-Weight"),
+                ("nodal", "Nodal Load"),
+                ("member_point", "Member Point Load"),
+                ("member_uniform", "Uniform Member Load"),
+                ("member_linear", "Linearly Varying Member Load"),
+                ("member_partial", "Partial-Span Member Load"),
+                ("member_moment", "Member Point Moment"),
+                ("floor", "Assign Floor Load"),
             ),
         ),
         (
             "generators",
-            (("wind", "풍하중"), ("seismic", "정적 지진하중")),
+            (("wind", "Wind Load"), ("seismic", "Static Seismic Load")),
         ),
         (
             "combinations",
             (
-                ("load_combinations", "하중조합"),
-                ("make_combination", "조합으로 케이스 생성"),
+                ("load_combinations", "Load Combinations"),
+                ("make_combination", "Create Case from Combination"),
             ),
         ),
     )
@@ -7457,17 +7457,23 @@ class ModelingInterfacePage(QFrame):
         return
 
     def _on_3d_node_picked(self, tag: int, _screen_x: int, _screen_y: int) -> None:
-        """A click on an existing node in the 3D view: continue the chain to it
-        while drawing, or just select it otherwise — matching what clicking a
-        node on the 2D plan does in each of those tools."""
+        """Use pairs of node clicks to draw independent members in 3D.
+
+        The draw tool stays active after a member is completed, but its start
+        node is cleared.  The next click therefore starts a new member instead
+        of silently continuing from the previous member's end node.
+        """
         if self.canvas.mode == "draw":
             if self._active_element_kwargs is None:
                 self.canvas.end_chain()
                 self._activate_draw_tool()
                 return
+            start_tag = self.canvas.chain_last_node
             before = set(self.canvas.elements)
             self.canvas.continue_chain_to_node(tag)
             self._apply_active_element_to_new_members(set(self.canvas.elements) - before)
+            if start_tag is not None and start_tag != tag:
+                self.canvas.end_chain()
         elif self.canvas.mode == "floor_pick":
             # Clicking back on the boundary's own first node closes the loop
             # (MIDAS-style) - requested: "다시 시작점 노드로 오면 자동으로
@@ -7713,11 +7719,15 @@ class ModelingInterfacePage(QFrame):
             self.element_subcategory_combo.setCurrentIndex(index)
             self.element_subcategory_combo.blockSignals(False)
             self._active_element_subcategory = "element_picker"
-        self._set_mode(
-            "draw",
-            "그리기 · 연속 클릭으로 노드와 부재를 함께 만듭니다. "
-            "아래 입력칸에 길이·각도를 쳐도 됩니다. Esc로 그리기를 종료합니다.",
+        description = (
+            "그리기 · 시작 노드와 끝 노드를 차례로 클릭합니다. "
+            "부재가 완성되면 다음 클릭은 새 부재의 시작 노드가 됩니다. "
+            "Esc로 그리기를 종료합니다."
+            if self.canvas.ndm == 3
+            else "그리기 · 연속 클릭으로 노드와 부재를 함께 만듭니다. "
+            "아래 입력칸에 길이·각도를 쳐도 됩니다. Esc로 그리기를 종료합니다."
         )
+        self._set_mode("draw", description)
         self.draw_entry.setFocus()
         self._sync_property_panel()
         self._refresh_draw_readout()

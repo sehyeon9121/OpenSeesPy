@@ -1,18 +1,19 @@
 """Domain-level topology precheck on ``StructuralModel`` — not a stability solver.
 
-OpenSees assembly (``MaterialFreeStaticsSolver._build``, script export) rewrites
-the user's model before K is formed: 3D releases become dummy nodes + zeroLength,
-inclined/spring supports get auxiliary ground nodes, and unused joint rotations
-are ``fix``ed so the matrix is not singular. A later stiffness-matrix diagnostic
-therefore sees a *patched* model and can miss the original modeling mistake.
-This module inspects the user-facing ``StructuralModel`` only, before that
-rewrite. It reports obvious topology/geometry problems. It does **not** decide
-whether the structure is a mechanism — that is the matrix diagnostic's job.
+OpenSees assembly rewrites the user's model before K is formed (dummy hinge
+nodes, auxiliary ground nodes, orphan-rotation pins). A later stiffness-matrix
+diagnostic therefore sees a *patched* model and can miss the original modeling
+mistake. This module inspects the user-facing ``StructuralModel`` only. It
+reports obvious topology/geometry problems. It does **not** decide whether the
+structure is a mechanism — that is the matrix diagnostic's job.
+
+Auxiliary OpenSees nodes never live on ``StructuralModel.nodes``; they are
+minted only inside ``_build`` / script export. This layer therefore does not
+know, and must not encode, solver-internal tag offsets.
 
 Deliberately does not import OpenSeesPy or ``features.analysis.statics.solver``
-(that module pulls in OpenSees at import time). Truss-vs-frame detection and
-dummy-tag ranges are duplicated here with comments pointing at the solver so
-the two can be compared, not so they stay coupled at runtime.
+(that module pulls in OpenSees at import time). Truss-vs-frame detection is
+duplicated from ``_element_family`` so this module stays off that import.
 
 What the solvers currently do (so this precheck does not fight them):
 
@@ -22,20 +23,14 @@ What the solvers currently do (so this precheck does not fight them):
   3D truss → 3, so unused rotations never enter that K. Mixed frame+truss
   keeps the full frame ndf and pins orphan rotations
   (``_mixed_orphan_rotation_nodes``).
-- 3D frame end releases do not use ``equalDOF``. They duplicate the joint
-  (tag ``8_000_000 + element*10 + end``) and tie it with an oriented
-  zeroLength that is rigid in local 1–4 and free in bending 5–6. If every
-  end at a joint is released, the original joint's Rx/Ry/Rz are ``fix``ed
-  (``_orphan_joint_nodes_for_rotation_pin``) — the physical hinge lives on
-  the dummy nodes. Canvas node-hinges already keep one member rigid at an
-  unrestrained joint (``_apply_hinge_releases``), so a normal hinge frame
-  never hits that pin.
-- Inclined supports and elastic springs mint ground nodes at ``9_000_000`` /
-  ``9_500_000`` plus zeroLength. Trapezoid load discretization uses
-  ``7_000_000``. None of those tags exist on ``StructuralModel.nodes``.
+- 3D frame end releases do not use ``equalDOF``. They duplicate the joint and
+  tie it with an oriented zeroLength. If every end at a joint is released, the
+  original joint's rotations are ``fix``ed
+  (``_orphan_joint_nodes_for_rotation_pin``). Canvas node-hinges already keep
+  one member rigid at an unrestrained joint, so a normal hinge frame never
+  hits that pin.
 - ``rigidDiaphragm`` is a 3D Story Manager object on the domain model.
-  Studio does not emit ``equalDOF`` for drawn models (imported scripts may
-  still contain it, but it is not a ``StructuralModel`` field).
+  Studio does not emit ``equalDOF`` for drawn models.
 - ``check_determinacy`` is a scalar m+r−j count, not a topology walk.
 """
 
@@ -52,14 +47,6 @@ from openframe.core.domain.model import BoundaryCondition, Element, Node, Struct
 # axes; treating it as "zero length" here matches that existing policy rather
 # than inventing a second tolerance.
 _ZERO_LENGTH_ABS_TOL = 1.0e-12
-
-# Solver-internal node tags start at the trapezoid-subnode offset in
-# ``features.analysis.statics.solver`` (7_000_000), then hinge dummies
-# (8_000_000), plastic-hinge dummies (8_600_000), inclined-support grounds
-# (9_000_000) and spring grounds (9_500_000). They are never stored on a
-# canvas ``StructuralModel``, but a test (or a corrupted payload) might put
-# one in ``nodes`` — those must not be reported as user modeling errors.
-_AUXILIARY_NODE_TAG_FLOOR = 7_000_000
 
 _TRUSS_ROTATION_DOFS = ("RX", "RY", "RZ")
 
@@ -91,31 +78,23 @@ class StructuralPrecheckService:
     """Walk a ``StructuralModel`` and return obvious topology issues."""
 
     def check(self, model: StructuralModel) -> tuple[StructuralPrecheckIssue, ...]:
-        user_nodes = {
-            tag: node
-            for tag, node in model.nodes.items()
-            if not _is_auxiliary_node_tag(tag)
-        }
-        if not user_nodes:
+        nodes = dict(model.nodes)
+        if not nodes:
             return ()
 
         issues: list[StructuralPrecheckIssue] = []
-        adjacency, incident = _element_adjacency(model, user_nodes)
+        adjacency, incident = _element_adjacency(model, nodes)
 
-        issues.extend(_isolated_node_issues(user_nodes, incident))
+        issues.extend(_isolated_node_issues(nodes, incident))
         issues.extend(_unsupported_component_issues(model, adjacency, incident))
-        issues.extend(_zero_length_element_issues(model, user_nodes))
-        issues.extend(_truss_rotational_dof_issues(model, user_nodes, incident))
-        issues.extend(_orphan_release_rotation_issues(model, user_nodes, incident))
+        issues.extend(_zero_length_element_issues(model, nodes))
+        issues.extend(_truss_rotational_dof_issues(model, nodes, incident))
+        issues.extend(_orphan_release_rotation_issues(model, nodes, incident))
         return tuple(issues)
 
 
 def run_structural_precheck(model: StructuralModel) -> tuple[StructuralPrecheckIssue, ...]:
     return StructuralPrecheckService().check(model)
-
-
-def _is_auxiliary_node_tag(tag: int) -> bool:
-    return tag >= _AUXILIARY_NODE_TAG_FLOOR
 
 
 def _is_truss(element: Element) -> bool:
@@ -134,7 +113,7 @@ def _member_length(node_i: Node, node_j: Node, ndm: int) -> float:
 
 def _element_adjacency(
     model: StructuralModel,
-    user_nodes: dict[int, Node],
+    nodes: dict[int, Node],
 ) -> tuple[dict[int, set[int]], dict[int, list[Element]]]:
     """Element-graph neighbours plus the elements incident on each user node.
 
@@ -143,22 +122,22 @@ def _element_adjacency(
     *is* added as a graph edge when grouping floating components — two frames
     tied at a floor are one structural group for this coarse support check.
     """
-    adjacency: dict[int, set[int]] = {tag: set() for tag in user_nodes}
-    incident: dict[int, list[Element]] = {tag: [] for tag in user_nodes}
+    adjacency: dict[int, set[int]] = {tag: set() for tag in nodes}
+    incident: dict[int, list[Element]] = {tag: [] for tag in nodes}
     for element in model.elements.values():
         i_tag, j_tag = element.node_i, element.node_j
-        if i_tag in user_nodes:
+        if i_tag in nodes:
             incident[i_tag].append(element)
-        if j_tag in user_nodes:
+        if j_tag in nodes:
             incident[j_tag].append(element)
-        if i_tag in user_nodes and j_tag in user_nodes and i_tag != j_tag:
+        if i_tag in nodes and j_tag in nodes and i_tag != j_tag:
             adjacency[i_tag].add(j_tag)
             adjacency[j_tag].add(i_tag)
     for diaphragm in model.rigid_diaphragms:
         tied = [
             tag
             for tag in (diaphragm.master_tag, *diaphragm.slave_tags)
-            if tag in user_nodes
+            if tag in nodes
         ]
         for left in tied:
             for right in tied:
@@ -210,11 +189,11 @@ def _format_span(start: int, end: int) -> str:
 
 
 def _isolated_node_issues(
-    user_nodes: dict[int, Node],
+    nodes: dict[int, Node],
     incident: dict[int, list[Element]],
 ) -> list[StructuralPrecheckIssue]:
     issues: list[StructuralPrecheckIssue] = []
-    for tag in sorted(user_nodes):
+    for tag in sorted(nodes):
         if incident[tag]:
             continue
         issues.append(
@@ -277,12 +256,12 @@ def _unsupported_component_issues(
 
 def _zero_length_element_issues(
     model: StructuralModel,
-    user_nodes: dict[int, Node],
+    nodes: dict[int, Node],
 ) -> list[StructuralPrecheckIssue]:
     issues: list[StructuralPrecheckIssue] = []
     for element in sorted(model.elements.values(), key=lambda item: item.tag):
-        node_i = user_nodes.get(element.node_i) or model.nodes.get(element.node_i)
-        node_j = user_nodes.get(element.node_j) or model.nodes.get(element.node_j)
+        node_i = nodes.get(element.node_i)
+        node_j = nodes.get(element.node_j)
         if node_i is None or node_j is None:
             continue
         if element.node_i == element.node_j or math.isclose(
@@ -323,22 +302,27 @@ def _has_rotational_restraint(model: StructuralModel, tag: int) -> bool:
 
 def _truss_rotational_dof_issues(
     model: StructuralModel,
-    user_nodes: dict[int, Node],
+    nodes: dict[int, Node],
     incident: dict[int, list[Element]],
 ) -> list[StructuralPrecheckIssue]:
-    """3D nodes touched only by truss-family members, with unused rotations.
+    """Unused rotational DOFs at truss-only nodes of a *mixed* 3D model.
 
-    Not an ERROR. A space truss is a valid structure: the in-process solver
-    drops rotational ndf entirely for a pure truss, and a mixed model pins
-    those rotations (``_mixed_orphan_rotation_nodes``). Canvas 3D models
-    still declare ``ndf=6``, so the unused rotations are real on the domain
-    model and on exported scripts — INFO, not 'this truss is unstable'.
-    Skipped when ``ndf < 6`` because those rotations do not exist.
+    A pure 3D truss is silent: production ``_build`` assembles it with ndf=3,
+    so those rotations never exist in K. Emitting even INFO would look like a
+    modeling problem (and PRE-CHECK treats any issue as a case '경고').
+
+    Mixed frame+truss keeps ndf=6 and pins truss-only rotations
+    (``_mixed_orphan_rotation_nodes``). That is solver policy, not an error —
+    INFO here, and ``run_precheck`` keeps it off the default chips.
     """
-    if model.ndm != 3 or model.ndf < 6:
+    if model.ndm != 3 or not model.elements:
+        return []
+    if all(_is_truss(element) for element in model.elements.values()):
+        return []
+    if model.ndf < 6:
         return []
     tagged: list[int] = []
-    for tag in sorted(user_nodes):
+    for tag in sorted(nodes):
         elements = incident[tag]
         if not elements or not all(_is_truss(element) for element in elements):
             continue
@@ -354,8 +338,8 @@ def _truss_rotational_dof_issues(
             StructuralPrecheckSeverity.INFO,
             "truss_rotational_dof",
             "트러스 회전 자유도",
-            f"절점 {listed}은(는) 트러스 부재에만 연결되어 있어 회전 강성이 없습니다. "
-            "3D 트러스의 회전 자유도는 해석 시 구속됩니다.",
+            f"절점 {listed}은(는) 트러스 부재에만 연결되어 있습니다. "
+            "혼합 모델에서 해당 회전 자유도는 해석 시 사용되지 않습니다.",
             node_tags=tags,
             dof=",".join(_TRUSS_ROTATION_DOFS),
         )
@@ -364,7 +348,7 @@ def _truss_rotational_dof_issues(
 
 def _orphan_release_rotation_issues(
     model: StructuralModel,
-    user_nodes: dict[int, Node],
+    nodes: dict[int, Node],
     incident: dict[int, list[Element]],
 ) -> list[StructuralPrecheckIssue]:
     """Joints where every *frame* end is released and nothing anchors rotation.
@@ -379,7 +363,7 @@ def _orphan_release_rotation_issues(
     """
     tagged: list[int] = []
     rotation_indices = (2,) if model.ndm == 2 else (4, 5)
-    for tag in sorted(user_nodes):
+    for tag in sorted(nodes):
         elements = incident[tag]
         if not elements:
             continue

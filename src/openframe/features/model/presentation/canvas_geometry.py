@@ -5,6 +5,7 @@ standalone class.
 """
 
 import math
+from dataclasses import replace
 
 from openframe.core.domain import BoundaryCondition, Element, NodalLoad, Node, UniformElementLoad
 from openframe.features.model.presentation.canvas_model_build import _lerp
@@ -173,6 +174,7 @@ class _GeometryMixin:
         node_j: int,
         *,
         edge_index: set[frozenset[int]] | None = None,
+        template: Element | None = None,
     ) -> int | None:
         """``edge_index`` is an optional cache of every existing member's
         ``frozenset({node_i, node_j})``, built once and reused across many
@@ -180,6 +182,11 @@ class _GeometryMixin:
         duplicate-member check below is an O(1) set lookup instead of an
         O(existing elements) scan repeated once per new member. Omitted
         (the default) everywhere else; behavior is unchanged there.
+
+        ``template`` lets transform operations install the copied member's
+        structural identity before intersection splitting runs. Applying it
+        afterward would overwrite the first split piece with the unsplit
+        endpoints and leave overlapping geometry at the new joint.
         """
         if node_i == node_j:
             return None
@@ -193,9 +200,18 @@ class _GeometryMixin:
             return None
         self._record_history()
         tag = max(self.elements, default=0) + 1
-        self.elements[tag] = Element(
-            tag, node_i, node_j, self.element_family, {"behavior": self.element_behavior}
-        )
+        if template is None:
+            self.elements[tag] = Element(
+                tag, node_i, node_j, self.element_family, {"behavior": self.element_behavior}
+            )
+        else:
+            self.elements[tag] = replace(
+                template,
+                tag=tag,
+                node_i=node_i,
+                node_j=node_j,
+                properties=dict(template.properties),
+            )
         if edge_index is not None:
             edge_index.add(pair)
         # Only the *new* member's own line can newly qualify a pre-existing
@@ -221,14 +237,13 @@ class _GeometryMixin:
             position = self._point_parameter(candidate_node, start, end)
             if position is not None:
                 self.embedded_nodes[candidate_tag] = (tag, position)
-        if self.ndm == 2:
-            self._split_crossings_for(tag)
+        self._split_crossings_for(tag)
         self._changed()
         return tag
 
     def _split_crossings_for(self, new_tag: int) -> None:
-        """Split ``new_tag`` and any existing 2D member it crosses in free
-        space (no shared endpoint) at their true geometric intersection —
+        """Split ``new_tag`` and any existing member it crosses in free
+        space (no shared endpoint) at their true 3D geometric intersection —
         two members drawn to cross, like X-bracing, are meant to transfer
         force at that point, not silently pass through each other.
 
@@ -236,9 +251,9 @@ class _GeometryMixin:
         segments' endpoints); a member merely touching an existing node is
         already handled by the ``_attach_node_to_member`` sweep above, and
         collinear/parallel members have no single crossing point to speak
-        of. 2D-only (gated by the caller) because in 3D two members that
-        look like they cross in one work plane are almost always skew
-        lines at different depths, not a real joint.
+        of. In 3D, the closest points on both segments must coincide within
+        the same coordinate tolerance used for duplicate nodes, so members
+        that overlap only in the current screen projection remain separate.
         """
         current = new_tag
         while True:
@@ -252,8 +267,12 @@ class _GeometryMixin:
                 other = self.elements[other_tag]
                 if {other.node_i, other.node_j} & {element.node_i, element.node_j}:
                     continue
+                c = self.nodes[other.node_i]
+                d = self.nodes[other.node_j]
+                if not self._segment_bounds_overlap(a, b, c, d):
+                    continue
                 hit = self._segment_crossing(
-                    a, b, self.nodes[other.node_i], self.nodes[other.node_j]
+                    a, b, c, d
                 )
                 if hit is None:
                     continue
@@ -267,29 +286,77 @@ class _GeometryMixin:
             if joint is None:
                 joint = max(self.nodes, default=0) + 1
                 self.nodes[joint] = Node(joint, *point)
+            self.embedded_nodes.pop(joint, None)
             _, current = self._split_element_at(current, t_new, joint)
             self._split_element_at(other_tag, t_other, joint)
+
+    @staticmethod
+    def _segment_bounds_overlap(a: Node, b: Node, c: Node, d: Node) -> bool:
+        """Cheap broad-phase rejection before the true 3D intersection test."""
+        tolerance = _COORD_TOLERANCE
+        return not (
+            max(a.x, b.x) + tolerance < min(c.x, d.x)
+            or max(c.x, d.x) + tolerance < min(a.x, b.x)
+            or max(a.y, b.y) + tolerance < min(c.y, d.y)
+            or max(c.y, d.y) + tolerance < min(a.y, b.y)
+            or max(a.z, b.z) + tolerance < min(c.z, d.z)
+            or max(c.z, d.z) + tolerance < min(a.z, b.z)
+        )
 
     @staticmethod
     def _segment_crossing(
         a: Node, b: Node, c: Node, d: Node
     ) -> tuple[float, float, tuple[float, float, float]] | None:
-        """Parametric intersection of segments ``a``-``b`` and ``c``-``d`` in
-        the x/y plane, or ``None`` if they are parallel/collinear or cross
-        outside both segments' open interior (0 < t < 1 strictly).
-        """
-        rx, ry = b.x - a.x, b.y - a.y
-        sx, sy = d.x - c.x, d.y - c.y
-        denom = rx * sy - ry * sx
-        if abs(denom) < 1.0e-12:
+        """Return one proper interior intersection of two true 3D segments."""
+        first = (b.x - a.x, b.y - a.y, b.z - a.z)
+        second = (d.x - c.x, d.y - c.y, d.z - c.z)
+        first_length_squared = sum(component * component for component in first)
+        second_length_squared = sum(component * component for component in second)
+        if first_length_squared <= 1.0e-18 or second_length_squared <= 1.0e-18:
             return None
-        qx, qy = c.x - a.x, c.y - a.y
-        t = (qx * sy - qy * sx) / denom
-        u = (qx * ry - qy * rx) / denom
+
+        def cross(
+            left: tuple[float, float, float], right: tuple[float, float, float]
+        ) -> tuple[float, float, float]:
+            return (
+                left[1] * right[2] - left[2] * right[1],
+                left[2] * right[0] - left[0] * right[2],
+                left[0] * right[1] - left[1] * right[0],
+            )
+
+        def dot(left: tuple[float, float, float], right: tuple[float, float, float]) -> float:
+            return sum(left[index] * right[index] for index in range(3))
+
+        normal = cross(first, second)
+        denominator = dot(normal, normal)
+        if denominator <= 1.0e-24 * first_length_squared * second_length_squared:
+            return None
+
+        offset = (c.x - a.x, c.y - a.y, c.z - a.z)
+        t = dot(cross(offset, second), normal) / denominator
+        u = dot(cross(offset, first), normal) / denominator
         eps = 1.0e-6
         if not (eps < t < 1.0 - eps and eps < u < 1.0 - eps):
             return None
-        return t, u, (a.x + t * rx, a.y + t * ry, 0.0)
+
+        first_point = tuple(
+            start + t * delta for start, delta in zip((a.x, a.y, a.z), first, strict=True)
+        )
+        second_point = tuple(
+            start + u * delta for start, delta in zip((c.x, c.y, c.z), second, strict=True)
+        )
+        coordinate_scale = max(
+            1.0,
+            *(abs(value) for node in (a, b, c, d) for value in (node.x, node.y, node.z)),
+        )
+        tolerance = max(_COORD_TOLERANCE, 16.0 * math.ulp(coordinate_scale))
+        if math.dist(first_point, second_point) > tolerance:
+            return None
+
+        point = tuple(
+            (first_point[index] + second_point[index]) / 2.0 for index in range(3)
+        )
+        return t, u, point
 
     def add_arch(
         self, start_x: float, start_y: float, span: float, rise: float, segments: int

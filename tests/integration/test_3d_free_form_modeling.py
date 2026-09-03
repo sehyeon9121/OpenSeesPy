@@ -206,6 +206,129 @@ def test_a_node_dropped_mid_height_on_a_column_splits_it_in_true_3d() -> None:
     assert spans == {(base, mid), (mid, top)}
 
 
+def test_crossing_3d_braces_create_one_exact_shared_truss_joint() -> None:
+    """True 3D intersections split both braces; projection overlap is not enough."""
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    canvas.element_family = "truss"
+    canvas.element_behavior = "truss"
+    bottom_left = canvas._add_node_at((0.0, 0.0, 3.0))
+    bottom_right = canvas._add_node_at((4.0, 0.0, 3.0))
+    top_left = canvas._add_node_at((0.0, 0.0, 7.0))
+    top_right = canvas._add_node_at((4.0, 0.0, 7.0))
+
+    canvas.add_member(bottom_left, top_right)
+    canvas.add_member(top_left, bottom_right)
+
+    assert len(canvas.nodes) == 5
+    assert len(canvas.elements) == 4
+    crossing = next(
+        tag
+        for tag in canvas.nodes
+        if tag not in {bottom_left, bottom_right, top_left, top_right}
+    )
+    joint = canvas.nodes[crossing]
+    assert (joint.x, joint.y, joint.z) == pytest.approx((2.0, 0.0, 5.0))
+    assert all(element.element_type == "truss" for element in canvas.elements.values())
+    assert all(
+        crossing in (element.node_i, element.node_j)
+        for element in canvas.elements.values()
+    )
+
+    model = canvas.build_model()
+    assert len(model.elements) == 4
+    assert all(
+        crossing in (element.node_i, element.node_j) for element in model.elements.values()
+    )
+
+
+def test_3d_braces_that_only_overlap_in_projection_do_not_get_a_joint() -> None:
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    lower_left = canvas._add_node_at((0.0, 0.0, 3.0))
+    lower_right = canvas._add_node_at((4.0, 0.0, 7.0))
+    raised_left = canvas._add_node_at((0.0, 0.25, 7.0))
+    raised_right = canvas._add_node_at((4.0, 0.25, 3.0))
+
+    canvas.add_member(lower_left, lower_right)
+    canvas.add_member(raised_left, raised_right)
+
+    assert len(canvas.nodes) == 4
+    assert len(canvas.elements) == 2
+
+
+def test_3d_crossing_search_rejects_disjoint_members_before_exact_math(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    first_a = canvas._add_node_at((0.0, 0.0, 0.0))
+    first_b = canvas._add_node_at((1.0, 0.0, 0.0))
+    canvas.add_member(first_a, first_b)
+    second_a = canvas._add_node_at((100.0, 100.0, 100.0))
+    second_b = canvas._add_node_at((101.0, 100.0, 100.0))
+    exact_checks = 0
+    exact_intersection = canvas._segment_crossing
+
+    def counted_exact_intersection(*args):
+        nonlocal exact_checks
+        exact_checks += 1
+        return exact_intersection(*args)
+
+    monkeypatch.setattr(canvas, "_segment_crossing", counted_exact_intersection)
+    canvas.add_member(second_a, second_b)
+
+    assert exact_checks == 0
+    assert len(canvas.elements) == 2
+
+
+def test_copy_element_keeps_both_split_pieces_at_a_new_crossing() -> None:
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    horizontal_left = canvas._add_node_at((0.0, 0.0, 0.0))
+    horizontal_right = canvas._add_node_at((4.0, 0.0, 0.0))
+    canvas.add_member(horizontal_left, horizontal_right)
+    canvas.element_family = "truss"
+    canvas.element_behavior = "truss"
+    source_bottom = canvas._add_node_at((2.0, 2.0, 0.0))
+    source_top = canvas._add_node_at((2.0, 4.0, 0.0))
+    source = canvas.add_member(source_bottom, source_top)
+    canvas.selected_elements = {source}
+
+    canvas.transform_selected_nodes("copy", 0.0, -3.0)
+
+    copied_bottom = next(
+        tag
+        for tag, node in canvas.nodes.items()
+        if (node.x, node.y, node.z) == pytest.approx((2.0, -1.0, 0.0))
+    )
+    copied_top = next(
+        tag
+        for tag, node in canvas.nodes.items()
+        if (node.x, node.y, node.z) == pytest.approx((2.0, 1.0, 0.0))
+    )
+    joint = next(
+        tag
+        for tag, node in canvas.nodes.items()
+        if (node.x, node.y, node.z) == pytest.approx((2.0, 0.0, 0.0))
+    )
+    copied_pieces = [
+        element
+        for element in canvas.elements.values()
+        if copied_bottom in (element.node_i, element.node_j)
+        or copied_top in (element.node_i, element.node_j)
+    ]
+
+    assert len(canvas.elements) == 5
+    assert len(copied_pieces) == 2
+    assert all(joint in (element.node_i, element.node_j) for element in copied_pieces)
+    assert all(element.element_type == "truss" for element in copied_pieces)
+    assert not any(
+        {element.node_i, element.node_j} == {copied_bottom, copied_top}
+        for element in canvas.elements.values()
+    )
+
+
 def test_build_model_reports_3d_dimensionality_once_in_3d_mode() -> None:
     canvas = _canvas()
     canvas.place_point(0.0, 0.0)
@@ -418,6 +541,28 @@ def test_clicking_two_existing_nodes_in_3d_still_connects_them_while_drawing() -
     assert len(page.canvas.elements) == 1
     element = next(iter(page.canvas.elements.values()))
     assert {element.node_i, element.node_j} == {first, second}
+    assert page.canvas.mode == "draw"
+    assert page.canvas.chain_last_node is None
+
+
+def test_3d_draw_tool_accepts_repeated_independent_node_pairs() -> None:
+    page = _page(start_in_3d=True)
+    first = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    second = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    third = page.canvas._add_node_at((0.0, 0.0, 3.0))
+    fourth = page.canvas._add_node_at((4.0, 0.0, 3.0))
+    _enable_element_drawing(page)
+
+    for tag in (first, second, third, fourth):
+        page._on_3d_node_picked(tag, 0, 0)
+
+    endpoints = {
+        frozenset((element.node_i, element.node_j))
+        for element in page.canvas.elements.values()
+    }
+    assert endpoints == {frozenset((first, second)), frozenset((third, fourth))}
+    assert page.canvas.mode == "draw"
+    assert page.canvas.chain_last_node is None
 
 
 def test_clicking_an_existing_node_in_3d_continues_the_chain_while_drawing() -> None:

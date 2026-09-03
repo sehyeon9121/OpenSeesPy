@@ -119,6 +119,22 @@ _SPRING_SUPPORT_COLOR = "#a855f7"
 #: small air gap keeps the complete socket/cone/roller silhouette readable
 #: instead of letting the node sphere hide its mechanically useful top half.
 _SUPPORT_NODE_GAP_RATIO = 0.30
+#: Fixed stand-ins for ``self._extent``/``self._default_thickness`` used only
+#: by support glyphs and load arrows/moment glyphs (never by real member/node
+#: geometry, which stays genuinely local - see ``_compute_node_radii``'s own
+#: docstring for that earlier fix). Those two were computed from the whole
+#: model's bounding box, so mirroring/arraying the structure to add a bay or
+#: floor anywhere changed ``self._extent`` and resized every support and load
+#: glyph already in the scene, including ones nowhere near the new geometry -
+#: reported as "복사하거나 규모가 커지면 지점 크기가 변동". Support/load glyphs
+#: are annotations, not physical geometry, so there is no correctness reason
+#: they need to track overall model size at all; freezing their reference
+#: scale at a typical single portal frame's own extent (6 m span, matching
+#: tests' own ``_portal_frame`` fixture) keeps an ordinary model looking
+#: exactly as it did before, while a much larger or smaller model now simply
+#: keeps the same absolute glyph size instead of drifting with it.
+_GLYPH_REFERENCE_EXTENT = 6.0
+_GLYPH_REFERENCE_THICKNESS = max(_GLYPH_REFERENCE_EXTENT * 0.012, 0.025)
 #: Each ``BoundaryCondition.angle_axis`` structural axis, mapped through
 #: ``_view_coordinates`` once - see ``_build_support_parts``'s own comment
 #: for why conjugating the rotation this way (angle unchanged, axis mapped)
@@ -1380,7 +1396,7 @@ class Quick3DSceneBridge(QObject):
             0.5 * (min(z_values) + max(z_values)),
         )
         if model.boundaries:
-            support_height = max(self._extent * 0.05, 0.055)
+            support_height = max(_GLYPH_REFERENCE_EXTENT * 0.05, 0.055)
             support_plate = max(support_height * 0.16, 0.012)
             ground_thickness = max(self._extent * 0.012, 0.01)
             supported_sphere_bottoms = [
@@ -1860,8 +1876,8 @@ class Quick3DSceneBridge(QObject):
         that form reliably during incremental geometry edits.
         """
         parts: list[dict[str, float | int | str]] = []
-        width = max(self._extent * 0.055, 0.06)
-        height = max(self._extent * 0.05, 0.055)
+        width = max(_GLYPH_REFERENCE_EXTENT * 0.055, 0.06)
+        height = max(_GLYPH_REFERENCE_EXTENT * 0.05, 0.055)
         plate_height = max(height * 0.16, 0.012)
 
         def add_part(
@@ -2689,10 +2705,10 @@ class Quick3DSceneBridge(QObject):
             if magnitude <= 1.0e-12:
                 continue
             scale = self._load_scale(magnitude, maximum_magnitude)
-            arrow_length = max(self._extent * 0.17, 0.06) * scale
+            arrow_length = max(_GLYPH_REFERENCE_EXTENT * 0.17, 0.06) * scale
             shaft_length = arrow_length * 0.68
             head_length = arrow_length - shaft_length
-            shaft_thickness = max(self._default_thickness * 0.55, 0.009)
+            shaft_thickness = max(_GLYPH_REFERENCE_THICKNESS * 0.55, 0.009)
             head_thickness = shaft_thickness * 2.25
             direction_model = (fx / magnitude, fy / magnitude, fz / magnitude)
             direction = self._view_coordinates(*direction_model)
@@ -2848,10 +2864,10 @@ class Quick3DSceneBridge(QObject):
                 continue
             magnitude = math.sqrt(load.wx * load.wx + load.wy * load.wy + load.wz * load.wz)
             scale = self._load_scale(magnitude, maximum_magnitude)
-            arrow_length = max(self._extent * 0.085, 0.05) * scale
+            arrow_length = max(_GLYPH_REFERENCE_EXTENT * 0.085, 0.05) * scale
             shaft_length = arrow_length * 0.68
             head_length = arrow_length - shaft_length
-            shaft_thickness = max(self._default_thickness * 0.36, 0.007)
+            shaft_thickness = max(_GLYPH_REFERENCE_THICKNESS * 0.36, 0.007)
             head_thickness = shaft_thickness * 2.15
             transverse_magnitude = math.hypot(load.wy, load.wz)
             is_axial = abs(load.wx) > transverse_magnitude
@@ -2870,9 +2886,10 @@ class Quick3DSceneBridge(QObject):
             area = self._number_property(element.properties, "A")
             section_size = math.sqrt(area) if area is not None and area > 0.0 else 0.0
             member_half_thickness = (
-                min(max(section_size, self._default_thickness), self._extent * 0.055) / 2
+                min(max(section_size, _GLYPH_REFERENCE_THICKNESS), _GLYPH_REFERENCE_EXTENT * 0.055)
+                / 2
             )
-            visual_clearance = max(head_thickness * 0.18, self._extent * 0.0015)
+            visual_clearance = max(head_thickness * 0.18, _GLYPH_REFERENCE_EXTENT * 0.0015)
             tip_offset = member_half_thickness + visual_clearance
             rotation = {"qscalar": scalar, "qx": qx, "qy": qy, "qz": qz}
             for arrow_index, fraction in enumerate((0.5,)):
@@ -3124,11 +3141,11 @@ class Quick3DSceneBridge(QObject):
                 fx / force_magnitude, fy / force_magnitude, fz / force_magnitude
             )
             arrow_length = (
-                max(self._extent * 0.17, 0.06)
+                max(_GLYPH_REFERENCE_EXTENT * 0.17, 0.06)
                 * self._load_scale(force_magnitude, maximum_magnitude)
                 * scale
             )
-            shaft_thickness = max(self._default_thickness * 0.55, 0.009)
+            shaft_thickness = max(_GLYPH_REFERENCE_THICKNESS * 0.55, 0.009)
             for node_tag in entry.target:
                 anchor = points.get(node_tag)
                 if anchor is None:
@@ -3195,8 +3212,10 @@ class Quick3DSceneBridge(QObject):
         ``_build_element_load_arrows``'s own clearance math."""
         area = self._number_property(element.properties, "A")
         section_size = math.sqrt(area) if area is not None and area > 0.0 else 0.0
-        member_half_thickness = min(max(section_size, self._default_thickness), self._extent * 0.055) / 2
-        visual_clearance = max(self._default_thickness * 0.1, self._extent * 0.0015)
+        member_half_thickness = (
+            min(max(section_size, _GLYPH_REFERENCE_THICKNESS), _GLYPH_REFERENCE_EXTENT * 0.055) / 2
+        )
+        visual_clearance = max(_GLYPH_REFERENCE_THICKNESS * 0.1, _GLYPH_REFERENCE_EXTENT * 0.0015)
         return member_half_thickness + visual_clearance
 
     @staticmethod
@@ -3241,9 +3260,11 @@ class Quick3DSceneBridge(QObject):
                 )
             else:
                 arrow_length = (
-                    max(self._extent * 0.11, 0.05) * self._load_scale(magnitude, maximum_magnitude) * scale
+                    max(_GLYPH_REFERENCE_EXTENT * 0.11, 0.05)
+                    * self._load_scale(magnitude, maximum_magnitude)
+                    * scale
                 )
-                shaft_thickness = max(self._default_thickness * 0.45, 0.008)
+                shaft_thickness = max(_GLYPH_REFERENCE_THICKNESS * 0.45, 0.008)
                 tip_offset = self._member_tip_offset(element)
                 tip = tuple(member_point[index] - direction[index] * tip_offset for index in range(3))
                 parts.extend(self._arrow_pair(tip, direction, arrow_length, shaft_thickness, common, magnitude))
@@ -3263,8 +3284,12 @@ class Quick3DSceneBridge(QObject):
         along the moment axis (a "bowtie") reads as clearly distinct from a
         translational-force arrow while reusing only shapes this scene
         already renders."""
-        half_length = max(self._extent * 0.05, 0.022) * self._load_scale(magnitude, maximum_magnitude) * scale
-        thickness = max(self._default_thickness * 1.1, 0.018)
+        half_length = (
+            max(_GLYPH_REFERENCE_EXTENT * 0.05, 0.022)
+            * self._load_scale(magnitude, maximum_magnitude)
+            * scale
+        )
+        thickness = max(_GLYPH_REFERENCE_THICKNESS * 1.1, 0.018)
         parts = []
         for direction in (axis_direction, tuple(-component for component in axis_direction)):
             scalar, qx, qy, qz = self._rotation_from_y_axis(direction)
@@ -3324,7 +3349,7 @@ class Quick3DSceneBridge(QObject):
             span = end_fraction - start_fraction
             axis_vector = (local_x, local_y, local_z)[axis_index]
             tip_offset = self._member_tip_offset(element)
-            shaft_thickness = max(self._default_thickness * 0.32, 0.006)
+            shaft_thickness = max(_GLYPH_REFERENCE_THICKNESS * 0.32, 0.006)
             sample_count = 5 if span > 1.0e-6 else 1
 
             tails: list[tuple[float, float, float]] = []
@@ -3341,7 +3366,9 @@ class Quick3DSceneBridge(QObject):
                     start[coord] + (end[coord] - start[coord]) * fraction for coord in range(3)
                 )
                 arrow_length = (
-                    max(self._extent * 0.07, 0.035) * self._load_scale(magnitude, maximum_magnitude) * scale
+                    max(_GLYPH_REFERENCE_EXTENT * 0.07, 0.035)
+                    * self._load_scale(magnitude, maximum_magnitude)
+                    * scale
                 )
                 tip = tuple(member_point[coord] - direction[coord] * tip_offset for coord in range(3))
                 parts.extend(self._arrow_pair(tip, direction, arrow_length, shaft_thickness, common, magnitude))
@@ -3586,15 +3613,19 @@ class Quick3DSceneBridge(QObject):
         boundary = [points[tag] for tag in entry.target if tag in points]
         if len(boundary) < 3:
             return []
-        thickness = max(self._default_thickness * 0.3, 0.006)
+        thickness = max(_GLYPH_REFERENCE_THICKNESS * 0.3, 0.006)
         parts = self._connector_segments([*boundary, boundary[0]], thickness, common)
         magnitude = abs(payload.magnitude * factor)
         if magnitude <= 1.0e-12:
             return parts
         direction = self._view_coordinates(*self._floor_direction_vector(payload.direction))
         centroid = tuple(sum(point[index] for point in boundary) / len(boundary) for index in range(3))
-        arrow_length = max(self._extent * 0.13, 0.06) * self._load_scale(magnitude, maximum_magnitude) * scale
-        shaft_thickness = max(self._default_thickness * 0.4, 0.008)
+        arrow_length = (
+            max(_GLYPH_REFERENCE_EXTENT * 0.13, 0.06)
+            * self._load_scale(magnitude, maximum_magnitude)
+            * scale
+        )
+        shaft_thickness = max(_GLYPH_REFERENCE_THICKNESS * 0.4, 0.008)
         parts.extend(self._arrow_pair(centroid, direction, arrow_length, shaft_thickness, common, magnitude))
         return parts
 
@@ -3625,14 +3656,14 @@ class Quick3DSceneBridge(QObject):
         if direction_model is None:
             return []
         direction = self._view_coordinates(*direction_model)
-        length = max(self._extent * 0.12, 0.05) * scale
-        thickness = max(self._default_thickness * 0.4, 0.008)
+        length = max(_GLYPH_REFERENCE_EXTENT * 0.12, 0.05) * scale
+        thickness = max(_GLYPH_REFERENCE_THICKNESS * 0.4, 0.008)
         if payload.apply_to_all or not entry.target:
             # One marker above the whole model rather than one per member -
             # "every member, always" is exactly the case where per-member
             # arrows would swamp the scene without adding information.
             top = max((point[1] for point in points.values()), default=0.0)
-            anchor = (self._center[0], top + self._extent * 0.08, self._center[2])
+            anchor = (self._center[0], top + _GLYPH_REFERENCE_EXTENT * 0.08, self._center[2])
             return self._arrow_pair(anchor, direction, length, thickness, common, 1.0)
         parts: list[dict[str, float | int | str]] = []
         for element_tag in entry.target:

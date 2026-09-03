@@ -22,16 +22,14 @@ class _TransformMixin:
         edge_index: set[frozenset[int]] | None = None,
     ) -> int | None:
         """Create a geometric copy without dropping its structural identity."""
-        new_tag = self.add_member(node_i, node_j, edge_index=edge_index)
+        new_tag = self.add_member(
+            node_i,
+            node_j,
+            edge_index=edge_index,
+            template=source,
+        )
         if new_tag is None:
             return None
-        self.elements[new_tag] = replace(
-            source,
-            tag=new_tag,
-            node_i=node_i,
-            node_j=node_j,
-            properties=dict(source.properties),
-        )
         if copy_element_loads and source.tag in self.element_loads:
             self.element_loads[new_tag] = replace(
                 self.element_loads[source.tag], element_tag=new_tag
@@ -57,10 +55,11 @@ class _TransformMixin:
         implied = {
             node_tag
             for tag in self.selected_elements
-            for node_tag in (self.elements[tag].node_i, self.elements[tag].node_j)
             if tag in self.elements
+            for node_tag in (self.elements[tag].node_i, self.elements[tag].node_j)
         }
-        return set(self.selected_nodes) | implied
+        selected_nodes = {tag for tag in self.selected_nodes if tag in self.nodes}
+        return selected_nodes | implied
 
     def transform_selected_nodes(
         self,

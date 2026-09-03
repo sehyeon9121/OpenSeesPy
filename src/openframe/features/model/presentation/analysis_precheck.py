@@ -70,6 +70,13 @@ _NOT_WIRED_KINDS = (AnalysisKind.MODAL, AnalysisKind.BUCKLING, AnalysisKind.TIME
 
 _DIRECTIONS = ("x", "y", "z")
 
+#: Solver-policy notes from ``run_structural_precheck``. They are not modeling
+#: errors. PRE-CHECK chips and ``AnalysisCaseStore.set_precheck`` treat *any*
+#: issue as a case "경고", so putting these on the default screen would make a
+#: valid mixed truss look broken. Keep them on the service for a later
+#: diagnostic; do not map them into chips here.
+_STRUCTURAL_POLICY_CODES = frozenset({"truss_rotational_dof"})
+
 
 def run_precheck(case: AnalysisCase, model: StructuralModel) -> PrecheckReport:
     issues: list[PrecheckIssue] = []
@@ -115,7 +122,9 @@ def run_precheck(case: AnalysisCase, model: StructuralModel) -> PrecheckReport:
     # components, zero-length members). Mapped onto this chip type so PRE-CHECK
     # can show them without the structural layer depending on Qt or AnalysisCase.
     issues.extend(
-        _to_precheck_issue(issue) for issue in run_structural_precheck(model)
+        _to_precheck_issue(issue)
+        for issue in run_structural_precheck(model)
+        if issue.code not in _STRUCTURAL_POLICY_CODES
     )
 
     return PrecheckReport(tuple(issues))

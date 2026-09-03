@@ -698,6 +698,23 @@ def test_element_copy_preserves_structural_properties_and_optional_attributes() 
     assert copied.node_j in canvas.nodal_loads
 
 
+def test_element_copy_ignores_a_stale_selected_member_tag() -> None:
+    """A member split can leave a removed tag selected until the next refresh."""
+    canvas = _canvas()
+    canvas.place_point(0.0, 0.0)
+    canvas.place_point(4.0, 0.0)
+    member = next(iter(canvas.elements))
+    canvas.selected_nodes = {998}
+    canvas.selected_elements = {member, 999}
+
+    created = canvas.transform_selected_nodes("copy", 8.0, 0.0)
+
+    assert created == 2
+    assert len(canvas.nodes) == 4
+    assert len(canvas.elements) == 2
+    assert canvas.selected_elements <= set(canvas.elements)
+
+
 def test_selecting_only_nodes_still_copies_without_inventing_a_member() -> None:
     """The existing, tested plain-copy contract must survive untouched: two
     endpoint nodes picked by hand (not the member itself) copy as bare points."""

@@ -7,6 +7,7 @@ from openframe.core.domain import (
     AnalysisKind,
     BoundaryCondition,
     Element,
+    NodalLoad,
     Node,
     RigidDiaphragm,
     StructuralModel,
@@ -115,23 +116,14 @@ def test_supported_component_is_not_reported_as_floating() -> None:
     assert "unsupported_component" not in _codes(model)
 
 
-def test_tetrahedral_truss_has_no_instability_error() -> None:
-    """A valid space truss must not be flagged as unstable.
+def test_tetrahedral_truss_has_no_issues() -> None:
+    """A valid space truss is silent even when the canvas declares ndf=6.
 
-    Canvas 3D models declare ndf=6, so unused rotations may produce INFO, but
-    never an ERROR that would block the run as if the truss were a mechanism.
+    Production ``_build`` assembles a pure 3D truss with ndf=3, so unused
+    rotations are not a modeling problem and must not appear as INFO/WARNING.
     """
     for ndf in (3, 6):
-        issues = run_structural_precheck(_tetrahedral_truss(ndf=ndf))
-        assert not any(
-            issue.severity is StructuralPrecheckSeverity.ERROR for issue in issues
-        )
-        if ndf < 6:
-            assert issues == ()
-        else:
-            info = [issue for issue in issues if issue.code == "truss_rotational_dof"]
-            assert len(info) == 1
-            assert info[0].severity is StructuralPrecheckSeverity.INFO
+        assert run_structural_precheck(_tetrahedral_truss(ndf=ndf)) == ()
 
 
 def test_normal_hinge_frame_is_not_a_mechanism() -> None:
@@ -183,28 +175,41 @@ def test_zero_length_element_is_detected() -> None:
     assert issues[0].node_tags == (1, 2)
 
 
-def test_auxiliary_dummy_node_is_not_reported_as_a_user_error() -> None:
-    """Hinge/support dummy tags live in the solver, not on StructuralModel.
-    If one nevertheless appears in ``nodes``, it must not look like a user
-    isolated-node mistake.
+def test_precheck_does_not_encode_opensees_auxiliary_tag_offsets() -> None:
+    """Dummy hinge/ground nodes are minted inside OpenSees assembly, never
+    stored on ``StructuralModel``. Domain precheck must not copy those tag
+    floors — a number sitting in ``model.nodes`` is a user node.
     """
-    dummy_tag = 8_000_000
+    path = (
+        Path(__file__).parents[2]
+        / "src"
+        / "openframe"
+        / "features"
+        / "model"
+        / "application"
+        / "structural_precheck.py"
+    )
+    source = path.read_text(encoding="utf-8")
+    for magic in ("7_000_000", "8_000_000", "8_600_000", "9_000_000", "9_500_000"):
+        assert magic not in source
+
+
+def test_high_tag_in_structural_model_is_treated_as_a_user_node() -> None:
+    """If a caller put a large tag on the domain model, it is still a node."""
     model = StructuralModel(
         ndm=3,
         ndf=6,
         nodes={
             1: Node(1, 0.0, 0.0, 0.0, ndf=6),
             2: Node(2, 0.0, 0.0, 4.0, ndf=6),
-            dummy_tag: Node(dummy_tag, 0.0, 0.0, 4.0, ndf=6),
+            8_000_000: Node(8_000_000, 1.0, 0.0, 0.0, ndf=6),
             17: Node(17, 10.0, 0.0, 0.0, ndf=6),
         },
         elements={1: Element(1, 1, 2, "frame")},
         boundaries=[BoundaryCondition(1, (True,) * 6)],
     )
-
-    isolated = _issues_of(model, "isolated_node")
-    assert [issue.node_tags for issue in isolated] == [(17,)]
-    assert all(dummy_tag not in issue.node_tags for issue in run_structural_precheck(model))
+    isolated = {issue.node_tags for issue in _issues_of(model, "isolated_node")}
+    assert isolated == {(17,), (8_000_000,)}
 
 
 def test_all_released_joint_is_info_not_a_mechanism_error() -> None:
@@ -294,6 +299,44 @@ def test_precheck_module_does_not_import_opensees_or_solvers() -> None:
         for name in imported
         for prefix in forbidden
     )
+
+
+def test_mixed_truss_only_node_is_solver_policy_info_not_a_precheck_chip() -> None:
+    """A guyed mast: frame column + truss stay. The stay's far node has no
+    rotational stiffness. Service may record that as INFO (solver will pin
+    it); PRE-CHECK must not show a chip or the case becomes '경고'.
+    """
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, ndf=6),
+            2: Node(2, 0.0, 0.0, 4.0, ndf=6),
+            3: Node(3, 3.0, 0.0, 0.0, ndf=6),
+        },
+        elements={
+            1: Element(1, 1, 2, "frame"),
+            2: Element(2, 2, 3, "truss"),
+        },
+        boundaries=[
+            BoundaryCondition(1, (True,) * 6),
+            BoundaryCondition(3, (True, True, True, False, False, False)),
+        ],
+        nodal_loads=[NodalLoad(2, (1.0, 0.0, 0.0, 0.0, 0.0, 0.0))],
+    )
+    issues = _issues_of(model, "truss_rotational_dof")
+    assert len(issues) == 1
+    assert issues[0].severity is StructuralPrecheckSeverity.INFO
+    assert issues[0].node_tags == (3,)
+    assert "사용되지 않습니다" in issues[0].message
+    assert not any(
+        issue.severity is StructuralPrecheckSeverity.ERROR
+        for issue in run_structural_precheck(model)
+    )
+
+    report = run_precheck(AnalysisCase.new(AnalysisKind.LINEAR_STATIC, "case"), model)
+    assert not any(issue.code == "truss_rotational_dof" for issue in report.issues)
+    assert report.can_run
 
 
 def test_run_precheck_surfaces_isolated_node() -> None:
