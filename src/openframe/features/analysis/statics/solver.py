@@ -42,6 +42,7 @@ from openframe.core.domain.results import (
     NodeResult,
     NonlinearConvergence,
 )
+from openframe.infrastructure.opensees.instability_diagnostic import InstabilityDiagnosticService
 
 # Ground node and zero-length element tags for inclined supports are offset well
 # past any tag a hand-drawn model would ever reach, so they never collide with a
@@ -197,6 +198,19 @@ def check_determinacy(model: StructuralModel) -> DeterminacyCheck:
     else:
         message = f"정정차수가 {degree}이므로 불안정 구조일 가능성이 있습니다. 지점 조건을 확인하세요."
     return DeterminacyCheck(system, degree, message)
+
+
+class _LinearStaticConvergenceFailure(RuntimeError):
+    """``ops.analyze(1)`` returned nonzero inside ``_analyze()`` - raised
+    (instead of a plain ``RuntimeError``) so ``solve()`` can tell this one
+    failure mode apart from every other reason ``_build``/``_apply_loads``/
+    ``_analyze`` might raise. Only this one means "the live OpenSees domain
+    is intact and its analyze() itself just failed to converge" - exactly
+    the precondition ``InstabilityDiagnosticService`` needs, and the only
+    case where running it is meaningful. Nothing between the failing
+    ``ops.analyze(1)`` call and ``solve()`` catching this touches the
+    domain, so it is still the exact one that failed when the diagnostic
+    runs."""
 
 
 class MaterialFreeStaticsSolver:
@@ -388,6 +402,30 @@ class MaterialFreeStaticsSolver:
                 check.message,
                 material,
                 displacement_stiffness=displacement_stiffness,
+            )
+        except _LinearStaticConvergenceFailure as error:
+            # The domain _analyze() just failed on is still fully live here -
+            # nothing since that failing ops.analyze(1) call has touched it -
+            # so the diagnostic gets exactly the system that failed, not a
+            # rebuild (see InstabilityDiagnosticService's own docstring).
+            # analyze() != 0 does not by itself mean "confirmed mechanism":
+            # the diagnostic may find zero near-zero modes (some other cause)
+            # or fail to run at all (diagnostic_success=False) - both are
+            # reported as such, never silently treated as a confirmed
+            # instability.
+            try:
+                diagnostic = InstabilityDiagnosticService().diagnose(model)
+            except Exception:  # noqa: BLE001 - a diagnostic failure must never mask the real error
+                diagnostic = None
+            messages = [f"정역학 계산에 실패했습니다: {error}"]
+            if diagnostic is not None and diagnostic.diagnostic_success and diagnostic.mechanism_count > 0:
+                messages.append(diagnostic.message)
+            else:
+                messages.append("해석이 실패했지만 구조적 불안정 여부는 확인되지 않았습니다.")
+            return AnalysisResult(
+                status=AnalysisStatus.FAILED,
+                messages=messages,
+                instability_diagnostic=diagnostic,
             )
         except (RuntimeError, ValueError, ops.OpenSeesError) as error:
             return AnalysisResult(
@@ -1480,7 +1518,7 @@ class MaterialFreeStaticsSolver:
                     " 인장전담·압축전담 부재가 모두 슬랙 상태가 되어 구조가 "
                     "메커니즘이 되었을 수 있습니다."
                 )
-            raise RuntimeError(message)
+            raise _LinearStaticConvergenceFailure(message)
         ops.reactions()
 
     @staticmethod
