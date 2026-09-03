@@ -183,6 +183,64 @@ class BucklingMode:
 
 
 @dataclass(frozen=True, slots=True)
+class MechanismMode:
+    """One structural mechanism recovered from the stiffness-nullspace of a
+    live OpenSees domain right after its linear-static ``ops.analyze()``
+    failed - a rigid-body motion or a hinge/support-deficiency collapse mode,
+    never a real displacement. Deliberately its own dataclass rather than a
+    reuse of ``NodeResult``/``ModeShape`` - an eigenvector of K has no load,
+    no time axis and no physical scale, so ``AnalysisResult.node_results``
+    must never contain one of these (see ``InstabilityDiagnosticResult``).
+
+    ``mode_shape`` carries only the model's own user-facing node tags
+    (``StructuralModel.nodes``) - auxiliary OpenSees nodes the assembly adds
+    internally (hinge dummies, inclined-support ground nodes, orphan-rotation
+    pins, ...) participate in the underlying eigenvector but are stripped
+    before this reaches a caller.
+    """
+
+    mode_number: int
+    #: This mode's eigenvalue in the diagonally-equilibrated (Jacobi-scaled)
+    #: spectrum the diagnostic actually classifies on - dimensionless and
+    #: unit-system-invariant, not a raw K eigenvalue (which is not).
+    eigenvalue: float
+    mode_shape: dict[int, tuple[float, ...]] = field(default_factory=dict)
+    #: Human-readable "n<tag>:<Ux|Uy|Uz|Rx|Ry|Rz>=<value>" labels for every
+    #: user-node DOF whose normalized participation exceeds the diagnostic's
+    #: display threshold - which DOFs actually move, at a glance.
+    dominant_dofs: tuple[str, ...] = ()
+    #: ``||K @ phi|| / (||K||_F * ||phi||)`` sanity check that ``phi`` (the
+    #: physical-space mode, ``Dinv * equilibrated eigenvector``) is actually
+    #: in K's near-nullspace - near 0 confirms the D^-1 remap did not corrupt
+    #: the mode; not itself the near-zero classification.
+    residual: float = 0.0
+    source: str = "stiffness_nullspace"
+
+
+@dataclass(frozen=True, slots=True)
+class InstabilityDiagnosticResult:
+    """Outcome of ``InstabilityDiagnosticService`` diagnosing why a linear
+    static solve's ``ops.analyze()`` just failed, run against the exact live
+    OpenSees domain that failure left behind (never a rebuilt one - see the
+    service's own docstring for why that distinction is load-bearing).
+
+    ``diagnostic_success=False`` means the diagnostic itself could not run
+    (no free DOFs, or the FullGeneral re-extraction raised) - this is
+    distinct from ``mechanism_count == 0``, which means the diagnostic DID
+    run and found no near-zero stiffness-nullspace mode, so the original
+    solve failure has some other cause. Callers must not read
+    ``mechanism_count == 0`` as "confirmed stable" when
+    ``diagnostic_success`` is ``False``.
+    """
+
+    mechanism_count: int = 0
+    modes: tuple[MechanismMode, ...] = ()
+    message: str = ""
+    matrix_size: int = 0
+    diagnostic_success: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class TimeHistoryStep:
     """One recorded time step of a transient (time-history) analysis.
 
@@ -297,6 +355,11 @@ class AnalysisResult:
     #: node_results/element_results carry the SRSS-combined values themselves,
     #: same shape as a plain static result.
     response_spectrum_settings: ResponseSpectrumSettings | None = None
+    #: None unless a linear-static solve's ``ops.analyze()`` failed and
+    #: ``InstabilityDiagnosticService`` ran against the live domain that
+    #: failure left behind - see that service and ``MechanismMode`` for why
+    #: this never touches ``node_results``/``mode_shapes``.
+    instability_diagnostic: InstabilityDiagnosticResult | None = None
     #: PHYSICAL (default) for every solver that already returns real-stiffness
     #: displacements. UNIT_STIFFNESS only for a determinate truss solved without
     #: E/A - forces are still equilibrium-correct; translations are not in
