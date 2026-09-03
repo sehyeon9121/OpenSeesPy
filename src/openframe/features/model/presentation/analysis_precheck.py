@@ -23,6 +23,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from openframe.core.domain import AnalysisKind, StructuralModel
+from openframe.features.model.application.structural_precheck import (
+    StructuralPrecheckIssue,
+    run_structural_precheck,
+)
 from openframe.features.model.presentation.analysis_case import AnalysisCase
 
 
@@ -107,7 +111,23 @@ def run_precheck(case: AnalysisCase, model: StructuralModel) -> PrecheckReport:
             )
         )
 
+    # Topology findings from the domain model itself (isolated nodes, floating
+    # components, zero-length members). Mapped onto this chip type so PRE-CHECK
+    # can show them without the structural layer depending on Qt or AnalysisCase.
+    issues.extend(
+        _to_precheck_issue(issue) for issue in run_structural_precheck(model)
+    )
+
     return PrecheckReport(tuple(issues))
+
+
+def _to_precheck_issue(issue: StructuralPrecheckIssue) -> PrecheckIssue:
+    return PrecheckIssue(
+        Severity(issue.severity),
+        issue.code,
+        issue.title,
+        issue.message,
+    )
 
 
 def _precheck_time_history(settings: dict[str, object]) -> list[PrecheckIssue]:

@@ -533,6 +533,18 @@ Item {
         )
     }
 
+    function cameraTargetPosition() {
+        // panX is a screen-horizontal offset, not a world-X offset. Rotate it
+        // with the orbit yaw so a rightward drag keeps moving the model right
+        // after the camera crosses to the opposite side of the structure.
+        const yawRadians = cameraYaw * Math.PI / 180
+        return Qt.vector3d(
+            bridgeCenterX + panX * Math.cos(yawRadians),
+            bridgeCenterY + panY,
+            bridgeCenterZ - panX * Math.sin(yawRadians)
+        )
+    }
+
     View3D {
         id: view3d
         anchors.fill: parent
@@ -558,11 +570,7 @@ Item {
 
         Node {
             id: cameraTarget
-            position: Qt.vector3d(
-                bridgeCenterX + root.panX,
-                bridgeCenterY + root.panY,
-                bridgeCenterZ
-            )
+            position: root.cameraTargetPosition()
             Node {
                 id: cameraYawNode
                 eulerRotation.y: root.cameraYaw

@@ -190,6 +190,62 @@ def test_create_load_case_from_combination_requires_explicit_replace() -> None:
     )
 
 
+def test_deleting_a_node_prunes_its_orphaned_nodal_load_entry() -> None:
+    """Regression test: delete_selected() used to leave load_entries
+    untouched, and new nodes/elements are assigned max()+1 tags - so a
+    deleted node's dangling entry would reappear (as an unwanted load
+    glyph, and for member-scoped kinds feed build_model()) the moment a
+    freshly drawn node/member happened to reuse its old tag."""
+    canvas = _canvas()
+    canvas.add_node(0.0, 0.0)
+    target = canvas.add_node(5.0, 0.0)
+    canvas.add_load_case("EQ")
+    canvas.add_load_entry("EQ", "nodal", (target,), NodalLoadEntry(fz=-10.0, mx=5.0))
+    assert len(canvas.load_entries) == 1
+
+    canvas.selected_nodes = {target}
+    canvas.delete_selected()
+    assert canvas.load_entries == {}
+
+    reused = canvas.add_node(9.0, 0.0)
+    assert reused == target
+    assert canvas.load_entries == {}
+
+
+def test_deleting_an_element_prunes_its_orphaned_member_load_entry() -> None:
+    canvas = _canvas()
+    a = canvas.add_node(0.0, 0.0)
+    b = canvas.add_node(5.0, 0.0)
+    member = canvas.add_member(a, b)
+    canvas.add_load_case("DL")
+    canvas.add_load_entry(
+        "DL", "member_partial", (member,), MemberDistributedLoadEntry(start_value=-1.0, end_value=-1.0)
+    )
+    assert len(canvas.load_entries) == 1
+
+    canvas.selected_elements = {member}
+    canvas.delete_selected()
+    assert canvas.load_entries == {}
+
+    c = canvas.add_node(9.0, 0.0)
+    reused = canvas.add_member(a, c)
+    assert reused == member
+    assert canvas.load_entries == {}
+
+
+def test_deleting_a_node_leaves_other_nodes_load_entries_alone() -> None:
+    canvas = _canvas()
+    keep = canvas.add_node(0.0, 0.0)
+    doomed = canvas.add_node(5.0, 0.0)
+    canvas.add_load_case("EQ")
+    entry_id = canvas.add_load_entry("EQ", "nodal", (keep,), NodalLoadEntry(fz=-10.0))
+
+    canvas.selected_nodes = {doomed}
+    canvas.delete_selected()
+
+    assert canvas.load_entries.keys() == {entry_id}
+
+
 def test_generated_combination_can_be_activated_as_solver_loads() -> None:
     canvas = _canvas()
     canvas.ndm = 3

@@ -681,6 +681,7 @@ class _ModelBuildMixin:
         if not node_tags and not element_tags:
             return
         self._record_history()
+        deleted_node_tags = set(node_tags)
         for tag in node_tags:
             connected = [
                 key
@@ -700,6 +701,7 @@ class _ModelBuildMixin:
                 if host_tag == tag
             ]
             for node_tag in hosted_nodes:
+                deleted_node_tags.add(node_tag)
                 self.nodes.pop(node_tag, None)
                 self.boundaries.pop(node_tag, None)
                 self.nodal_loads.pop(node_tag, None)
@@ -707,8 +709,53 @@ class _ModelBuildMixin:
                 self.embedded_nodes.pop(node_tag, None)
             self.elements.pop(tag, None)
             self.element_loads.pop(tag, None)
+        self._prune_load_entries_for_deleted(deleted_node_tags, element_tags)
         self._selected = None
         self.selected_nodes.clear()
         self.selected_elements.clear()
         self._changed()
         self.selection_changed.emit()
+
+    def _prune_load_entries_for_deleted(
+        self, deleted_node_tags: set[int], deleted_element_tags: set[int]
+    ) -> None:
+        """Cascade ``self.load_entries`` when the tags they target are deleted.
+
+        Without this, a Load Tree entry keeps pointing at a tag nobody owns
+        any more. New nodes/elements are assigned ``max()+1`` tags, so the
+        next thing you draw can reuse a stale entry's target and have it
+        reappear as a load out of nowhere - and for the member-scoped kinds,
+        silently feed ``build_model()`` at solve time (see its own comment).
+        """
+        if not deleted_node_tags and not deleted_element_tags:
+            return
+        node_scoped_kinds = {"nodal", "floor"}
+        element_scoped_kinds = {
+            "member_point",
+            "member_moment",
+            "member_uniform",
+            "member_linear",
+            "member_partial",
+        }
+        pruned = {}
+        changed = False
+        for entry_id, entry in self.load_entries.items():
+            if entry.kind in node_scoped_kinds:
+                if deleted_node_tags.intersection(entry.target):
+                    changed = True
+                    continue
+            elif entry.kind in element_scoped_kinds:
+                if entry.target and entry.target[0] in deleted_element_tags:
+                    changed = True
+                    continue
+            elif entry.kind == "self_weight" and isinstance(entry.payload, SelfWeightEntry):
+                remaining = tuple(
+                    t for t in entry.payload.target_elements if t not in deleted_element_tags
+                )
+                if remaining != entry.payload.target_elements:
+                    changed = True
+                    entry = replace(entry, payload=replace(entry.payload, target_elements=remaining))
+            pruned[entry_id] = entry
+        if changed:
+            self.load_entries = pruned
+            self.load_state_changed.emit()

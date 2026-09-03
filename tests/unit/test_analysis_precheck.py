@@ -5,7 +5,14 @@ other per-kind rule from the full spec slots in once its own settings field
 exists on AnalysisCase (see analysis_case.py's own docstring for why
 settings is still a plain dict in this pass)."""
 
-from openframe.core.domain import AnalysisKind, Element, NodalLoad, Node, StructuralModel
+from openframe.core.domain import (
+    AnalysisKind,
+    BoundaryCondition,
+    Element,
+    NodalLoad,
+    Node,
+    StructuralModel,
+)
 from openframe.features.model.presentation.analysis_case import AnalysisCase
 from openframe.features.model.presentation.analysis_precheck import Severity, run_precheck
 
@@ -29,6 +36,7 @@ def _frame_model(*, with_load: bool) -> StructuralModel:
         ndm=2,
         nodes={1: Node(1, 0.0, 0.0), 2: Node(2, 4.0, 0.0)},
         elements={1: Element(1, 1, 2, "frame", properties={"E": 200000.0, "A": 0.02, "I": 0.0002})},
+        boundaries=[BoundaryCondition(1, (True, True, True))],
         nodal_loads=[NodalLoad(2, (0.0, -10.0, 0.0))] if with_load else [],
     )
 

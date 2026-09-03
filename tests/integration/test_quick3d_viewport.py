@@ -202,6 +202,33 @@ def test_set_model_resets_the_camera_by_default_but_can_be_told_not_to() -> None
     assert root.property("cameraPitch") == pytest.approx(-25.0), "default still reframes to iso"
 
 
+def test_shift_pan_follows_screen_horizontal_axis_after_orbiting_behind_model() -> None:
+    """Dragging right must move the model right from either side of the orbit."""
+    viewport = _viewport()
+    viewport.setFixedSize(640, 480)
+    QApplication.processEvents()
+    root = viewport.quick_widget.rootObject()
+    axes = root.findChild(QObject, "worldOriginAxes")
+    assert axes is not None
+
+    def projected_x_after_right_drag(yaw: float, pan_x: float) -> float:
+        root.setProperty("cameraYaw", yaw)
+        root.setProperty("cameraPitch", 0.0)
+        root.setProperty("cameraDistance", 10.0)
+        root.setProperty("panX", pan_x)
+        root.setProperty("panY", 0.0)
+        QApplication.processEvents()
+        return axes.structuralPoint(0.0, 0.0, 0.0).x()
+
+    center_x = projected_x_after_right_drag(0.0, 0.0)
+    # The gesture handler subtracts dx from panX, so a negative panX is a
+    # rightward Shift+middle drag. It must stay rightward after a 180° orbit.
+    assert projected_x_after_right_drag(0.0, -1.0) > center_x
+    assert projected_x_after_right_drag(180.0, -1.0) > center_x
+
+    viewport.close()
+
+
 def test_members_expose_endpoints_for_projected_box_selection() -> None:
     viewport = _viewport()
     model = StructuralModel(
