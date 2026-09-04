@@ -7,6 +7,10 @@ from typing import Any
 import openseespy.opensees as ops
 
 from openframe.infrastructure.opensees.element_load_collector import ElementLoadCollector
+from openframe.infrastructure.opensees.instability_diagnostic import (
+    InstabilityDiagnosticService,
+    instability_diagnostic_to_json,
+)
 from openframe.infrastructure.opensees.model_collector import ModelCommandCollector
 from openframe.infrastructure.opensees.script_execution import run_model_script
 
@@ -50,11 +54,29 @@ def _element_length(element_tag: int) -> float:
     return math.sqrt(sum(value * value for value in deltas))
 
 
-def run_linear_static_analysis(source: Path) -> dict[str, Any]:
+def run_linear_static_analysis(
+    source: Path,
+    *,
+    user_node_tags: set[int] | None = None,
+    ndm: int | None = None,
+) -> dict[str, Any]:
     """Build the model by executing ``source``, solve it, and return raw results.
 
     The script only builds: any analysis block it carries is suppressed, so the load
     patterns are applied exactly once, by the single static step below.
+
+    On ``ops.analyze()`` failure the live domain is diagnosed by
+    ``InstabilityDiagnosticService`` before ``ops.wipe()`` destroys it.  The
+    result is returned (not raised) as ``{"status": "failed", ...}`` so the
+    diagnostic data can travel through the subprocess JSON pipe.
+
+    ``user_node_tags`` is the set of node tags that belong to the user's model
+    (not auxiliary hinge dummies or ground anchors added by the script).  Pass
+    ``None`` when the script does not add any auxiliary nodes - all domain tags
+    are then used as the allow-list.  Avoid estimating the range from tag
+    numbers; pass the set explicitly from the exporting StructuralModel.
+
+    ``ndm`` is detected from the live domain when ``None``.
     """
     # The section properties are only knowable from the element() call itself, and the
     # deflected shape between two nodes cannot be rebuilt without EI. Its own nested
@@ -92,7 +114,7 @@ def run_linear_static_analysis(source: Path) -> dict[str, Any]:
     ops.algorithm("Linear")
     ops.analysis("Static")
     if ops.analyze(1) != 0:
-        raise RuntimeError("선형정적해석이 수렴하지 않았습니다.")
+        return _handle_analyze_failure(user_node_tags, ndm, load_collector, element_tags)
     ops.reactions()
 
     return {
@@ -116,6 +138,51 @@ def run_linear_static_analysis(source: Path) -> dict[str, Any]:
             for tag in element_tags
         ],
         "messages": _load_warnings(load_collector, element_tags),
+    }
+
+
+def _handle_analyze_failure(
+    user_node_tags: set[int] | None,
+    ndm: int | None,
+    load_collector: ElementLoadCollector,
+    element_tags: list[int],
+) -> dict[str, Any]:
+    """Run the instability diagnostic on the live domain after analyze() != 0.
+
+    Returns a ``{"status": "failed", ...}`` dict so the failure and diagnostic
+    travel through the subprocess JSON pipe intact.  Never raises - a
+    diagnostic failure is recorded in the payload, not propagated.
+
+    The diagnostic is intentionally run before any ops.wipe() call so the live
+    domain is still present.  The caller must NOT call ops.wipe() before this.
+    """
+    error_msg = "선형정적해석이 수렴하지 않았습니다."
+    diagnostic_json: dict[str, Any] | None = None
+    try:
+        diagnostic = InstabilityDiagnosticService().diagnose_live(
+            user_node_tags_allow_list=user_node_tags,
+            ndm=ndm,
+        )
+        diagnostic_json = instability_diagnostic_to_json(diagnostic)
+    except Exception:  # noqa: BLE001 - diagnostic failure must not mask original error
+        pass
+
+    messages: list[str] = [f"정역학 계산에 실패했습니다: {error_msg}"]
+    if (
+        diagnostic_json is not None
+        and diagnostic_json.get("diagnostic_success")
+        and diagnostic_json.get("mechanism_count", 0) > 0
+    ):
+        messages.append(diagnostic_json["message"])
+    else:
+        messages.append("해석이 실패했지만 구조적 불안정 여부는 확인되지 않았습니다.")
+
+    messages.extend(_load_warnings(load_collector, element_tags))
+
+    return {
+        "status": "failed",
+        "messages": messages,
+        "instability_diagnostic": diagnostic_json,
     }
 
 
