@@ -41,6 +41,7 @@ three things this module relies on:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import openseespy.opensees as ops
@@ -191,38 +192,61 @@ class InstabilityDiagnosticService:
                                  # matters, not this call's return code
             -> assembled K extraction (ops.printA)
 
-    ``model`` is used only to know which OpenSees node tags are the user's
-    own (``StructuralModel.nodes``) versus auxiliary nodes the assembly
-    added internally (hinge dummies, inclined-support ground nodes, orphan-
-    rotation pins, ...) - never to rebuild anything. Every ``MechanismMode``
-    this returns is filtered to the former set only (see ``MechanismMode``'s
-    own docstring); the latter still participate in the underlying
-    eigenvector (needed for a correct equilibration and for
-    ``correct_constrained_dof_values`` to work at all) but never reach a
-    caller.
+    The preferred entry point is ``diagnose_live()``, which does not require
+    a ``StructuralModel`` and is therefore usable in the worker/export
+    subprocess where no domain object is available. ``diagnose()`` delegates
+    to it for backwards compatibility with in-process callers.
     """
 
-    def diagnose(
+    def diagnose_live(
         self,
-        model: StructuralModel,
+        user_node_tags_allow_list: set[int] | None = None,
+        ndm: int | None = None,
         *,
+        constraint_handler: str = "Transformation",
         tolerance: float = DEFAULT_MECHANISM_TOLERANCE,
     ) -> InstabilityDiagnosticResult:
+        """Diagnose the live OpenSees domain without needing a StructuralModel.
+
+        ``user_node_tags_allow_list`` selects which node tags appear in each
+        returned ``MechanismMode.mode_shape`` (user-facing projection).  Pass
+        ``None`` to include all domain tags - correct only when the script
+        does not add auxiliary nodes (hinge dummies, etc.) beyond the user's
+        own geometry.  The full domain always participates in the stiffness
+        extraction and eigenproblem; the allow-list affects only the
+        projection.
+
+        ``ndm`` is the model spatial dimension (2 or 3).  When ``None`` it is
+        inferred from the first live node's coordinate vector.
+
+        ``constraint_handler`` must match the handler the failed analysis used
+        (so the condensed K is comparable); only ``system`` is changed to
+        ``FullGeneral``.  Transformation is the correct default here because a
+        Plain handler silently drops MP constraints from K, which would both
+        miscount mechanisms and make ``correct_constrained_dof_values`` find
+        nothing to correct.
+        """
         node_tags = [int(tag) for tag in ops.getNodeTags()]
         if not node_tags:
             return InstabilityDiagnosticResult(
                 message="진단할 절점이 live domain에 없습니다.",
                 diagnostic_success=False,
             )
+
+        if ndm is None:
+            try:
+                ndm = len(ops.nodeCoord(node_tags[0]))
+            except Exception:  # noqa: BLE001
+                ndm = 2
+
         try:
             ops.wipeAnalysis()
             ops.system("FullGeneral")
             ops.numberer("RCM")
-            # Transformation (not Plain) so equalDOF/rigidDiaphragm
-            # constraints are actually condensed into K - a multi-point
-            # constraint under Plain is silently dropped, which would both
-            # miscount and make correct_constrained_dof_values find nothing
-            # to correct.
+            # Always use Transformation regardless of constraint_handler
+            # argument - Plain silently drops MP constraints from K, which
+            # would miscount mechanisms and break correct_constrained_dof_values.
+            # The parameter is kept for caller documentation parity.
             ops.constraints("Transformation")
             ops.algorithm("Linear")
             ops.integrator("LoadControl", 0.0)
@@ -241,25 +265,38 @@ class InstabilityDiagnosticService:
                 diagnostic_success=False,
             )
 
+        if not np.isfinite(matrix).all():
+            return InstabilityDiagnosticResult(
+                message="강성행렬에 NaN/Inf가 포함되어 있어 진단을 진행할 수 없습니다.",
+                diagnostic_success=False,
+            )
+        if np.all(matrix == 0.0):
+            return InstabilityDiagnosticResult(
+                message="강성행렬이 영행렬입니다.",
+                diagnostic_success=False,
+            )
+
+        user_tags: set[int] = (
+            user_node_tags_allow_list if user_node_tags_allow_list is not None else set(node_tags)
+        )
         dof_equations = node_dof_equations(node_tags)
         index, eigenvalues, physical = physical_mechanism_modes(matrix, tolerance)
-        user_node_tags = set(model.nodes.keys())
 
         modes: list[MechanismMode] = []
         for order, eigenvalue in enumerate(eigenvalues, start=1):
             phi = physical[:, order - 1]
             raw_shape = mode_shape_from_eigenvector(phi, node_tags, dof_equations, size)
-            correct_constrained_dof_values(node_tags, raw_shape, model.ndm)
-            normalized = normalize_mode_shape(raw_shape, model.ndm)
+            correct_constrained_dof_values(node_tags, raw_shape, ndm)
+            normalized = normalize_mode_shape(raw_shape, ndm)
             mode_shape = {
-                tag: tuple(values) for tag, values in normalized.items() if tag in user_node_tags
+                tag: tuple(values) for tag, values in normalized.items() if tag in user_tags
             }
             modes.append(
                 MechanismMode(
                     mode_number=order,
                     eigenvalue=float(eigenvalue),
                     mode_shape=mode_shape,
-                    dominant_dofs=_dominant_dofs(normalized, user_node_tags, model.ndm),
+                    dominant_dofs=_dominant_dofs(normalized, user_tags, ndm),
                     residual=_residual(matrix, phi),
                 )
             )
@@ -278,8 +315,98 @@ class InstabilityDiagnosticService:
             diagnostic_success=True,
         )
 
+    def diagnose(
+        self,
+        model: StructuralModel,
+        *,
+        tolerance: float = DEFAULT_MECHANISM_TOLERANCE,
+    ) -> InstabilityDiagnosticResult:
+        """Diagnose using a live StructuralModel for the user-node allow-list.
+
+        Delegates to ``diagnose_live()``; kept for in-process canvas callers
+        that already hold a ``StructuralModel``.
+        """
+        return self.diagnose_live(
+            user_node_tags_allow_list=set(model.nodes.keys()),
+            ndm=model.ndm,
+            tolerance=tolerance,
+        )
+
 
 def diagnose_instability(
     model: StructuralModel, *, tolerance: float = DEFAULT_MECHANISM_TOLERANCE
 ) -> InstabilityDiagnosticResult:
     return InstabilityDiagnosticService().diagnose(model, tolerance=tolerance)
+
+
+# ---------------------------------------------------------------------------
+# JSON codec
+# ---------------------------------------------------------------------------
+
+
+def mechanism_mode_to_json(mode: MechanismMode) -> dict[str, Any]:
+    """Serialize a ``MechanismMode`` to a JSON-compatible dict.
+
+    Type conversions:
+    - ``mode_shape`` keys: ``int`` → ``str`` (JSON only allows string keys).
+    - ``mode_shape`` values: ``tuple[float, ...]`` → ``list[float]``.
+    - ``dominant_dofs``: ``tuple[str, ...]`` → ``list[str]``.
+    """
+    return {
+        "mode_number": mode.mode_number,
+        "eigenvalue": mode.eigenvalue,
+        "mode_shape": {str(k): list(v) for k, v in mode.mode_shape.items()},
+        "dominant_dofs": list(mode.dominant_dofs),
+        "residual": mode.residual,
+        "source": mode.source,
+    }
+
+
+def mechanism_mode_from_json(data: dict[str, Any]) -> MechanismMode:
+    """Deserialize a ``MechanismMode`` from a JSON-decoded dict.
+
+    Type conversions (inverse of ``mechanism_mode_to_json``):
+    - ``mode_shape`` keys: ``str`` → ``int``.
+    - ``mode_shape`` values: ``list`` → ``tuple[float, ...]``.
+    - ``dominant_dofs``: ``list`` → ``tuple[str, ...]``.
+    """
+    return MechanismMode(
+        mode_number=int(data["mode_number"]),
+        eigenvalue=float(data["eigenvalue"]),
+        mode_shape={
+            int(k): tuple(float(x) for x in v)
+            for k, v in data.get("mode_shape", {}).items()
+        },
+        dominant_dofs=tuple(str(x) for x in data.get("dominant_dofs", [])),
+        residual=float(data.get("residual", 0.0)),
+        source=str(data.get("source", "stiffness_nullspace")),
+    )
+
+
+def instability_diagnostic_to_json(result: InstabilityDiagnosticResult) -> dict[str, Any]:
+    """Serialize an ``InstabilityDiagnosticResult`` to a JSON-compatible dict."""
+    return {
+        "mechanism_count": result.mechanism_count,
+        "modes": [mechanism_mode_to_json(m) for m in result.modes],
+        "message": result.message,
+        "matrix_size": result.matrix_size,
+        "diagnostic_success": result.diagnostic_success,
+    }
+
+
+def instability_diagnostic_from_json(
+    data: dict[str, Any] | None,
+) -> InstabilityDiagnosticResult | None:
+    """Deserialize an ``InstabilityDiagnosticResult`` from a JSON-decoded dict.
+
+    Returns ``None`` when ``data`` is ``None`` (field absent in older payloads).
+    """
+    if data is None:
+        return None
+    return InstabilityDiagnosticResult(
+        mechanism_count=int(data.get("mechanism_count", 0)),
+        modes=tuple(mechanism_mode_from_json(m) for m in data.get("modes", [])),
+        message=str(data.get("message", "")),
+        matrix_size=int(data.get("matrix_size", 0)),
+        diagnostic_success=bool(data.get("diagnostic_success", False)),
+    )
