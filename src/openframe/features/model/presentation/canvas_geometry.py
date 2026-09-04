@@ -201,8 +201,23 @@ class _GeometryMixin:
         self._record_history()
         tag = max(self.elements, default=0) + 1
         if template is None:
+            properties: dict[str, float | str] = {"behavior": self.element_behavior}
+            # A length-unit gap is only consumed by ElasticPPGap (tension_only
+            # / unprestressed cable). Storing 0 would still round-trip, but
+            # omitting the key keeps older saved models and "plain truss"
+            # members indistinguishable from before this field existed.
+            if self.element_behavior in ("tension_only", "cable") and self.element_gap:
+                properties["gap"] = self.element_gap
+            prestress = (
+                self.element_prestress if self.element_behavior == "cable" else 0.0
+            )
             self.elements[tag] = Element(
-                tag, node_i, node_j, self.element_family, {"behavior": self.element_behavior}
+                tag,
+                node_i,
+                node_j,
+                self.element_family,
+                properties,
+                prestress=prestress,
             )
         else:
             self.elements[tag] = replace(

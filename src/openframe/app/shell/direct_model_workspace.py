@@ -105,6 +105,11 @@ class DirectModelWorkspace(QFrame):
         # (see start_3d_model). The step bar only ever asks for "geometry" —
         # it has no separate 3D button — so this is where that gets resolved.
         self._wizard_geometry_target = "geometry"
+        # Last .ofsm this session wrote or opened. Ctrl+S / 저장 overwrite
+        # that file instead of re-prompting; None means the model is still
+        # untitled (new canvas, or a bundled template the user never chose a
+        # path for) and the next save has to ask.
+        self._project_path: Path | None = None
 
         self.workflow.step_selected.connect(self.set_current_step)
         self.setup_page.continue_requested.connect(self._continue_from_setup)
@@ -125,6 +130,7 @@ class DirectModelWorkspace(QFrame):
         wizard entirely."""
         self.geometry_page.load_project_dict({"ndm": 2})
         self._wizard_geometry_target = "geometry"
+        self._project_path = None
         self.set_current_step("geometry")
 
     def start_3d_model(self) -> None:
@@ -137,6 +143,7 @@ class DirectModelWorkspace(QFrame):
         """
         self.geometry_page_3d.load_project_dict({"ndm": 3})
         self._wizard_geometry_target = "geometry_3d"
+        self._project_path = None
         self.setup_page.dimension.setCurrentIndex(1)
         self.set_current_step("geometry")
 
@@ -186,12 +193,24 @@ class DirectModelWorkspace(QFrame):
         )
         return page.to_project_dict()
 
-    def restore_project(self, data: dict[str, object], *, step: str = "geometry") -> None:
-        """Restore an in-memory recent session and return to its last step."""
+    def restore_project(
+        self,
+        data: dict[str, object],
+        *,
+        step: str = "geometry",
+        path: Path | None = None,
+    ) -> None:
+        """Restore an in-memory recent session and return to its last step.
+
+        ``path`` is the .ofsm this session was last saved to, if any - without
+        it, resuming a saved project would forget the file and the next Ctrl+S
+        would pop a Save As dialog over a path the user already chose.
+        """
         is_3d = int(data.get("ndm", 2)) == 3
         target = self.geometry_page_3d if is_3d else self.geometry_page
         target.load_project_dict(data)
         self._wizard_geometry_target = "geometry_3d" if is_3d else "geometry"
+        self._project_path = path.resolve() if path is not None else None
         self.setup_page.dimension.setCurrentIndex(1 if is_3d else 0)
         self.set_current_step(step)
 
@@ -199,20 +218,27 @@ class DirectModelWorkspace(QFrame):
         page = self._current_geometry_page()
         if page is None:
             return
-        path_str, _ = QFileDialog.getSaveFileName(
-            self, "프로젝트 저장", "", "OpenFrame 프로젝트 (*.ofsm)"
-        )
-        if not path_str:
-            return
-        path = Path(path_str)
-        if path.suffix != ".ofsm":
-            path = path.with_suffix(".ofsm")
+        path = self._project_path
+        if path is None:
+            # Untitled: first save (or a template the user never picked a
+            # destination for) still needs a path. Once that lands, later
+            # Ctrl+S / 저장 writes the same file so the dialog is not a
+            # per-keystroke tax.
+            path_str, _ = QFileDialog.getSaveFileName(
+                self, "프로젝트 저장", "", "OpenFrame 프로젝트 (*.ofsm)"
+            )
+            if not path_str:
+                return
+            path = Path(path_str)
+            if path.suffix != ".ofsm":
+                path = path.with_suffix(".ofsm")
         try:
             page.save_to_file(path)
         except OSError as error:
             QMessageBox.critical(self, "프로젝트 저장", f"저장하지 못했습니다: {error}")
             return
-        self.project_saved.emit(path.resolve())
+        self._project_path = path.resolve()
+        self.project_saved.emit(self._project_path)
 
     def open_project_dict(self, data: dict[str, object]) -> None:
         """Load an already-parsed project dict and land on its own (2D or
@@ -232,13 +258,19 @@ class DirectModelWorkspace(QFrame):
         target = self.geometry_page_3d if is_3d else self.geometry_page
         target.load_project_dict(data)
         self._wizard_geometry_target = "geometry_3d" if is_3d else "geometry"
+        # In-memory load (bundled template, or the shared core of
+        # open_project_file): never inherit a previous session's path, or
+        # Ctrl+S would silently overwrite that other .ofsm / a resource file
+        # the user never chose. open_project_file re-sets the path after.
+        self._project_path = None
         self.set_current_step("geometry")
 
     def open_project_file(self, path: Path) -> None:
         """Load a saved project and land on its own (2D or 3D) canvas."""
         data = json.loads(path.read_text(encoding="utf-8"))
         self.open_project_dict(data)
-        self.project_opened.emit(path.resolve())
+        self._project_path = path.resolve()
+        self.project_opened.emit(self._project_path)
 
     def _open_project(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(

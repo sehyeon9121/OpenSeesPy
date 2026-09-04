@@ -298,6 +298,50 @@ def test_create_element_type_picker_precedes_properties_and_controls_new_member_
     assert page.canvas.elements[beam_member].element_type == "frame"
 
 
+def test_directional_member_settings_card_appears_for_tension_compression_cable() -> None:
+    """Tension-only / Compression-only / Cable used to share the beam
+    Material & Section form with no type-specific 설정창 at all."""
+    page = _page(start_in_3d=True)
+    page.workbench_buttons["element"].click()
+
+    assert page.element_behavior_settings_card.isHidden()
+
+    page.element_type_selector.setCurrentIndex(
+        page.element_type_selector.findData("tension_only")
+    )
+    assert page.element_behavior_settings_card.isVisible()
+    assert page.element_gap_field.isVisible()
+    assert page.element_prestress_field.isHidden()
+    assert "인장만" in page.element_behavior_hint.text()
+
+    page.element_type_selector.setCurrentIndex(
+        page.element_type_selector.findData("compression_only")
+    )
+    assert page.element_behavior_settings_card.isVisible()
+    assert page.element_gap_field.isHidden()
+    assert page.element_prestress_field.isHidden()
+    assert "압축만" in page.element_behavior_hint.text()
+
+    page.element_type_selector.setCurrentIndex(
+        page.element_type_selector.findData("cable")
+    )
+    assert page.element_gap_field.isVisible()
+    assert page.element_prestress_field.isVisible()
+    page.element_prestress_field.setValue(150.0)
+    assert page.canvas.element_prestress == pytest.approx(150.0)
+
+    node_a = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    node_b = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    cable = page.canvas.add_member(node_a, node_b)
+    assert page.canvas.elements[cable].prestress == pytest.approx(150.0)
+    assert page.canvas.elements[cable].properties["behavior"] == "cable"
+
+    page.element_type_selector.setCurrentIndex(
+        page.element_type_selector.findData("general_beam")
+    )
+    assert page.element_behavior_settings_card.isHidden()
+
+
 def test_element_tab_applied_section_is_picked_up_by_the_next_drawn_member() -> None:
     """Element assigns saved definitions to members drawn afterwards."""
     page = _page(start_in_3d=True)

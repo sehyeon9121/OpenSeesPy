@@ -8,7 +8,7 @@ from pathlib import Path
 from openframe import __version__ as _APP_VERSION
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -224,8 +224,15 @@ class MainWindow(QMainWindow):
         upload_action.triggered.connect(self._choose_model_file)
         file_menu.addAction(upload_action)
         save_action = QAction("Save Project", self)
-        save_action.triggered.connect(lambda: self._show_pending_workflow("Save Project"))
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        # ApplicationShortcut so Ctrl+S still fires while the 3D QQuickWidget
+        # (or a length/angle QLineEdit) holds focus - WindowShortcut / a
+        # widget-scoped QShortcut is what used to miss Delete/Undo there.
+        save_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        save_action.triggered.connect(self._save_project_from_header)
         file_menu.addAction(save_action)
+        self.addAction(save_action)
+        self._save_project_action = save_action
         file_menu.addSeparator()
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
@@ -949,6 +956,7 @@ class MainWindow(QMainWindow):
         session = self._direct_workspace_sessions.get(key or "")
         if session is None:
             self._direct_project_opened(resolved)
+            self.statusBar().showMessage(f"프로젝트 저장 · {resolved.name}")
             return
         old_key = session.key
         new_key = f"direct-file:{resolved}"
@@ -965,6 +973,7 @@ class MainWindow(QMainWindow):
         self._current_direct_session_key = new_key
         self._touch_recent_session(new_key)
         self._refresh_start_sessions()
+        self.statusBar().showMessage(f"프로젝트 저장 · {resolved.name}")
 
     def _store_current_session_section(self, section: str) -> None:
         if self._current_session_key in self._workspace_sessions:
@@ -1048,7 +1057,7 @@ class MainWindow(QMainWindow):
         self._current_model_source = None
         self._has_active_workspace = True
         self.direct_model_workspace.restore_project(
-            session.project_data, step=session.step
+            session.project_data, step=session.step, path=session.source_path
         )
         self.navigation.hide()
         self.header.show()

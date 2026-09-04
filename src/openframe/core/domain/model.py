@@ -95,14 +95,13 @@ class Element:
     #: default) reproduces every existing element exactly - no prestress,
     #: same as before this field existed. Positive = tension (see
     #: ``opensees_script_export.py``'s ``_write_elements`` for the sign
-    #: convention test). As of this field's introduction, only wired through
-    #: to Linear Static and Nonlinear Static analysis (via
-    #: ``export_opensees_script``'s conditional corotTruss +
-    #: InitStrainMaterial emission, only when this is nonzero) - Modal,
-    #: Buckling, Response Spectrum and Time History have not been verified
-    #: against a prestressed truss element and must not be assumed to
-    #: handle it correctly just because they happen to execute the same
-    #: exported script text.
+    #: convention test). Linear Static / Nonlinear Static consume this both
+    #: in-process (``MaterialFreeStaticsSolver._build_one_truss_element``)
+    #: and via script export (corotTruss + InitStrainMaterial, only when
+    #: nonzero). Modal, Buckling, Response Spectrum and Time History have
+    #: not been verified against a prestressed truss element and must not be
+    #: assumed to handle it correctly just because they happen to execute
+    #: the same exported script text.
     prestress: float = 0.0
 
     @property

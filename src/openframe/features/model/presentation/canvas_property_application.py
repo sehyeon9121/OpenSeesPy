@@ -336,6 +336,40 @@ class _PropertyApplicationMixin:
             self.elements[element_tag] = replace(element, properties=merged)
         self._changed()
 
+    def apply_behavior_settings_to_selection(
+        self, *, gap: float | None = None, prestress: float | None = None
+    ) -> None:
+        """Write tension/compression/cable extras onto the current selection.
+
+        Section/material apply already retains ``properties["behavior"]`` and
+        ``properties["gap"]`` (they are not in ``_SECTION_PROPERTY_KEYS``),
+        but prestress lives on ``Element.prestress`` - a separate field that
+        ``apply_full_section_to_selection`` never touches. Without this, the
+        Create Element 설정창 could only affect members drawn *after* the
+        values changed, never ones already on the canvas.
+        """
+        if not self.selected_elements:
+            return
+        self._record_history()
+        for element_tag in self.selected_elements:
+            element = self.elements.get(element_tag)
+            if element is None:
+                continue
+            properties = dict(element.properties)
+            behavior = properties.get("behavior", "truss")
+            if gap is not None and behavior in ("tension_only", "cable"):
+                if gap:
+                    properties["gap"] = gap
+                else:
+                    properties.pop("gap", None)
+            next_prestress = element.prestress
+            if prestress is not None and behavior == "cable":
+                next_prestress = prestress
+            self.elements[element_tag] = replace(
+                element, properties=properties, prestress=next_prestress
+            )
+        self._changed()
+
     def apply_uniform_load_to_selection(
         self,
         values: tuple[float, float] | tuple[float, float, float, float],

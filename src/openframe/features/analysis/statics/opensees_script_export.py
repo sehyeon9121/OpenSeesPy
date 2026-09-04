@@ -44,13 +44,16 @@ from openframe.features.analysis.statics.solver import (
     _INCLINED_SUPPORT_MATERIAL_TAG,
     _INCLINED_SUPPORT_STIFFNESS,
     _SPRING_TAG_OFFSET,
+    _UNIDIRECTIONAL_FY_STRAIN_MULTIPLE,
     MaterialFreeStaticsSolver,
+    _element_behavior,
     _element_family,
     _hinge_local_axes,
     _orphan_joint_nodes_for_rotation_pin,
     _orphan_joint_rotation_fix_pattern,
     _reference_vector,
     _released_and_rigid_nodes,
+    _truss_gap_strain,
 )
 
 #: Same table `ModalStaticsSolver` uses to convert a lumped unit-weight into a
@@ -292,7 +295,18 @@ def _write_elements(lines: list[str], model: StructuralModel) -> None:
     for element in sorted(truss_elements, key=lambda item: item.tag):
         elastic, area = _element_properties(element, ndm)
         base_tag = _TRUSS_MATERIAL_TAG_OFFSET + element.tag
-        lines.append(f"ops.uniaxialMaterial('Elastic', {base_tag}, {_num(elastic)})")
+        behavior = _element_behavior(element)
+        if behavior == "compression_only":
+            lines.append(f"ops.uniaxialMaterial('ENT', {base_tag}, {_num(elastic)})")
+        elif behavior in ("tension_only", "cable"):
+            huge_fy = elastic * _UNIDIRECTIONAL_FY_STRAIN_MULTIPLE
+            gap_strain = _truss_gap_strain(model, element)
+            lines.append(
+                f"ops.uniaxialMaterial('ElasticPPGap', {base_tag}, {_num(elastic)}, "
+                f"{_num(huge_fy)}, {_num(gap_strain)})"
+            )
+        else:
+            lines.append(f"ops.uniaxialMaterial('Elastic', {base_tag}, {_num(elastic)})")
         if element.prestress != 0.0 and area > 0.0:
             # Only a prestressed member needs corotTruss's geometrically
             # nonlinear formulation + InitStrainMaterial's initial-strain

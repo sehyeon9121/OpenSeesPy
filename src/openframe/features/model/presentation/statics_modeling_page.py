@@ -136,6 +136,13 @@ class StaticsDrawingCanvas(
         #: add_member) so the 3D viewport can color-code by structural type
         #: instead of by whichever section happens to be assigned.
         self.element_behavior = "general_beam"
+        # Drawing-pen extras for tension_only / cable (see add_member). 0
+        # keeps every existing member identical: ElasticPPGap's gap stays
+        # closed, and Element.prestress stays at its field default. The
+        # Create Element 설정창 writes these; they are not a per-click
+        # prompt because the type itself already decided which extras apply.
+        self.element_gap = 0.0
+        self.element_prestress = 0.0
         self.selection_filter = "all"
         self.grid = 1.0
         self._member_start: int | None = None

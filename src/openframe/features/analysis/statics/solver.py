@@ -61,9 +61,14 @@ _TRUSS_MATERIAL_TAG = 9_000_002
 # varies per element, unlike the unit placeholder above) - offset by the
 # element's own tag, same scheme as every other *_TAG_OFFSET here.
 _TRUSS_ELEMENT_MATERIAL_TAG_OFFSET = 9_600_000
-# tension_only/cable use ElasticPPGap with a zero gap (elastic once strain
-# goes positive/tension, zero stiffness in compression); compression_only
-# uses ENT (the mirror - elastic in compression, zero in tension). Both are
+# InitStrainMaterial wrapper tags for a prestressed truss/cable - distinct
+# from the per-element Elastic/ENT/ElasticPPGap tag above so a member can
+# carry both. Export uses its own 9_200_000 offset (a different process);
+# these never share an OpenSees domain.
+_TRUSS_INIT_STRAIN_TAG_OFFSET = 9_700_000
+# tension_only/cable use ElasticPPGap (elastic once strain exceeds the
+# optional gap, zero stiffness in compression); compression_only uses ENT
+# (the mirror - elastic in compression, zero in tension). Both are
 # OpenSeesPy's own verified one-directional materials - confirmed directly
 # against ops.setStrain/getStress, not a custom formulation - see
 # _define_truss_material. ElasticPPGap's Fy is set to this many times the
@@ -614,43 +619,78 @@ class MaterialFreeStaticsSolver:
         return (float(element.properties["E"]), float(element.properties["A"]))
 
     @staticmethod
-    def _define_truss_material(tag: int, elastic: float, behavior: str) -> None:
+    def _define_truss_material(
+        tag: int, elastic: float, behavior: str, gap_strain: float = 0.0
+    ) -> None:
         """One ``uniaxialMaterial`` per truss/cable/tension-only/compression-
         only member, matching ``behavior`` (see ``_element_behavior``):
         ``compression_only`` gets OpenSeesPy's own ``ENT`` (elastic in
         compression, zero stiffness in tension); ``tension_only`` and
-        ``cable`` share ``ElasticPPGap`` with a zero gap (elastic in
-        tension, zero stiffness in compression - the mirror of ``ENT``);
-        anything else keeps the plain bidirectional ``Elastic`` every truss
-        member has always used. See ``_UNIDIRECTIONAL_FY_STRAIN_MULTIPLE``
-        for why ``ElasticPPGap``'s Fy is set so high.
+        ``cable`` share ``ElasticPPGap`` (elastic in tension, zero stiffness
+        in compression - the mirror of ``ENT``); anything else keeps the
+        plain bidirectional ``Elastic`` every truss member has always used.
+
+        ``gap_strain`` is the ElasticPPGap initial gap as a *strain* (OpenSees'
+        own unit for that argument) - 0 keeps the historical "engages at the
+        first hint of tension" behaviour. A length-unit gap from the Create
+        Element 설정창 is converted by ``_truss_gap_strain`` before it gets
+        here. See ``_UNIDIRECTIONAL_FY_STRAIN_MULTIPLE`` for why Fy is high.
         """
         if behavior == "compression_only":
             ops.uniaxialMaterial("ENT", tag, elastic)
         elif behavior in ("tension_only", "cable"):
             huge_fy = elastic * _UNIDIRECTIONAL_FY_STRAIN_MULTIPLE
-            ops.uniaxialMaterial("ElasticPPGap", tag, elastic, huge_fy, 0.0)
+            ops.uniaxialMaterial("ElasticPPGap", tag, elastic, huge_fy, gap_strain)
         else:
             ops.uniaxialMaterial("Elastic", tag, elastic)
 
     @staticmethod
-    def _truss_element_command(behavior: str) -> str:
-        """Every behaviour (including ``cable``) builds the ordinary linear
-        ``truss`` element here, not ``corotTruss``. A real cable's sag/large-
-        displacement behaviour needs both ``corotTruss`` AND a nonzero
-        ``InitStrainMaterial``-wrapped prestress together - ``corotTruss``
-        alone, on an otherwise-slack one-directional material with no other
-        lateral restraint, admits an unphysical "flip-through" large-
-        displacement equilibrium (confirmed directly: a vertical cable asked
-        to resist a disallowed compression demand converges to the member
-        stretching back out on the *other* side of its own anchor node,
-        instead of failing as the mechanism it actually is). ``element.
-        prestress`` is not wired into this solver at all yet (only
-        ``opensees_script_export.py``'s script-export path reads it) - until
-        it is, ``cable`` stays numerically identical to ``tension_only``
-        here.
+    def _truss_element_command(behavior: str, prestress: float = 0.0) -> str:
+        """``corotTruss`` only when this member actually carries prestress.
+
+        A real cable's sag/large-displacement behaviour needs both
+        ``corotTruss`` AND a nonzero ``InitStrainMaterial``-wrapped prestress
+        together - ``corotTruss`` alone, on an otherwise-slack one-directional
+        material with no other lateral restraint, admits an unphysical
+        "flip-through" large-displacement equilibrium (confirmed directly: a
+        vertical cable asked to resist a disallowed compression demand
+        converges to the member stretching back out on the *other* side of
+        its own anchor node, instead of failing as the mechanism it actually
+        is). Until prestress is nonzero, every behaviour including ``cable``
+        therefore stays the ordinary linear ``truss``.
         """
+        if prestress != 0.0:
+            return "corotTruss"
         return "truss"
+
+    @staticmethod
+    def _build_one_truss_element(
+        model: StructuralModel, element: Element, elastic: float, area: float
+    ) -> None:
+        """Define this member's uniaxial material (and optional prestress
+        wrapper) then emit the matching ``truss`` / ``corotTruss``. Shared by
+        the pure-truss and mixed builders so a directional member cannot pick
+        up ENT in one path and plain Elastic in the other.
+        """
+        behavior = _element_behavior(element)
+        base_tag = _TRUSS_ELEMENT_MATERIAL_TAG_OFFSET + element.tag
+        MaterialFreeStaticsSolver._define_truss_material(
+            base_tag, elastic, behavior, _truss_gap_strain(model, element)
+        )
+        material_tag = base_tag
+        if element.prestress != 0.0 and area > 0.0:
+            wrapper_tag = _TRUSS_INIT_STRAIN_TAG_OFFSET + element.tag
+            init_strain = element.prestress / (elastic * area)
+            ops.uniaxialMaterial("InitStrainMaterial", wrapper_tag, base_tag, init_strain)
+            material_tag = wrapper_tag
+        ops.element(
+            MaterialFreeStaticsSolver._truss_element_command(behavior, element.prestress),
+            element.tag,
+            element.node_i,
+            element.node_j,
+            area,
+            material_tag,
+        )
 
     @staticmethod
     def _truss_stiffness_gap(element: Element) -> str | None:
@@ -808,11 +848,9 @@ class MaterialFreeStaticsSolver:
                     if truss_unit_stiffness
                     else MaterialFreeStaticsSolver._element_material_truss(element)
                 )
-                behavior = _element_behavior(element)
-                element_command = MaterialFreeStaticsSolver._truss_element_command(behavior)
                 if real_material is None:
                     ops.element(
-                        element_command,
+                        "truss",
                         element.tag,
                         element.node_i,
                         element.node_j,
@@ -821,17 +859,8 @@ class MaterialFreeStaticsSolver:
                     )
                     continue
                 elastic, area = real_material
-                element_material_tag = _TRUSS_ELEMENT_MATERIAL_TAG_OFFSET + element.tag
-                MaterialFreeStaticsSolver._define_truss_material(
-                    element_material_tag, elastic, behavior
-                )
-                ops.element(
-                    element_command,
-                    element.tag,
-                    element.node_i,
-                    element.node_j,
-                    area,
-                    element_material_tag,
+                MaterialFreeStaticsSolver._build_one_truss_element(
+                    model, element, elastic, area
                 )
             return
 
@@ -998,18 +1027,8 @@ class MaterialFreeStaticsSolver:
             if _element_family(element.element_type) != "truss":
                 continue
             elastic, area = MaterialFreeStaticsSolver._element_material_truss(element)
-            element_material_tag = _TRUSS_ELEMENT_MATERIAL_TAG_OFFSET + element.tag
-            behavior = _element_behavior(element)
-            MaterialFreeStaticsSolver._define_truss_material(
-                element_material_tag, elastic, behavior
-            )
-            ops.element(
-                MaterialFreeStaticsSolver._truss_element_command(behavior),
-                element.tag,
-                element.node_i,
-                element.node_j,
-                area,
-                element_material_tag,
+            MaterialFreeStaticsSolver._build_one_truss_element(
+                model, element, elastic, area
             )
 
         if ndm == 2:
@@ -1645,6 +1664,33 @@ def _is_directional_truss(element: Element) -> bool:
         _element_family(element.element_type) == "truss"
         and _element_behavior(element) in ("tension_only", "compression_only", "cable")
     )
+
+
+def _truss_gap_strain(model: StructuralModel, element: Element) -> float:
+    """ElasticPPGap's gap argument is a strain, but the Create Element 설정창
+    authors it as a length (the physical opening before the member picks up
+    tension). Convert here so a 10 mm gap on a 4 m cable is 0.0025, not an
+    OpenSees strain of 10 that would never close. 0 (omitted / default)
+    stays 0 - the historical "engages at the first hint of tension" case.
+    """
+    raw = element.properties.get("gap", 0.0)
+    try:
+        gap = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(gap) or gap <= 0.0:
+        return 0.0
+    node_i = model.nodes.get(element.node_i)
+    node_j = model.nodes.get(element.node_j)
+    if node_i is None or node_j is None:
+        return 0.0
+    dz = (node_j.z - node_i.z) if model.ndm != 2 else 0.0
+    length = math.sqrt(
+        (node_j.x - node_i.x) ** 2 + (node_j.y - node_i.y) ** 2 + dz**2
+    )
+    if length <= 0.0:
+        return 0.0
+    return gap / length
 
 
 def _released_and_rigid_nodes(model: StructuralModel) -> tuple[dict[int, int], set[int]]:

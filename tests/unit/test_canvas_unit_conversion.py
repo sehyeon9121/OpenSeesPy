@@ -103,6 +103,22 @@ def test_rigid_offsets_scale_by_length_factor() -> None:
     assert element.offset_j == pytest.approx((-300.0, 0.0, 0.0))
 
 
+def test_cable_prestress_and_gap_scale_with_force_and_length() -> None:
+    canvas = _canvas()
+    canvas.element_behavior = "cable"
+    canvas.element_gap = 0.01
+    canvas.element_prestress = 150.0
+    a = canvas._add_node_at((0.0, 0.0, 0.0))
+    b = canvas._add_node_at((4.0, 0.0, 0.0))
+    member = canvas.add_member(a, b)
+
+    canvas.convert_units(_FACTORS)
+
+    element = canvas.elements[member]
+    assert element.prestress == pytest.approx(150.0 * _FACTORS.force)
+    assert element.properties["gap"] == pytest.approx(0.01 * _FACTORS.length)
+
+
 def test_spring_stiffness_scales_translational_vs_rotational_in_3d() -> None:
     canvas = _canvas(ndm=3)
     node = canvas._add_node_at((0.0, 0.0, 0.0))

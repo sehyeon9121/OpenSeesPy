@@ -45,7 +45,7 @@ from openframe.core.domain import (
 #: apply_full_section_to_selection (canvas_property_application.py), plus
 #: "dim_*" (any Master-DB/Custom section's own raw dimensions), handled
 #: separately below since its members vary per shape.
-_LENGTH_PROPERTY_KEYS = frozenset({"width", "height"})
+_LENGTH_PROPERTY_KEYS = frozenset({"width", "height", "gap"})
 _AREA_PROPERTY_KEYS = frozenset({"A"})
 _INERTIA_PROPERTY_KEYS = frozenset({"I", "Iy", "Iz", "J"})
 _STRESS_PROPERTY_KEYS = frozenset({"E", "G"})
@@ -84,6 +84,7 @@ def _convert_element(element: Element, factors: UnitConversionFactors) -> Elemen
         properties=properties,
         offset_i=tuple(component * factors.length for component in element.offset_i),
         offset_j=tuple(component * factors.length for component in element.offset_j),
+        prestress=element.prestress * factors.force,
     )
 
 

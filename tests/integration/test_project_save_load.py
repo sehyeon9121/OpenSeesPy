@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import json
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QFileDialog
 
 from openframe.app.shell.direct_model_workspace import DirectModelWorkspace
 from openframe.core.domain import UnitSystem
@@ -153,3 +153,99 @@ def test_open_project_file_routes_2d_and_3d_projects_to_their_own_page(tmp_path:
     fresh.open_project_file(path_3d)
     assert fresh.stage_stack.currentWidget() is fresh.geometry_page_3d
     assert len(fresh.geometry_page_3d.canvas.nodes) == 1
+
+
+def _fail_if_save_dialog(*_args, **_kwargs):
+    raise AssertionError("save dialog should not open when a project path is already known")
+
+
+def test_save_project_overwrites_the_opened_file_without_a_dialog(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Ctrl+S / 저장 after Open (or a first Save As) must write the same
+    .ofsm immediately. Re-prompting every time is what made the shortcut
+    useless - the path is already known from open_project_file."""
+    QApplication.instance() or QApplication([])
+    workspace = DirectModelWorkspace()
+    path = tmp_path / "live.ofsm"
+    workspace.geometry_page.canvas.add_node(1.0, 2.0)
+    workspace.geometry_page.save_to_file(path)
+
+    workspace.open_project_file(path)
+    workspace.geometry_page.canvas.add_node(3.0, 4.0)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", _fail_if_save_dialog)
+
+    workspace._save_project()
+
+    reloaded = json.loads(path.read_text(encoding="utf-8"))
+    assert len(reloaded["nodes"]) == 2
+    assert workspace._project_path == path.resolve()
+
+
+def test_new_model_forgets_the_previous_save_path(tmp_path: Path, monkeypatch) -> None:
+    """A New 2D/3D session must not keep writing into the last .ofsm - that
+    would silently clobber a finished project the moment the user hits
+    Ctrl+S on a blank canvas."""
+    QApplication.instance() or QApplication([])
+    workspace = DirectModelWorkspace()
+    path = tmp_path / "previous.ofsm"
+    workspace.geometry_page.canvas.add_node(1.0, 2.0)
+    workspace.geometry_page.save_to_file(path)
+    workspace.open_project_file(path)
+
+    workspace.start_2d_model()
+    dialogs: list[object] = []
+
+    def _cancel_dialog(*_args, **_kwargs):
+        dialogs.append(True)
+        return "", ""
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", _cancel_dialog)
+    workspace._save_project()
+
+    assert dialogs
+    assert json.loads(path.read_text(encoding="utf-8"))["nodes"]
+
+
+def test_restoring_a_saved_session_keeps_the_file_path_for_ctrl_s(
+    tmp_path: Path, monkeypatch
+) -> None:
+    QApplication.instance() or QApplication([])
+    workspace = DirectModelWorkspace()
+    path = tmp_path / "resume.ofsm"
+    workspace.geometry_page.canvas.add_node(1.0, 2.0)
+    data = workspace.geometry_page.to_project_dict()
+    workspace.geometry_page.save_to_file(path)
+
+    workspace.restore_project(data, path=path)
+    workspace.geometry_page.canvas.add_node(5.0, 6.0)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", _fail_if_save_dialog)
+
+    workspace._save_project()
+
+    reloaded = json.loads(path.read_text(encoding="utf-8"))
+    assert len(reloaded["nodes"]) == 2
+
+
+def test_first_save_asks_for_a_path_and_later_saves_reuse_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    QApplication.instance() or QApplication([])
+    workspace = DirectModelWorkspace()
+    workspace.start_2d_model()
+    workspace.geometry_page.canvas.add_node(1.0, 2.0)
+    path = tmp_path / "first.ofsm"
+
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *_args, **_kwargs: (str(path), "")
+    )
+    workspace._save_project()
+    assert path.exists()
+    assert workspace._project_path == path.resolve()
+
+    workspace.geometry_page.canvas.add_node(3.0, 4.0)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", _fail_if_save_dialog)
+    workspace._save_project()
+
+    reloaded = json.loads(path.read_text(encoding="utf-8"))
+    assert len(reloaded["nodes"]) == 2

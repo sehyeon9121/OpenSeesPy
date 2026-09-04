@@ -1777,9 +1777,10 @@ class ModelingInterfacePage(QFrame):
     )
 
     #: MIDAS-style structural intent for members drawn from Create Element.
-    #: The current solver distinguishes frame members from axial-only members;
-    #: tension/compression/cable refinements are exposed now as drawing choices
-    #: and use the axial-only family until their nonlinear formulations land.
+    #: Tension-only / compression-only / cable are axial-only like a truss,
+    #: but each has its own uniaxial law (ElasticPPGap / ENT / optional
+    #: prestress) and a type-specific 설정창 rather than sharing the beam
+    #: I/J form.
     _ELEMENT_TYPE_OPTIONS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("general_beam", "General Beam"),
         ("truss", "Truss"),
@@ -1925,14 +1926,53 @@ class ModelingInterfacePage(QFrame):
         for key, label in self._ELEMENT_TYPE_OPTIONS:
             self.element_type_selector.addItem(label, key)
         self.element_type_selector.setToolTip(
-            "다음에 그릴 부재의 구조 형식을 선택합니다. 현재 Tension-only, "
-            "Compression-only, Cable은 축력 전용 부재로 생성됩니다."
+            "다음에 그릴 부재의 구조 형식을 선택합니다. Tension-only / "
+            "Compression-only / Cable은 축력만 전달하며, 아래 거동 설정에서 "
+            "갭·프리스트레스를 지정합니다."
         )
         self.element_type_selector.currentIndexChanged.connect(
             self._element_type_selection_changed
         )
         type_root.addWidget(self.element_type_selector)
         root.addWidget(type_card)
+
+        behavior_card, behavior_root = self._section("부재 거동 설정")
+        self.element_behavior_settings_card = behavior_card
+        self.element_behavior_hint = QLabel()
+        self.element_behavior_hint.setWordWrap(True)
+        self.element_behavior_hint.setObjectName("setupSectionHint")
+        self.element_behavior_hint.setMaximumWidth(272)
+        behavior_root.addWidget(self.element_behavior_hint)
+        behavior_form = QFormLayout()
+        behavior_form.setContentsMargins(0, 0, 0, 0)
+        self.element_gap_field = self._number(0.0)
+        self.element_gap_field.setRange(0.0, 1_000_000.0)
+        self.element_gap_field.setToolTip(
+            "인장 저항이 시작되기 전의 초기 유간입니다. 0이면 인장 즉시 저항합니다."
+        )
+        self.element_gap_field.valueChanged.connect(self._directional_pen_changed)
+        self.element_gap_label = QLabel("초기 갭")
+        behavior_form.addRow(self.element_gap_label, self.element_gap_field)
+        self.element_prestress_field = self._number(0.0)
+        self.element_prestress_field.setToolTip(
+            "케이블에 미리 도입하는 인장력입니다. 0이 아니면 기하비선형(corotTruss)로 해석합니다."
+        )
+        self.element_prestress_field.valueChanged.connect(self._directional_pen_changed)
+        self.element_prestress_label = QLabel("프리스트레스")
+        behavior_form.addRow(self.element_prestress_label, self.element_prestress_field)
+        behavior_root.addLayout(behavior_form)
+        self.apply_element_behavior_button = QPushButton("선택 부재에 거동 설정 적용")
+        self.apply_element_behavior_button.setObjectName("direct2DSecondaryButton")
+        self.apply_element_behavior_button.setToolTip(
+            "이미 그린 Tension-only / Compression-only / Cable 부재에 "
+            "위 갭·프리스트레스를 적용합니다. 새로 그리는 부재에는 자동 반영됩니다."
+        )
+        self.apply_element_behavior_button.clicked.connect(
+            self._apply_directional_settings_to_selection
+        )
+        behavior_root.addWidget(self.apply_element_behavior_button)
+        behavior_card.hide()
+        root.addWidget(behavior_card)
 
         properties_card, properties_root = self._section(
             "현재 부재 설정" if not self._start_in_3d else "Material & Section"
@@ -2064,6 +2104,85 @@ class ModelingInterfacePage(QFrame):
                 self.model_type_selector.blockSignals(False)
 
         self._element_property_selection_changed()
+        self._refresh_directional_pen_card()
+
+    _DIRECTIONAL_BEHAVIOR_HINTS: ClassVar[dict[str, str]] = {
+        "tension_only": (
+            "인장만 저항하는 축력 부재입니다. 압축을 받으면 강성이 0이 되어 "
+            "슬랙 상태가 됩니다. 재료·단면(E, A)은 아래 Material/Section에서 지정하세요."
+        ),
+        "compression_only": (
+            "압축만 저항하는 축력 부재입니다. 인장을 받으면 강성이 0이 됩니다. "
+            "재료·단면(E, A)은 아래 Material/Section에서 지정하세요."
+        ),
+        "cable": (
+            "인장전담 케이블입니다. 프리스트레스가 있으면 기하비선형(corotTruss)로 "
+            "해석하고, 0이면 인장전담 트러스와 같습니다. 재료·단면(E, A)은 아래에서 지정하세요."
+        ),
+    }
+
+    def _refresh_directional_pen_card(self) -> None:
+        """Show the type-specific 설정창 only for tension/compression/cable.
+
+        General Beam / Truss keep the Material & Section card they already
+        had - inventing a second empty form there would look like those types
+        were unfinished too.
+        """
+        if not hasattr(self, "element_behavior_settings_card"):
+            return
+        behavior = self.element_type_selector.currentData()
+        directional = behavior in self._DIRECTIONAL_BEHAVIOR_HINTS
+        self.element_behavior_settings_card.setVisible(directional)
+        if not directional:
+            return
+        self.element_behavior_hint.setText(self._DIRECTIONAL_BEHAVIOR_HINTS[behavior])
+        show_gap = behavior in ("tension_only", "cable")
+        show_prestress = behavior == "cable"
+        self.element_gap_label.setVisible(show_gap)
+        self.element_gap_field.setVisible(show_gap)
+        self.element_prestress_label.setVisible(show_prestress)
+        self.element_prestress_field.setVisible(show_prestress)
+        self._refresh_directional_unit_labels()
+        self._directional_pen_changed()
+
+    def _directional_pen_changed(self, _value: float | None = None) -> None:
+        """Keep the drawing pen in sync so the next Space-drawn member
+        inherits the 설정창 without an extra Apply click."""
+        if not hasattr(self, "element_gap_field"):
+            return
+        self.canvas.element_gap = float(self.element_gap_field.value())
+        self.canvas.element_prestress = float(self.element_prestress_field.value())
+
+    def _apply_directional_settings_to_selection(self) -> None:
+        if not self.canvas.selected_elements:
+            self.active_element_status.setText(
+                "⚠ 적용할 기존 부재를 먼저 선택하세요. 새로 그리는 부재에는 자동 반영됩니다."
+            )
+            return
+        self._directional_pen_changed()
+        self.canvas.apply_behavior_settings_to_selection(
+            gap=self.canvas.element_gap,
+            prestress=self.canvas.element_prestress,
+        )
+        count = len(self.canvas.selected_elements)
+        self.active_element_status.setText(
+            f"✓ 선택 부재 {count}개에 거동 설정(갭·프리스트레스)을 적용했습니다."
+        )
+
+    def _refresh_directional_unit_labels(self) -> None:
+        if not hasattr(self, "element_gap_field"):
+            return
+        length = self._unit_system.length
+        force = self._unit_system.force
+        self.element_gap_label.setText(f"초기 갭 ({length})")
+        self.element_gap_field.setSuffix(f" {length}")
+        self.element_prestress_label.setText(f"프리스트레스 ({force})")
+        self.element_prestress_field.setSuffix(f" {force}")
+        if hasattr(self, "member_gap_field"):
+            self.member_gap_label.setText(f"초기 갭 ({length})")
+            self.member_gap_field.setSuffix(f" {length}")
+            self.member_prestress_label.setText(f"프리스트레스 ({force})")
+            self.member_prestress_field.setSuffix(f" {force}")
 
     #: Label + the dialog class that captures "what kind of run this is
     #: meant to be" for every AnalysisKind this canvas cannot execute
@@ -6258,6 +6377,31 @@ class ModelingInterfacePage(QFrame):
         section_hint.setObjectName("setupSectionHint")
         root.addWidget(section_hint)
 
+        member_behavior_card, member_behavior_root = self._section("부재 거동 설정")
+        self.member_behavior_settings_card = member_behavior_card
+        self.member_behavior_hint = QLabel()
+        self.member_behavior_hint.setWordWrap(True)
+        self.member_behavior_hint.setObjectName("setupSectionHint")
+        self.member_behavior_hint.setMaximumWidth(272)
+        member_behavior_root.addWidget(self.member_behavior_hint)
+        member_behavior_form = QFormLayout()
+        member_behavior_form.setContentsMargins(0, 0, 0, 0)
+        self.member_gap_field = self._number(0.0)
+        self.member_gap_field.setRange(0.0, 1_000_000.0)
+        self.member_gap_label = QLabel("초기 갭")
+        member_behavior_form.addRow(self.member_gap_label, self.member_gap_field)
+        self.member_prestress_field = self._number(0.0)
+        self.member_prestress_label = QLabel("프리스트레스")
+        member_behavior_form.addRow(self.member_prestress_label, self.member_prestress_field)
+        member_behavior_root.addLayout(member_behavior_form)
+        self.apply_member_behavior_button = QPushButton("선택 부재에 거동 설정 적용")
+        self.apply_member_behavior_button.clicked.connect(
+            self._apply_member_behavior_settings
+        )
+        member_behavior_root.addWidget(self.apply_member_behavior_button)
+        member_behavior_card.hide()
+        root.addWidget(member_behavior_card)
+
         self.member_end_i = QCheckBox("i단 핀 해제 (모멘트 0)")
         self.member_end_i.toggled.connect(
             lambda checked: self._apply_member_end_release("i", checked)
@@ -6781,8 +6925,20 @@ class ModelingInterfacePage(QFrame):
             self.seismic_eccentricity.setValue(
                 self.seismic_eccentricity.value() * factors.length
             )
+        if factors.force != 1.0:
+            for name in ("element_prestress_field", "member_prestress_field"):
+                field = getattr(self, name, None)
+                if field is None:
+                    continue
+                field.blockSignals(True)
+                field.setValue(field.value() * factors.force)
+                field.blockSignals(False)
         self.canvas.convert_units(factors)
         self._scale_length_authoring_fields(factors.length)
+        if hasattr(self, "element_gap_field"):
+            # The spinboxes were rescaled above; the drawing pen still held
+            # the pre-conversion numbers until this write-back.
+            self._directional_pen_changed()
         self._unit_system = unit_system
         self._refresh_unit_system_ui(unit_system)
         if factors.length != 1.0 and self._start_in_3d and hasattr(self, "preview_3d"):
@@ -6812,6 +6968,8 @@ class ModelingInterfacePage(QFrame):
             "new_plane_offset",
             "member_offset_i",
             "member_offset_j",
+            "element_gap_field",
+            "member_gap_field",
         ):
             field = getattr(self, name, None)
             if field is None:
@@ -6841,6 +6999,7 @@ class ModelingInterfacePage(QFrame):
         self._refresh_load3d_unit_labels()
         self._refresh_support_spring_unit_labels()
         self._refresh_member_offset_unit_labels()
+        self._refresh_directional_unit_labels()
         self._refresh_create_section_unit_labels()
         self._rebuild_grid_snap_options()
         if hasattr(self, "new_plane_offset_label"):
@@ -7835,6 +7994,8 @@ class ModelingInterfacePage(QFrame):
         self._update_member_info_card(member_tag)
         if member_tag is not None:
             self._refresh_member_section(member_tag)
+        elif hasattr(self, "member_behavior_settings_card"):
+            self.member_behavior_settings_card.hide()
         if nodes:
             self._refresh_node_type_controls()
         node_summary = self._node_selection_summary()
@@ -7906,6 +8067,57 @@ class ModelingInterfacePage(QFrame):
             self.member_offset_j.setValue(offset_j_length)
             self.member_offset_j.blockSignals(False)
         self.section_material_panel.load_from_element(element)
+        self._refresh_member_behavior_card(element)
+
+    def _refresh_member_behavior_card(self, element) -> None:
+        """Properties-tab counterpart of the Create Element 설정창.
+
+        Without this, a cable already on the canvas had nowhere to edit
+        prestress after the fact - the drawing pen only affects members
+        drawn next.
+        """
+        if not hasattr(self, "member_behavior_settings_card"):
+            return
+        behavior = element.properties.get("behavior", "truss")
+        directional = behavior in self._DIRECTIONAL_BEHAVIOR_HINTS
+        self.member_behavior_settings_card.setVisible(directional)
+        if not directional:
+            return
+        self.member_behavior_hint.setText(self._DIRECTIONAL_BEHAVIOR_HINTS[behavior])
+        show_gap = behavior in ("tension_only", "cable")
+        show_prestress = behavior == "cable"
+        self.member_gap_label.setVisible(show_gap)
+        self.member_gap_field.setVisible(show_gap)
+        self.member_prestress_label.setVisible(show_prestress)
+        self.member_prestress_field.setVisible(show_prestress)
+        raw_gap = element.properties.get("gap", 0.0)
+        try:
+            gap = float(raw_gap)
+        except (TypeError, ValueError):
+            gap = 0.0
+        self.member_gap_field.blockSignals(True)
+        self.member_gap_field.setValue(gap)
+        self.member_gap_field.blockSignals(False)
+        self.member_prestress_field.blockSignals(True)
+        self.member_prestress_field.setValue(element.prestress)
+        self.member_prestress_field.blockSignals(False)
+        self._refresh_directional_unit_labels()
+
+    def _apply_member_behavior_settings(self) -> None:
+        if not self.canvas.selected_elements:
+            self.selection_summary.setText(
+                "⚠ 선택된 부재가 없어 거동 설정을 적용하지 못했습니다."
+            )
+            return
+        self.canvas.apply_behavior_settings_to_selection(
+            gap=float(self.member_gap_field.value()),
+            prestress=float(self.member_prestress_field.value()),
+        )
+        count = len(self.canvas.selected_elements)
+        self.selection_summary.setText(
+            f"✓ 부재 {count}개에 거동 설정(갭·프리스트레스)을 적용했습니다."
+        )
+        self._sync_selection_status()
 
     def _properties_selector_changed(self, _index: int = 0) -> None:
         """Show only the MATERIAL/SECTION/SECTION PROPERTIES card the

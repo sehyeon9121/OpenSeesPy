@@ -140,9 +140,9 @@ def test_cable_element_command_is_plain_truss_without_prestress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """cable stays the ordinary linear truss here (not corotTruss) as long as
-    solver.py has no prestress wiring - see _truss_element_command's own
-    docstring for the unphysical "flip-through" equilibrium corotTruss alone
-    would otherwise admit."""
+    prestress is 0 - see _truss_element_command's own docstring for the
+    unphysical "flip-through" equilibrium corotTruss alone would otherwise
+    admit."""
     from openframe.features.analysis.statics import solver as solver_module
 
     calls: list[tuple] = []
@@ -162,3 +162,80 @@ def test_cable_element_command_is_plain_truss_without_prestress(
     element_calls = [call for call in calls if call and call[1] == 1]
     assert element_calls, "expected element 1 to be built"
     assert element_calls[0][0] == "truss"
+
+
+def test_export_emits_ent_and_elasticppgap_for_directional_members() -> None:
+    from openframe.features.analysis.statics.opensees_script_export import export_opensees_script
+
+    tension = _hanging_member("tension_only")
+    tension.nodal_loads[0] = NodalLoad(2, (0.0, -10.0))
+    script = export_opensees_script(tension)
+    assert "ElasticPPGap" in script
+    assert "ENT" not in script
+
+    compression = _hanging_member("compression_only")
+    script = export_opensees_script(compression)
+    assert "uniaxialMaterial('ENT'" in script
+
+
+def test_in_process_solver_wraps_prestress_as_init_strain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openframe.features.analysis.statics import solver as solver_module
+
+    material_calls: list[tuple] = []
+    element_calls: list[tuple] = []
+    real_material = solver_module.ops.uniaxialMaterial
+    real_element = solver_module.ops.element
+
+    def spy_material(*args: object) -> None:
+        material_calls.append(args)
+        return real_material(*args)
+
+    def spy_element(*args: object) -> None:
+        element_calls.append(args)
+        return real_element(*args)
+
+    monkeypatch.setattr(solver_module.ops, "uniaxialMaterial", spy_material)
+    monkeypatch.setattr(solver_module.ops, "element", spy_element)
+
+    model = _hanging_member("cable")
+    model.elements[1] = Element(
+        1, 1, 2, "truss",
+        properties={"E": _E, "A": _A, "behavior": "cable"},
+        prestress=20.0,
+    )
+    model.nodal_loads[0] = NodalLoad(2, (0.0, -10.0))
+    result = MaterialFreeStaticsSolver().solve(model)
+
+    assert result.status == AnalysisStatus.COMPLETED
+    assert any(call and call[0] == "InitStrainMaterial" for call in material_calls)
+    cable_elements = [call for call in element_calls if call and call[1] == 1]
+    assert cable_elements
+    assert cable_elements[0][0] == "corotTruss"
+
+
+def test_tension_only_gap_is_passed_as_strain(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openframe.features.analysis.statics import solver as solver_module
+
+    material_calls: list[tuple] = []
+    real_material = solver_module.ops.uniaxialMaterial
+
+    def spy_material(*args: object) -> None:
+        material_calls.append(args)
+        return real_material(*args)
+
+    monkeypatch.setattr(solver_module.ops, "uniaxialMaterial", spy_material)
+
+    model = _hanging_member("tension_only")
+    model.elements[1] = Element(
+        1, 1, 2, "truss",
+        properties={"E": _E, "A": _A, "behavior": "tension_only", "gap": 0.04},
+    )
+    model.nodal_loads[0] = NodalLoad(2, (0.0, -10.0))
+    MaterialFreeStaticsSolver().solve(model)
+
+    gap_calls = [call for call in material_calls if call and call[0] == "ElasticPPGap"]
+    assert gap_calls
+    # length 4 m, gap 0.04 m -> strain 0.01
+    assert gap_calls[0][4] == pytest.approx(0.01)

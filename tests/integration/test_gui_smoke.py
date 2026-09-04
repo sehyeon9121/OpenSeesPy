@@ -116,3 +116,15 @@ def test_new_3d_model_opens_directly_on_the_3d_authoring_workspace() -> None:
     assert not window.header.direct_open_button.isHidden()
 
     window.close()
+
+
+def test_file_save_is_bound_to_ctrl_s() -> None:
+    """File > Save Project used to be a pending-workflow placeholder, so
+    Ctrl+S did nothing useful even after a project had a path."""
+    from PySide6.QtGui import QKeySequence
+
+    _application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    assert window._save_project_action.shortcut() == QKeySequence.StandardKey.Save
+    window.close()
