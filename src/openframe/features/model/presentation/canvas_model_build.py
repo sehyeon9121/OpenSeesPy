@@ -265,6 +265,32 @@ class _ModelBuildMixin:
         values = (0.0, 0.0, mz) if self.ndm == 2 else (0.0, 0.0, 0.0, mx, my, mz)
         nodal_loads.append(NodalLoad(node_tag, values, case_type=LoadCaseKind.OTHER))
 
+    def authoring_model(self) -> StructuralModel:
+        """Drawn geometry as a ``StructuralModel``, without analysis-time splitting.
+
+        ``build_model()`` inserts extra nodes and member segments for point
+        loads, moments and self-weight so OpenSees can solve. The status bar,
+        3D authoring preview and the live determinacy *label* must not pay
+        that cost on every ``model_changed``: they describe what the user
+        placed, not the analysis mesh. Calling ``build_model()`` twice per
+        click (status + 3D preview) was the modeling-loop stall — solve and
+        script export still call ``build_model()`` once, when analysis
+        actually starts.
+        """
+        model = StructuralModel(
+            ndm=self.ndm,
+            ndf=3 if self.ndm == 2 else 6,
+            nodes=dict(self.nodes),
+            elements=dict(self.elements),
+            boundaries=list(self.boundaries.values()),
+            nodal_loads=list(self.nodal_loads.values()),
+            element_loads=list(self.element_loads.values()),
+            rigid_diaphragms=tuple(self._build_rigid_diaphragms()),
+        )
+        model.metadata["hinge_nodes"] = ",".join(str(tag) for tag in sorted(self.hinge_nodes))
+        model.metadata["logical_member_count"] = str(len(self.elements))
+        return model
+
     def build_model(self) -> StructuralModel:
         analysis_elements: dict[int, Element] = {}
         analysis_loads: list[UniformElementLoad] = []
