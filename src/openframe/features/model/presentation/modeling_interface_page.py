@@ -7174,10 +7174,16 @@ class ModelingInterfacePage(QFrame):
         except OSError as error:
             self.determinacy_status.setText(f"임시 스크립트 생성 실패: {error}")
             return
+        normalized = self._normalize_full_analysis_options(kind, dict(options))
+        # Thread the user-node allow-list and ndm so the worker subprocess can
+        # project mechanism mode shapes onto the correct node set without
+        # estimating tag ranges.  Popped in worker.py before solver dispatch.
+        normalized["user_node_tags"] = sorted(model.nodes.keys())
+        normalized["ndm"] = model.ndm
         request = AnalysisRequest(
             source_path=source_path,
             kind=kind,
-            options=self._normalize_full_analysis_options(kind, dict(options)),
+            options=normalized,
         )
         errors = self._run_analysis_service.validate(request)
         if errors:

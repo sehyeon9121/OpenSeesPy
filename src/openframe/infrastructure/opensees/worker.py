@@ -70,6 +70,16 @@ def run_analysis(
     options: dict[str, object],
     progress_callback: Callable[[int | None, str], None] | None = None,
 ) -> dict[str, object]:
+    # Extract linear-static metadata before dispatching - these keys are not
+    # recognised by any other solver and would cause a TypeError if passed via
+    # **options.  Pop them unconditionally so every branch stays clean.
+    user_node_tags_raw = options.pop("user_node_tags", None)
+    user_node_tags: set[int] | None = (
+        {int(t) for t in user_node_tags_raw} if user_node_tags_raw else None
+    )
+    ndm_raw = options.pop("ndm", None)
+    ndm: int | None = int(ndm_raw) if ndm_raw is not None else None
+
     if kind == "nonlinear_static":
         return run_nonlinear_static_analysis(
             source,
@@ -101,7 +111,7 @@ def run_analysis(
             **time_history_options,
             progress_callback=progress_callback,
         )
-    return run_linear_static_analysis(source)
+    return run_linear_static_analysis(source, user_node_tags=user_node_tags, ndm=ndm)
 
 
 def main() -> int:
