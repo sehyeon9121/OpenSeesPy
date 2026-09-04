@@ -25,6 +25,9 @@ from openframe.core.domain import (
     TimeHistorySettings,
     TimeHistoryStep,
 )
+from openframe.infrastructure.opensees.instability_diagnostic import (
+    instability_diagnostic_from_json,
+)
 
 
 def _uniform_load(values: Any) -> tuple[float, float, float, float]:
@@ -373,6 +376,9 @@ class OpenSeesProcessRunner:
             status = AnalysisStatus(str(payload.get("status", "completed")))
         except ValueError:
             status = AnalysisStatus.FAILED
+        instability_diagnostic = instability_diagnostic_from_json(
+            payload.get("instability_diagnostic")
+        )
         return AnalysisResult(
             status=status,
             node_results=node_results,
@@ -385,4 +391,5 @@ class OpenSeesProcessRunner:
             buckling_modes=buckling_modes,
             time_history_settings=time_history_settings,
             response_spectrum_settings=response_spectrum_settings,
+            instability_diagnostic=instability_diagnostic,
         )
