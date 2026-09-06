@@ -103,14 +103,24 @@ class ResultsWorkspace(QFrame):
         self.stiffness_warning.setVisible(
             result.displacement_stiffness is DisplacementStiffnessKind.UNIT_STIFFNESS
         )
+        diagnostic = result.instability_diagnostic
+        has_mechanism = (
+            diagnostic is not None
+            and diagnostic.diagnostic_success
+            and diagnostic.mechanism_count > 0
+        )
+        self.result_types.set_instability_available(has_mechanism)
         self.viewport.show_result(result)
         self.summary.show_result(result)
         self.tables_panel.show_result(result)
         self.time_history_results_panel.show_result(result)
+        if has_mechanism:
+            self.result_types.select_result_type("mechanism_modes")
 
     def clear_result(self) -> None:
         """Return the workspace to its waiting state, keeping the drawn model."""
         self.stiffness_warning.setVisible(False)
+        self.result_types.set_instability_available(False)
         self.viewport.clear_result()
         self.summary.clear_result()
         self.tables_panel.clear_result()

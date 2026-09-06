@@ -4503,6 +4503,27 @@ class ModelingInterfacePage(
             self.determinacy_status.setText(
                 f"정정성: {check.message}  ·  {' '.join(result.messages)}"
             )
+            # 3D canvas only (project policy - shared code must gate new
+            # behaviour behind self._start_in_3d rather than touching the 2D
+            # page). Only when the diagnostic actually found a mechanism is
+            # there anything instability-specific worth surfacing: push the
+            # result into the results workspace and let the user opt into
+            # viewing it via the existing "결과 보기" button - no forced
+            # navigation, matching the "not an interruption-worthy error"
+            # philosophy already in this method.
+            if self._start_in_3d:
+                diagnostic = result.instability_diagnostic
+                has_mechanism = (
+                    diagnostic is not None
+                    and diagnostic.diagnostic_success
+                    and diagnostic.mechanism_count > 0
+                )
+                if has_mechanism:
+                    self.results.set_model(model)
+                    self.results.show_result(result)
+                    self.view_results_button.setEnabled(True)
+                    if hasattr(self, "task_results_button"):
+                        self.task_results_button.setEnabled(True)
             return
         summary = (
             f"절점 {len(result.node_results)}개, 부재 {len(result.element_results)}개 "

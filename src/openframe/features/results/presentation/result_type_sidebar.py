@@ -67,6 +67,11 @@ class ResultTypeSidebar(QFrame):
         self.setMaximumWidth(232)
         self._analysis_kind = AnalysisKind.LINEAR_STATIC
         self._current_result_type = "overview"
+        #: Set only by ResultsWorkspace.show_result() when a failed Linear
+        #: Static result actually carries a detected mechanism - the
+        #: "INSTABILITY" section stays hidden otherwise, and is never shown
+        #: for any other analysis kind regardless of this flag.
+        self._instability_available = False
 
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(10, 10, 8, 8)
@@ -148,6 +153,11 @@ class ResultTypeSidebar(QFrame):
         data = self._add_section("data", "DATA")
         self._add_button(data, ("tables",), "Result Tables", "tables")
 
+        instability = self._add_section("instability", "INSTABILITY")
+        self._add_button(
+            instability, ("mechanism_modes",), "Mechanism Shapes", "mechanism_modes"
+        )
+
     def _add_section(self, key: str, title: str) -> _ResultSection:
         section = _ResultSection(title)
         self.sections[key] = section
@@ -191,10 +201,7 @@ class ResultTypeSidebar(QFrame):
         self._current_result_type = selected
         self.result_type_changed.emit(selected)
 
-    def set_analysis_kind(self, kind: AnalysisKind) -> None:
-        self._analysis_kind = kind
-        self.context_label.setText(self._ANALYSIS_LABELS[kind])
-
+    def _visible_sections_for(self, kind: AnalysisKind) -> set[str]:
         common = {"overview", "visualization", "forces", "stress", "data"}
         visible_sections = {
             AnalysisKind.LINEAR_STATIC: common,
@@ -204,6 +211,20 @@ class ResultTypeSidebar(QFrame):
             AnalysisKind.BUCKLING: {"buckling", "data"},
             AnalysisKind.TIME_HISTORY: {"time_history", "data"},
         }[kind]
+        # "INSTABILITY" only ever joins the visible set for Linear Static, and
+        # only once a failed result has actually diagnosed a mechanism - never
+        # for Modal/Buckling/etc., regardless of the flag's value.
+        if self._instability_available and kind == AnalysisKind.LINEAR_STATIC:
+            visible_sections = visible_sections | {"instability"}
+        return visible_sections
+
+    def set_analysis_kind(self, kind: AnalysisKind) -> None:
+        self._analysis_kind = kind
+        self.context_label.setText(self._ANALYSIS_LABELS[kind])
+        self._apply_visible_sections()
+
+    def _apply_visible_sections(self) -> None:
+        visible_sections = self._visible_sections_for(self._analysis_kind)
         for key, section in self.sections.items():
             section.setVisible(key in visible_sections)
 
@@ -213,10 +234,18 @@ class ResultTypeSidebar(QFrame):
                 AnalysisKind.MODAL: "mode_shapes",
                 AnalysisKind.BUCKLING: "buckling_modes",
                 AnalysisKind.TIME_HISTORY: "time_history",
-            }.get(kind, "overview")
+            }.get(self._analysis_kind, "overview")
             self.select_result_type(default_result)
         else:
             self.select_result_type(self._current_result_type)
+
+    def set_instability_available(self, available: bool) -> None:
+        """Show/hide the INSTABILITY section - called by ResultsWorkspace.show_result()
+        with whether the current AnalysisResult actually diagnosed a mechanism."""
+        if available == self._instability_available:
+            return
+        self._instability_available = available
+        self._apply_visible_sections()
 
     def select_result_type(self, key: str) -> None:
         button = self.buttons.get(key)

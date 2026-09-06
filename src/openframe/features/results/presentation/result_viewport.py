@@ -31,6 +31,7 @@ from openframe.core.domain import (
     BucklingMode,
     DisplacementStiffnessKind,
     LoadDisplacementPoint,
+    MechanismMode,
     ModeShape,
     NodeResult,
     StructuralModel,
@@ -81,16 +82,28 @@ RESULT_TYPE_NAMES = {
     "tables": "RESULT TABLES",
     "mode_shapes": "MODE SHAPES",
     "buckling_modes": "BUCKLING MODES",
+    "mechanism_modes": "INSTABILITY MECHANISM",
 }
 
 #: result_types whose header shows the shared mode selector combo (self.mode_shape_selector)
-#: - Modal's ModeShape and Buckling's BucklingMode are different dataclasses (see
-#: core/domain/results.py: a buckling factor is not a natural frequency, and this
-#: analysis never forms a mass matrix), but both need the exact same "pick one
+#: - Modal's ModeShape, Buckling's BucklingMode, and the instability diagnostic's
+#: MechanismMode are three different dataclasses (see core/domain/results.py: a
+#: buckling factor is not a natural frequency, and a stiffness-nullspace mechanism
+#: has no load/time axis at all), but all three need the exact same "pick one
 #: mode, draw its shape" UI, so they share the one selector widget/rendering path
 #: rather than duplicating it - only the entries feeding it and the underlying
 #: AnalysisResult field differ.
-_MODE_SELECTOR_RESULT_TYPES = frozenset({"mode_shapes", "buckling_modes"})
+_MODE_SELECTOR_RESULT_TYPES = frozenset({"mode_shapes", "buckling_modes", "mechanism_modes"})
+
+
+def _mechanism_node_results(mode: MechanismMode) -> dict[int, NodeResult]:
+    """Adapt a MechanismMode's raw eigenvector dict into the NodeResult shape
+    ModeShape.node_results/BucklingMode.node_results already have, so the
+    existing "draw a mode's displacement" pipeline can be reused unchanged."""
+    return {
+        tag: NodeResult(node_tag=tag, displacement=values)
+        for tag, values in mode.mode_shape.items()
+    }
 
 
 class ResultViewport(QFrame):
@@ -172,6 +185,13 @@ class ResultViewport(QFrame):
         header_layout.addWidget(self.mode_shape_selector)
         self.mode_shape_label.hide()
         self.mode_shape_selector.hide()
+        # "which DOFs actually move" readout for the selected mechanism -
+        # MechanismMode.dominant_dofs has no equivalent in ModeShape/BucklingMode
+        # and isn't otherwise visible once you're looking at the 3D shape itself.
+        self.mechanism_dofs_label = QLabel("")
+        self.mechanism_dofs_label.setObjectName("resultMechanismDofsLabel")
+        header_layout.addWidget(self.mechanism_dofs_label)
+        self.mechanism_dofs_label.hide()
         zoom_out = self._tool_button("−")
         zoom_in = self._tool_button("+")
         fit = self._tool_button("FIT")
@@ -340,6 +360,7 @@ class ResultViewport(QFrame):
         self.relative_shape_badge.setVisible(show)
 
     def _refresh_mode_selector(self) -> None:
+        self.mechanism_dofs_label.setVisible(self._result_type == "mechanism_modes")
         if self._result_type == "buckling_modes":
             buckling_modes = () if self._result is None else self._result.buckling_modes
             self.mode_shape_selector.blockSignals(True)
@@ -350,6 +371,18 @@ class ResultViewport(QFrame):
                 )
             self.mode_shape_selector.blockSignals(False)
             return
+        if self._result_type == "mechanism_modes":
+            diagnostic = None if self._result is None else self._result.instability_diagnostic
+            modes = () if diagnostic is None else diagnostic.modes
+            self.mode_shape_selector.blockSignals(True)
+            self.mode_shape_selector.clear()
+            for index, mode in enumerate(modes):
+                self.mode_shape_selector.addItem(
+                    f"Mechanism {mode.mode_number}  (residual={mode.residual:.1e})", index
+                )
+            self.mode_shape_selector.blockSignals(False)
+            self._refresh_mechanism_dofs_label()
+            return
         mode_shapes = () if self._result is None else self._result.mode_shapes
         self.mode_shape_selector.blockSignals(True)
         self.mode_shape_selector.clear()
@@ -358,6 +391,11 @@ class ResultViewport(QFrame):
                 f"Mode {mode.mode_number}  (T={mode.period:.4g}s)", index
             )
         self.mode_shape_selector.blockSignals(False)
+
+    def _refresh_mechanism_dofs_label(self) -> None:
+        mode = self._current_mechanism_mode()
+        text = "—" if mode is None else (", ".join(mode.dominant_dofs) or "—")
+        self.mechanism_dofs_label.setText(text)
 
     def _current_mode_shape(self) -> ModeShape | None:
         if self._result is None:
@@ -374,6 +412,15 @@ class ResultViewport(QFrame):
         if index is None or not (0 <= index < len(self._result.buckling_modes)):
             return None
         return self._result.buckling_modes[index]
+
+    def _current_mechanism_mode(self) -> MechanismMode | None:
+        if self._result is None or self._result.instability_diagnostic is None:
+            return None
+        modes = self._result.instability_diagnostic.modes
+        index = self.mode_shape_selector.currentData()
+        if index is None or not (0 <= index < len(modes)):
+            return None
+        return modes[index]
 
     def _scale_value_text(self, force_diagram: bool) -> str:
         if force_diagram:
@@ -407,6 +454,9 @@ class ResultViewport(QFrame):
             # effect regardless of whatever arbitrary magnitude scipy happened to
             # return the eigenvector at.
             return {} if buckling_mode is None else buckling_mode.normalized_node_results
+        if self._result_type == "mechanism_modes":
+            mechanism_mode = self._current_mechanism_mode()
+            return {} if mechanism_mode is None else _mechanism_node_results(mechanism_mode)
         return {} if self._result is None else self._result.node_results
 
     def _compute_auto_scale(self) -> int | None:
@@ -525,6 +575,9 @@ class ResultViewport(QFrame):
             return
         if self._result_type == "buckling_modes":
             self._redraw_buckling_mode()
+            return
+        if self._result_type == "mechanism_modes":
+            self._redraw_mechanism_mode()
             return
 
         self.controls_stack.setCurrentIndex(0)
@@ -748,6 +801,46 @@ class ResultViewport(QFrame):
         finally:
             self._result, self._result_type = saved_result, saved_type
         self.scale_caption.setText("BUCKLING MODE SHAPE SCALE")
+
+    def _redraw_mechanism_mode(self) -> None:
+        """Same state-swap-and-recurse trick as ``_redraw_mode_shape``/
+        ``_redraw_buckling_mode`` - drawn with the ordinary "nodal
+        displacements" pipeline fed the picked mechanism's raw eigenvector,
+        adapted into NodeResult shape by ``_mechanism_node_results``. Like a
+        mode shape (and unlike a buckling mode) this has no natural
+        normalization, so the raw eigenvector is used as-is."""
+        mode = self._current_mechanism_mode()
+        self._refresh_mechanism_dofs_label()
+        self.real_deform.setVisible(True)
+        self.auto_scale_button.setVisible(True)
+        if self._model is None or mode is None:
+            self.controls_stack.setCurrentIndex(0)
+            self.scale_caption.setText("MECHANISM SHAPE SCALE")
+            self.scale_value.setText(self._scale_value_text(force_diagram=False))
+            if self._model is None:
+                self.scene.clear()
+                self.view.set_content_scene_rect(QRectF(-8.0, -5.0, 16.0, 9.0))
+                return
+            self.canvas_stack.setCurrentWidget(
+                self.quick3d_view if self._model.ndm == 3 else self.view
+            )
+            self.view_selector.setVisible(self._model.ndm == 3)
+            if self._model.ndm == 3:
+                self.quick3d_view.clear_result()
+            else:
+                self.scene.set_model(self._model)
+            return
+
+        synthetic_result = AnalysisResult(
+            status=AnalysisStatus.COMPLETED, node_results=_mechanism_node_results(mode)
+        )
+        saved_result, saved_type = self._result, self._result_type
+        self._result, self._result_type = synthetic_result, "displacement"
+        try:
+            self._redraw()
+        finally:
+            self._result, self._result_type = saved_result, saved_type
+        self.scale_caption.setText("MECHANISM SHAPE SCALE")
 
     def _is_truss_model(self) -> bool:
         """Whole-model, matching how ``check_determinacy``/the solver already
