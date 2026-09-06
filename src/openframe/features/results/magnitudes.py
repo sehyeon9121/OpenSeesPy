@@ -7,7 +7,10 @@ import math
 
 from openframe.core.domain import AnalysisResult, StructuralModel
 from openframe.features.results.diagrams import member_diagrams
-from openframe.features.results.stress import member_stress_magnitudes
+from openframe.features.results.stress import (
+    member_stress_magnitudes,
+    member_stress_station_magnitudes,
+)
 
 #: Result types that colour members by a member force.
 FORCE_INDEX = {"axial": 0, "shear": 1, "moment": 2}
@@ -74,6 +77,20 @@ def member_magnitudes(
         )
 
     return {}
+
+
+def member_station_magnitudes(
+    model: StructuralModel, result: AnalysisResult, result_type: str
+) -> dict[int, tuple[float, ...]]:
+    """Along-member samples of the active quantity, or empty when a single
+    peak per member is the whole colour.
+
+    Stress is the only type that currently grades the member: N/V/M still
+    colour by peak (the ribbon already shows the variation).
+    """
+    if result_type != STRESS_TYPE:
+        return {}
+    return member_stress_station_magnitudes(model, result.element_results)
 
 
 def magnitude_range(magnitudes: dict[int, float]) -> tuple[float, float]:

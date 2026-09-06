@@ -237,12 +237,10 @@ def _stress_labels(
             continue
         pi = _displaced(node_i, result, deformation_scale)
         pj = _displaced(node_j, result, deformation_scale)
-        # peak_member_stress paints the whole member one colour, so the number
-        # used to sit at midspan even when the peak is at a fixed end - a
-        # cantilever then looks uniformly yellow with σ in the middle. Put the
-        # label on the hotter end (same idea as N/V/M end labels). When both
-        # ends agree (truss, constant N) keep midspan so a single number does
-        # not pretend to pick a side.
+        # The contour grades |σ| along the member; the number still names the
+        # peak, so put the label on the hotter end (same idea as N/V/M end
+        # labels). When both ends agree (truss, constant N) keep midspan so a
+        # single number does not pretend to pick a side.
         i_stress = member_end_stress(element, element_result, end="i", ndm=model.ndm)
         j_stress = member_end_stress(element, element_result, end="j", ndm=model.ndm)
         if (

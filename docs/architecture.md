@@ -56,6 +56,47 @@ infrastructure.opensees ───────┴──────────�
 `features/analysis/common/module.py`의 `AnalysisModule`을 구현합니다. 공통 모델과 결과
 형식은 유지하고 해석 종류별 검증·설정·실행만 해당 패키지에 둡니다.
 
+## 면요소 (전단벽·슬래브) — 자리만 정해 둠
+
+전단벽과 슬래브는 **새 해석 종류가 아니다.** 보·기둥과 같이 모델에 들어가는
+면요소이고, 이미 있는 Linear Static / Nonlinear Static / Time History가
+같은 `StructuralModel`을 풀어 낸다. `features/analysis/shear_wall/` 같은
+`AnalysisModule` 패키지를 만들지 않는다.
+
+2D 캔버스는 선부재(보·기둥·트러스) 도면이고, 면요소 모델링·표시는 3D 쪽에
+둔다. 역할이 다르다.
+
+요구가 정해지기 전에는 절점 수, OpenSees 요소명, 두께·재료 필드를 추측해서
+도메인 타입을 만들지 않는다. 코드가 들어갈 패키지와, 절대 재사용하면 안 되는
+기존 개념만 고정한다.
+
+### 소유 지도
+
+| 책임 | 경로 | 이유 |
+|---|---|---|
+| 면요소 도메인 타입 | `core/domain/surfaces.py` | Qt·OpenSees 없는 공통 데이터. `Element`는 `node_i`/`node_j` 두 절점만 갖는다. |
+| 외곽선→메시, 연결 | `features/model/surfaces/` | `features/model/drawing/`과 같이 순수 기하. 그리기 위젯은 `presentation/`에 남긴다. |
+| OpenSees 요소 명령 | `features/analysis/statics/surfaces.py` | `solver.py`와 `opensees_script_export.py`가 호출. GUI는 OpenSees를 부르지 않는다. |
+| 면 응력·결과 표 데이터 | `features/results/surfaces/` | 부재 `stress.py`와 같은 순수 계산. 위젯은 `results/presentation/`. |
+| 3D 면 표시 | `features/viewport/.../quick3d_scene_bridge.py` | 부재 큐브와 같은 브릿지 페이로드. viewport가 results를 역수입하지 않는다. |
+
+해석 종류 패키지(`linear_static`, `nonlinear_static`, `time_history`, …)는
+면요소가 생겨도 그대로 두고, 요소 생성만 `statics/surfaces.py`로 모은다.
+
+### 면요소가 아닌 것
+
+- **`FloorLoadEntry` / `floor_tributary.py`** — 바닥 하중을 주변 보의
+  `UniformElementLoad`로 바꾸는 하중 경로다. 슬래브 강성이 아니다.
+- **`RigidDiaphragm`** — 층 평면의 강체 구속이다. 슬래브 요소가 아니다.
+- **`ElementResult.local_forces`** — 지금 형식은 보 단부력(6 또는 12)이다.
+  셸 결과는 여기 길이를 늘려 끼워 넣지 말고, 면요소용 결과 필드를 따로 둔다.
+
+### 의존 규칙 (면요소에도 동일)
+
+- `core`는 PySide6·OpenSeesPy를 참조하지 않는다.
+- 캔버스·QML은 OpenSees를 직접 호출하지 않는다.
+- 응력·메시 계산 모듈은 Qt 그래픽 객체를 만들지 않는다.
+
 ## 실행 프로세스
 
 사용자가 업로드한 Python 파일은 GUI 프로세스에서 실행하지 않습니다.

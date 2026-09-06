@@ -11,7 +11,12 @@ from openframe.core.domain import (
     StructuralModel,
 )
 from openframe.features.results.magnitudes import member_magnitudes
-from openframe.features.results.stress import fibre_stress, member_end_stress, peak_member_stress
+from openframe.features.results.stress import (
+    fibre_stress,
+    member_end_stress,
+    member_stress_stations,
+    peak_member_stress,
+)
 
 
 def test_beam_peak_stress_combines_axial_and_bending() -> None:
@@ -128,3 +133,55 @@ def test_table_end_stress_uses_the_same_fibre_stress_helper_as_the_contour() -> 
     assert peak_member_stress(element, result, ndm=2) == pytest.approx(1000.0)
     assert abs(i_stress) == pytest.approx(1000.0)
     assert abs(j_stress) == pytest.approx(1000.0)
+
+
+def test_cantilever_stress_stations_fall_from_the_fixed_end() -> None:
+    """A tip-loaded cantilever has M = PL at the fix and 0 at the tip.
+
+    Painting the member the peak |σ| made the whole column one red; the
+    contour samples have to actually decrease along the span.
+    """
+    element = Element(
+        tag=1,
+        node_i=1,
+        node_j=2,
+        element_type="elasticBeamColumn",
+        properties={
+            "A": 0.15,
+            "Iy": 0.003125,
+            "Iz": 0.003125,
+            "height": 0.5,
+            "width": 0.5,
+        },
+    )
+    # OpenSees localForce: Mz_i = -10, Mz_j = 0. Internal Mz runs 10 → 0.
+    # |σ| = |M|c/I = 10 * 0.25 / 0.003125 = 800 at end i, 0 at end j.
+    result = ElementResult(
+        element_tag=1,
+        local_forces=(
+            0.0, 0.0, 0.0, 0.0, 0.0, -10.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ),
+        length=4.0,
+    )
+
+    stations = member_stress_stations(element, result, ndm=3)
+
+    assert stations is not None
+    assert len(stations) > 2
+    assert stations[0] == pytest.approx(800.0)
+    assert stations[-1] == pytest.approx(0.0)
+    assert stations[0] > stations[len(stations) // 2] > stations[-1]
+
+
+def test_truss_stress_stations_stay_the_two_ends() -> None:
+    element = Element(
+        tag=1,
+        node_i=1,
+        node_j=2,
+        element_type="truss",
+        properties={"A": 0.01},
+    )
+    result = ElementResult(element_tag=1, local_forces=(-5.0, 5.0), length=3.0)
+
+    assert member_stress_stations(element, result, ndm=3) == (500.0, 500.0)

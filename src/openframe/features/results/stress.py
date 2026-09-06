@@ -1,12 +1,16 @@
 """Elastic normal stress (σ) from member end forces and section properties.
 
-Peak absolute fibre stress is what the Results Stress view colours by:
+Peak absolute fibre stress is what the Results Stress legend is scaled by:
 
     σ = N/A ± M·c/I
 
-with samples along the member when a 2D distributed load makes N/M vary
-between the ends. Missing section data is skipped (no silent A=1 / I=1
-defaults) so an unassigned member never invents a stress value.
+The contour itself colours stations along the member, not that peak: a
+cantilever's |σ| falls from PL·c/I at the fix to ~0 at the free tip, and
+painting the whole cube the peak red made it look uniformly stressed.
+Samples along the member (and extra interior samples when a 2D distributed
+load makes N/M vary between the ends) are what the canvas tessellates.
+Missing section data is skipped (no silent A=1 / I=1 defaults) so an
+unassigned member never invents a stress value.
 
 The result table uses the same ``fibre_stress`` helper as the contour so the
 two surfaces cannot drift onto different formulas.
@@ -16,9 +20,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from itertools import pairwise
 
 from openframe.core.domain import Element, ElementResult, StructuralModel
-from openframe.features.results.diagrams import member_diagrams
+from openframe.features.results.deformation.deflected_shape import DEFORMED_3D_SAMPLES
+from openframe.features.results.diagrams import member_diagrams, member_diagrams_3d
+from openframe.features.results.diagrams.base import MemberDiagram
 
 
 def fibre_stress(
@@ -126,6 +133,49 @@ def member_stress_magnitudes(
     return magnitudes
 
 
+def member_stress_stations(
+    element: Element,
+    result: ElementResult,
+    *,
+    ndm: int,
+    samples: int = DEFORMED_3D_SAMPLES,
+) -> tuple[float, ...] | None:
+    """|σ| at even stations from end i to end j, or ``None`` if section data is missing.
+
+    End-only peak used to paint the whole member one colour. These samples are
+    what the 3D contour splits into cubes, using the same station count as the
+    deformed Hermite overlay so each cube already drawn for curvature can keep
+    its own |σ|. A truss is axial-only and constant, so it stays two ends.
+    """
+    if "truss" in element.element_type.lower():
+        i_stress = member_end_stress(element, result, end="i", ndm=ndm)
+        j_stress = member_end_stress(element, result, end="j", ndm=ndm)
+        if i_stress is None or j_stress is None:
+            return None
+        return (abs(i_stress), abs(j_stress))
+
+    positions = _even_stations(samples)
+    if ndm == 3:
+        return _stress_stations_3d(element, result, positions)
+    return _stress_stations_2d(element, result, positions)
+
+
+def member_stress_station_magnitudes(
+    model: StructuralModel, element_results: Mapping[int, ElementResult]
+) -> dict[int, tuple[float, ...]]:
+    """Per-element |σ| samples along the member; omitted when section data is missing."""
+    magnitudes: dict[int, tuple[float, ...]] = {}
+    for tag, element in model.elements.items():
+        result = element_results.get(tag)
+        if result is None:
+            continue
+        stations = member_stress_stations(element, result, ndm=model.ndm)
+        if stations is None:
+            continue
+        magnitudes[tag] = stations
+    return magnitudes
+
+
 def _frame_fibre_stress_2d(
     element: Element, area: float, axial_force: float, moment: float
 ) -> float | None:
@@ -212,6 +262,93 @@ def _peak_stress_3d(element: Element, result: ElementResult) -> float | None:
     if i_stress is None or j_stress is None:
         return None
     return max(abs(i_stress), abs(j_stress))
+
+
+def _even_stations(samples: int) -> tuple[float, ...]:
+    count = max(samples, 1)
+    return tuple(index / count for index in range(count + 1))
+
+
+def _stress_stations_2d(
+    element: Element, result: ElementResult, positions: tuple[float, ...]
+) -> tuple[float, ...] | None:
+    try:
+        axial_diagram, _shear, moment_diagram = member_diagrams(result)
+    except ValueError:
+        forces = (*result.local_forces, *((0.0,) * 6))[:6]
+        axial_i, axial_j = -forces[0], forces[3]
+        moment_i, moment_j = -forces[2], forces[5]
+        values: list[float] = []
+        for position in positions:
+            axial = axial_i + (axial_j - axial_i) * position
+            moment = moment_i + (moment_j - moment_i) * position
+            stress = fibre_stress(
+                element, axial_force=axial, moment=moment, ndm=2
+            )
+            if stress is None:
+                return None
+            values.append(abs(stress))
+        return tuple(values)
+
+    values = []
+    for position in positions:
+        stress = fibre_stress(
+            element,
+            axial_force=_diagram_value(axial_diagram, position),
+            moment=_diagram_value(moment_diagram, position),
+            ndm=2,
+        )
+        if stress is None:
+            return None
+        values.append(abs(stress))
+    return tuple(values)
+
+
+def _stress_stations_3d(
+    element: Element, result: ElementResult, positions: tuple[float, ...]
+) -> tuple[float, ...] | None:
+    try:
+        bundle = member_diagrams_3d(result)
+    except ValueError:
+        i_stress = member_end_stress(element, result, end="i", ndm=3)
+        j_stress = member_end_stress(element, result, end="j", ndm=3)
+        if i_stress is None or j_stress is None:
+            return None
+        return tuple(
+            abs(i_stress) * (1.0 - position) + abs(j_stress) * position
+            for position in positions
+        )
+
+    values: list[float] = []
+    for position in positions:
+        stress = fibre_stress(
+            element,
+            axial_force=_diagram_value(bundle.axial, position),
+            moment_y=_diagram_value(bundle.moment_y, position),
+            moment_z=_diagram_value(bundle.moment_z, position),
+            ndm=3,
+        )
+        if stress is None:
+            return None
+        values.append(abs(stress))
+    return tuple(values)
+
+
+def _diagram_value(diagram: MemberDiagram, position: float) -> float:
+    """Linear interpolation of a force diagram, matching spatial-strip sampling."""
+    points = diagram.points
+    if not points:
+        return 0.0
+    if position <= points[0].position:
+        return points[0].value
+    for previous, current in pairwise(points):
+        if position <= current.position:
+            span = current.position - previous.position
+            if span <= 1.0e-15:
+                return current.value
+            blend = (position - previous.position) / span
+            return previous.value + blend * (current.value - previous.value)
+    return points[-1].value
 
 
 def _truss_axial(result: ElementResult) -> float | None:

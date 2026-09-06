@@ -197,6 +197,65 @@ def _color_for_ratio(ratio: float) -> str:
     return f"#{red:02x}{green:02x}{blue:02x}"
 
 
+def _even_polyline(
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    count: int,
+) -> list[tuple[float, float, float]]:
+    """Even vertices on the chord. ``count`` 2 is the chord itself."""
+    if count <= 2:
+        return [start, end]
+    last = count - 1
+    return [
+        (
+            start[0] + (end[0] - start[0]) * (index / last),
+            start[1] + (end[1] - start[1]) * (index / last),
+            start[2] + (end[2] - start[2]) * (index / last),
+        )
+        for index in range(count)
+    ]
+
+
+def _resample_polyline(
+    points: list[tuple[float, float, float]],
+    count: int,
+) -> list[tuple[float, float, float]]:
+    """Arc-length sample of ``points`` to ``count`` vertices.
+
+    Used when a contour's station count does not match the Hermite overlay
+    (scale 0 is a two-point chord; a mismatch would otherwise paint one cube).
+    """
+    if len(points) < 2:
+        return points
+    if count <= 2:
+        return [points[0], points[-1]]
+    if len(points) == count:
+        return points
+    lengths = [0.0]
+    for start, end in pairwise(points):
+        lengths.append(lengths[-1] + math.dist(start, end))
+    total = lengths[-1]
+    if total <= 1.0e-15:
+        return [points[0]] * count
+    resampled: list[tuple[float, float, float]] = []
+    segment = 0
+    for index in range(count):
+        target = total * index / (count - 1)
+        while segment < len(points) - 2 and lengths[segment + 1] < target:
+            segment += 1
+        span = lengths[segment + 1] - lengths[segment]
+        blend = 0.0 if span <= 1.0e-15 else (target - lengths[segment]) / span
+        start, end = points[segment], points[segment + 1]
+        resampled.append(
+            (
+                start[0] + (end[0] - start[0]) * blend,
+                start[1] + (end[1] - start[1]) * blend,
+                start[2] + (end[2] - start[2]) * blend,
+            )
+        )
+    return resampled
+
+
 def _as_point_list(value: object) -> list[tuple[float, float, float]]:
     """Accept the axis/curve payload ``spatial_diagram_strips`` produces
     (tuples of xyz) without dragging that type into this module.
@@ -445,6 +504,7 @@ class Quick3DSceneBridge(QObject):
         force_diagrams: list[dict[str, object]] | None = None,
         overlay_labels: list[dict[str, object]] | None = None,
         member_polylines: dict[int, list[tuple[float, float, float]]] | None = None,
+        member_station_magnitudes: dict[int, tuple[float, ...]] | None = None,
     ) -> None:
         """Overlay analysis displacements: deformed + colour-mapped geometry, an
         optional translucent undeformed ghost, and arrows at loaded nodes."""
@@ -493,7 +553,13 @@ class Quick3DSceneBridge(QObject):
                 for tag, value in member_magnitudes.items()
             }
         else:
+            member_peak = 0.0
             member_ratios = None
+        if member_station_magnitudes and member_peak <= 1.0e-12:
+            member_peak = max(
+                (max(values, default=0.0) for values in member_station_magnitudes.values()),
+                default=0.0,
+            )
 
         members: list[dict[str, float | int | str]] = []
         for element in sorted(model.elements.values(), key=lambda item: item.tag):
@@ -502,14 +568,20 @@ class Quick3DSceneBridge(QObject):
             else:
                 ratio = 0.5 * (ratios.get(element.node_i, 0.0) + ratios.get(element.node_j, 0.0))
             polyline = self._view_member_polyline(element.tag, member_polylines)
-            members.extend(
-                self._member_parts(
-                    element,
-                    deformed_points,
-                    color=_color_for_ratio(ratio),
-                    polyline=polyline,
-                )
+            station_values = (
+                member_station_magnitudes.get(element.tag)
+                if member_station_magnitudes
+                else None
             )
+            contour = self._stress_contour_parts(
+                element,
+                deformed_points,
+                polyline=polyline,
+                station_values=station_values,
+                peak=member_peak,
+                fallback_color=_color_for_ratio(ratio),
+            )
+            members.extend(contour)
         self._members = members
 
         if show_undeformed:
@@ -2616,6 +2688,85 @@ class Quick3DSceneBridge(QObject):
             "opacity": opacity,
         }
 
+    def _stress_contour_parts(
+        self,
+        element: Element,
+        points: dict[int, tuple[float, float, float]],
+        *,
+        polyline: list[tuple[float, float, float]] | None,
+        station_values: tuple[float, ...] | None,
+        peak: float,
+        fallback_color: str,
+    ) -> list[dict[str, float | int | str]]:
+        """Colour a member by |σ| along its length when the samples vary.
+
+        A single peak used to paint every Hermite cube the same red, so a
+        cantilever read as uniformly stressed. When |σ| actually changes
+        along the member, tessellate to the sample count (reusing the
+        deformed centreline when it already has that many vertices) and
+        give each cube the colour at that station. Constant stress (truss,
+        pure axial) keeps the one-colour extrusion it always had.
+        """
+        if (
+            station_values is None
+            or len(station_values) < 3
+            or not self._stations_vary(station_values, peak)
+        ):
+            return self._member_parts(
+                element, points, color=fallback_color, polyline=polyline
+            )
+        contour_line = self._polyline_for_stations(
+            element, points, polyline, len(station_values)
+        )
+        if contour_line is None or len(contour_line) < 2:
+            return self._member_parts(
+                element, points, color=fallback_color, polyline=polyline
+            )
+        segment_colors = [
+            _color_for_ratio(
+                0.0
+                if peak <= 1.0e-12
+                else (station_values[index] + station_values[index + 1]) * 0.5 / peak
+            )
+            for index in range(len(station_values) - 1)
+        ]
+        return self._member_parts(
+            element,
+            points,
+            color=fallback_color,
+            polyline=contour_line,
+            segment_colors=segment_colors,
+        )
+
+    @staticmethod
+    def _stations_vary(values: tuple[float, ...], peak: float) -> bool:
+        if peak <= 1.0e-12:
+            return False
+        return (max(values) - min(values)) > peak * 1.0e-6
+
+    def _polyline_for_stations(
+        self,
+        element: Element,
+        points: dict[int, tuple[float, float, float]],
+        polyline: list[tuple[float, float, float]] | None,
+        station_count: int,
+    ) -> list[tuple[float, float, float]] | None:
+        """A centreline with ``station_count`` vertices so each |σ| sample owns a cube.
+
+        The deformed Hermite overlay already uses this many points; keep it so
+        the contour follows the bow. A two-point chord (scale 0, or a truss)
+        is subdivided in place - otherwise it would stay one cube.
+        """
+        if polyline is not None and len(polyline) >= 2:
+            if len(polyline) == station_count:
+                return polyline
+            return _resample_polyline(polyline, station_count)
+        start = points.get(element.node_i)
+        end = points.get(element.node_j)
+        if start is None or end is None:
+            return None
+        return _even_polyline(start, end, station_count)
+
     def _view_member_polyline(
         self,
         element_tag: int,
@@ -2641,6 +2792,7 @@ class Quick3DSceneBridge(QObject):
         color: str,
         opacity: float = 1.0,
         polyline: list[tuple[float, float, float]] | None = None,
+        segment_colors: list[str] | None = None,
     ) -> list[dict[str, float | int | str]]:
         """One flat box/cylinder part per member, or three (web + two
         flanges) for an H/I section - matching the flat-list-of-parts
@@ -2661,6 +2813,9 @@ class Quick3DSceneBridge(QObject):
         member can show bending instead of one cube between displaced nodes.
         Stored start/end on every piece stay the polyline's true ends so
         box-picking and line-display still see one member, not N stubs.
+        ``segment_colors`` paints each of those pairs its own colour; the
+        stress contour uses this so |σ| can fall along a cantilever instead
+        of the whole extrusion reading as the peak.
         """
         if polyline is None:
             start = points.get(element.node_i)
@@ -2671,14 +2826,19 @@ class Quick3DSceneBridge(QObject):
         if len(polyline) < 2:
             return []
         record_start, record_end = polyline[0], polyline[-1]
+        segments = list(pairwise(polyline))
+        if segment_colors is None or len(segment_colors) != len(segments):
+            colors = [color] * len(segments)
+        else:
+            colors = segment_colors
         parts: list[dict[str, float | int | str]] = []
-        for start, end in pairwise(polyline):
+        for (start, end), segment_color in zip(segments, colors, strict=True):
             parts.extend(
                 self._member_segment_parts(
                     element,
                     start,
                     end,
-                    color=color,
+                    color=segment_color,
                     opacity=opacity,
                     record_start=record_start,
                     record_end=record_end,

@@ -45,6 +45,10 @@ $env:QT_QPA_PLATFORM='offscreen'; .\.venv\Scripts\python.exe -m pytest tests/ -q
 - 계산(응력값 산출, 내보낼 표 데이터 구성) → `features/results/` 하위의 순수 모듈
 - 표시·위젯·다이얼로그 → `features/results/presentation/`
 
+전단벽·슬래브는 새 `AnalysisModule`이 아니다. `docs/architecture.md`의
+면요소 소유 지도를 따른다. `FloorLoadEntry` / `floor_tributary` /
+`RigidDiaphragm`을 슬래브 강성으로 쓰지 마라.
+
 전체 규칙은 `docs/architecture.md` 참고.
 
 ---

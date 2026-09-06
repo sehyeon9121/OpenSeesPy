@@ -412,7 +412,7 @@ class ResultSummaryPanel(QFrame):
         "axial": "Members coloured by peak axial force.",
         "shear": "Members coloured by peak shear force.",
         "moment": "Members coloured by peak bending moment.",
-        "stress": "Members coloured by peak normal stress |sigma|.",
+        "stress": "Members coloured by normal stress |sigma| along each member.",
         "overview": "Members coloured by nodal displacement.",
         "deformation": "Members coloured by nodal displacement.",
         "displacement": "Members coloured by nodal displacement.",

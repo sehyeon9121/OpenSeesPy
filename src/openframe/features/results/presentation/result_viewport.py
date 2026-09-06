@@ -44,7 +44,11 @@ from openframe.features.results.deformation import (
     nodal_displacements,
 )
 from openframe.features.results.diagrams import DiagramKind, spatial_diagram_strips
-from openframe.features.results.magnitudes import magnitude_range, member_magnitudes
+from openframe.features.results.magnitudes import (
+    magnitude_range,
+    member_magnitudes,
+    member_station_magnitudes,
+)
 from openframe.features.results.overlay_labels import result_overlay_labels
 from openframe.features.results.presentation.frame_diagram_renderer import (
     FrameDiagramRenderer,
@@ -672,6 +676,11 @@ class ResultViewport(QFrame):
                 if force_diagram or self._result_type == "stress"
                 else None
             )
+            station_colors = (
+                member_station_magnitudes(self._model, self._result, self._result_type)
+                if self._result_type == "stress"
+                else None
+            )
             # Diagrams are drawn on the undeformed centreline, the same way the
             # 2D QGraphics overlay is. The DIAGRAM SCALE slider is the same
             # widget as DEFORM SCALE; feeding that value as a displacement
@@ -684,6 +693,7 @@ class ResultViewport(QFrame):
                 scale,
                 self.show_undeformed.isChecked() and not force_diagram,
                 member_magnitudes=member_colors,
+                member_station_magnitudes=station_colors or None,
                 force_diagrams=self._force_diagram_payload() if force_diagram else [],
                 overlay_labels=self._overlay_label_payload(scale),
                 member_polylines=self._deformed_member_polylines(scale),
