@@ -4,22 +4,17 @@ Manager's own state.
 A ``Story`` never owns geometry; it is a thin, renamable label attached to
 an elevation, and ``nodes_at_story`` re-derives which nodes belong to it by
 Z-proximity every time it is asked, rather than storing a node-tag list that
-could drift out of sync as the model is edited. ``rigid_diaphragm`` is the
-only field that changes analysis behaviour - see
+could drift out of sync as the model is edited. ``rigid_diaphragm`` still owns the kinematic floor constraint - see
 ``canvas_model_build.py``'s ``_build_rigid_diaphragms`` and
-``core.domain.model.RigidDiaphragm``.
+``core.domain.model.RigidDiaphragm``. Elevations are also copied onto
+``StructuralModel.stories`` so a rectangular wall can seed a horizontal
+mesh row at each floor; the story still does not own or move nodes.
 
 See ``canvas_work_planes.py`` for why this is a mixin rather than a
 standalone class.
 """
 
-from openframe.core.domain import Story
-
-#: Nodes within this many model-length-units of a story's elevation count as
-#: "at" that story - forgiving enough for the small floating-point noise a
-#: hand-drawn or generated grid can pick up, tight enough that two real
-#: floors a normal building's story height apart are never confused.
-_STORY_Z_TOLERANCE = 1.0e-6
+from openframe.core.domain.story import STORY_Z_TOLERANCE, Story
 
 
 class _StoryMixin:
@@ -78,7 +73,7 @@ class _StoryMixin:
             sorted(
                 tag
                 for tag, node in self.nodes.items()
-                if abs(node.z - story.elevation) <= _STORY_Z_TOLERANCE
+                if abs(node.z - story.elevation) <= STORY_Z_TOLERANCE
             )
         )
 
@@ -97,7 +92,7 @@ class _StoryMixin:
         existing = [story.elevation for story in self.stories.values()]
 
         def _covered(z: float) -> bool:
-            return any(abs(z - elevation) <= _STORY_Z_TOLERANCE for elevation in existing)
+            return any(abs(z - elevation) <= STORY_Z_TOLERANCE for elevation in existing)
 
         candidates = sorted({node.z for node in self.nodes.values() if not _covered(node.z)})
         if not candidates:

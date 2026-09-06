@@ -324,6 +324,12 @@ class _ModelBuildMixin:
             nodal_loads=list(self.nodal_loads.values()),
             element_loads=list(self.element_loads.values()),
             rigid_diaphragms=tuple(self._build_rigid_diaphragms()),
+            # Wall meshing seeds horizontal rows from these elevations.
+            # Copied even when no wall exists yet so a later panel sees
+            # the same Story Manager floors the canvas already shows.
+            stories=tuple(
+                sorted(self.stories.values(), key=lambda story: (story.elevation, story.id))
+            ),
         )
         model.metadata["hinge_nodes"] = ",".join(str(tag) for tag in sorted(self.hinge_nodes))
         model.metadata["logical_member_count"] = str(len(self.elements))
@@ -670,6 +676,9 @@ class _ModelBuildMixin:
             element_loads=analysis_loads,
             point_loads=analysis_point_loads,
             rigid_diaphragms=tuple(self._build_rigid_diaphragms()),
+            stories=tuple(
+                sorted(self.stories.values(), key=lambda story: (story.elevation, story.id))
+            ),
         )
         model.metadata["hinge_nodes"] = ",".join(str(tag) for tag in sorted(self.hinge_nodes))
         model.metadata["logical_member_count"] = str(len(self.elements))

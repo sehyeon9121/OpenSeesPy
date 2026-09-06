@@ -15,6 +15,7 @@ def test_default_structural_model_has_empty_walls_and_shell_quads() -> None:
 
     assert model.walls == {}
     assert model.shell_quads == {}
+    assert model.stories == ()
     assert model.elements == {}
     assert model.validate() == []
 

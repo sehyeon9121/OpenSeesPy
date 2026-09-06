@@ -65,6 +65,49 @@ def test_bridge_creates_one_face_per_quad_and_deduped_edges() -> None:
     assert len(bridge.wallFaces) + len(bridge.wallEdges) < 4 * 5
 
 
+def test_seeded_shared_user_node_does_not_duplicate_edges_or_faces() -> None:
+    _app()
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 2.0, 0.0, 0.0, 6),
+            3: Node(3, 2.0, 0.0, 3.0, 6),
+            4: Node(4, 0.0, 0.0, 3.0, 6),
+            5: Node(5, 1.0, 0.0, 3.0, 6),
+        },
+        walls={
+            1: WallPanel(
+                tag=1,
+                node_1=1,
+                node_2=2,
+                node_3=3,
+                node_4=4,
+                thickness=0.2,
+                nx=1,
+                ny=1,
+                elastic_modulus=30_000_000.0,
+                poisson_ratio=0.2,
+            )
+        },
+    )
+    model = assemble_wall_meshes(model)
+    bridge = Quick3DSceneBridge()
+    bridge.set_model(model)
+
+    # nx=1, ny=1 plus a top-mid USER seed → 3×2 grid: 2 faces, 7 unique edges.
+    assert len(model.shell_quads) == 2
+    assert len(bridge.wallFaces) == 2
+    assert len(bridge.wallEdges) == 7
+    centres = {(round(face["x"], 9), round(face["y"], 9), round(face["z"], 9)) for face in bridge.wallFaces}
+    assert len(centres) == 2
+    edge_midpoints = {
+        (round(edge["x"], 9), round(edge["y"], 9), round(edge["z"], 9)) for edge in bridge.wallEdges
+    }
+    assert len(edge_midpoints) == len(bridge.wallEdges)
+
+
 def test_undeformed_wall_face_centre_matches_quad_geometry() -> None:
     _app()
     model = _meshed_wall(1, 1)

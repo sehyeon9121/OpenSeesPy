@@ -8,6 +8,13 @@ owns geometry.
 
 from dataclasses import dataclass
 
+#: Nodes within this many model-length-units of a story's elevation count as
+#: "at" that story. Story Manager grouping and the rectangular wall mesher's
+#: horizontal seeds share this number so a floor label and a mesh row cannot
+#: disagree about whether a Z is on that storey. Forgiving enough for grid
+#: float noise, tight enough that two real floors are never merged.
+STORY_Z_TOLERANCE = 1.0e-6
+
 
 @dataclass(frozen=True, slots=True)
 class Story:

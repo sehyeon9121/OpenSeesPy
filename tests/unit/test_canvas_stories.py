@@ -125,3 +125,16 @@ def test_build_model_skips_a_diaphragm_story_with_fewer_than_two_nodes() -> None
     model = canvas.build_model()
 
     assert model.rigid_diaphragms == ()
+
+
+def test_build_model_copies_stories_for_wall_mesh_seeds() -> None:
+    canvas = _canvas()
+    canvas.add_story("1층", 0.0)
+    canvas.add_story("2층", 3.0)
+
+    built = canvas.build_model()
+    authored = canvas.authoring_model()
+
+    assert [story.elevation for story in built.stories] == [0.0, 3.0]
+    assert [story.elevation for story in authored.stories] == [0.0, 3.0]
+    assert built.stories[0].name == "1층"

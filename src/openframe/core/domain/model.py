@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from openframe.core.domain.geometric_transform import GeometricTransform
+from openframe.core.domain.story import Story
 from openframe.core.domain.surfaces import ShellQuad, WallPanel
 
 
@@ -329,6 +330,13 @@ class StructuralModel:
     #: mesher runs; remesh drops this collection and every
     #: ``NodeOrigin.WALL_MESH`` node, then rebuilds both.
     shell_quads: dict[int, ShellQuad] = field(default_factory=dict)
+    #: Story elevations copied from Story Manager. Empty on every model
+    #: built before this field existed — adding it last keeps beam/truss
+    #: constructors unchanged. The rectangular wall mesher inserts a
+    #: horizontal grid line at each elevation that falls inside a wall's
+    #: height. This is not a rigid diaphragm and does not move nodes;
+    #: ``rigid_diaphragms`` stays the only kinematic floor constraint.
+    stories: tuple[Story, ...] = ()
 
     def validate(self) -> list[str]:
         """Return validation errors without depending on a GUI dialog."""

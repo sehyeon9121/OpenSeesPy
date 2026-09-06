@@ -12,6 +12,8 @@ from openframe.core.domain import (
     Element,
     NodalLoad,
     Node,
+    NodeOrigin,
+    Story,
     StructuralModel,
     WallPanel,
 )
@@ -211,6 +213,161 @@ def test_beam_only_linear_static_is_unchanged_without_walls() -> None:
     assert result.node_results[1].reaction[1] == pytest.approx(12.0)
     assert result.node_results[1].reaction[2] == pytest.approx(36.0)
     assert model.shell_quads == {}
+
+
+_BEAM_PROPS = {
+    "E": 2.0e8,
+    "A": 0.04,
+    "G": 8.0e7,
+    "J": 1.0e-4,
+    "Iy": 1.0e-4,
+    "Iz": 1.0e-4,
+}
+
+
+def _frame_wall_nodes(*, junction_y: float) -> dict[int, Node]:
+    return {
+        1: Node(1, 0.0, 0.0, 0.0, 6),
+        2: Node(2, _LW, 0.0, 0.0, 6),
+        3: Node(3, _LW, 0.0, _H, 6),
+        4: Node(4, 0.0, 0.0, _H, 6),
+        5: Node(5, _LW / 2.0, junction_y, _H, 6),
+        6: Node(6, 4.0, junction_y, _H, 6),
+    }
+
+
+def _frame_wall_model(*, connected: bool) -> StructuralModel:
+    """Cantilever wall with a beam leaving the top-edge mid-point.
+
+    Connected: beam node 5 sits on the wall edge so the mesh reuses tag 5.
+    Disconnected: the same beam is offset off the plane; node 6 is then
+    fixed so the frame can solve on its own and the wall must not pick up
+    the beam load.
+    """
+    junction_y = 0.0 if connected else 0.05
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes=_frame_wall_nodes(junction_y=junction_y),
+        elements={
+            20: Element(20, 5, 6, "elasticBeamColumn", properties=_BEAM_PROPS),
+        },
+        walls={
+            1: WallPanel(
+                tag=1,
+                node_1=1,
+                node_2=2,
+                node_3=3,
+                node_4=4,
+                thickness=_THICKNESS,
+                nx=1,
+                ny=1,
+                elastic_modulus=_E,
+                poisson_ratio=_NU,
+            )
+        },
+        nodal_loads=[NodalLoad(6, (_P, 0.0, 0.0, 0.0, 0.0, 0.0))],
+    )
+    assemble_wall_meshes(model)
+    base = [node for node in model.nodes.values() if abs(node.z) <= 1.0e-12]
+    model.boundaries = [
+        BoundaryCondition(node.tag, (True, True, True, True, True, True)) for node in base
+    ]
+    if not connected:
+        model.boundaries.append(BoundaryCondition(6, (True, True, True, True, True, True)))
+    return model
+
+
+def test_connected_beam_shares_its_wall_edge_node_and_transfers_load() -> None:
+    model = _frame_wall_model(connected=True)
+    used_by_shell = {
+        tag for quad in model.shell_quads.values() for tag in quad.node_tags()
+    }
+    assert 5 in used_by_shell
+    assert model.elements[20].node_i == 5
+    coords: dict[tuple[float, float, float], int] = {}
+    for node in model.nodes.values():
+        key = (round(node.x, 9), round(node.y, 9), round(node.z, 9))
+        assert key not in coords, f"duplicate coordinate {key}: {coords[key]} and {node.tag}"
+        coords[key] = node.tag
+
+    result = MaterialFreeStaticsSolver().solve(model)
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+    assert _base_reaction_x(model, result) == pytest.approx(-_P, rel=1e-5, abs=1e-4)
+
+
+def test_disconnected_beam_does_not_load_the_wall() -> None:
+    connected = _frame_wall_model(connected=True)
+    disconnected = _frame_wall_model(connected=False)
+    used_by_shell = {
+        tag for quad in disconnected.shell_quads.values() for tag in quad.node_tags()
+    }
+    assert 5 not in used_by_shell
+    assert len(disconnected.shell_quads) == 1
+
+    connected_result = MaterialFreeStaticsSolver().solve(connected)
+    disconnected_result = MaterialFreeStaticsSolver().solve(disconnected)
+    assert connected_result.status == AnalysisStatus.COMPLETED, connected_result.messages
+    assert disconnected_result.status == AnalysisStatus.COMPLETED, disconnected_result.messages
+    assert _base_reaction_x(connected, connected_result) == pytest.approx(-_P, rel=1e-5, abs=1e-4)
+    assert _base_reaction_x(disconnected, disconnected_result) == pytest.approx(0.0, abs=1e-3)
+
+
+def test_story_seeded_wall_still_solves_as_a_cantilever() -> None:
+    model = _authored_wall(1, 1)
+    model.stories = (
+        Story("s0", "1층", 0.0),
+        Story("s1", "2층", 1.5),
+        Story("s2", "3층", 3.0),
+    )
+    model = assemble_wall_meshes(model)
+    zs = sorted({round(node.z, 9) for node in model.nodes.values()})
+    assert zs == [0.0, 1.5, 3.0]
+    assert len(model.shell_quads) == 2
+    base = [node for node in model.nodes.values() if abs(node.z) <= 1.0e-12]
+    top = [node for node in model.nodes.values() if abs(node.z - _H) <= 1.0e-12]
+    model.boundaries = [
+        BoundaryCondition(node.tag, (True, True, True, True, True, True)) for node in base
+    ]
+    share = _P / len(top)
+    model.nodal_loads = [NodalLoad(node.tag, (share, 0.0, 0.0, 0.0, 0.0, 0.0)) for node in top]
+    result = MaterialFreeStaticsSolver().solve(model)
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+    assert _base_reaction_x(model, result) == pytest.approx(-_P, rel=1e-6, abs=1e-6)
+
+
+def test_remesh_after_solve_still_adopts_the_beam_user_node() -> None:
+    model = _frame_wall_model(connected=True)
+    first = MaterialFreeStaticsSolver().solve(model)
+    assert first.status == AnalysisStatus.COMPLETED, first.messages
+    assert model.elements[20].node_i == 5
+    model.walls[1] = WallPanel(
+        tag=1,
+        node_1=1,
+        node_2=2,
+        node_3=3,
+        node_4=4,
+        thickness=_THICKNESS,
+        nx=4,
+        ny=2,
+        elastic_modulus=_E,
+        poisson_ratio=_NU,
+    )
+    # New uniform stations add base nodes that the first solve never
+    # restrained. Re-collect after remesh so the finer wall is still a
+    # cantilever; the beam element itself must not be touched.
+    assemble_wall_meshes(model)
+    base = [node for node in model.nodes.values() if abs(node.z) <= 1.0e-12]
+    model.boundaries = [
+        BoundaryCondition(node.tag, (True, True, True, True, True, True)) for node in base
+    ]
+    result = MaterialFreeStaticsSolver().solve(model)
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+    assert model.nodes[5].origin is NodeOrigin.USER
+    assert any(5 in quad.node_tags() for quad in model.shell_quads.values())
+    assert model.elements[20].node_i == 5
+    assert model.elements[20].node_j == 6
+    assert _base_reaction_x(model, result) == pytest.approx(-_P, rel=1e-5, abs=1e-4)
 
 
 def test_deformed_wall_payload_follows_solved_top_displacement() -> None:
