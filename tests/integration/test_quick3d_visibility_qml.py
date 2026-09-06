@@ -113,6 +113,8 @@ def _qml_node_visible(viewport: Quick3DViewport, tag: int) -> bool:
         ("supports_show", lambda v: v.bridge.supportsVisible),
         ("local_axes_on", lambda v: v.bridge.localAxesVisible),
         ("local_axes_off", lambda v: not v.bridge.localAxesVisible),
+        ("line_display_on", lambda v: v.bridge.lineDisplayActive),
+        ("line_display_off", lambda v: not v.bridge.lineDisplayActive),
     ],
 )
 def test_visibility_toggle_qml_state(action: str, verify) -> None:
@@ -141,6 +143,10 @@ def test_visibility_toggle_qml_state(action: str, verify) -> None:
         viewport.set_local_axes_visible(True)
     elif action == "local_axes_off":
         viewport.set_local_axes_visible(False)
+    elif action == "line_display_on":
+        viewport.set_line_display_active(True)
+    elif action == "line_display_off":
+        viewport.set_line_display_active(False)
 
     for _ in range(5):
         QApplication.processEvents()

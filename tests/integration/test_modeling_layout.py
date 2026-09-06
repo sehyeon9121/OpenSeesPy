@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from _solve_helpers import solve_and_wait
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QFrame
+from PySide6.QtWidgets import QApplication, QFrame, QWidget
 
 from openframe.features.model.presentation.modeling_interface_page import ModelingInterfacePage
 
@@ -340,6 +340,65 @@ def test_directional_member_settings_card_appears_for_tension_compression_cable(
         page.element_type_selector.findData("general_beam")
     )
     assert page.element_behavior_settings_card.isHidden()
+
+
+def test_create_element_beta_angle_is_visible_only_in_3d_below_material_section() -> None:
+    """The 90° rotate control was discussed as MIDAS Beta Angle and then
+    never built on Create Element, so users looking there saw nothing."""
+    page_3d = _page(start_in_3d=True)
+    page_3d.workbench_buttons["element"].click()
+
+    layout = page_3d.findChild(QWidget, "elementCreatePanel").layout()
+    assert layout.indexOf(page_3d.element_local_axis_card) == (
+        layout.indexOf(page_3d.element_properties_card) + 1
+    )
+    assert page_3d.element_local_axis_card.isVisible()
+    assert page_3d.element_rotate_90_button.isVisible()
+    assert page_3d.element_local_axis_angle.isVisible()
+    assert page_3d.element_rotate_90_button.text() == "90° 회전"
+
+    page_2d = _page(start_in_3d=False)
+    page_2d.workbench_buttons["element"].click()
+    assert page_2d.element_local_axis_card.isHidden()
+
+
+def test_create_element_90_degree_rotate_adds_to_selection_local_axis_angle() -> None:
+    """A second 90° press must add another 90 (mod 360), not snap back to a
+    fixed 90 — otherwise Iy↔Iz only works once."""
+    page = _page(start_in_3d=True)
+    page.workbench_buttons["element"].click()
+    node_a = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    node_b = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    member = page.canvas.add_member(node_a, node_b)
+    page.canvas.selected_elements = {member}
+
+    page.element_rotate_90_button.click()
+    assert page.canvas.elements[member].local_axis_angle == pytest.approx(90.0)
+    assert page.member_local_axis_gizmo_toggle.isChecked() is False
+    assert page.preview_3d.bridge.localAxesVisible is False
+    page.element_rotate_90_button.click()
+    assert page.canvas.elements[member].local_axis_angle == pytest.approx(180.0)
+    page.element_rotate_90_button.click()
+    page.element_rotate_90_button.click()
+    assert page.canvas.elements[member].local_axis_angle == pytest.approx(0.0)
+
+    page.element_local_axis_angle.setValue(37.5)
+    page.element_local_axis_angle.editingFinished.emit()
+    assert page.canvas.elements[member].local_axis_angle == pytest.approx(37.5)
+
+
+def test_create_element_local_axis_angle_is_inherited_by_newly_drawn_members() -> None:
+    """Create Element 회전각 is a pen, like Material & Section: members
+    drawn after setting it pick up the angle without a second Apply."""
+    page = _page(start_in_3d=True)
+    page.workbench_buttons["element"].click()
+    page.element_local_axis_angle.setValue(90.0)
+
+    node_a = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    node_b = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    member = page.canvas.add_member(node_a, node_b)
+    assert page.canvas.elements[member].local_axis_angle == pytest.approx(90.0)
+    assert page.canvas.element_local_axis_angle == pytest.approx(90.0)
 
 
 def test_element_tab_applied_section_is_picked_up_by_the_next_drawn_member() -> None:

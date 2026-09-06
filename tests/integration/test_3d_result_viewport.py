@@ -71,6 +71,9 @@ def test_result_viewport_shows_deformed_overlay_colours_and_load_arrows() -> Non
     # Node 2 moves under the load, so it should be coloured away from the default blue.
     node_colors = {node["tag"]: node["color"] for node in bridge.nodes}
     assert node_colors[2] != "#2877b7"
+    # A single cube between displaced ends is the hinged-stick picture; the
+    # overlay must tessellate the Hermite centreline so the cantilever bows.
+    assert len(bridge.members) > 1
 
     viewport.show_undeformed.setChecked(False)
     application.processEvents()

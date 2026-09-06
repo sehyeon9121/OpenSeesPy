@@ -147,7 +147,13 @@ def member_deformed_endpoints(
     state: Deformed3DState,
     element_tag: int,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
-    """Straight deformed member line from transformed end nodes (MVP - no curvature)."""
+    """Straight deformed member line from transformed end nodes.
+
+    Time-history animation still moves the two end nodes only (see
+    ``update_deformed_node_positions``). Static 3D results rebuild the
+    bending cubic via ``member_deflection`` / ``deflected_polyline`` instead
+    of this chord - a fixed cantilever drawn with this helper looks hinged.
+    """
     element = model.elements.get(element_tag)
     if element is None:
         return None

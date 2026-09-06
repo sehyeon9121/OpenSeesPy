@@ -168,6 +168,7 @@ class Quick3DViewport(QFrame):
             "node_numbers": self.bridge.set_node_numbers_visible,
             "members": self.bridge.set_members_visible,
             "member_numbers": self.bridge.set_member_numbers_visible,
+            "line_display": self.bridge.set_line_display_active,
             "loads": self.bridge.set_loads_visible,
             "nodal_loads": self.bridge.set_nodal_loads_visible,
             "member_loads": self.bridge.set_member_loads_visible,
@@ -269,6 +270,7 @@ class Quick3DViewport(QFrame):
         member_magnitudes: dict[int, float] | None = None,
         force_diagrams: list[dict[str, object]] | None = None,
         overlay_labels: list[dict[str, object]] | None = None,
+        member_polylines: dict[int, list[tuple[float, float, float]]] | None = None,
     ) -> None:
         self._ensure_bridge_current()
         self.bridge.set_result(
@@ -279,6 +281,7 @@ class Quick3DViewport(QFrame):
             member_magnitudes=member_magnitudes,
             force_diagrams=force_diagrams,
             overlay_labels=overlay_labels,
+            member_polylines=member_polylines,
         )
 
     def begin_time_history_deformation(
@@ -401,6 +404,12 @@ class Quick3DViewport(QFrame):
 
     def isolate_active(self) -> bool:
         return self.bridge.isolateActive
+
+    def set_line_display_active(self, active: bool) -> None:
+        self.bridge.set_line_display_active(active)
+
+    def line_display_active(self) -> bool:
+        return self.bridge.lineDisplayActive
 
     def set_camera_preset(self, preset: str) -> None:
         if preset not in {"iso", "xy", "xz", "yz"}:

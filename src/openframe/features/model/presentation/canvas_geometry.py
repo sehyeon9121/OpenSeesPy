@@ -218,6 +218,10 @@ class _GeometryMixin:
                 self.element_family,
                 properties,
                 prestress=prestress,
+                # Same "pen" pattern as element_gap / element_prestress: the
+                # Create Element 회전각 is the next-drawn member's beta, not
+                # a second domain field. 0.0 equals the dataclass default.
+                local_axis_angle=self.element_local_axis_angle,
             )
         else:
             self.elements[tag] = replace(

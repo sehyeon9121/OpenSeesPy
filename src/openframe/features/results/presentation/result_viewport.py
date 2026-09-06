@@ -37,6 +37,7 @@ from openframe.core.domain import (
     UnitSystem,
 )
 from openframe.features.results.deformation import (
+    deflected_polyline,
     largest_displacement,
     member_deflection,
     nodal_displacements,
@@ -632,6 +633,7 @@ class ResultViewport(QFrame):
                 member_magnitudes=member_colors,
                 force_diagrams=self._force_diagram_payload() if force_diagram else [],
                 overlay_labels=self._overlay_label_payload(scale),
+                member_polylines=self._deformed_member_polylines(scale),
             )
         else:
             self.quick3d_view.clear_result()
@@ -761,6 +763,25 @@ class ResultViewport(QFrame):
         if self._model is None or self._result is None:
             return {}
         return member_magnitudes(self._model, self._result, self._result_type)
+
+    def _deformed_member_polylines(
+        self, scale: float
+    ) -> dict[int, list[tuple[float, float, float]]]:
+        """Hermite centreline per frame member, already scaled, in structural xyz.
+
+        Passed through to Quick3D as a payload the same way force diagrams are,
+        so the viewport never imports beam-theory helpers. Empty when there is
+        nothing to curve (scale 0, no result) - the bridge then draws the
+        straight displaced chord it always did.
+        """
+        if self._model is None or self._result is None or abs(scale) <= 1.0e-15:
+            return {}
+        polylines: dict[int, list[tuple[float, float, float]]] = {}
+        for tag in self._model.elements:
+            points = deflected_polyline(self._model, self._result, tag, scale)
+            if len(points) >= 3:
+                polylines[tag] = list(points)
+        return polylines
 
     def _force_diagram_payload(self) -> list[dict[str, object]]:
         """Structural-space strips for the Quick3D overlay - Qt-free geometry

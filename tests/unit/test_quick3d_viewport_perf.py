@@ -294,6 +294,37 @@ def test_isolate_uses_visibility_not_topology() -> None:
     assert counts["visibility"] == 2
 
 
+def test_line_display_uses_visibility_not_topology() -> None:
+    """Ctrl+H must not rebuild member parts. The section mesh stays in
+    ``_members``; QML only rescales to a centerline, the same isolate
+    pattern of visibility_changed without a topology_changed.
+    """
+    _app()
+    bridge = Quick3DSceneBridge()
+    bridge.set_model(_grid_model(4, 4))
+    members_id = id(bridge._members)
+    part_count = len(bridge._members)
+
+    counts = {"topology": 0, "geometry": 0, "visibility": 0}
+    bridge.topology_changed.connect(lambda: counts.__setitem__("topology", counts["topology"] + 1))
+    bridge.geometry_changed.connect(lambda: counts.__setitem__("geometry", counts["geometry"] + 1))
+    bridge.visibility_changed.connect(
+        lambda: counts.__setitem__("visibility", counts["visibility"] + 1)
+    )
+
+    assert bridge.lineDisplayActive is False
+    bridge.set_line_display_active(True)
+    bridge.set_line_display_active(True)
+    bridge.set_line_display_active(False)
+
+    assert bridge.lineDisplayActive is False
+    assert id(bridge._members) == members_id
+    assert len(bridge._members) == part_count
+    assert counts["topology"] == 0
+    assert counts["geometry"] == 0
+    assert counts["visibility"] == 2
+
+
 def test_selection_preserved_after_coordinate_update() -> None:
     _app()
     bridge = Quick3DSceneBridge()

@@ -55,14 +55,27 @@ def _rotate(scalar: float, qx: float, qy: float, qz: float, v: tuple[float, floa
 
 
 def _member_parts(
-    properties: dict[str, float | str], *, start=(0.0, 0.0, 0.0), end=(4.0, 0.0, 0.0)
+    properties: dict[str, float | str],
+    *,
+    start=(0.0, 0.0, 0.0),
+    end=(4.0, 0.0, 0.0),
+    local_axis_angle: float = 0.0,
 ) -> list[dict[str, float | int | str]]:
     """Every rendered part for a single 3D beam-column member, rendered
     through a full set_model() so scene metrics match real usage."""
     model = StructuralModel(
         ndm=3,
         nodes={1: Node(1, *start), 2: Node(2, *end)},
-        elements={1: Element(1, 1, 2, "elasticBeamColumn", properties=properties)},
+        elements={
+            1: Element(
+                1,
+                1,
+                2,
+                "elasticBeamColumn",
+                properties=properties,
+                local_axis_angle=local_axis_angle,
+            )
+        },
     )
     bridge = _bridge()
     bridge.set_model(model)
@@ -157,6 +170,38 @@ def test_h_section_renders_as_three_parts_reading_dim_keys() -> None:
     # The two flanges must be on opposite sides of the web, not stacked.
     delta = tuple(flange_a[axis] - flange_b[axis] for axis in "xyz")
     assert math.sqrt(sum(c * c for c in delta)) == pytest.approx(2.0 * expected_offset, abs=1e-6)
+
+
+def test_h_section_rolled_90_degrees_looks_like_an_i_from_the_same_view() -> None:
+    """90° is a roll about the member's own span, not a new local-axis gizmo.
+
+    An H standing web-vertical has flanges stacked in view Y. After 90° the
+    flanges lie in the horizontal plane so the same view reads as an I -
+    the visual a column needs when its strong axis must face a different
+    way than its neighbours. The member still runs (0,0,0)→(4,0,0).
+    """
+    upright = _member_parts(_H_PROPERTIES, local_axis_angle=0.0)
+    rolled = _member_parts(_H_PROPERTIES, local_axis_angle=90.0)
+    mid = (2.0, 0.0, 0.0)
+
+    def flange_delta(parts: list[dict[str, float | int | str]]) -> tuple[float, float, float]:
+        flanges = sorted(parts, key=lambda part: part["width_h"])[:2]
+        return tuple(flanges[0][axis] - flanges[1][axis] for axis in "xyz")
+
+    upright_delta = flange_delta(upright)
+    rolled_delta = flange_delta(rolled)
+    # Flange-to-flange stays the same length; only the stacking direction
+    # rolls 90° around the span (view X), so the two vectors are orthogonal.
+    upright_len = math.sqrt(sum(c * c for c in upright_delta))
+    rolled_len = math.sqrt(sum(c * c for c in rolled_delta))
+    assert rolled_len == pytest.approx(upright_len, abs=1e-6)
+    dot = sum(a * b for a, b in zip(upright_delta, rolled_delta, strict=True))
+    assert abs(dot) == pytest.approx(0.0, abs=1e-6)
+    # Upright H: flanges stacked vertically (view Y). Rolled I: horizontal.
+    assert abs(upright_delta[1]) == pytest.approx(upright_len, abs=1e-6)
+    assert abs(rolled_delta[1]) == pytest.approx(0.0, abs=1e-6)
+    assert all(part["x"] == pytest.approx(mid[0]) for part in rolled)
+
 
 
 def test_h_section_uses_true_web_and_flange_thickness() -> None:

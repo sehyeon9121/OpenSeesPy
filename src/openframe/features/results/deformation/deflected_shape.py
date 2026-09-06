@@ -11,11 +11,25 @@ No Qt objects are created here; drawing belongs to the presentation layer.
 import math
 from dataclasses import dataclass
 
-from openframe.core.domain import AnalysisResult, StructuralModel
+from openframe.core.domain import (
+    AnalysisResult,
+    Element,
+    Node,
+    NodeResult,
+    StructuralModel,
+    rotate_about_axis,
+)
 
 #: Stations per member. A member's deflected shape is a quartic at worst, so this is far
 #: more than enough to draw a smooth curve.
 DEFAULT_SAMPLES = 16
+
+#: 3D result overlay tessellates each frame member into this many cubes.
+#: Spatial N/V/M ribbons already use 8 stations; 16 (the 2D curve default)
+#: would double Quick3D instances for a shape that is at most cubic.
+DEFORMED_3D_SAMPLES = 8
+
+_TRUSS_TYPES = frozenset({"truss", "corottruss"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +41,8 @@ class DeflectionStation:
     y: float
     ux: float  # displacement in global axes, unscaled
     uy: float
+    z: float = 0.0
+    uz: float = 0.0
 
 
 def member_deflection(
@@ -45,6 +61,9 @@ def member_deflection(
     result_j = result.node_results.get(element.node_j)
     if node_i is None or node_j is None or result_i is None or result_j is None:
         return ()
+
+    if model.ndm == 3:
+        return _member_deflection_3d(element, node_i, node_j, result_i, result_j, samples)
 
     dx = node_j.x - node_i.x
     dy = node_j.y - node_i.y
@@ -93,6 +112,130 @@ def member_deflection(
             )
         )
     return tuple(stations)
+
+
+def deflected_polyline(
+    model: StructuralModel,
+    result: AnalysisResult,
+    element_tag: int,
+    scale: float,
+    samples: int = DEFORMED_3D_SAMPLES,
+) -> tuple[tuple[float, float, float], ...]:
+    """Scaled structural-space points along one member's rebuilt centreline."""
+    stations = member_deflection(model, result, element_tag, samples=samples)
+    return tuple(
+        (item.x + item.ux * scale, item.y + item.uy * scale, item.z + item.uz * scale)
+        for item in stations
+    )
+
+
+def _member_deflection_3d(
+    element: Element,
+    node_i: Node,
+    node_j: Node,
+    result_i: NodeResult,
+    result_j: NodeResult,
+    samples: int,
+) -> tuple[DeflectionStation, ...]:
+    """Cubic Hermite through the two displaced ends, matching each end's rotation.
+
+    A 3D result view used to draw one cube between the displaced nodes. That
+    chord is exact for a truss; for a frame it hides bending, so a fixed
+    cantilever looks like a hinged stick even when the solver's tip Δ is
+    PL³/3EI and the base rotations are zero. The 2D overlay already rebuilds
+    this cubic from end translation + RZ; here the same cubic is built from
+    the 3D rotation *vector* so we do not have to pick a local y/z pairing
+    (θy vs −θy flips with vecxz).
+    """
+    ux_i, uy_i, uz_i = _translation_3d(result_i.displacement)
+    ux_j, uy_j, uz_j = _translation_3d(result_j.displacement)
+    start = (
+        DeflectionStation(0.0, node_i.x, node_i.y, ux_i, uy_i, z=node_i.z, uz=uz_i),
+        DeflectionStation(1.0, node_j.x, node_j.y, ux_j, uy_j, z=node_j.z, uz=uz_j),
+    )
+    if element.element_type.lower() in _TRUSS_TYPES or samples < 1:
+        return start
+
+    axis = (node_j.x - node_i.x, node_j.y - node_i.y, node_j.z - node_i.z)
+    length = math.sqrt(sum(component * component for component in axis))
+    if length <= 1.0e-12:
+        return start
+
+    p0 = (node_i.x + ux_i, node_i.y + uy_i, node_i.z + uz_i)
+    p1 = (node_j.x + ux_j, node_j.y + uy_j, node_j.z + uz_j)
+    m0 = _rotate_by_omega(axis, _rotation_vector(result_i.displacement))
+    m1 = _rotate_by_omega(axis, _rotation_vector(result_j.displacement))
+
+    stations: list[DeflectionStation] = []
+    for index in range(samples + 1):
+        ratio = index / samples
+        point = _hermite_point(ratio, p0, m0, p1, m1)
+        undeformed = (
+            node_i.x + axis[0] * ratio,
+            node_i.y + axis[1] * ratio,
+            node_i.z + axis[2] * ratio,
+        )
+        stations.append(
+            DeflectionStation(
+                position=ratio,
+                x=undeformed[0],
+                y=undeformed[1],
+                ux=point[0] - undeformed[0],
+                uy=point[1] - undeformed[1],
+                z=undeformed[2],
+                uz=point[2] - undeformed[2],
+            )
+        )
+    return tuple(stations)
+
+
+def _translation_3d(displacement: tuple[float, ...]) -> tuple[float, float, float]:
+    padded = (*displacement, 0.0, 0.0, 0.0)
+    ux, uy, uz = float(padded[0]), float(padded[1]), float(padded[2])
+    if not (math.isfinite(ux) and math.isfinite(uy) and math.isfinite(uz)):
+        return 0.0, 0.0, 0.0
+    return ux, uy, uz
+
+
+def _rotation_vector(displacement: tuple[float, ...]) -> tuple[float, float, float]:
+    padded = (*displacement, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)[:6]
+    rx, ry, rz = float(padded[3]), float(padded[4]), float(padded[5])
+    if not (math.isfinite(rx) and math.isfinite(ry) and math.isfinite(rz)):
+        return 0.0, 0.0, 0.0
+    return rx, ry, rz
+
+
+def _rotate_by_omega(
+    vector: tuple[float, float, float], omega: tuple[float, float, float]
+) -> tuple[float, float, float]:
+    angle = math.sqrt(sum(component * component for component in omega))
+    if angle <= 1.0e-15:
+        return vector
+    axis = tuple(component / angle for component in omega)
+    return rotate_about_axis(vector, axis, angle)
+
+
+def _hermite_point(
+    ratio: float,
+    start: tuple[float, float, float],
+    start_tangent: tuple[float, float, float],
+    end: tuple[float, float, float],
+    end_tangent: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Cubic that matches both end positions and both end tangents (dP/d ratio)."""
+    squared = ratio * ratio
+    cubed = squared * ratio
+    h00 = 1.0 - 3.0 * squared + 2.0 * cubed
+    h10 = ratio - 2.0 * squared + cubed
+    h01 = 3.0 * squared - 2.0 * cubed
+    h11 = cubed - squared
+    return tuple(
+        h00 * start[index]
+        + h10 * start_tangent[index]
+        + h01 * end[index]
+        + h11 * end_tangent[index]
+        for index in range(3)
+    )
 
 
 def _components(displacement: tuple[float, ...]) -> tuple[float, float, float]:

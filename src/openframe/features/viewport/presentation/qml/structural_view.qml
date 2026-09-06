@@ -58,13 +58,19 @@ Item {
     property var cubePaintHex: []
     property var cylinderPaintHex: []
     property var cubePaintWidthB: []
+    property var cubePaintQscalar: []
     property var _cubeEntryPool: []
     property var _cylinderEntryPool: []
-    // Must include every part's B/H, not just members[0]. Drawing a beam
-    // onto an already-sectioned frame (columns first, then the girder)
-    // leaves the new member at the end of the list; the first part's
-    // dimensions do not change, so a first-only key never fired and the
-    // new span stayed a hairline until the next add bumped the count.
+    // Must include every part's B/H *and* roll, not just members[0].
+    // Drawing a beam onto an already-sectioned frame (columns first, then
+    // the girder) leaves the new member at the end of the list; the first
+    // part's dimensions do not change, so a first-only key never fired and
+    // the new span stayed a hairline until the next add bumped the count.
+    // A 90° local_axis_angle (Create Element 부재 회전각) has the same
+    // shape: tag/B/H/length stay put and only the quaternion (and an H/I
+    // flange's world position) change. Without those in the key the
+    // InstanceList kept the old roll, so the 3D member looked unrotated
+    // even though Python had already swapped strong/weak axes.
     readonly property string memberSyncKey: {
         if (!bridgeReady)
             return "0"
@@ -72,7 +78,10 @@ Item {
         let parts = ""
         for (let index = 0; index < members.length; ++index) {
             const part = members[index]
-            parts += part.tag + ":" + part.width_b + ":" + part.width_h + ":" + part.length + ";"
+            parts += part.tag + ":" + part.width_b + ":" + part.width_h + ":"
+                + part.length + ":" + part.qscalar + ":" + part.qx + ":"
+                + part.qy + ":" + part.qz + ":" + part.x + ":" + part.y + ":"
+                + part.z + ";"
         }
         return sceneBridge.geometryRevision
             + ":" + sceneBridge.deformationRevision
@@ -278,6 +287,35 @@ Item {
             || sceneBridge.timeHistoryShowDeformed
     }
 
+    function lineDisplayActive() {
+        return bridgeReady && sceneBridge.lineDisplayActive
+    }
+
+    function memberDisplayThickness(width) {
+        return root.lineDisplayActive() ? sceneBridge.lineDisplayThickness : width
+    }
+
+    function memberDisplayPosition(part) {
+        // H/I flanges are offset from the member axis. Line display has to
+        // sit on the true centerline (start/end midpoint) or a 90-degree
+        // I-beam would show three parallel sticks instead of one line.
+        if (root.lineDisplayActive())
+            return Qt.vector3d(
+                (part.start_x + part.end_x) / 2,
+                (part.start_y + part.end_y) / 2,
+                (part.start_z + part.end_z) / 2
+            )
+        return Qt.vector3d(part.x, part.y, part.z)
+    }
+
+    function isFirstPartForTag(parts, index) {
+        const tag = parts[index].tag
+        for (let i = 0; i < index; ++i)
+            if (parts[i].tag === tag)
+                return false
+        return true
+    }
+
     function _fillInstancePool(listObj, pool, tags, colors, parts) {
         const selected = bridgeReady ? sceneBridge.selectedMemberTags : []
         while (pool.length < parts.length)
@@ -285,8 +323,12 @@ Item {
         for (let index = 0; index < parts.length; ++index) {
             const part = parts[index]
             const entry = pool[index]
-            entry.position = Qt.vector3d(part.x, part.y, part.z)
-            entry.scale = Qt.vector3d(part.width_b / 100, part.length / 100, part.width_h / 100)
+            entry.position = root.memberDisplayPosition(part)
+            entry.scale = Qt.vector3d(
+                root.memberDisplayThickness(part.width_b) / 100,
+                part.length / 100,
+                root.memberDisplayThickness(part.width_h) / 100
+            )
             entry.rotation = Qt.quaternion(part.qscalar, part.qx, part.qy, part.qz)
             colors[index] = part.color
             tags[index] = part.tag
@@ -331,9 +373,13 @@ Item {
         cubePaintHex = hexes(_cubeEntryPool, cubeTags)
         cylinderPaintHex = hexes(_cylinderEntryPool, cylinderTags)
         const widths = []
-        for (let index = 0; index < cubeTags.length; ++index)
+        const rolls = []
+        for (let index = 0; index < cubeTags.length; ++index) {
             widths.push(_cubeEntryPool[index].scale.x * 100)
+            rolls.push(_cubeEntryPool[index].rotation.scalar)
+        }
         cubePaintWidthB = widths
+        cubePaintQscalar = rolls
     }
 
     function syncMemberInstances() {
@@ -347,6 +393,7 @@ Item {
             cubePaintHex = []
             cylinderPaintHex = []
             cubePaintWidthB = []
+            cubePaintQscalar = []
             cubeInstanceList.instances = []
             cylinderInstanceList.instances = []
             return
@@ -354,9 +401,14 @@ Item {
         const cubes = []
         const cylinders = []
         const members = sceneBridge.members
+        const lineMode = root.lineDisplayActive()
         for (let index = 0; index < members.length; ++index) {
             const part = members[index]
             if (!root.memberModelVisible(part.tag))
+                continue
+            // One stick per member: an H/I's web+flanges would otherwise
+            // become three overlapping hairlines after the centerline snap.
+            if (lineMode && !root.isFirstPartForTag(members, index))
                 continue
             if (part.source === "#Cylinder")
                 cylinders.push(part)
@@ -876,8 +928,10 @@ Item {
                     && sceneBridge.membersVisible
                     && (!sceneBridge.timeHistoryDeformationActive
                         || sceneBridge.timeHistoryShowOriginal)
+                    && (!root.lineDisplayActive()
+                        || root.isFirstPartForTag(sceneBridge.ghostMembers, index))
                 source: modelData.source
-                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                position: root.memberDisplayPosition(modelData)
                 rotation: Qt.quaternion(
                     modelData.qscalar,
                     modelData.qx,
@@ -885,9 +939,9 @@ Item {
                     modelData.qz
                 )
                 scale: Qt.vector3d(
-                    modelData.width_b / 100,
+                    root.memberDisplayThickness(modelData.width_b) / 100,
                     modelData.length / 100,
-                    modelData.width_h / 100
+                    root.memberDisplayThickness(modelData.width_h) / 100
                 )
                 materials: [
                     PrincipledMaterial {
@@ -1596,6 +1650,16 @@ Item {
                             ? Qt.Checked : Qt.Unchecked
                         toggleAction: function(visible) {
                             root.displayVisibilityRequested("member_numbers", visible)
+                        }
+                    }
+                    DisplayCheck {
+                        objectName: "lineDisplayOption"
+                        width: parent.width - 24
+                        text: "선으로만 표시 (Ctrl+H)"
+                        checkState: root.bridgeReady && sceneBridge.lineDisplayActive
+                            ? Qt.Checked : Qt.Unchecked
+                        toggleAction: function(visible) {
+                            root.displayVisibilityRequested("line_display", visible)
                         }
                     }
                 }

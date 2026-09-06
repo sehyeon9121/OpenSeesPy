@@ -297,6 +297,12 @@ class Quick3DSceneBridge(QObject):
         self._isolate_active = False
         self._isolate_node_tags: set[int] = set()
         self._isolate_member_tags: set[int] = set()
+        #: MIDAS-style line display (Ctrl+H): keep the real B×H / H-section
+        #: parts in ``_members`` so toggling does not rebuild Repeater3D
+        #: topology, and let QML draw one thin centerline per member instead.
+        #: Off by default so a newly opened model still shows the assigned
+        #: section extrusion.
+        self._line_display_active = False
         #: Loads tab (case-based Load Case/Load Entry/Load Combination store) -
         #: entirely separate from the nodal_loads/element_loads-driven
         #: loadArrows above (see canvas_load_entries.py's own module
@@ -438,6 +444,7 @@ class Quick3DSceneBridge(QObject):
         member_magnitudes: dict[int, float] | None = None,
         force_diagrams: list[dict[str, object]] | None = None,
         overlay_labels: list[dict[str, object]] | None = None,
+        member_polylines: dict[int, list[tuple[float, float, float]]] | None = None,
     ) -> None:
         """Overlay analysis displacements: deformed + colour-mapped geometry, an
         optional translucent undeformed ghost, and arrows at loaded nodes."""
@@ -494,11 +501,13 @@ class Quick3DSceneBridge(QObject):
                 ratio = member_ratios.get(element.tag, 0.0)
             else:
                 ratio = 0.5 * (ratios.get(element.node_i, 0.0) + ratios.get(element.node_j, 0.0))
+            polyline = self._view_member_polyline(element.tag, member_polylines)
             members.extend(
                 self._member_parts(
                     element,
                     deformed_points,
                     color=_color_for_ratio(ratio),
+                    polyline=polyline,
                 )
             )
         self._members = members
@@ -968,9 +977,37 @@ class Quick3DSceneBridge(QObject):
         self._isolate_member_tags.clear()
         self._emit_visibility_changed()
 
+    def set_line_display_active(self, active: bool) -> None:
+        """Ctrl+H: draw members as thin centerlines plus nodes.
+
+        The assigned section mesh stays in ``_members``; only the QML
+        instance scale/position changes. Rebuilding those parts here would
+        turn a display toggle into a topology update, the same class of
+        cost isolate already avoids by staying on ``visibility_changed``.
+        """
+        active = bool(active)
+        if self._line_display_active == active:
+            return
+        self._line_display_active = active
+        self._emit_visibility_changed()
+
     @Property(bool, notify=visibility_changed)
     def isolateActive(self) -> bool:
         return self._isolate_active
+
+    @Property(bool, notify=visibility_changed)
+    def lineDisplayActive(self) -> bool:
+        return self._line_display_active
+
+    @Property(float, constant=True)
+    def lineDisplayThickness(self) -> float:
+        """World-unit stick size used while line display is on.
+
+        Same value as the unassigned-member fallback (``_default_thickness``)
+        so a sectioned frame collapses to the hairline already used before
+        a B/H was applied, rather than inventing a second magic width.
+        """
+        return self._default_thickness
 
     @Property(int, notify=visibility_changed)
     def visibilityRevision(self) -> int:
@@ -2579,6 +2616,23 @@ class Quick3DSceneBridge(QObject):
             "opacity": opacity,
         }
 
+    def _view_member_polyline(
+        self,
+        element_tag: int,
+        member_polylines: dict[int, list[tuple[float, float, float]]] | None,
+    ) -> list[tuple[float, float, float]] | None:
+        """Convert a structural-space Hermite polyline into view coordinates.
+
+        None means '_member_parts' should keep the straight displaced chord.
+        Two-point polylines are also ignored: they are that chord already.
+        """
+        if not member_polylines:
+            return None
+        points = member_polylines.get(element_tag)
+        if points is None or len(points) < 3:
+            return None
+        return [self._view_coordinates(*point) for point in points]
+
     def _member_parts(
         self,
         element: Element,
@@ -2586,6 +2640,7 @@ class Quick3DSceneBridge(QObject):
         *,
         color: str,
         opacity: float = 1.0,
+        polyline: list[tuple[float, float, float]] | None = None,
     ) -> list[dict[str, float | int | str]]:
         """One flat box/cylinder part per member, or three (web + two
         flanges) for an H/I section - matching the flat-list-of-parts
@@ -2600,11 +2655,48 @@ class Quick3DSceneBridge(QObject):
         real cross-section), while a flat list of independent parts is
         exactly the pattern the loadArrows/gizmo parts above already rely on
         without that problem.
+
+        ``polyline`` is an optional view-space centreline (result overlay).
+        Each consecutive pair becomes its own section extrusion so a frame
+        member can show bending instead of one cube between displaced nodes.
+        Stored start/end on every piece stay the polyline's true ends so
+        box-picking and line-display still see one member, not N stubs.
         """
-        start = points.get(element.node_i)
-        end = points.get(element.node_j)
-        if start is None or end is None:
+        if polyline is None:
+            start = points.get(element.node_i)
+            end = points.get(element.node_j)
+            if start is None or end is None:
+                return []
+            polyline = [start, end]
+        if len(polyline) < 2:
             return []
+        record_start, record_end = polyline[0], polyline[-1]
+        parts: list[dict[str, float | int | str]] = []
+        for start, end in pairwise(polyline):
+            parts.extend(
+                self._member_segment_parts(
+                    element,
+                    start,
+                    end,
+                    color=color,
+                    opacity=opacity,
+                    record_start=record_start,
+                    record_end=record_end,
+                )
+            )
+        return parts
+
+    def _member_segment_parts(
+        self,
+        element: Element,
+        start: tuple[float, float, float],
+        end: tuple[float, float, float],
+        *,
+        color: str,
+        opacity: float,
+        record_start: tuple[float, float, float],
+        record_end: tuple[float, float, float],
+    ) -> list[dict[str, float | int | str]]:
         orientation = self._member_orientation(start, end)
         if orientation is None:
             return []
@@ -2621,7 +2713,13 @@ class Quick3DSceneBridge(QObject):
             0.5 * (start[2] + end[2]),
         )
 
-        visual = self._section_visual_dimensions(element.properties, length)
+        # Section size is a property of the member, not of this Hermite
+        # segment. Using the short chord as ``member_length`` would shrink an
+        # unassigned stick on every tessellated piece.
+        visual_length = math.dist(record_start, record_end)
+        if visual_length <= 1.0e-12:
+            visual_length = length
+        visual = self._section_visual_dimensions(element.properties, visual_length)
         h_section = visual["shape"] == "H/I Section" and visual.get("web_height", 0.0) > 0.0
         is_truss = element.element_type.lower() in _TRUSS_ELEMENT_TYPES
         if is_truss and not h_section:
@@ -2633,7 +2731,7 @@ class Quick3DSceneBridge(QObject):
             truss_source = "#Cylinder" if visual["shape"] in {"Circle", "Pipe"} else "#Cube"
             return [
                 self._box_part(
-                    element.tag, start, end, mid, rendered_length,
+                    element.tag, record_start, record_end, mid, rendered_length,
                     visual["width_b"], visual["width_h"],
                     old_scalar, old_qx, old_qy, old_qz, color, opacity,
                     source=truss_source,
@@ -2647,7 +2745,7 @@ class Quick3DSceneBridge(QObject):
             local_z_world = self._rotate_by_quaternion((0.0, 0.0, 1.0), scalar, qx, qy, qz)
             parts = [
                 self._box_part(
-                    element.tag, start, end, mid, rendered_length,
+                    element.tag, record_start, record_end, mid, rendered_length,
                     visual["web_thickness"], visual["web_height"],
                     scalar, qx, qy, qz, color, opacity,
                 )
@@ -2658,7 +2756,7 @@ class Quick3DSceneBridge(QObject):
                 )
                 parts.append(
                     self._box_part(
-                        element.tag, start, end, flange_position, rendered_length,
+                        element.tag, record_start, record_end, flange_position, rendered_length,
                         visual["width_b"], visual["flange_thickness"],
                         scalar, qx, qy, qz, color, opacity,
                     )
@@ -2668,7 +2766,7 @@ class Quick3DSceneBridge(QObject):
         source = "#Cylinder" if visual["shape"] in {"Circle", "Pipe"} else "#Cube"
         return [
             self._box_part(
-                element.tag, start, end, mid, rendered_length,
+                element.tag, record_start, record_end, mid, rendered_length,
                 visual["width_b"], visual["width_h"],
                 scalar, qx, qy, qz, color, opacity, source=source,
             )

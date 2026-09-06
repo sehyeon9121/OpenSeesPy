@@ -143,6 +143,13 @@ class StaticsDrawingCanvas(
         # prompt because the type itself already decided which extras apply.
         self.element_gap = 0.0
         self.element_prestress = 0.0
+        # Create Element drawing pen for ``Element.local_axis_angle`` (MIDAS
+        # Beta Angle). Stamped onto members drawn via add_member; 0.0 is the
+        # dataclass default, so 2D/truss/untouched 3D members stay identical
+        # to before this field existed. The solver only reads it on 3D
+        # beam-columns, which is also why the Create Element card is hidden
+        # in 2D rather than offering a no-op control.
+        self.element_local_axis_angle = 0.0
         self.selection_filter = "all"
         self.grid = 1.0
         self._member_start: int | None = None

@@ -2,7 +2,9 @@
 
 from openframe.features.results.deformation.deflected_shape import (
     DEFAULT_SAMPLES,
+    DEFORMED_3D_SAMPLES,
     DeflectionStation,
+    deflected_polyline,
     member_deflection,
 )
 from openframe.features.results.deformation.deformed_3d_state import (
@@ -25,6 +27,7 @@ from openframe.features.results.deformation.nodal_displacements import (
 
 __all__ = [
     "DEFAULT_SAMPLES",
+    "DEFORMED_3D_SAMPLES",
     "DeflectionStation",
     "Deformed3DState",
     "DeformedNode3D",
@@ -34,6 +37,7 @@ __all__ = [
     "build_deformed_3d_state",
     "build_member_torsion_state",
     "compute_3d_translation_auto_scale",
+    "deflected_polyline",
     "largest_displacement",
     "member_deflection",
     "member_deformed_endpoints",

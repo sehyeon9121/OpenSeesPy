@@ -84,6 +84,7 @@ def test_display_panel_opens_and_tracks_bridge_visibility() -> None:
         "nodeNumbersVisibleOption",
         "membersVisibleOption",
         "memberNumbersVisibleOption",
+        "lineDisplayOption",
         "nodalLoadsVisibleOption",
         "memberLoadsVisibleOption",
         "floorLoadsVisibleOption",
@@ -131,6 +132,11 @@ def test_display_panel_opens_and_tracks_bridge_visibility() -> None:
     click_display_item("floorLoadsVisibleOption")
     assert viewport.bridge.floorLoadsVisible is True
 
+    click_display_item("lineDisplayOption")
+    assert viewport.bridge.lineDisplayActive is True
+    click_display_item("lineDisplayOption")
+    assert viewport.bridge.lineDisplayActive is False
+
     viewport.set_nodes_visible(False)
     viewport.set_node_numbers_visible(True)
     viewport.set_members_visible(False)
@@ -143,6 +149,7 @@ def test_display_panel_opens_and_tracks_bridge_visibility() -> None:
     assert options["nodeNumbersVisibleOption"].property("checked") is True
     assert options["membersVisibleOption"].property("checked") is False
     assert options["memberNumbersVisibleOption"].property("checked") is True
+    assert options["lineDisplayOption"].property("checked") is False
     assert options["nodalLoadsVisibleOption"].property("checked") is False
     assert options["memberLoadsVisibleOption"].property("checked") is True
     assert options["floorLoadsVisibleOption"].property("checked") is False
@@ -707,3 +714,123 @@ def test_selection_highlight_does_not_replace_geometry_lists() -> None:
     assert bridge.selectedNodeTags == [1]
     assert bridge.selectedMemberTags == [1]
     assert bridge.selectionRevision >= 1
+
+
+def test_line_display_collapses_section_meshes_to_thin_centerlines() -> None:
+    """Ctrl+H must leave the Python section parts alone and only shrink the
+    QML instance sticks - including collapsing an H/I's three parts to one
+    hairline so the view does not draw three parallel lines.
+    """
+    viewport = _viewport()
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 4.0, 0.0, 0.0, 6),
+            3: Node(3, 0.0, 0.0, 3.0, 6),
+        },
+        elements={
+            1: Element(
+                1,
+                1,
+                2,
+                "elasticBeamColumn",
+                properties={
+                    "section_shape": "Rectangle",
+                    "width": 0.3,
+                    "height": 0.5,
+                },
+            ),
+            2: Element(
+                2,
+                1,
+                3,
+                "elasticBeamColumn",
+                properties={
+                    "section_shape": "H/I Section",
+                    "dim_H": 0.12,
+                    "dim_B": 0.06,
+                    "dim_tw": 0.02,
+                    "dim_tf": 0.025,
+                },
+            ),
+        },
+    )
+    _set_model(viewport, model)
+    root = viewport.quick_widget.rootObject()
+    assert root is not None
+
+    members_id = id(viewport.bridge._members)
+    assert len(viewport.bridge.members) == 4  # 1 rectangle + 3 H/I parts
+    section_widths = _qml_list(root.property("cubePaintWidthB"))
+    assert len(section_widths) == 4
+    assert max(section_widths) == pytest.approx(0.3, rel=1e-4)
+
+    viewport.set_line_display_active(True)
+    QApplication.processEvents()
+
+    assert id(viewport.bridge._members) == members_id
+    assert len(viewport.bridge.members) == 4
+    line_widths = _qml_list(root.property("cubePaintWidthB"))
+    assert len(line_widths) == 2  # one stick per member
+    stick = viewport.bridge.lineDisplayThickness
+    assert line_widths == pytest.approx([stick, stick], rel=1e-4)
+
+    viewport.set_line_display_active(False)
+    QApplication.processEvents()
+    restored = _qml_list(root.property("cubePaintWidthB"))
+    assert len(restored) == 4
+    assert max(restored) == pytest.approx(0.3, rel=1e-4)
+
+
+def test_local_axis_angle_roll_updates_instance_rotation_without_changing_section_size() -> None:
+    """Create Element 90° rotation used to leave the 3D member looking
+    unrotated: memberSyncKey keyed off B/H/length, which a beta-angle roll
+    does not change, so InstanceList kept the old quaternion.
+    """
+    from dataclasses import replace
+
+    viewport = _viewport()
+    unrotated = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0, 6),
+            2: Node(2, 4.0, 0.0, 0.0, 6),
+        },
+        elements={
+            1: Element(
+                1,
+                1,
+                2,
+                "elasticBeamColumn",
+                properties={
+                    "section_shape": "Rectangle",
+                    "width": 0.3,
+                    "height": 0.5,
+                },
+            )
+        },
+    )
+    _set_model(viewport, unrotated)
+    root = viewport.quick_widget.rootObject()
+    assert root is not None
+    before = _qml_list(root.property("cubePaintQscalar"))
+    widths_before = _qml_list(root.property("cubePaintWidthB"))
+    assert len(before) == 1
+    assert widths_before[0] == pytest.approx(0.3, rel=1e-4)
+
+    rotated = replace(
+        unrotated,
+        elements={
+            1: replace(unrotated.elements[1], local_axis_angle=90.0),
+        },
+    )
+    _set_model(viewport, rotated)
+    after = _qml_list(root.property("cubePaintQscalar"))
+    widths_after = _qml_list(root.property("cubePaintWidthB"))
+    assert len(after) == 1
+    assert after[0] != pytest.approx(before[0], abs=1e-6)
+    assert widths_after[0] == pytest.approx(0.3, rel=1e-4)
+    assert viewport.bridge.members[0]["qscalar"] == pytest.approx(after[0], abs=1e-5)

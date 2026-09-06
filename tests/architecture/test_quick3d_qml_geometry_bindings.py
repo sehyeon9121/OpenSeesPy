@@ -39,14 +39,18 @@ def test_geometry_revision_in_each_modeling_delegate_block() -> None:
 def test_member_cross_sections_use_model_unit_dimensions() -> None:
     text = QML.read_text(encoding="utf-8")
     assert "memberCrossSectionScale" not in text
-    assert "part.width_b / 100" in text
+    # Line display may swap B/H for a stick thickness, but the stored
+    # model-unit size is still what goes into the /100 Qt cube scale -
+    # a second presentation factor must not sneak back in.
+    assert "memberDisplayThickness(part.width_b) / 100" in text
     assert "part.length / 100" in text
-    assert "part.width_h / 100" in text
+    assert "memberDisplayThickness(part.width_h) / 100" in text
     assert "InstanceList { id: cubeInstanceList; objectName: \"cubeInstanceList\" }" in text
     assert 'objectName: "cubeMemberModel"' in text
     assert "instancing: cubeInstanceList" in text
-    assert text.count("modelData.width_b / 100") == 1
-    assert text.count("modelData.width_h / 100") == 1
+    assert text.count("memberDisplayThickness(modelData.width_b) / 100") == 1
+    assert text.count("memberDisplayThickness(modelData.width_h) / 100") == 1
+    assert "sceneBridge.lineDisplayThickness : width" in text
 
 
 def test_selected_member_highlight_changes_color_without_changing_section_size() -> None:
@@ -83,6 +87,7 @@ def test_nodes_have_a_depth_independent_screen_marker_and_pick_radius() -> None:
     assert "hoverPickTimer.start()" in text
     assert "readonly property string memberSyncKey:" in text
     assert 'part.tag + ":" + part.width_b' in text
+    assert "part.qscalar" in text
     assert "return sceneBridge.members.length" not in text
 
 
@@ -117,6 +122,7 @@ def test_display_panel_has_hierarchical_geometry_number_and_load_controls() -> N
         "nodeNumbersVisibleOption",
         "membersVisibleOption",
         "memberNumbersVisibleOption",
+        "lineDisplayOption",
         "nodalLoadsVisibleOption",
         "memberLoadsVisibleOption",
         "floorLoadsVisibleOption",

@@ -157,6 +157,56 @@ def test_stress_label_uses_peak_fibre_stress() -> None:
     assert (labels[0].x, labels[0].y, labels[0].z) == pytest.approx((0.5, 0.0, 0.0))
 
 
+def test_stress_label_sits_on_the_peak_end_of_a_cantilever() -> None:
+    """peak_member_stress is one number per member, but it is the hotter end.
+    Midspan was the wrong place to print it on a fixed cantilever.
+    """
+    model = StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(tag=1, x=0.0, y=0.0, z=0.0, ndf=6),
+            2: Node(tag=2, x=0.0, y=0.0, z=5.0, ndf=6),
+        },
+        elements={
+            1: Element(
+                tag=1,
+                node_i=2,
+                node_j=1,
+                element_type="elasticBeamColumn",
+                properties={
+                    "A": 0.01,
+                    "Iy": 1.0e-4,
+                    "Iz": 1.0e-4,
+                    "dim_H": 0.2,
+                    "dim_B": 0.2,
+                },
+            ),
+        },
+        boundaries=[
+            BoundaryCondition(node_tag=1, restraints=(True, True, True, True, True, True)),
+        ],
+    )
+    result = AnalysisResult(
+        status=AnalysisStatus.COMPLETED,
+        element_results={
+            1: ElementResult(
+                element_tag=1,
+                local_forces=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 50.0, 0.0),
+            )
+        },
+        node_results={
+            1: NodeResult(node_tag=1, displacement=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)),
+            2: NodeResult(node_tag=2, displacement=(0.03, 0.0, 0.0, 0.0, 0.009, 0.0)),
+        },
+    )
+    labels = result_overlay_labels(model, result, "stress", DEFAULT_UNIT_SYSTEM)
+
+    assert len(labels) == 1
+    assert labels[0].text.startswith("σ ")
+    assert (labels[0].x, labels[0].y, labels[0].z) == pytest.approx((0.0, 0.0, 0.0))
+
+
 def test_dense_models_keep_the_largest_labels(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(overlay_labels_module, "_LABEL_CAP", 2)
     nodes = {tag: Node(tag=tag, x=float(tag), y=0.0, z=0.0, ndf=6) for tag in range(1, 6)}

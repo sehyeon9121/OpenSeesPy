@@ -18,7 +18,7 @@ from openframe.core.domain import (
 )
 from openframe.features.results.diagrams.base import DiagramKind
 from openframe.features.results.diagrams.spatial import spatial_diagram_strips
-from openframe.features.results.stress import peak_member_stress
+from openframe.features.results.stress import member_end_stress, peak_member_stress
 
 #: Above this many labels the 3D overlay turns into a cloud; keep the largest
 #: by |value| and let the table carry the rest.
@@ -237,13 +237,33 @@ def _stress_labels(
             continue
         pi = _displaced(node_i, result, deformation_scale)
         pj = _displaced(node_j, result, deformation_scale)
-        mid = tuple(0.5 * (pi[k] + pj[k]) for k in range(3))
+        # peak_member_stress paints the whole member one colour, so the number
+        # used to sit at midspan even when the peak is at a fixed end - a
+        # cantilever then looks uniformly yellow with σ in the middle. Put the
+        # label on the hotter end (same idea as N/V/M end labels). When both
+        # ends agree (truss, constant N) keep midspan so a single number does
+        # not pretend to pick a side.
+        i_stress = member_end_stress(element, element_result, end="i", ndm=model.ndm)
+        j_stress = member_end_stress(element, element_result, end="j", ndm=model.ndm)
+        if (
+            i_stress is not None
+            and j_stress is not None
+            and not math.isclose(
+                abs(i_stress),
+                abs(j_stress),
+                rel_tol=1.0e-6,
+                abs_tol=max(peak * _RELATIVE_NOISE, 1.0e-30),
+            )
+        ):
+            point = pi if abs(i_stress) >= abs(j_stress) else pj
+        else:
+            point = tuple(0.5 * (pi[k] + pj[k]) for k in range(3))
         labels.append(
             OverlayLabel(
                 f"σ {peak:.4g} {unit.stress}",
-                mid[0],
-                mid[1],
-                mid[2],
+                point[0],
+                point[1],
+                point[2],
                 "#b4530a",
                 peak,
             )

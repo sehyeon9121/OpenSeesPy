@@ -360,6 +360,18 @@ class _Modeling3DInputMixin:
             set(self.canvas.selected_nodes), set(self.canvas.selected_elements)
         )
 
+    def _toggle_line_display_3d(self) -> None:
+        """Ctrl+H: MIDAS-style line display.
+
+        Dense frames are easier to author when members are thin centerlines
+        plus nodes instead of the assigned B×H / H-section extrusion filling
+        the view. Press again to restore the section mesh - this is a view
+        toggle, not a hide, so selection and the stored section stay put.
+        """
+        self.preview_3d.set_line_display_active(
+            not self.preview_3d.line_display_active()
+        )
+
 
     def _sync_3d_selection_highlight(self) -> None:
         if self.canvas.ndm == 3:

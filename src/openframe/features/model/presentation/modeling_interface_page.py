@@ -328,6 +328,14 @@ class ModelingInterfacePage(
             self.show_all_shortcut_3d = QShortcut(QKeySequence("Ctrl+A"), self)
             self.show_all_shortcut_3d.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             self.show_all_shortcut_3d.activated.connect(self.preview_3d.clear_isolate)
+            # Same page-wide scope as F2/Ctrl+A: the hidden 2D canvas cannot
+            # hold focus in 3D mode, and a QLineEdit (length/angle) often
+            # owns it while drawing. Ctrl+H must still toggle line display.
+            self.line_display_shortcut_3d = QShortcut(QKeySequence("Ctrl+H"), self)
+            self.line_display_shortcut_3d.setContext(
+                Qt.ShortcutContext.WidgetWithChildrenShortcut
+            )
+            self.line_display_shortcut_3d.activated.connect(self._toggle_line_display_3d)
         self.fit_shortcut = QShortcut(QKeySequence("F"), self.canvas)
         self.fit_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.fit_shortcut.activated.connect(self.canvas.fit_model)
@@ -1672,6 +1680,57 @@ class ModelingInterfacePage(
             properties_root.addWidget(self.element_assignment_selection_status)
         root.addWidget(properties_card)
 
+        # 3D Create Element is where members are born, so the strong/weak
+        # axis rotation belongs here as a drawing pen - the same way Material
+        # & Section does. It lived only on the Properties 부재 page (30°
+        # nudges) which nobody opens while drawing, so users asked where the
+        # "부재 돌리는" control went; it had been discussed as MIDAS Beta
+        # Angle and never built on this panel. 90° is the useful default
+        # because it swaps Iy↔Iz; the spinbox is for an arbitrary beta.
+        # 2D/truss ignore Element.local_axis_angle, so the card is hidden
+        # there rather than offering a no-op. The Properties-tab 30° row
+        # stays: that is for editing a selected member after the fact.
+        axis_card, axis_root = self._section("부재 회전각")
+        self.element_local_axis_card = axis_card
+        axis_card.setObjectName("elementLocalAxisCard")
+        axis_hint = QLabel(
+            "선택한 부재를 길이 방향으로만 굴립니다. H형을 90° 돌리면 웹이 누워 "
+            "I처럼 보입니다. 부재가 놓인 방향(절점)과 로컬축 표시는 그대로입니다. "
+            "같은 층의 기둥만 방향을 다르게 둘 때 씁니다."
+        )
+        axis_hint.setWordWrap(True)
+        axis_hint.setObjectName("setupSectionHint")
+        axis_root.addWidget(axis_hint)
+        axis_row = QHBoxLayout()
+        axis_row.addWidget(QLabel("회전각(°)"))
+        self.element_local_axis_angle = self._number(0.0)
+        self.element_local_axis_angle.setObjectName("elementLocalAxisAngle")
+        self.element_local_axis_angle.setRange(-360.0, 360.0)
+        self.element_local_axis_angle.setToolTip(
+            "부재 길이 축을 중심으로 단면만 굴리는 각도. 0이면 그린 그대로이고, "
+            "90°면 H형이 I처럼 보입니다. 절점 위치와 부재가 놓인 방향은 바뀌지 않습니다."
+        )
+        self.element_local_axis_angle.valueChanged.connect(
+            self._sync_create_element_local_axis_pen
+        )
+        self.element_local_axis_angle.editingFinished.connect(
+            self._apply_create_element_local_axis_angle
+        )
+        axis_row.addWidget(self.element_local_axis_angle, 1)
+        axis_root.addLayout(axis_row)
+        self.element_rotate_90_button = QPushButton("90° 회전")
+        self.element_rotate_90_button.setObjectName("elementRotate90Button")
+        self.element_rotate_90_button.setToolTip(
+            "단면을 90° 굴립니다 (360°에서 0으로 순환). H형은 I처럼, I형은 다시 H처럼 "
+            "보입니다. 한 번 더 누르면 고정 90°로 점프하지 않고 180°가 됩니다."
+        )
+        self.element_rotate_90_button.clicked.connect(
+            self._rotate_create_element_local_axis_90
+        )
+        axis_root.addWidget(self.element_rotate_90_button)
+        root.addWidget(axis_card)
+        axis_card.setVisible(self._start_in_3d)
+
         self.start_element_drawing_button = QPushButton(
             "현재 설정으로 부재 그리기 (Space)"
             if not self._start_in_3d
@@ -1771,6 +1830,40 @@ class ModelingInterfacePage(
         self.active_element_status.setText(
             f"✓ 선택 부재 {count}개에 거동 설정(갭·프리스트레스)을 적용했습니다."
         )
+
+    def _sync_create_element_local_axis_pen(self, _value: float | None = None) -> None:
+        """Keep the drawing pen in sync so the next Space-drawn member
+        inherits the Create Element 회전각 without an extra Apply click."""
+        if not hasattr(self, "element_local_axis_angle"):
+            return
+        self.canvas.element_local_axis_angle = float(self.element_local_axis_angle.value())
+
+    def _apply_create_element_local_axis_angle(self) -> None:
+        self._sync_create_element_local_axis_pen()
+        if not self.canvas.selected_elements:
+            return
+        angle = float(self.element_local_axis_angle.value())
+        self.canvas.apply_local_axis_angle_to_selection(angle)
+        # Properties-tab spinbox is a second view of the same field; leave it
+        # matching so opening 부재 after a Create Element rotate does not
+        # show the pre-rotate number and write it back on editingFinished.
+        if hasattr(self, "member_local_axis_angle"):
+            self.member_local_axis_angle.blockSignals(True)
+            self.member_local_axis_angle.setValue(angle)
+            self.member_local_axis_angle.blockSignals(False)
+        self._sync_selection_status()
+
+    def _rotate_create_element_local_axis_90(self) -> None:
+        """Add 90° (mod 360) rather than jumping to a fixed 90.
+
+        A second press has to keep turning: 0→90→180→270→0 is the Iy↔Iz
+        swap sequence. Setting the spinbox to 90 every click would look
+        like the button was a toggle, not a rotate.
+        """
+        self.element_local_axis_angle.setValue(
+            (self.element_local_axis_angle.value() + 90.0) % 360.0
+        )
+        self._apply_create_element_local_axis_angle()
 
     def _refresh_directional_unit_labels(self) -> None:
         if not hasattr(self, "element_gap_field"):

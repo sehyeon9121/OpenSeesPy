@@ -724,6 +724,35 @@ def test_the_3d_viewport_accepts_keyboard_focus_so_space_can_reach_it() -> None:
     assert page.draw_space_shortcut_3d.parent() is page.preview_3d
 
 
+def test_ctrl_h_toggles_line_display_in_the_3d_view() -> None:
+    """Ctrl+H is scoped to the whole 3D page, same reason as F2/Escape:
+    the hidden 2D canvas never holds focus, and a length/angle field often
+    does. The toggle must shrink the QML sticks without rewriting members.
+    """
+    from PySide6.QtGui import QKeySequence
+
+    page = _page(start_in_3d=True)
+    left = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    right = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    page.canvas.add_member(left, right)
+    QApplication.processEvents()
+
+    assert page.line_display_shortcut_3d.parent() is page
+    assert page.line_display_shortcut_3d.key() == QKeySequence("Ctrl+H")
+    assert page.preview_3d.line_display_active() is False
+    members_before = list(page.preview_3d.bridge.members)
+
+    page._toggle_line_display_3d()
+    QApplication.processEvents()
+
+    assert page.preview_3d.line_display_active() is True
+    assert list(page.preview_3d.bridge.members) == members_before
+
+    page._toggle_line_display_3d()
+    QApplication.processEvents()
+    assert page.preview_3d.line_display_active() is False
+
+
 def test_escape_in_the_3d_view_exits_draw_mode() -> None:
     page = _page(start_in_3d=True)
     _enable_element_drawing(page)

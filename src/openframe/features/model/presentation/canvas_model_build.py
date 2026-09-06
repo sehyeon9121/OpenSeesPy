@@ -29,6 +29,8 @@ from openframe.core.domain import (
 # never drift apart.
 from openframe.features.analysis.statics.solver import _reference_vector
 
+_ZERO_OFFSET = (0.0, 0.0, 0.0)
+
 
 def _lerp(start: float, end: float, fraction: float) -> float:
     return start + (end - start) * fraction
@@ -109,7 +111,7 @@ def _local_axes(
         if length <= 0.0:
             return None
         local_x = (dx / length, dy / length, dz / length)
-        reference = _reference_vector(start, end)
+        reference = _reference_vector(start, end, element.local_axis_angle)
         raw_y = (
             reference[1] * local_x[2] - reference[2] * local_x[1],
             reference[2] * local_x[0] - reference[0] * local_x[2],
@@ -130,6 +132,42 @@ def _local_axes(
     local_x = (dx / length, dy / length, 0.0)
     local_y = (-dy / length, dx / length, 0.0)
     return local_x, local_y, (0.0, 0.0, 1.0)
+
+
+def _analysis_segment(
+    source: Element,
+    tag: int,
+    node_i: int,
+    node_j: int,
+    *,
+    release_i: bool,
+    release_j: bool,
+    keep_offset_i: bool,
+    keep_offset_j: bool,
+) -> Element:
+    """One analysis-mesh segment cloned from the drawn member.
+
+    ``build_model`` used to reconstruct ``Element()`` with only type,
+    properties and end releases. That silently dropped
+    ``local_axis_angle`` (and prestress / rigid offsets), so a 90° Create
+    Element roll showed on the 3D canvas via ``authoring_model()`` but the
+    solver still built ``geomTransf`` at 0° — same load, same Iy/Iz facing
+    the load, identical stress and displacement. Every field the solver
+    actually reads from a drawn member has to survive this clone.
+    """
+    return Element(
+        tag,
+        node_i,
+        node_j,
+        source.element_type,
+        dict(source.properties),
+        moment_release_i=release_i,
+        moment_release_j=release_j,
+        local_axis_angle=source.local_axis_angle,
+        offset_i=source.offset_i if keep_offset_i else _ZERO_OFFSET,
+        offset_j=source.offset_j if keep_offset_j else _ZERO_OFFSET,
+        prestress=source.prestress,
+    )
 
 
 class _ModelBuildMixin:
@@ -444,14 +482,15 @@ class _ModelBuildMixin:
                     )
 
                 if split_fraction is None:
-                    analysis_elements[segment_tag] = Element(
+                    analysis_elements[segment_tag] = _analysis_segment(
+                        element,
                         segment_tag,
                         node_i,
                         node_j,
-                        element.element_type,
-                        dict(element.properties),
-                        moment_release_i=release_i,
-                        moment_release_j=release_j,
+                        release_i=release_i,
+                        release_j=release_j,
+                        keep_offset_i=index == 0,
+                        keep_offset_j=index == last_index,
                     )
                     _append_uniform(segment_tag, start_fraction, end_fraction)
                 else:
@@ -469,23 +508,25 @@ class _ModelBuildMixin:
                     second_tag = next_tag
                     next_tag += 1
                     mid_global_fraction = start_fraction + split_fraction * segment_span
-                    analysis_elements[segment_tag] = Element(
+                    analysis_elements[segment_tag] = _analysis_segment(
+                        element,
                         segment_tag,
                         node_i,
                         mid_tag,
-                        element.element_type,
-                        dict(element.properties),
-                        moment_release_i=release_i,
-                        moment_release_j=False,
+                        release_i=release_i,
+                        release_j=False,
+                        keep_offset_i=index == 0,
+                        keep_offset_j=False,
                     )
-                    analysis_elements[second_tag] = Element(
+                    analysis_elements[second_tag] = _analysis_segment(
+                        element,
                         second_tag,
                         mid_tag,
                         node_j,
-                        element.element_type,
-                        dict(element.properties),
-                        moment_release_i=False,
-                        moment_release_j=release_j,
+                        release_i=False,
+                        release_j=release_j,
+                        keep_offset_i=False,
+                        keep_offset_j=index == last_index,
                     )
                     _append_uniform(segment_tag, start_fraction, mid_global_fraction)
                     _append_uniform(second_tag, mid_global_fraction, end_fraction)
