@@ -90,12 +90,12 @@ def test_inspector_shows_only_metrics_for_the_active_result_type() -> None:
     assert panel.learning_hint.isHidden()
 
 
-def test_results_workspace_uses_a_narrow_context_inspector_shell() -> None:
+def test_results_workspace_reserves_space_for_options_and_values() -> None:
     QApplication.instance() or QApplication([])
     workspace = ResultsWorkspace()
 
-    assert workspace.result_types.minimumWidth() >= 200
-    assert workspace.result_types.maximumWidth() <= 232
+    assert workspace.result_types.minimumWidth() >= 264
+    assert workspace.result_types.maximumWidth() <= 300
     assert workspace.summary.maximumWidth() <= 280
     workspace.set_result_type("reaction")
     assert not workspace.summary.metric_rows["reaction"].isHidden()

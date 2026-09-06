@@ -162,26 +162,25 @@ def test_picked_node_is_highlighted_and_clears_when_leaving_displacement_mode() 
     application.processEvents()
     viewport.set_result_type("displacement")
 
-    default_radius = next(
-        node["radius"] for node in viewport.quick3d_view.bridge.nodes if node["tag"] == 2
+    default_node = next(
+        node.copy() for node in viewport.quick3d_view.bridge.nodes if node["tag"] == 2
     )
 
     # Simulate what happens when the QML side reports a successful pick.
     viewport._show_node_displacement(2, 100, 100)
 
-    nodes_by_tag = {node["tag"]: node for node in viewport.quick3d_view.bridge.nodes}
-    # Reuses the same red selection highlight as the modeling canvas
-    # (Quick3DSceneBridge.set_selected_node) - a dedicated cyan pick color
-    # used to give no visible feedback on click, so this was switched to the
-    # already-working selection color instead.
-    assert nodes_by_tag[2]["color"] == "#ef4444"
-    assert nodes_by_tag[2]["radius"] > default_radius
-    # The other node must be untouched, so only the picked one stands out.
-    assert nodes_by_tag[1]["color"] != "#ef4444"
+    bridge = viewport.quick3d_view.bridge
+    nodes_by_tag = {node["tag"]: node for node in bridge.nodes}
+    # Selection is a QML overlay fed by the bridge. Keeping the result colour
+    # and radius intact means selecting a node cannot corrupt its contour value.
+    assert bridge.selectedNodeTags == [2]
+    assert [node["tag"] for node in bridge.selectedNodeHalo] == [2]
+    assert nodes_by_tag[2]["color"] == default_node["color"]
+    assert nodes_by_tag[2]["radius"] == default_node["radius"]
 
     # Leaving displacement mode should drop the highlight along with picking mode.
     viewport.set_result_type("overview")
-    assert all(node["color"] != "#ef4444" for node in viewport.quick3d_view.bridge.nodes)
+    assert viewport.quick3d_view.bridge.selectedNodeTags == []
 
     viewport.close()
 

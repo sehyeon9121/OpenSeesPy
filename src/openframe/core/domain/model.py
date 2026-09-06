@@ -5,6 +5,22 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from openframe.core.domain.geometric_transform import GeometricTransform
+from openframe.core.domain.surfaces import ShellQuad, WallPanel
+
+
+class NodeOrigin(StrEnum):
+    """Who owns this node.
+
+    Mesh nodes must be distinguishable from user-authored corners so a
+    remesh can delete derived geometry without a tag-range heuristic.
+    Solver-internal dummy nodes (inclined-support grounds, hinge
+    duplicates, trapezoid stations) never appear in ``StructuralModel.nodes``
+    — they live only inside an OpenSees domain — so they are not an origin
+    here.
+    """
+
+    USER = "user"
+    WALL_MESH = "wall_mesh"
 
 
 class SupportKind(StrEnum):
@@ -50,6 +66,11 @@ class Node:
     y: float
     z: float = 0.0
     ndf: int = 3
+    origin: NodeOrigin = NodeOrigin.USER
+
+    @property
+    def is_wall_mesh(self) -> bool:
+        return self.origin is NodeOrigin.WALL_MESH
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,6 +321,14 @@ class StructuralModel:
     #: before this feature existed, or any 2D model (diaphragms are a 3D-only
     #: concept).
     rigid_diaphragms: tuple[RigidDiaphragm, ...] = ()
+    #: User-authored rectangular walls. Empty on every beam/truss model
+    #: built before this field existed — adding it last with a default keeps
+    #: those constructors unchanged.
+    walls: dict[int, WallPanel] = field(default_factory=dict)
+    #: Analysis quads derived from ``walls``. Empty until the rectangular
+    #: mesher runs; remesh drops this collection and every
+    #: ``NodeOrigin.WALL_MESH`` node, then rebuilds both.
+    shell_quads: dict[int, ShellQuad] = field(default_factory=dict)
 
     def validate(self) -> list[str]:
         """Return validation errors without depending on a GUI dialog."""
@@ -309,4 +338,21 @@ class StructuralModel:
         for element in self.elements.values():
             if element.node_i not in self.nodes or element.node_j not in self.nodes:
                 errors.append(f"부재 {element.tag}가 존재하지 않는 절점을 참조합니다.")
+        for wall in self.walls.values():
+            errors.extend(wall.validate())
+            for corner_tag in wall.corner_tags():
+                if corner_tag not in self.nodes:
+                    errors.append(
+                        f"벽체 {wall.tag}가 존재하지 않는 절점 {corner_tag}를 참조합니다."
+                    )
+        for quad in self.shell_quads.values():
+            for node_tag in quad.node_tags():
+                if node_tag not in self.nodes:
+                    errors.append(
+                        f"셸 쿼드 {quad.tag}가 존재하지 않는 절점 {node_tag}를 참조합니다."
+                    )
+            if quad.wall_tag not in self.walls:
+                errors.append(
+                    f"셸 쿼드 {quad.tag}의 부모 벽체 {quad.wall_tag}가 없습니다."
+                )
         return errors

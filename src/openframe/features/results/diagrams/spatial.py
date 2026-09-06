@@ -75,6 +75,7 @@ class SpatialDiagramStrip:
     #: the fill; the engineer reads the two ends (and a single mid label when
     #: they agree).
     end_values: tuple[float, float]
+    component: str = ""
 
 
 def spatial_diagram_strips(
@@ -82,6 +83,8 @@ def spatial_diagram_strips(
     result: AnalysisResult,
     kind: DiagramKind,
     scale_percent: int,
+    *,
+    component: str = "all",
 ) -> tuple[SpatialDiagramStrip, ...]:
     """Build every non-zero diagram strip for ``kind`` (axial / shear / moment)."""
     components = _COMPONENTS.get(kind)
@@ -100,6 +103,8 @@ def spatial_diagram_strips(
             continue
         is_truss = element.element_type.lower() in _TRUSS_TYPES
         for attribute, axis_name, plot_kind, color in components:
+            if component != "all" and attribute != component:
+                continue
             if is_truss and attribute != "axial":
                 continue
             diagram = getattr(bundle, attribute)
@@ -164,6 +169,10 @@ def _strip_for_member(
         tuple(axis_points),
         tuple(curve_points),
         (diagram.points[0].value, diagram.points[-1].value),
+        "axial" if kind == DiagramKind.AXIAL else (
+            f"shear_{axis_name}" if kind == DiagramKind.SHEAR
+            else ("moment_z" if axis_name == "y" else "moment_y")
+        ),
     )
 
 

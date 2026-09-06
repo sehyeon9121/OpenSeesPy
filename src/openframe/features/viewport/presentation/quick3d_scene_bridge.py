@@ -1,6 +1,7 @@
 """Convert structural-domain objects into renderer-neutral Qt Quick 3D data."""
 
 import math
+from dataclasses import replace
 from itertools import pairwise
 
 from PySide6.QtCore import Property, QObject, Signal
@@ -16,6 +17,7 @@ from openframe.core.domain import (
     LoadEntry,
     MemberDistributedLoadEntry,
     MemberPointLoadEntry,
+    NodalLoad,
     NodalLoadEntry,
     SelfWeightEntry,
     StructuralModel,
@@ -72,6 +74,12 @@ _PREVIEW_MEMBER_THICKNESS_SCALE = 0.4
 _FLOOR_OUTLINE_COLOR = "#facc15"
 _GHOST_COLOR = "#c9cfd6"
 _GHOST_OPACITY = 0.35
+#: One face + one edge colour for the Phase-1 wall slice. Not a stress
+#: ramp: this phase has no shell contour, and a second palette would
+#: collide with the displacement legend the result overlay already uses.
+_WALL_FACE_COLOR = "#94a3b8"
+_WALL_EDGE_COLOR = "#475569"
+_WALL_EDGE_THICKNESS_RATIO = 0.012
 _NODAL_FORCE_COLOR = "#e5484d"
 _UNIFORM_TRANSVERSE_COLOR = "#f59e0b"
 _UNIFORM_AXIAL_COLOR = "#8b5cf6"
@@ -301,8 +309,12 @@ class Quick3DSceneBridge(QObject):
         super().__init__(parent)
         self._nodes: list[dict[str, float | int | str]] = []
         self._members: list[dict[str, float | int | str]] = []
+        self._wall_faces: list[dict[str, float | int | str]] = []
+        self._wall_edges: list[dict[str, float | int | str]] = []
         self._ghost_nodes: list[dict[str, float | int | str]] = []
         self._ghost_members: list[dict[str, float | int | str]] = []
+        self._ghost_wall_faces: list[dict[str, float | int | str]] = []
+        self._ghost_wall_edges: list[dict[str, float | int | str]] = []
         self._load_arrows: list[dict[str, float | int | str]] = []
         self._support_parts: list[dict[str, float | int | str]] = []
         self._local_axis_gizmos: list[dict[str, float | int | str]] = []
@@ -505,6 +517,7 @@ class Quick3DSceneBridge(QObject):
         overlay_labels: list[dict[str, object]] | None = None,
         member_polylines: dict[int, list[tuple[float, float, float]]] | None = None,
         member_station_magnitudes: dict[int, tuple[float, ...]] | None = None,
+        result_reactions: dict[int, tuple[float, ...]] | None = None,
     ) -> None:
         """Overlay analysis displacements: deformed + colour-mapped geometry, an
         optional translucent undeformed ghost, and arrows at loaded nodes."""
@@ -583,6 +596,7 @@ class Quick3DSceneBridge(QObject):
             )
             members.extend(contour)
         self._members = members
+        self._assign_wall_parts(model, deformed_points, color=_WALL_FACE_COLOR, opacity=1.0)
 
         if show_undeformed:
             self._ghost_nodes = [
@@ -608,11 +622,20 @@ class Quick3DSceneBridge(QObject):
                     )
                 )
             self._ghost_members = ghost_members
+            self._assign_ghost_wall_parts(model, self._points)
         else:
             self._ghost_nodes = []
             self._ghost_members = []
+            self._ghost_wall_faces = []
+            self._ghost_wall_edges = []
 
-        self._load_arrows = self._build_all_load_arrows(model, deformed_points)
+        if result_reactions is None:
+            self._load_arrows = self._build_all_load_arrows(model, deformed_points)
+        else:
+            reaction_model = replace(model, nodal_loads=[
+                NodalLoad(tag, values) for tag, values in result_reactions.items()
+            ])
+            self._load_arrows = self._build_load_arrows(reaction_model, deformed_points)
         self._force_diagram_parts = self._build_force_diagram_parts(force_diagrams or [])
         self._result_labels = self._build_result_labels(overlay_labels or [])
         self._cached_topology_fingerprint = None
@@ -625,6 +648,8 @@ class Quick3DSceneBridge(QObject):
         self._end_torsion_marker_mode(notify=False)
         self._ghost_nodes = []
         self._ghost_members = []
+        self._ghost_wall_faces = []
+        self._ghost_wall_edges = []
         self._force_diagram_parts = []
         self._result_labels = []
         if self._last_model is not None and self._points:
@@ -850,6 +875,8 @@ class Quick3DSceneBridge(QObject):
         self._deformation_member_records = []
         self._ghost_nodes = []
         self._ghost_members = []
+        self._ghost_wall_faces = []
+        self._ghost_wall_edges = []
         self._deformation_revision = 0
         if self._last_model is not None and self._points:
             self._rebuild_default_geometry(self._last_model)
@@ -1186,6 +1213,28 @@ class Quick3DSceneBridge(QObject):
     def members(self) -> list[dict[str, float | int | str]]:
         return self._members
 
+    @Property("QVariantList", notify=topology_changed)
+    def wallFaces(self) -> list[dict[str, float | int | str]]:
+        """One #Rectangle instance per ShellQuad — not one Model per edge.
+
+        Faces and edges are two flat lists (same pattern as members vs
+        loadArrows). A nested Node-per-quad with four child edges is the
+        layout Repeater3D already failed to keep in sync for H/I sections.
+        """
+        return self._wall_faces
+
+    @Property("QVariantList", notify=topology_changed)
+    def wallEdges(self) -> list[dict[str, float | int | str]]:
+        return self._wall_edges
+
+    @Property("QVariantList", notify=topology_changed)
+    def ghostWallFaces(self) -> list[dict[str, float | int | str]]:
+        return self._ghost_wall_faces
+
+    @Property("QVariantList", notify=topology_changed)
+    def ghostWallEdges(self) -> list[dict[str, float | int | str]]:
+        return self._ghost_wall_edges
+
     @Property(int, notify=geometry_changed)
     def geometryRevision(self) -> int:
         return self._geometry_revision
@@ -1447,8 +1496,208 @@ class Quick3DSceneBridge(QObject):
             member_records.append((element, parts))
             members.extend(parts)
         self._members = members
+        self._assign_wall_parts(model, self._points, color=_WALL_FACE_COLOR, opacity=1.0)
         self._node_by_tag = {int(node["tag"]): node for node in self._nodes}
         self._geometry_member_records = member_records
+
+    def _assign_wall_parts(
+        self,
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+        *,
+        color: str,
+        opacity: float,
+    ) -> None:
+        self._wall_faces = self._wall_face_parts(model, points, color=color, opacity=opacity)
+        self._wall_edges = self._wall_edge_parts(
+            model, points, color=_WALL_EDGE_COLOR, opacity=opacity
+        )
+
+    def _assign_ghost_wall_parts(
+        self,
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+    ) -> None:
+        self._ghost_wall_faces = self._wall_face_parts(
+            model, points, color=_GHOST_COLOR, opacity=_GHOST_OPACITY
+        )
+        self._ghost_wall_edges = self._wall_edge_parts(
+            model, points, color=_GHOST_COLOR, opacity=_GHOST_OPACITY
+        )
+
+    def _wall_face_parts(
+        self,
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+        *,
+        color: str,
+        opacity: float,
+    ) -> list[dict[str, float | int | str]]:
+        parts: list[dict[str, float | int | str]] = []
+        for quad in sorted(model.shell_quads.values(), key=lambda item: item.tag):
+            corners = [
+                points.get(quad.node_1),
+                points.get(quad.node_2),
+                points.get(quad.node_3),
+                points.get(quad.node_4),
+            ]
+            if any(corner is None for corner in corners):
+                continue
+            part = self._rectangle_part(
+                quad.tag,
+                (corners[0], corners[1], corners[2], corners[3]),
+                color=color,
+                opacity=opacity,
+            )
+            if part is not None:
+                parts.append(part)
+        return parts
+
+    def _wall_edge_parts(
+        self,
+        model: StructuralModel,
+        points: dict[int, tuple[float, float, float]],
+        *,
+        color: str,
+        opacity: float,
+    ) -> list[dict[str, float | int | str]]:
+        """Unique mesh edges, one cube each.
+
+        Four edges per quad would double-draw shared sides and explode
+        delegate count as nx, ny grow. Deduping by sorted node-tag pair
+        keeps one stick per grid line.
+        """
+        parts: list[dict[str, float | int | str]] = []
+        seen: set[tuple[int, int]] = set()
+        for quad in sorted(model.shell_quads.values(), key=lambda item: item.tag):
+            ring = (quad.node_1, quad.node_2, quad.node_3, quad.node_4)
+            for start_tag, end_tag in zip(ring, (*ring[1:], ring[0]), strict=True):
+                key = (start_tag, end_tag) if start_tag < end_tag else (end_tag, start_tag)
+                if key in seen:
+                    continue
+                seen.add(key)
+                start = points.get(start_tag)
+                end = points.get(end_tag)
+                if start is None or end is None:
+                    continue
+                orientation = self._member_orientation(start, end)
+                if orientation is None:
+                    continue
+                length, scalar, qx, qy, qz = orientation
+                thickness = max(length * _WALL_EDGE_THICKNESS_RATIO, 0.01)
+                midpoint = tuple((start[index] + end[index]) / 2.0 for index in range(3))
+                parts.append(
+                    {
+                        "tag": quad.tag,
+                        "x": midpoint[0],
+                        "y": midpoint[1],
+                        "z": midpoint[2],
+                        "qscalar": scalar,
+                        "qx": qx,
+                        "qy": qy,
+                        "qz": qz,
+                        "scale_x": thickness,
+                        "scale_y": length,
+                        "scale_z": thickness,
+                        "color": color,
+                        "opacity": opacity,
+                    }
+                )
+        return parts
+
+    def _rectangle_part(
+        self,
+        tag: int,
+        corners: tuple[
+            tuple[float, float, float],
+            tuple[float, float, float],
+            tuple[float, float, float],
+            tuple[float, float, float],
+        ],
+        *,
+        color: str,
+        opacity: float,
+    ) -> dict[str, float | int | str] | None:
+        """Map a planar quad onto Quick3D's XY ``#Rectangle``.
+
+        The primitive is 100×100 in XY; QML divides these scales by 100,
+        same as member cubes. ``scale_z`` stays 1 so the face has no fake
+        thickness extrusion.
+        """
+        n1, n2, _n3, n4 = corners
+        axis_x = self._normalized((n2[0] - n1[0], n2[1] - n1[1], n2[2] - n1[2]))
+        axis_y = self._normalized((n4[0] - n1[0], n4[1] - n1[1], n4[2] - n1[2]))
+        if axis_x is None or axis_y is None:
+            return None
+        axis_z = self._normalized(self._cross(axis_x, axis_y))
+        if axis_z is None:
+            return None
+        # Re-orthogonalise y after the view-space map so a 90° structural
+        # rectangle does not pick up a shear from float noise.
+        axis_y = self._normalized(self._cross(axis_z, axis_x))
+        if axis_y is None:
+            return None
+        quaternion = self._quaternion_from_axes(axis_x, axis_y, axis_z)
+        if quaternion is None:
+            return None
+        width = math.dist(n1, n2)
+        height = math.dist(n1, n4)
+        center = tuple(sum(corner[index] for corner in corners) / 4.0 for index in range(3))
+        scalar, qx, qy, qz = quaternion
+        return {
+            "tag": tag,
+            "x": center[0],
+            "y": center[1],
+            "z": center[2],
+            "qscalar": scalar,
+            "qx": qx,
+            "qy": qy,
+            "qz": qz,
+            "scale_x": width,
+            "scale_y": height,
+            "scale_z": 1.0,
+            "color": color,
+            "opacity": opacity,
+        }
+
+    @staticmethod
+    def _quaternion_from_axes(
+        axis_x: tuple[float, float, float],
+        axis_y: tuple[float, float, float],
+        axis_z: tuple[float, float, float],
+    ) -> tuple[float, float, float, float] | None:
+        """Rotation taking identity axes onto ``axis_x/y/z`` (Shepperd)."""
+        m00, m10, m20 = axis_x
+        m01, m11, m21 = axis_y
+        m02, m12, m22 = axis_z
+        trace = m00 + m11 + m22
+        if trace > 0.0:
+            scale = math.sqrt(trace + 1.0) * 2.0
+            scalar = 0.25 * scale
+            qx = (m21 - m12) / scale
+            qy = (m02 - m20) / scale
+            qz = (m10 - m01) / scale
+        elif m00 > m11 and m00 > m22:
+            scale = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+            scalar = (m21 - m12) / scale
+            qx = 0.25 * scale
+            qy = (m01 + m10) / scale
+            qz = (m02 + m20) / scale
+        elif m11 > m22:
+            scale = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+            scalar = (m02 - m20) / scale
+            qx = (m01 + m10) / scale
+            qy = 0.25 * scale
+            qz = (m12 + m21) / scale
+        else:
+            scale = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+            scalar = (m10 - m01) / scale
+            qx = (m02 + m20) / scale
+            qy = (m12 + m21) / scale
+            qz = 0.25 * scale
+        if scale <= 1.0e-15:
+            return None
+        return (scalar, qx, qy, qz)
 
     def _full_topology_rebuild(self, model: StructuralModel) -> None:
         points = {
@@ -1459,6 +1708,8 @@ class Quick3DSceneBridge(QObject):
         self._rebuild_default_geometry(model)
         self._ghost_nodes = []
         self._ghost_members = []
+        self._ghost_wall_faces = []
+        self._ghost_wall_edges = []
         self._force_diagram_parts = []
         self._result_labels = []
         self._load_arrows = self._build_all_load_arrows(model, points)
@@ -1562,6 +1813,20 @@ class Quick3DSceneBridge(QObject):
                 self._fallback_to_full_topology_rebuild(
                     model, reason=f"member_part_count:{element.tag}"
                 )
+                return
+
+        if model.shell_quads:
+            fresh_faces = self._wall_face_parts(
+                model, points, color=_WALL_FACE_COLOR, opacity=1.0
+            )
+            fresh_edges = self._wall_edge_parts(
+                model, points, color=_WALL_EDGE_COLOR, opacity=1.0
+            )
+            if not self._replace_part_list_in_place(self._wall_faces, fresh_faces, "wall_faces"):
+                self._fallback_to_full_topology_rebuild(model, reason="wall_faces")
+                return
+            if not self._replace_part_list_in_place(self._wall_edges, fresh_edges, "wall_edges"):
+                self._fallback_to_full_topology_rebuild(model, reason="wall_edges")
                 return
 
         loads_dirty = False
@@ -1685,6 +1950,10 @@ class Quick3DSceneBridge(QObject):
             self._model_loads_topology_signature(model),
             self._load_entries_topology_key(),
             self._local_axis_topology_signature(model),
+            tuple(
+                (quad.tag, quad.node_1, quad.node_2, quad.node_3, quad.node_4, quad.wall_tag)
+                for quad in sorted(model.shell_quads.values(), key=lambda item: item.tag)
+            ),
         )
 
     @staticmethod
@@ -1944,6 +2213,8 @@ class Quick3DSceneBridge(QObject):
             {
                 "nodes": len(self._nodes),
                 "members": len(self._members),
+                "wallFaces": len(self._wall_faces),
+                "wallEdges": len(self._wall_edges),
                 "loadArrows": len(self._load_arrows),
                 "supportSymbols": len(self._support_parts),
                 "localAxisGizmos": len(self._local_axis_gizmos),
@@ -3991,8 +4262,12 @@ class Quick3DSceneBridge(QObject):
         self._torsion_revision = 0
         self._nodes = []
         self._members = []
+        self._wall_faces = []
+        self._wall_edges = []
         self._ghost_nodes = []
         self._ghost_members = []
+        self._ghost_wall_faces = []
+        self._ghost_wall_edges = []
         self._load_arrows = []
         self._support_parts = []
         self._local_axis_gizmos = []

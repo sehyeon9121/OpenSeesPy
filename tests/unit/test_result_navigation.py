@@ -54,7 +54,7 @@ def test_analysis_kind_switches_the_navigation_context_and_default_view() -> Non
     assert sidebar.buttons["mode_shapes"].isChecked()
 
 
-def test_member_forces_share_one_sidebar_entry_and_switch_in_the_canvas_header() -> None:
+def test_member_forces_share_one_sidebar_entry_and_switch_in_left_options() -> None:
     _application()
     workspace = ResultsWorkspace()
 
@@ -62,12 +62,16 @@ def test_member_forces_share_one_sidebar_entry_and_switch_in_the_canvas_header()
     assert workspace.result_types.buttons["shear"] is workspace.result_types.buttons["moment"]
 
     workspace.set_result_type("axial")
-    assert not workspace.viewport.force_selector.isHidden()
-    assert workspace.viewport.force_buttons["axial"].isChecked()
+    settings = workspace.result_types.display_settings
+    assert workspace.viewport.force_selector.isHidden()
+    assert not settings.force_kind_row.isHidden()
+    assert settings.force_kind_selector.currentData() == "axial"
 
-    workspace.viewport.force_buttons["shear"].click()
+    settings.force_kind_selector.setCurrentIndex(
+        settings.force_kind_selector.findData("shear")
+    )
     assert workspace.viewport.mode_badge.text() == "SHEAR FORCE (V)"
-    assert workspace.viewport.force_buttons["shear"].isChecked()
+    assert settings.force_kind_selector.currentData() == "shear"
     assert not workspace.summary.metric_rows["shear"].isHidden()
     assert workspace.summary.metric_rows["axial"].isHidden()
 

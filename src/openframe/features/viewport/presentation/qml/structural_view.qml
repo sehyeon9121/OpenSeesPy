@@ -957,6 +957,160 @@ Item {
         }
 
         Repeater3D {
+            // One #Rectangle per ShellQuad. Not a Node with child edge
+            // Models — Repeater3D already dropped nested H/I children out
+            // of sync, and nx×ny faces would multiply that. Edges are the
+            // sibling Repeater below, deduped in Python.
+            model: bridgeReady ? sceneBridge.wallFaces : []
+            delegate: Model {
+                visible: bridgeReady && sceneBridge.membersVisible
+                source: "#Rectangle"
+                position: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
+                rotation: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.quaternion(
+                        modelData.qscalar,
+                        modelData.qx,
+                        modelData.qy,
+                        modelData.qz
+                    )
+                }
+                scale: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(
+                        modelData.scale_x / 100,
+                        modelData.scale_y / 100,
+                        modelData.scale_z / 100
+                    )
+                }
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.62
+                        cullMode: Material.NoCulling
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                pickable: false
+            }
+        }
+
+        Repeater3D {
+            model: bridgeReady ? sceneBridge.wallEdges : []
+            delegate: Model {
+                visible: bridgeReady && sceneBridge.membersVisible
+                source: "#Cube"
+                position: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                }
+                rotation: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.quaternion(
+                        modelData.qscalar,
+                        modelData.qx,
+                        modelData.qy,
+                        modelData.qz
+                    )
+                }
+                scale: {
+                    if (bridgeReady)
+                        sceneBridge.geometryRevision
+                    return Qt.vector3d(
+                        modelData.scale_x / 100,
+                        modelData.scale_y / 100,
+                        modelData.scale_z / 100
+                    )
+                }
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.55
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                pickable: false
+            }
+        }
+
+        Repeater3D {
+            model: bridgeReady ? sceneBridge.ghostWallFaces : []
+            delegate: Model {
+                visible: bridgeReady && sceneBridge.membersVisible
+                source: "#Rectangle"
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                rotation: Qt.quaternion(
+                    modelData.qscalar,
+                    modelData.qx,
+                    modelData.qy,
+                    modelData.qz
+                )
+                scale: Qt.vector3d(
+                    modelData.scale_x / 100,
+                    modelData.scale_y / 100,
+                    modelData.scale_z / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.62
+                        cullMode: Material.NoCulling
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                pickable: false
+            }
+        }
+
+        Repeater3D {
+            model: bridgeReady ? sceneBridge.ghostWallEdges : []
+            delegate: Model {
+                visible: bridgeReady && sceneBridge.membersVisible
+                source: "#Cube"
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                rotation: Qt.quaternion(
+                    modelData.qscalar,
+                    modelData.qx,
+                    modelData.qy,
+                    modelData.qz
+                )
+                scale: Qt.vector3d(
+                    modelData.scale_x / 100,
+                    modelData.scale_y / 100,
+                    modelData.scale_z / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.55
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                pickable: false
+            }
+        }
+
+        Repeater3D {
             model: bridgeReady ? sceneBridge.ghostNodes : []
             delegate: Model {
                 visible: bridgeReady

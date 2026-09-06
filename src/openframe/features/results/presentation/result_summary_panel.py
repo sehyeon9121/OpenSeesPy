@@ -52,17 +52,19 @@ class ResultSummaryPanel(QFrame):
         self.setMinimumWidth(220)
         self.setMaximumWidth(280)
         self._compact_2d = compact_2d
+        self._display_3d = not compact_2d
         self._model: StructuralModel | None = None
         self._result: AnalysisResult | None = None
         self._result_type = "overview"
         self._unit_system = DEFAULT_UNIT_SYSTEM
+        self._display_data: object | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
 
         header = QHBoxLayout()
-        title = QLabel("Inspector")
+        title = QLabel("Values")
         title.setObjectName("resultSectionTitle")
         self.status_badge = QLabel("WAITING")
         self.status_badge.setObjectName("waitingBadge")
@@ -70,6 +72,29 @@ class ResultSummaryPanel(QFrame):
         header.addStretch(1)
         header.addWidget(self.status_badge)
         layout.addLayout(header)
+
+        self.active_result_title = QLabel("ACTIVE RESULT")
+        self.active_result_title.setObjectName("resultGroupLabel")
+        layout.addWidget(self.active_result_title)
+        self.active_result_context = QLabel("Select a result on the left.")
+        self.active_result_context.setObjectName("resultDetailsText")
+        self.active_result_context.setWordWrap(True)
+        layout.addWidget(self.active_result_context)
+
+        self.active_value_table = QTableWidget(0, 2)
+        self.active_value_table.setObjectName("resultActiveValueTable")
+        self.active_value_table.setHorizontalHeaderLabels(("LOCATION", "VALUE"))
+        self.active_value_table.verticalHeader().setVisible(False)
+        self.active_value_table.horizontalHeader().setStretchLastSection(True)
+        self.active_value_table.setMaximumHeight(190)
+        layout.addWidget(self.active_value_table)
+        self.selected_pick_title = QLabel("SELECTED IN VIEW")
+        self.selected_pick_title.setObjectName("resultGroupLabel")
+        layout.addWidget(self.selected_pick_title)
+        self.selected_pick_value = QLabel("Click a node or member in the 3D view.")
+        self.selected_pick_value.setObjectName("resultDetailsText")
+        self.selected_pick_value.setWordWrap(True)
+        layout.addWidget(self.selected_pick_value)
 
         self.metric_values: dict[str, QLabel] = {}
         self.metric_rows: dict[str, QFrame] = {}
@@ -151,13 +176,27 @@ class ResultSummaryPanel(QFrame):
 
     def set_model(self, model: StructuralModel) -> None:
         self._model = model
+        self._display_3d = model.ndm == 3
         self.system_value.setText(f"LOCAL {model.ndm}D")
+        self._apply_active_display_visibility()
         self._refresh()
 
     def set_result_type(self, result_type: str) -> None:
         self._result_type = result_type
         self._apply_context_visibility()
+        self._apply_active_display_visibility()
         self._refresh()
+
+    def _apply_active_display_visibility(self) -> None:
+        visible = (
+            self._display_3d
+            and self._result_type not in {"pushover", "tables", "time_history"}
+        )
+        self.active_result_title.setVisible(visible)
+        self.active_result_context.setVisible(visible)
+        self.active_value_table.setVisible(visible)
+        self.selected_pick_title.setVisible(visible)
+        self.selected_pick_value.setVisible(visible)
 
     def _apply_context_visibility(self) -> None:
         """Show only inspector blocks that belong to the active result type.
@@ -168,7 +207,9 @@ class ResultSummaryPanel(QFrame):
         still see the numbers that matter for the view they just picked.
         """
         visible_metrics = {
-            "overview": {"displacement", "rotation", "reaction", "moment", "shear", "axial", "stress"},
+            "overview": {
+                "displacement", "rotation", "reaction", "moment", "shear", "axial", "stress"
+            },
             "deformation": {"displacement", "rotation"},
             "displacement": {"displacement", "rotation"},
             "reaction": {"reaction"},
@@ -238,8 +279,78 @@ class ResultSummaryPanel(QFrame):
     def clear_result(self) -> None:
         """Drop the summarised result so a new model never shows the previous one."""
         self._result = None
+        self.show_display_data(None)
         self._fill_member_selector(())
         self._refresh()
+
+    def show_display_data(self, data: object | None) -> None:
+        """Show the exact component currently drawn by the configured 3D view."""
+        self.active_value_table.setRowCount(0)
+        self._display_data = data
+        self.selected_pick_value.setText("Click a node or member in the 3D view.")
+        if data is None:
+            self.active_result_context.setText("Run analysis to populate values.")
+            return
+        values = getattr(data, "values", {})
+        unit = getattr(data, "unit", "")
+        context = getattr(data, "context", "")
+        lines = [line for line in (context, f"Unit: {unit}" if unit else "") if line]
+        self.active_result_context.setText("\n".join(lines) or "Current display component")
+        legend_visible = bool(getattr(data, "legend", True)) and bool(values)
+        for widget in (self.legend_title, self.legend, self.legend_minimum,
+                       self.legend_maximum, self.legend_caption):
+            widget.setVisible(legend_visible)
+        if legend_visible:
+            peak = max((abs(value) for value in values.values()), default=0.0)
+            self.legend_minimum.setText(f"0 {unit}".strip())
+            self.legend_maximum.setText(f"{peak:.4g} {unit}".strip())
+            self.legend_caption.setText("Absolute magnitude of the active component.")
+        if not values:
+            return
+        minimum_key = min(values, key=values.get)
+        maximum_key = max(values, key=values.get)
+        ordered = [minimum_key]
+        if maximum_key != minimum_key:
+            ordered.append(maximum_key)
+        ordered.extend(
+            key
+            for key, _value in sorted(
+                values.items(), key=lambda item: abs(item[1]), reverse=True
+            )
+            if key not in ordered
+        )
+        ordered = ordered[:12]
+        self.active_value_table.setRowCount(len(ordered))
+        for row, key in enumerate(ordered):
+            prefix = "MIN · " if key == minimum_key else ("MAX · " if key == maximum_key else "")
+            self.active_value_table.setItem(row, 0, QTableWidgetItem(prefix + key))
+            value_item = QTableWidgetItem(f"{values[key]:.6g} {unit}".strip())
+            self.active_value_table.setItem(row, 1, value_item)
+        self.active_value_table.resizeColumnsToContents()
+
+    def select_node(self, node_tag: int) -> None:
+        self._select_active_location(f"Node {node_tag}")
+
+    def select_active_member(self, element_tag: int) -> None:
+        self.select_member(element_tag)
+        self._select_active_location(f"Element {element_tag}")
+
+    def _select_active_location(self, prefix: str) -> None:
+        values = getattr(self._display_data, "values", {})
+        unit = getattr(self._display_data, "unit", "")
+        selected = [(key, value) for key, value in values.items() if key.startswith(prefix)]
+        if selected:
+            self.selected_pick_value.setText(
+                "\n".join(f"{key}: {value:.6g} {unit}".strip() for key, value in selected)
+            )
+        else:
+            self.selected_pick_value.setText(f"{prefix}: no value for the active component")
+        for row in range(self.active_value_table.rowCount()):
+            item = self.active_value_table.item(row, 0)
+            if item is not None and prefix in item.text():
+                self.active_value_table.selectRow(row)
+                self.active_value_table.scrollToItem(item)
+                return
 
     def _fill_member_selector(self, element_tags: Sequence[int]) -> None:
         self.member_selector.blockSignals(True)
@@ -329,7 +440,10 @@ class ResultSummaryPanel(QFrame):
         )
         ndm = self._model.ndm if self._model is not None else 2
         max_rotation = max(
-            (self._node_rotation_degrees(node.displacement, ndm) for node in result.node_results.values()),
+            (
+                self._node_rotation_degrees(node.displacement, ndm)
+                for node in result.node_results.values()
+            ),
             default=0.0,
         )
         axial = []
@@ -349,13 +463,26 @@ class ResultSummaryPanel(QFrame):
             f"{max_displacement:.6g}  {self._displacement_unit_label()}"
         )
         self.metric_values["rotation"].setText(f"{max_rotation:.4g}  °")
-        reactions = (
-            () if self._model is None else support_reactions(self._model, result)
-        )
-        max_reaction = max(
-            (math.hypot(reaction.fx, reaction.fy) for reaction in reactions),
-            default=0.0,
-        )
+        reactions = () if self._model is None else support_reactions(self._model, result)
+        if self._model is not None and self._model.ndm == 3:
+            restrained = {
+                boundary.node_tag
+                for boundary in self._model.boundaries
+                if any(boundary.restraints)
+            }
+            max_reaction = max(
+                (
+                    math.hypot(*((*result.node_results[tag].reaction, 0.0, 0.0, 0.0)[:3]))
+                    for tag in restrained
+                    if tag in result.node_results
+                ),
+                default=0.0,
+            )
+        else:
+            max_reaction = max(
+                (math.hypot(reaction.fx, reaction.fy) for reaction in reactions),
+                default=0.0,
+            )
         self.metric_values["reaction"].setText(
             f"{max_reaction:.6g}  {unit.force}"
         )

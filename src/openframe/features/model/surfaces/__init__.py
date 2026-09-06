@@ -12,3 +12,21 @@ Must not import PySide6 or OpenSeesPy. The solver reads ``core.domain``
 after ``canvas_model_build`` (or the equivalent surface builder) has
 produced it.
 """
+
+from openframe.features.model.surfaces.rectangular_mesh import (
+    WallMeshError,
+    WallQuadPayload,
+    assemble_wall_meshes,
+    mesh_rectangular_wall,
+    wall_local_x,
+    wall_quad_payloads,
+)
+
+__all__ = [
+    "WallMeshError",
+    "WallQuadPayload",
+    "assemble_wall_meshes",
+    "mesh_rectangular_wall",
+    "wall_local_x",
+    "wall_quad_payloads",
+]

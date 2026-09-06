@@ -86,15 +86,25 @@ class ResultsWorkspace(QFrame):
         layout.addWidget(body, 1)
 
         self.result_types.result_type_changed.connect(self._set_result_type)
+        self.result_types.display_options_changed.connect(self.viewport.configure_3d)
         self.viewport.result_type_requested.connect(self.set_result_type)
+        self.viewport.display_data_changed.connect(self.summary.show_display_data)
+        self.viewport.quick3d_view.member_picked.connect(
+            lambda tag, _x, _y: self.summary.select_active_member(tag)
+        )
+        self.viewport.quick3d_view.node_picked.connect(
+            lambda tag, _x, _y: self.summary.select_node(tag)
+        )
         self.set_unit_system(DEFAULT_UNIT_SYSTEM)
         self._set_result_type("overview")
 
     def set_model(self, model: StructuralModel) -> None:
         # A different model invalidates whatever the previous run produced.
         self.clear_result()
+        self.result_types.set_model(model)
         self.toolbar.set_dimension(model.ndm)
         self.viewport.set_model(model)
+        self.viewport.configure_3d(self.result_types.current_display_options())
         self.summary.set_model(model)
         self.tables_panel.set_model(model)
         self.time_history_results_panel.set_model(model)
@@ -110,10 +120,13 @@ class ResultsWorkspace(QFrame):
             and diagnostic.mechanism_count > 0
         )
         self.result_types.set_instability_available(has_mechanism)
-        self.viewport.show_result(result)
+        self.result_types.show_result(result)
         self.summary.show_result(result)
         self.tables_panel.show_result(result)
         self.time_history_results_panel.show_result(result)
+        # Last so display_data_changed leaves the inspector showing the exact
+        # component/legend configured in the left panel.
+        self.viewport.show_result(result)
         if has_mechanism:
             self.result_types.select_result_type("mechanism_modes")
 
@@ -121,16 +134,17 @@ class ResultsWorkspace(QFrame):
         """Return the workspace to its waiting state, keeping the drawn model."""
         self.stiffness_warning.setVisible(False)
         self.result_types.set_instability_available(False)
+        self.result_types.clear_result()
         self.viewport.clear_result()
         self.summary.clear_result()
         self.tables_panel.clear_result()
         self.time_history_results_panel.clear_result()
 
     def set_unit_system(self, unit_system: UnitSystem) -> None:
-        self.viewport.set_unit_system(unit_system)
         self.summary.set_unit_system(unit_system)
         self.tables_panel.set_unit_system(unit_system)
         self.time_history_results_panel.set_unit_system(unit_system)
+        self.viewport.set_unit_system(unit_system)
 
     def set_analysis_kind(self, kind: AnalysisKind) -> None:
         self.toolbar.set_analysis_kind(kind)
@@ -153,5 +167,6 @@ class ResultsWorkspace(QFrame):
             self.content_stack.setCurrentWidget(self.time_history_results_panel)
             return
         self.content_stack.setCurrentWidget(self.content_stack.widget(0))
-        self.viewport.set_result_type(result_type)
+        self.viewport.configure_3d(self.result_types.current_display_options())
         self.summary.set_result_type(result_type)
+        self.viewport.set_result_type(result_type)

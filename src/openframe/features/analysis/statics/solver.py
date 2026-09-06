@@ -150,7 +150,19 @@ def check_determinacy(model: StructuralModel) -> DeterminacyCheck:
     """
     if model.ndm not in (2, 3):
         return DeterminacyCheck("unsupported", 1, "재료 없는 정역학 풀이는 2D 또는 3D 모델만 지원합니다.")
-    if not model.nodes or not model.elements:
+    if not model.nodes:
+        return DeterminacyCheck("empty", -1, "절점과 부재를 먼저 작성하세요.")
+    if not model.elements:
+        # A wall-only model has nodes and WallPanels but no beam Element.
+        # Calling this "empty" would refuse the shell vertical slice; the
+        # degree is never computed (shells always need real E/ν/h, like
+        # mixed) so 1 just means "not the unit-stiffness shortcut".
+        if model.walls:
+            return DeterminacyCheck(
+                "shell",
+                1,
+                "면요소(전단벽)는 실제 재료·두께가 필요합니다.",
+            )
         return DeterminacyCheck("empty", -1, "절점과 부재를 먼저 작성하세요.")
 
     kinds = {_element_family(element.element_type) for element in model.elements.values()}
@@ -276,6 +288,15 @@ class MaterialFreeStaticsSolver:
         needs_material = not check.can_solve_without_materials or geometric_nonlinearity != "Linear"
         truss_unit_stiffness = False
         displacement_stiffness = DisplacementStiffnessKind.PHYSICAL
+        if model.walls:
+            shell_block = self._shell_solve_errors(model, check.system, geometric_nonlinearity)
+            if shell_block:
+                return AnalysisResult(status=AnalysisStatus.FAILED, messages=shell_block)
+            # A unit-placeholder beam next to a physical shell would mix
+            # fake and real displacements in one NodeResult table. Shells
+            # always take the physical-stiffness path; beam-only models
+            # never enter this branch.
+            needs_material = True
         # A tension-only/compression-only/cable member's axial resistance
         # depends on the sign of the force it ends up carrying (see
         # _define_truss_material) - equilibrium alone cannot tell whether
@@ -353,6 +374,15 @@ class MaterialFreeStaticsSolver:
                         "(프레임: E/A/I 또는 E/A/G/J/Iy/Iz, 트러스·케이블: E/A).",
                     ],
                 )
+        elif check.system == "shell":
+            if geometric_nonlinearity != "Linear":
+                return AnalysisResult(
+                    status=AnalysisStatus.FAILED,
+                    messages=[
+                        check.message,
+                        "면요소 모델의 P-Delta(기하비선형) 해석은 아직 지원하지 않습니다.",
+                    ],
+                )
         elif needs_material:
             if check.system != "frame":
                 # empty / unsupported: still no silent unit-stiffness
@@ -388,6 +418,12 @@ class MaterialFreeStaticsSolver:
 
         ops.wipe()
         try:
+            if model.walls:
+                from openframe.features.model.surfaces.rectangular_mesh import (
+                    assemble_wall_meshes,
+                )
+
+                assemble_wall_meshes(model)
             self._build(
                 model,
                 check.system,
@@ -395,6 +431,9 @@ class MaterialFreeStaticsSolver:
                 geometric_nonlinearity,
                 truss_unit_stiffness=truss_unit_stiffness,
             )
+            from openframe.features.analysis.statics.surfaces import build_shell_elements
+
+            build_shell_elements(model)
             self._apply_loads(model, check.system)
             self._analyze(
                 geometric_nonlinearity,
@@ -772,6 +811,31 @@ class MaterialFreeStaticsSolver:
             1.0,
             1.0,
         )
+
+    @staticmethod
+    def _shell_solve_errors(
+        model: StructuralModel,
+        system: str,
+        _geometric_nonlinearity: str,
+    ) -> list[str]:
+        """Refuse combinations this vertical slice does not host.
+
+        3D truss assembly uses ndf=3; ASDShellQ4 needs ndf=6. Mixing them
+        would either silently drop the shell rotations or change every
+        existing 3D-truss solve's ndf. Frame+shell shares ndf=6 already.
+        """
+        if model.ndm != 3:
+            return ["전단벽은 3D 모델에서만 지원합니다."]
+        if system == "truss":
+            return [
+                (
+                    "셸과 3D 트러스의 혼합은 아직 지원하지 않습니다. "
+                    "트러스 전용 조립은 ndf=3이고 ASDShellQ4는 ndf=6이 필요합니다."
+                )
+            ]
+        from openframe.features.analysis.statics.surfaces import wall_section_errors
+
+        return wall_section_errors(model)
 
     @staticmethod
     def _has_material_everywhere(model: StructuralModel, system: str, ndm: int = 2) -> bool:

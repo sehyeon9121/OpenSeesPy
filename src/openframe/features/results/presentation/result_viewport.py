@@ -44,6 +44,7 @@ from openframe.features.results.deformation import (
     nodal_displacements,
 )
 from openframe.features.results.diagrams import DiagramKind, spatial_diagram_strips
+from openframe.features.results.display_3d import DisplayOptions, build_display
 from openframe.features.results.magnitudes import (
     magnitude_range,
     member_magnitudes,
@@ -112,6 +113,7 @@ def _mechanism_node_results(mode: MechanismMode) -> dict[int, NodeResult]:
 
 class ResultViewport(QFrame):
     result_type_requested = Signal(str)
+    display_data_changed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -121,6 +123,7 @@ class ResultViewport(QFrame):
         self._result_type = "overview"
         self._unit_system = DEFAULT_UNIT_SYSTEM
         self._diagram_renderer = FrameDiagramRenderer()
+        self._display_options: DisplayOptions | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -488,7 +491,10 @@ class ResultViewport(QFrame):
         zs = [node.z for node in self._model.nodes.values()] if is_3d else [0.0]
         span = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs), 1.0)
         scale = (span * target_fraction) / max_displacement
-        return max(self.deformation_scale.minimum(), min(self.deformation_scale.maximum(), round(scale)))
+        return max(
+            self.deformation_scale.minimum(),
+            min(self.deformation_scale.maximum(), round(scale)),
+        )
 
     def _auto_scale_clicked(self) -> None:
         scale = self._compute_auto_scale()
@@ -571,6 +577,16 @@ class ResultViewport(QFrame):
         self._redraw()
 
     def _redraw(self) -> None:
+        if self._display_options is not None and (
+            self._model is None or self._model.ndm == 3
+        ):
+            self.controls_stack.hide()
+            self.force_selector.hide()
+            self.mode_shape_selector.hide()
+            self.mode_shape_label.hide()
+            if self._result_type != "pushover":
+                self._redraw_configured_3d()
+                return
         if self._result_type == "pushover":
             self._redraw_pushover()
             return
@@ -700,6 +716,37 @@ class ResultViewport(QFrame):
             )
         else:
             self.quick3d_view.clear_result()
+
+    def configure_3d(self, options: DisplayOptions | None) -> None:
+        """Use the external result settings panel, or restore legacy 2D controls."""
+        self._display_options = options
+        self.controls_stack.setVisible(options is None)
+        self._redraw()
+
+    def _redraw_configured_3d(self) -> None:
+        self.canvas_stack.setCurrentWidget(self.quick3d_view)
+        self.view_selector.show()
+        self.quick3d_view.set_picking_mode(True)
+        if self._model is None or self._result is None:
+            self.quick3d_view.clear_result()
+            self.display_data_changed.emit(None)
+            return
+        options = self._display_options
+        data = build_display(
+            self._model, self._result, self._result_type, options, self._unit_system
+        )
+        self.quick3d_view.show_result(
+            self._model, data.result, data.scale,
+            show_undeformed=options.undeformed and options.deformed and data.scale != 0.0,
+            member_magnitudes=data.member_values,
+            member_station_magnitudes=data.stations,
+            force_diagrams=data.diagrams, overlay_labels=data.labels,
+            member_polylines=data.polylines,
+            result_reactions=(data.reactions or {}) if options.arrows else {},
+        )
+        self.quick3d_view.set_node_numbers_visible(options.node_numbers)
+        self.quick3d_view.set_member_numbers_visible(options.member_numbers)
+        self.display_data_changed.emit(data)
 
     def _redraw_pushover(self) -> None:
         self.canvas_stack.setCurrentWidget(self.curve_view)

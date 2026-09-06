@@ -5,6 +5,8 @@ linear-static quantities therefore no longer compete with Modal, Buckling and
 Time History entries in one long accordion list.
 """
 
+from typing import ClassVar
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -17,7 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from openframe.core.domain import AnalysisKind
+from openframe.core.domain import AnalysisKind, AnalysisResult, StructuralModel
+from openframe.features.results.presentation.result_display_settings import ResultDisplaySettings
 
 
 class _ResultSection(QFrame):
@@ -45,9 +48,10 @@ class _ResultSection(QFrame):
 
 class ResultTypeSidebar(QFrame):
     result_type_changed = Signal(str)
+    display_options_changed = Signal(object)
 
     _FORCE_RESULT_TYPES = frozenset({"axial", "shear", "moment"})
-    _ANALYSIS_LABELS = {
+    _ANALYSIS_LABELS: ClassVar[dict[AnalysisKind, str]] = {
         AnalysisKind.LINEAR_STATIC: "LINEAR STATIC",
         AnalysisKind.NONLINEAR_STATIC: "NONLINEAR STATIC",
         AnalysisKind.MODAL: "MODAL",
@@ -63,8 +67,8 @@ class ResultTypeSidebar(QFrame):
         self.setObjectName("resultTypeSidebar")
         self._compact_2d = compact_2d
         self.setProperty("compact2d", compact_2d)
-        self.setMinimumWidth(204)
-        self.setMaximumWidth(232)
+        self.setMinimumWidth(204 if compact_2d else 264)
+        self.setMaximumWidth(232 if compact_2d else 300)
         self._analysis_kind = AnalysisKind.LINEAR_STATIC
         self._current_result_type = "overview"
         #: Set only by ResultsWorkspace.show_result() when a failed Linear
@@ -106,6 +110,11 @@ class ResultTypeSidebar(QFrame):
         self.sections: dict[str, _ResultSection] = {}
 
         self._build_sections()
+        self.display_settings = ResultDisplaySettings()
+        self.display_settings.set_dimension(2 if compact_2d else 3)
+        self.display_settings.options_changed.connect(self.display_options_changed)
+        self.display_settings.result_type_requested.connect(self.select_result_type)
+        self._sections_layout.addWidget(self.display_settings)
         self._sections_layout.addStretch(1)
         self.set_analysis_kind(self._analysis_kind)
 
@@ -199,6 +208,7 @@ class ResultTypeSidebar(QFrame):
             else default_key
         )
         self._current_result_type = selected
+        self.display_settings.set_result_type(selected)
         self.result_type_changed.emit(selected)
 
     def _visible_sections_for(self, kind: AnalysisKind) -> set[str]:
@@ -253,7 +263,22 @@ class ResultTypeSidebar(QFrame):
             return
         self._current_result_type = key
         button.setChecked(True)
+        self.display_settings.set_result_type(key)
         self.result_type_changed.emit(key)
+
+    def set_model(self, model: StructuralModel) -> None:
+        self.setMinimumWidth(264 if model.ndm == 3 else 204)
+        self.setMaximumWidth(300 if model.ndm == 3 else 232)
+        self.display_settings.set_model(model)
+
+    def show_result(self, result: AnalysisResult) -> None:
+        self.display_settings.show_result(result)
+
+    def clear_result(self) -> None:
+        self.display_settings.clear_result()
+
+    def current_display_options(self):
+        return self.display_settings.current_options()
 
     def visible_section_keys(self) -> tuple[str, ...]:
         return tuple(key for key, section in self.sections.items() if not section.isHidden())

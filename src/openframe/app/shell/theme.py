@@ -655,6 +655,30 @@ QToolButton#resultTypeButton:checked {
     color: #174ea6;
     font-weight: 600;
 }
+QFrame#resultDisplaySettings {
+    background: transparent;
+    border: 0;
+}
+QFrame#resultOptionGroup {
+    background: #ffffff;
+    border: 1px solid #dce4ee;
+    border-radius: 3px;
+}
+QLabel#resultOptionTitle {
+    color: #6b7789;
+    font-size: 7pt;
+    font-weight: 700;
+}
+QComboBox#resultOptionCombo {
+    min-height: 24px;
+    padding: 0 5px;
+    font-size: 8pt;
+}
+QFrame#resultOptionGroup QCheckBox {
+    color: #36465b;
+    font-size: 8pt;
+    spacing: 5px;
+}
 QFrame#resultViewport { background: #ffffff; }
 QFrame#resultCanvasHeader, QFrame#resultViewportControls {
     background: #f6f8fb;

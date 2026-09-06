@@ -93,8 +93,15 @@ def export_opensees_script(
     """
     if model.ndm not in (2, 3):
         raise ValueError("현재 2D 또는 3D 모델만 OpenSeesPy 스크립트로 내보낼 수 있습니다.")
-    if not model.nodes or not model.elements:
+    if not model.nodes or (not model.elements and not model.walls):
         raise ValueError("절점과 부재를 먼저 작성하세요.")
+
+    if model.walls:
+        from openframe.features.model.surfaces.rectangular_mesh import assemble_wall_meshes
+
+        if model.ndm != 3:
+            raise ValueError("전단벽은 3D 모델에서만 지원합니다.")
+        assemble_wall_meshes(model)
 
     missing = sorted(
         element.tag
@@ -139,6 +146,7 @@ def export_opensees_script(
     if model.ndm == 3:
         _write_rigid_diaphragms(lines, model)
     _write_elements(lines, model)
+    _write_shells(lines, model)
     if include_mass:
         _write_mass(lines, model, length_unit)
     _write_loads(lines, model)
@@ -415,6 +423,35 @@ def _write_3d_frame_elements(
             f"ops.element('elasticBeamColumn', {element.tag}, {end_i_tag}, {end_j_tag}, "
             f"{_num(area)}, {_num(elastic)}, {_num(shear)}, {_num(torsion)}, "
             f"{_num(inertia_y)}, {_num(inertia_z)}, {transf_tag})"
+        )
+    lines.append("")
+
+
+def _write_shells(lines: list[str], model: StructuralModel) -> None:
+    """Text form of ``build_shell_elements`` — same section + ASDShellQ4 calls.
+
+    Kept here rather than inlined into ``_write_elements`` so a beam-only
+    export still ends at the frame/truss loop and a wall-only export can
+    emit shells with no ``elasticBeamColumn`` lines at all.
+    """
+    from openframe.features.analysis.statics.surfaces import shell_build_plan
+
+    sections, elements = shell_build_plan(model)
+    if not sections and not elements:
+        return
+    for section in sections:
+        lines.append(
+            "ops.section('ElasticMembranePlateSection', "
+            f"{section.tag}, {_num(section.elastic_modulus)}, "
+            f"{_num(section.poisson_ratio)}, {_num(section.thickness)}, "
+            f"{_num(section.density)})"
+        )
+    for element in elements:
+        lx, ly, lz = element.local_x
+        lines.append(
+            f"ops.element('ASDShellQ4', {element.tag}, "
+            f"{element.node_1}, {element.node_2}, {element.node_3}, {element.node_4}, "
+            f"{element.section_tag}, '-local', {_num(lx)}, {_num(ly)}, {_num(lz)})"
         )
     lines.append("")
 
