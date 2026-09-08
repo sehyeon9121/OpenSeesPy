@@ -32,6 +32,7 @@ keeps the file honest about what it does.
 import math
 
 from openframe.core.domain.geometric_transform import boundary_local_axes
+from openframe.core.domain.load_entry import SelfWeightEntry
 from openframe.core.domain.model import (
     BoundaryCondition,
     Element,
@@ -79,6 +80,8 @@ def export_opensees_script(
     *,
     include_mass: bool = False,
     length_unit: str = "m",
+    self_weight: SelfWeightEntry | None = None,
+    gravity_acceleration: float | None = None,
 ) -> str:
     """Return a runnable OpenSeesPy script text for ``model``.
 
@@ -90,6 +93,9 @@ def export_opensees_script(
     determinate solver, there is no unit-placeholder fallback here - a script
     meant to feed a real nonlinear/modal/time-history run is only as
     trustworthy as the stiffness values it carries.
+
+    ``self_weight`` and ``gravity_acceleration`` have the same meaning as on
+    ``MaterialFreeStaticsSolver.solve`` and are passed to the same compiler.
     """
     if model.ndm not in (2, 3):
         raise ValueError("현재 2D 또는 3D 모델만 OpenSeesPy 스크립트로 내보낼 수 있습니다.")
@@ -126,20 +132,23 @@ def export_opensees_script(
     # plan.required_subdivisions to decide which 2D beams get the legacy
     # 40-segment trapezoid mesh, and _write_loads() below consumes the same
     # plan - see solver.py's identical ordering (its own in-process twin of
-    # this function) for why. Never pass entries/self_weight: a
-    # StructuralModel reaching this exporter already carries its final,
-    # fully expanded nodal_loads/element_loads/point_loads (LoadEntry/self-
-    # weight expansion happens upstream in canvas.build_model()); passing
-    # them again here would double the same physical load. LoadCompileError
-    # is a ValueError, so it surfaces through this function's own existing
+    # this function) for why. ``self_weight`` is an alternative source for
+    # callers that have not already expanded self-weight into model loads;
+    # this is required for ShellQuad gravity, which is compiled only after
+    # the WallPanel mesh exists above. LoadCompileError is a ValueError, so
+    # it surfaces through this function's own existing
     # "raise ValueError(...)" contract unchanged - no new except needed by
     # any caller. Modal/Buckling/Time History/Response Spectrum all export
     # through this same function with no static load at all (an eigenvalue
     # problem needs none) - skip the compiler entirely rather than run it
     # over empty input on every such export.
     plan = (
-        compile_loads(model)
-        if model.nodal_loads or model.element_loads or model.point_loads
+        compile_loads(
+            model,
+            self_weight=self_weight,
+            gravity_acceleration=gravity_acceleration,
+        )
+        if model.nodal_loads or model.element_loads or model.point_loads or self_weight is not None
         else CompiledLoadPlan()
     )
 

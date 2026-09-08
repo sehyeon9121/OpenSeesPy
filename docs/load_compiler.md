@@ -148,6 +148,29 @@ The 2D trapezoid approximation preserves the existing midpoint intensities and
 exact resultant, with a small first-moment error reported as
 `beam_trapezoid_midpoint_approximation`. No engine tag arithmetic lives in the IR.
 
+The in-memory and script adapters expose the same optional self-weight input:
+
+```python
+self_weight = SelfWeightEntry(factor_z=-1.0)
+result = MaterialFreeStaticsSolver().solve(
+    model,
+    self_weight=self_weight,
+    gravity_acceleration=9.80665,
+)
+script = export_opensees_script(
+    model,
+    self_weight=self_weight,
+    gravity_acceleration=9.80665,
+)
+```
+
+Both adapters mesh `WallPanel` objects first, call `compile_loads()` exactly once,
+then apply the returned plan. Use this optional input only when self-weight has
+not already been expanded into `model.element_loads`; supplying both represents
+two physical load sources and therefore applies both. Shell mass density requires
+positive `gravity_acceleration`. Line-member unit weight still does not multiply
+by that value.
+
 ## Validation
 
 `tests/unit/test_load_compiler.py` checks resultants and moments, partial-load

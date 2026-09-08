@@ -32,6 +32,7 @@ from openframe.core.domain.geometric_transform import (
     boundary_local_axes,
     rotate_about_axis,
 )
+from openframe.core.domain.load_entry import SelfWeightEntry
 from openframe.core.domain.model import BoundaryCondition, Element, StructuralModel
 from openframe.core.domain.results import (
     UNIT_STIFFNESS_DISPLACEMENT_WARNING,
@@ -282,6 +283,8 @@ class MaterialFreeStaticsSolver:
         model: StructuralModel,
         material: tuple[float, float, float] | None = None,
         geometric_nonlinearity: str = "Linear",
+        self_weight: SelfWeightEntry | None = None,
+        gravity_acceleration: float | None = None,
     ) -> AnalysisResult:
         """``material`` is a (E, A, I) fallback applied to any 2D frame member
         that doesn't carry its own E/A/I in ``properties`` - real values here
@@ -298,6 +301,11 @@ class MaterialFreeStaticsSolver:
         otherwise-determinate structure, so it always needs real E/A/I - there
         is no unit-placeholder shortcut for it the way there is for the
         first-order case.
+
+        ``self_weight`` feeds the shared load compiler directly. Use it for
+        models whose self-weight has not already been expanded into model
+        loads. A nonzero ShellQuad mass density additionally requires positive
+        ``gravity_acceleration`` in the model's length/time² units.
         """
         if geometric_nonlinearity not in ("Linear", "PDelta"):
             return AnalysisResult(
@@ -454,13 +462,15 @@ class MaterialFreeStaticsSolver:
             # legacy 40-segment trapezoid mesh (see _build's own use of this
             # set) - the same plan then drives _apply_loads() below, so the
             # physical load values are computed exactly once and never
-            # recomputed by either step. Never pass entries/self_weight here:
-            # by the time a StructuralModel reaches this solver its
-            # nodal_loads/element_loads/point_loads are already the final,
-            # fully expanded physical loads (canvas.build_model() already
-            # folded in LoadEntry/self-weight upstream) - passing them again
-            # as entries/self_weight would double-count the same load.
-            plan = compile_loads(model)
+            # recomputed by either step. ``self_weight`` is an alternative
+            # source for callers that have not already expanded self-weight
+            # into model.element_loads (notably WallPanel/ShellQuad, whose
+            # gravity load can only be generated after meshing above).
+            plan = compile_loads(
+                model,
+                self_weight=self_weight,
+                gravity_acceleration=gravity_acceleration,
+            )
             self._build(
                 model,
                 check.system,
