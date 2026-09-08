@@ -828,6 +828,20 @@ def test_3d_box_selection_ignores_narrowed_selection_filter() -> None:
     assert page.canvas.selected_elements == {member}
 
 
+def test_3d_node_click_does_not_replace_element_selection_in_element_mode() -> None:
+    page = _page(start_in_3d=True)
+    left = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    right = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    member = page.canvas.add_member(left, right)
+    page._element_subcategory_clicked("move")
+    page.canvas.selected_elements = {member}
+
+    page._on_3d_node_picked(left, 0, 0)
+
+    assert page.canvas.selected_nodes == set()
+    assert page.canvas.selected_elements == {member}
+
+
 def test_delete_and_ctrl_z_reach_the_canvas_while_the_3d_viewport_has_focus() -> None:
     """Delete/Ctrl+Z/Ctrl+Y are scoped to self.canvas, which stays hidden in
     3D mode and can therefore never hold keyboard focus - so a node/member
@@ -952,6 +966,25 @@ def test_copying_a_member_off_the_active_plane_preserves_its_true_height() -> No
     assert all(node.z == pytest.approx(3.0) for node in new_nodes)
     assert {round(node.x, 6) for node in new_nodes} == {5.0, 9.0}
     assert len(canvas.elements) == 2, "the copied member itself must exist, not just its nodes"
+
+
+def test_copy_onto_existing_geometry_keeps_source_selected_for_retry() -> None:
+    canvas = _canvas()
+    canvas.enter_3d_mode()
+    left = canvas._add_node_at((0.0, 0.0, 0.0))
+    right = canvas._add_node_at((4.0, 0.0, 0.0))
+    source = canvas.add_member(left, right)
+    existing_left = canvas._add_node_at((8.0, 0.0, 0.0))
+    existing_right = canvas._add_node_at((12.0, 0.0, 0.0))
+    canvas.add_member(existing_left, existing_right)
+    canvas.selected_elements = {source}
+
+    assert canvas.transform_selected_nodes("copy", 8.0, 0.0) == 0
+    assert canvas.selected_nodes == set()
+    assert canvas.selected_elements == {source}
+
+    assert canvas.transform_selected_nodes("copy", 16.0, 0.0) == 2
+    assert len(canvas.elements) == 3
 
 
 def test_copying_a_member_onto_an_existing_members_line_still_creates_the_copy() -> None:

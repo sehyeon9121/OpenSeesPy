@@ -180,8 +180,12 @@ class _TransformMixin:
                             created_elements.add(new_tag)
         finally:
             self.end_history_group()
-        self.selected_nodes = created
-        self.selected_elements = created_elements
+        # A copy can be a geometric no-op when every target node and member
+        # already exists. Keep the source selected in that case so correcting
+        # the offset and pressing Copy again still has something to act on.
+        if created or created_elements:
+            self.selected_nodes = created
+            self.selected_elements = created_elements
         self._selection_changed()
         return len(created)
 

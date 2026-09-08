@@ -166,6 +166,8 @@ class _Modeling3DInputMixin:
             else:
                 self.canvas.add_floor_boundary_node(tag)
         else:
+            if self.canvas.selection_filter == "elements":
+                return
             self.canvas.selected_nodes = {tag}
             self.canvas.selected_elements.clear()
             self.canvas.selection_changed.emit()
