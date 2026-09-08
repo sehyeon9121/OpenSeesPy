@@ -287,7 +287,9 @@ def test_export_rejects_a_3d_trapezoidal_load() -> None:
     """MaterialFreeStaticsSolver._apply_loads rejects this too (a 3D member
     is never discretized into sub-elements the way a 2D one is) - the
     exporter must reproduce the same rejection, not silently emit a wrong
-    (constant) load."""
+    (constant) load. The rejection now lives in ``compile_loads()``
+    (``unsupported_beam_trapezoid``) rather than exporter-local wording -
+    see solver.py's identical rewording for the same reason."""
     model = StructuralModel(
         ndm=3,
         ndf=6,
@@ -299,7 +301,7 @@ def test_export_rejects_a_3d_trapezoidal_load() -> None:
         ],
         element_loads=[UniformElementLoad(1, wy=-5.0, wy_j=-15.0)],
     )
-    with pytest.raises(ValueError, match="3D 모델의 선형 변화"):
+    with pytest.raises(ValueError, match="unsupported_beam_trapezoid"):
         export_opensees_script(model)
 
 

@@ -24,6 +24,7 @@ properties, regardless of whether the structure happens to be determinate.
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import openseespy.opensees as ops
 
 from openframe.core.domain.geometric_transform import (
@@ -42,7 +43,12 @@ from openframe.core.domain.results import (
     NodeResult,
     NonlinearConvergence,
 )
-from openframe.infrastructure.opensees.instability_diagnostic import InstabilityDiagnosticService
+from openframe.features.analysis.loads import CompiledLoadPlan, compile_loads
+from openframe.infrastructure.opensees.instability_diagnostic import (
+    InstabilityDiagnosticService,
+    mechanism_participating_dofs,
+)
+from openframe.infrastructure.opensees.stiffness_analysis import extract_stiffness_matrix
 
 # Ground node and zero-length element tags for inclined supports are offset well
 # past any tag a hand-drawn model would ever reach, so they never collide with a
@@ -126,6 +132,25 @@ _SPRING_TAG_OFFSET = 9_500_000
 # that if the two features' scopes drift apart later).
 _PLASTIC_HINGE_NODE_TAG_OFFSET = 8_600_000
 _PLASTIC_HINGE_MATERIAL_TAG_OFFSET = 8_700_000
+
+# Mechanism auto-stabilization (see solve()'s _LinearStaticConvergenceFailure
+# handler): the same ground-node + zeroLength trick _apply_springs uses for a
+# user-chosen elastic support, but sized automatically and placed only at the
+# DOFs InstabilityDiagnosticService's own nullspace diagnosis says are free.
+# Kept clear of every other dummy-tag range above.
+_STABILIZATION_TAG_OFFSET = 9_800_000
+#: Stabilizing spring stiffness as a fraction of the live K's own largest
+#: diagonal term - unit-system-invariant (a stiff column in kN-m and the same
+#: column in N-mm both get a spring this many orders softer than the model's
+#: own stiffest DOF), the same reasoning ``instability_diagnostic.py``'s
+#: equilibration uses to stay scale-free. Small enough that a well-posed DOF
+#: sharing a node with a stabilized one is negligibly perturbed; large enough
+#: that the resulting displacement stays a finite float instead of a solver
+#: overflow. The resulting displacement at a stabilized DOF is deliberately
+#: huge relative to the rest of the structure - that size *is* the signal
+#: ("this is where the mechanism is"), never a value to report as a real
+#: joint movement.
+_STABILIZATION_RELATIVE_STIFFNESS = 1.0e-6
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,17 +449,32 @@ class MaterialFreeStaticsSolver:
                 )
 
                 assemble_wall_meshes(model)
+            # Compile once, before any element is built: _build() needs
+            # plan.required_subdivisions to decide which 2D beams get the
+            # legacy 40-segment trapezoid mesh (see _build's own use of this
+            # set) - the same plan then drives _apply_loads() below, so the
+            # physical load values are computed exactly once and never
+            # recomputed by either step. Never pass entries/self_weight here:
+            # by the time a StructuralModel reaches this solver its
+            # nodal_loads/element_loads/point_loads are already the final,
+            # fully expanded physical loads (canvas.build_model() already
+            # folded in LoadEntry/self-weight upstream) - passing them again
+            # as entries/self_weight would double-count the same load.
+            plan = compile_loads(model)
             self._build(
                 model,
                 check.system,
                 material,
                 geometric_nonlinearity,
                 truss_unit_stiffness=truss_unit_stiffness,
+                required_subdivisions=frozenset(
+                    tag for tag, _count in plan.required_subdivisions
+                ),
             )
             from openframe.features.analysis.statics.surfaces import build_shell_elements
 
             build_shell_elements(model)
-            self._apply_loads(model, check.system)
+            self._apply_loads(model, check.system, plan)
             self._analyze(
                 geometric_nonlinearity,
                 has_multipoint_constraints=bool(model.rigid_diaphragms),
@@ -461,8 +501,33 @@ class MaterialFreeStaticsSolver:
                 diagnostic = InstabilityDiagnosticService().diagnose(model)
             except Exception:  # noqa: BLE001 - a diagnostic failure must never mask the real error
                 diagnostic = None
+            has_mechanism = (
+                diagnostic is not None
+                and diagnostic.diagnostic_success
+                and diagnostic.mechanism_count > 0
+            )
+            if has_mechanism:
+                # A diagnosed mechanism does not have to mean "no numbers at
+                # all" - try once more with a small stabilizing spring at
+                # exactly the free DOFs the diagnostic just found, so the
+                # user still sees real displacement/force values everywhere
+                # else in the structure and a clearly-flagged, oversized
+                # value at the mechanism itself (see _attempt_stabilized_solve).
+                stabilized_result = self._attempt_stabilized_solve(
+                    model,
+                    check.system,
+                    check.message,
+                    diagnostic,
+                    material,
+                    displacement_stiffness,
+                    geometric_nonlinearity,
+                    has_multipoint_constraints=bool(model.rigid_diaphragms),
+                    force_iterative=has_directional_truss,
+                )
+                if stabilized_result is not None:
+                    return stabilized_result
             messages = [f"정역학 계산에 실패했습니다: {error}"]
-            if diagnostic is not None and diagnostic.diagnostic_success and diagnostic.mechanism_count > 0:
+            if has_mechanism:
                 messages.append(diagnostic.message)
             else:
                 messages.append("해석이 실패했지만 구조적 불안정 여부는 확인되지 않았습니다.")
@@ -538,8 +603,18 @@ class MaterialFreeStaticsSolver:
             )
         ops.wipe()
         try:
-            self._build(model, "frame", None, "Linear", material_nonlinearity=True)
-            self._apply_loads(model, "frame")
+            plan = compile_loads(model)
+            self._build(
+                model,
+                "frame",
+                None,
+                "Linear",
+                material_nonlinearity=True,
+                required_subdivisions=frozenset(
+                    tag for tag, _count in plan.required_subdivisions
+                ),
+            )
+            self._apply_loads(model, "frame", plan)
             messages, curve, convergence = self._analyze_nonlinear_static(
                 control_node,
                 control_dof,
@@ -876,6 +951,7 @@ class MaterialFreeStaticsSolver:
         geometric_nonlinearity: str = "Linear",
         material_nonlinearity: bool = False,
         truss_unit_stiffness: bool = False,
+        required_subdivisions: frozenset[int] = frozenset(),
     ) -> None:
         ndm = model.ndm
         ndf = (2 if system == "truss" else 3) if ndm == 2 else (3 if system == "truss" else 6)
@@ -929,20 +1005,18 @@ class MaterialFreeStaticsSolver:
             return
 
         if system == "mixed":
-            MaterialFreeStaticsSolver._build_mixed(model, ndm, ndf, material)
+            MaterialFreeStaticsSolver._build_mixed(
+                model, ndm, ndf, material, required_subdivisions
+            )
             return
 
         if ndm == 2:
             ops.geomTransf(geometric_nonlinearity, 1)
-            trapezoid_loads = {
-                load.element_tag: load for load in model.element_loads if not load.is_uniform
-            }
             for element in model.elements.values():
                 elastic, area, inertia = MaterialFreeStaticsSolver._resolve_material(
                     element, material
                 )
-                trapezoid = trapezoid_loads.get(element.tag)
-                if trapezoid is not None:
+                if element.tag in required_subdivisions:
                     MaterialFreeStaticsSolver._build_discretized_member(
                         model, element, area, elastic, inertia
                     )
@@ -1044,6 +1118,7 @@ class MaterialFreeStaticsSolver:
         ndm: int,
         ndf: int,
         material: tuple[float, float, float] | None,
+        required_subdivisions: frozenset[int] = frozenset(),
     ) -> None:
         """Assemble a model whose members are a genuine mix of frame
         (moment-continuous) and truss/cable/tension-only/compression-only
@@ -1097,15 +1172,11 @@ class MaterialFreeStaticsSolver:
 
         if ndm == 2:
             ops.geomTransf("Linear", 1)
-            trapezoid_loads = {
-                load.element_tag: load for load in model.element_loads if not load.is_uniform
-            }
             for element in frame_elements:
                 elastic, area, inertia = MaterialFreeStaticsSolver._resolve_material(
                     element, material
                 )
-                trapezoid = trapezoid_loads.get(element.tag)
-                if trapezoid is not None:
+                if element.tag in required_subdivisions:
                     MaterialFreeStaticsSolver._build_discretized_member(
                         model, element, area, elastic, inertia
                     )
@@ -1444,117 +1515,201 @@ class MaterialFreeStaticsSolver:
             )
 
     @staticmethod
-    def _apply_loads(model: StructuralModel, system: str) -> None:
+    def _stabilize_mechanism(
+        model: StructuralModel,
+        ndm: int,
+        ndf: int,
+        participating: dict[int, tuple[int, ...]],
+        stiffness: float,
+    ) -> tuple[int, ...]:
+        """Attach a small stabilizing spring to exactly the (node, DOF) pairs
+        ``mechanism_participating_dofs`` says are free - same ground-node +
+        zeroLength idiom as ``_apply_springs``, sized uniformly at
+        ``stiffness`` rather than a user value. Returns the user-node tags
+        actually stabilized (a ``participating`` entry outside ``model.nodes``
+        - an auxiliary tag the diagnostic's allow-list should already have
+        excluded - or with every index >= ndf, e.g. a truss node's dropped
+        rotations, is silently skipped rather than raising).
+
+        Called on the *live* domain right after the diagnostic ran against
+        it - the same "still exactly the domain that failed" precondition
+        ``InstabilityDiagnosticService`` itself relies on (see its module
+        docstring): nothing rebuilds nodes/elements/loads here, this only
+        adds new ones.
+        """
+        material_tag = _STABILIZATION_TAG_OFFSET
+        stabilized: list[int] = []
+        for node_tag, dof_indices in participating.items():
+            node = model.nodes.get(node_tag)
+            if node is None:
+                continue
+            directions = [index + 1 for index in dof_indices if index < ndf]
+            if not directions:
+                continue
+            ground_tag = _STABILIZATION_TAG_OFFSET + node_tag
+            coordinates = (node.x, node.y) if ndm == 2 else (node.x, node.y, node.z)
+            ops.node(ground_tag, *coordinates)
+            ops.fix(ground_tag, *((1,) * ndf))
+            materials: list[int] = []
+            for _ in directions:
+                material_tag += 1
+                ops.uniaxialMaterial("Elastic", material_tag, stiffness)
+                materials.append(material_tag)
+            ops.element(
+                "zeroLength", ground_tag, ground_tag, node_tag,
+                "-mat", *materials, "-dir", *directions,
+            )
+            stabilized.append(node_tag)
+        return tuple(sorted(stabilized))
+
+    @staticmethod
+    def _attempt_stabilized_solve(
+        model: StructuralModel,
+        system: str,
+        determinacy_message: str,
+        diagnostic,
+        material: tuple[float, float, float] | None,
+        displacement_stiffness: DisplacementStiffnessKind,
+        geometric_nonlinearity: str,
+        has_multipoint_constraints: bool,
+        force_iterative: bool,
+    ) -> AnalysisResult | None:
+        """After a diagnosed mechanism, try to still produce real node/element
+        results under the applied load by attaching a small stabilizing
+        spring at exactly the DOFs the diagnostic's own nullspace says are
+        free, then re-running the ordinary analysis stack once more.
+
+        Returns ``None`` (never raises) when stabilization is not possible or
+        does not actually let ``ops.analyze()`` succeed - the caller then
+        falls back to today's diagnostic-only FAILED result. The live domain
+        is otherwise unharmed either way: this only *adds* ground nodes and
+        zeroLength elements, never touches what was already built.
+        """
+        participating = mechanism_participating_dofs(diagnostic.modes, model.ndm)
+        if not participating:
+            return None
+        ndm = model.ndm
+        ndf = (2 if system == "truss" else 3) if ndm == 2 else (3 if system == "truss" else 6)
+        try:
+            # Same FullGeneral re-extraction InstabilityDiagnosticService.
+            # diagnose_live() itself uses (see that module) - redone here
+            # rather than reused so this never depends on the diagnostic's
+            # own analysis-object state surviving past its return.
+            ops.wipeAnalysis()
+            ops.system("FullGeneral")
+            ops.numberer("RCM")
+            ops.constraints("Transformation")
+            ops.algorithm("Linear")
+            ops.integrator("LoadControl", 0.0)
+            ops.analysis("Static")
+            ops.analyze(1)
+            size = ops.systemSize()
+            if size <= 0:
+                return None
+            matrix = extract_stiffness_matrix(size)
+        except Exception:  # noqa: BLE001 - stabilization is best-effort, never fatal
+            return None
+        if not np.isfinite(matrix).all():
+            return None
+        max_abs_diag = float(np.max(np.abs(np.diag(matrix)))) if matrix.size else 0.0
+        if not np.isfinite(max_abs_diag) or max_abs_diag <= 0.0:
+            return None
+        stiffness = _STABILIZATION_RELATIVE_STIFFNESS * max_abs_diag
+
+        try:
+            stabilized = MaterialFreeStaticsSolver._stabilize_mechanism(
+                model, ndm, ndf, participating, stiffness
+            )
+            if not stabilized:
+                return None
+            MaterialFreeStaticsSolver._analyze(
+                geometric_nonlinearity,
+                has_multipoint_constraints=has_multipoint_constraints,
+                force_iterative=force_iterative,
+            )
+        except _LinearStaticConvergenceFailure:
+            return None
+        except Exception:  # noqa: BLE001 - stabilization is best-effort, never fatal
+            return None
+
+        result = MaterialFreeStaticsSolver._collect(
+            model, system, determinacy_message, material, displacement_stiffness=displacement_stiffness
+        )
+        listed = ", ".join(f"n{tag}" for tag in stabilized)
+        result.messages = [
+            diagnostic.message,
+            "해석을 완료하기 위해 위 메커니즘 방향에 인공 안정화 스프링을 자동으로 적용했습니다 - "
+            f"다음 절점의 변위는 실제 거동이 아니라 불안정 위치를 나타내는 신호입니다: {listed}",
+            *result.messages,
+        ]
+        result.instability_diagnostic = diagnostic
+        result.stabilized_node_tags = stabilized
+        return result
+
+    @staticmethod
+    def _apply_loads(model: StructuralModel, system: str, plan: CompiledLoadPlan) -> None:
+        """Consume ``plan`` (already computed by ``compile_loads()`` before
+        ``_build()`` ran - see ``solve()``) - never recompute load physics
+        here. A truss/cable member's distributed or point load was already
+        converted to equivalent nodal forces by the compiler
+        (``LoadHandling.EQUIVALENT_NODAL``), so it reaches this function as a
+        plain ``CompiledNodalLoad`` alongside every other nodal load - there
+        is nothing truss-specific left to reject: the old blanket ValueError
+        for a truss/mixed member carrying a distributed load, and the old
+        raw ``ops.eleLoad`` call that OpenSees silently dropped for a Truss
+        element (``Truss::addLoad - load type unknown``), are both gone.
+        """
         ndm = model.ndm
         ndf = (2 if system == "truss" else 3) if ndm == 2 else (3 if system == "truss" else 6)
         ops.timeSeries("Linear", 1)
         ops.pattern("Plain", 1, 1)
-        for load in model.nodal_loads:
-            values = tuple(load.values[:ndf]) + (0.0,) * max(0, ndf - len(load.values))
+        for load in plan.nodal_loads:
+            # force/moment are always GLOBAL (Fx,Fy,Fz)/(Mx,My,Mz), 2D
+            # included (2D's moment is (0,0,Mz) - see CompiledNodalLoad's own
+            # docstring) - so a 2D engine call needs (Fx,Fy,Mz), never a
+            # blind concatenation-then-truncate of the two 3-tuples (that
+            # would keep the always-zero Fz/Mx/My and drop the real Mz).
+            # Truncating further to this system's own ndf reproduces the
+            # exact same drop ``model.nodal_loads`` always got before (e.g.
+            # a determinate 2D truss's ndf=2 still drops Mz).
+            full = (
+                (load.force[0], load.force[1], load.moment[2])
+                if ndm == 2
+                else load.force + load.moment
+            )
+            values = full[:ndf] + (0.0,) * max(0, ndf - len(full))
             ops.load(load.node_tag, *values)
-        if system == "truss" and (model.element_loads or model.point_loads):
-            raise ValueError("트러스 부재의 등분포하중은 절점하중으로 변환해 입력하세요.")
-        if system == "mixed" and (model.element_loads or model.point_loads):
-            # A mixed model's own truss-family members are exactly as
-            # incapable of a distributed/point load as a pure-truss system's
-            # (see the check just above) - only its frame members can carry
-            # one, so the same rejection applies, scoped to whichever
-            # elements actually are truss-family here.
-            truss_tags = {
-                element.tag
-                for element in model.elements.values()
-                if _element_family(element.element_type) == "truss"
-            }
-            offending = sorted(
-                {load.element_tag for load in model.element_loads if load.element_tag in truss_tags}
-                | {
-                    load.element_tag
-                    for load in model.point_loads
-                    if load.element_tag in truss_tags
-                }
+        for load in plan.element_loads:
+            tag = (
+                load.target.element_tag
+                if load.target.segment_index is None
+                else MaterialFreeStaticsSolver._trapezoid_sub_element_tags(load.target.element_tag)[
+                    load.target.segment_index
+                ]
             )
-            if offending:
-                listed = ", ".join(str(tag) for tag in offending)
-                raise ValueError(
-                    f"트러스·케이블 부재({listed})의 분포하중은 절점하중으로 변환해 입력하세요."
+            # LOCAL (axial, transverse-y, transverse-z) for both kinds - see
+            # CompiledElementLoad's own docstring; "wx" naming kept for the
+            # uniform case to match the existing -beamUniform call shape.
+            wx, wy, wz = load.components
+            if load.kind == "uniform":
+                span_args = (
+                    ()
+                    if (load.start_ratio, load.end_ratio) == (0.0, 1.0)
+                    else (load.start_ratio, load.end_ratio)
                 )
-        if ndm == 3 and any(not load.is_uniform for load in model.element_loads):
-            # A linearly-varying (trapezoidal) load needs _build's discretized-
-            # member sub-elements (see _build_discretized_member), which only
-            # ever builds 2D (x, y) sub-nodes - there is nothing to eleLoad a
-            # 3D trapezoidal load's sub-tags onto. A plain uniform 3D load
-            # needs no such discretization (OpenSees' own -beamUniform already
-            # handles it directly on the one real element), so only the
-            # trapezoidal case is still rejected here.
-            raise ValueError(
-                "3D 모델의 선형 변화(사다리꼴) 분포하중은 아직 지원하지 않습니다. "
-                "등분포하중으로 입력하거나 절점하중으로 변환하세요."
-            )
-        for load in model.element_loads:
-            if load.is_uniform:
-                # A partial-span constant load (member_partial, confined to
-                # xL1..xL2 rather than the whole member) maps directly onto
-                # OpenSeesPy's own native -beamUniform trailing xL1/xL2
-                # arguments (confirmed against the installed openseespy, both
-                # 2D and 3D) - full-span loads (the overwhelming majority,
-                # xL1/xL2 left at their (0.0, 1.0) default) omit them
-                # entirely so this call is unchanged from before these two
-                # fields existed.
-                span_args = () if load.is_full_span else (load.xL1, load.xL2)
                 if ndm == 3:
-                    # wy/wz are the member's own local transverse axes (the
-                    # same ones _reference_vector already fixed when the
-                    # element was built - see its own docstring for how they
-                    # are chosen), wx is local axial - OpenSeesPy's own 3D
-                    # -beamUniform argument order.
                     ops.eleLoad(
-                        "-ele", load.element_tag, "-type", "-beamUniform",
-                        load.wy, load.wz, load.wx, *span_args,
+                        "-ele", tag, "-type", "-beamUniform", wy, wz, wx, *span_args
                     )
                 else:
-                    ops.eleLoad(
-                        "-ele", load.element_tag, "-type", "-beamUniform",
-                        load.wy, load.wx, *span_args,
-                    )
+                    ops.eleLoad("-ele", tag, "-type", "-beamUniform", wy, wx, *span_args)
                 continue
-            # No native linearly-varying eleLoad exists (see _TRAPEZOID_SEGMENTS) -
-            # _build already split this member into that many sub-elements, so
-            # each sub-element gets OpenSees' own constant -beamUniform sampled at
-            # the true w(x) value at its own midpoint. A midpoint sample equals
-            # the segment's exact average for a linear w(x), so this reproduces
-            # the exact resultant force per segment; only the within-segment
-            # shape is approximated. 2D only - see the ndm == 3 rejection above.
-            sub_tags = MaterialFreeStaticsSolver._trapezoid_sub_element_tags(load.element_tag)
-            for segment, sub_tag in enumerate(sub_tags):
-                midpoint = (segment + 0.5) / _TRAPEZOID_SEGMENTS
-                wx_mid = load.wx + (load.wx_j - load.wx) * midpoint
-                wy_mid = load.wy + (load.wy_j - load.wy) * midpoint
-                ops.eleLoad("-ele", sub_tag, "-type", "-beamUniform", wy_mid, wx_mid)
-        for point_load in model.point_loads:
-            # Concentrated (member_point) force, native OpenSeesPy -beamPoint
-            # (confirmed against the installed openseespy) - py/pz are the
-            # member's own local transverse axes (same convention as the
-            # -beamUniform call above), n is local axial, position is the
-            # xL fraction (0..1) along whichever element/segment actually
-            # carries this load (build_model() already resolved which one).
-            # 2D has no out-of-plane pz component to pass. The 3D argument
-            # order is (Py, Pz, xL, N) - confirmed by reproducing OpenSeesPy's
-            # own "invalid xDivL" rejection independently of this solver: an
-            # earlier version of this call passed (py, position, pz, n)
-            # instead, silently swapping position/pz (see
-            # tests/unit/test_solver_beam_point_argument_order.py, which pins
-            # this order down with a monkeypatched ops.eleLoad so a future
-            # edit can't reintroduce the swap without a failing test).
             if ndm == 3:
                 ops.eleLoad(
-                    "-ele", point_load.element_tag, "-type", "-beamPoint",
-                    point_load.py, point_load.pz, point_load.position, point_load.n,
+                    "-ele", tag, "-type", "-beamPoint", wy, wz, load.position, wx
                 )
             else:
-                ops.eleLoad(
-                    "-ele", point_load.element_tag, "-type", "-beamPoint",
-                    point_load.py, point_load.position, point_load.n,
-                )
+                ops.eleLoad("-ele", tag, "-type", "-beamPoint", wy, load.position, wx)
 
     @staticmethod
     def _analyze(

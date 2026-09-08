@@ -297,8 +297,8 @@ def test_beam_uniform_partial_and_point_match_existing_engine_call_values(ndm, m
     monkeypatch.setattr(ops, "eleLoad", lambda *args: recorded.append(args))
     monkeypatch.setattr(ops, "timeSeries", lambda *args: None)
     monkeypatch.setattr(ops, "pattern", lambda *args: None)
-    MaterialFreeStaticsSolver._apply_loads(model, "frame")
     plan = compile_loads(model)
+    MaterialFreeStaticsSolver._apply_loads(model, "frame", plan)
     uniform, point = plan.element_loads
     wx, wy, wz = uniform.components
     n, py, pz = point.components
@@ -509,7 +509,8 @@ def test_beam_plan_matches_exporter_uniform_and_point_commands(ndm):
     model.element_loads = [UniformElementLoad(1, wx=2, wy=-4, wz=3 if ndm == 3 else 0)]
     model.point_loads = [PointElementLoad(1, position=0.3, n=2, py=-7, pz=4 if ndm == 3 else 0)]
     lines = []
-    _write_loads(lines, model)
+    plan = compile_loads(model)
+    _write_loads(lines, plan, ndm, model.ndf)
     calls = [
         tuple(ast.literal_eval(arg) for arg in node.args)
         for node in ast.walk(ast.parse("\n".join(lines)))
@@ -517,7 +518,7 @@ def test_beam_plan_matches_exporter_uniform_and_point_commands(ndm):
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "eleLoad"
     ]
-    uniform, point = compile_loads(model).element_loads
+    uniform, point = plan.element_loads
     wx, wy, wz = uniform.components
     axial, py, pz = point.components
     assert calls[0][4:] == ((wy, wz, wx) if ndm == 3 else (wy, wx))

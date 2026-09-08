@@ -36,8 +36,8 @@ from openframe.core.domain.model import (
     BoundaryCondition,
     Element,
     StructuralModel,
-    UniformElementLoad,
 )
+from openframe.features.analysis.loads import CompiledLoadPlan, ElementLoadTarget, compile_loads
 from openframe.features.analysis.statics.solver import (
     _HINGE_MATERIAL_TAG,
     _HINGE_STIFFNESS,
@@ -122,6 +122,27 @@ def export_opensees_script(
             "내보내려면 모든 부재에 실제 강성이 필요합니다."
         )
 
+    # Compile once, before any element is written: _write_elements() needs
+    # plan.required_subdivisions to decide which 2D beams get the legacy
+    # 40-segment trapezoid mesh, and _write_loads() below consumes the same
+    # plan - see solver.py's identical ordering (its own in-process twin of
+    # this function) for why. Never pass entries/self_weight: a
+    # StructuralModel reaching this exporter already carries its final,
+    # fully expanded nodal_loads/element_loads/point_loads (LoadEntry/self-
+    # weight expansion happens upstream in canvas.build_model()); passing
+    # them again here would double the same physical load. LoadCompileError
+    # is a ValueError, so it surfaces through this function's own existing
+    # "raise ValueError(...)" contract unchanged - no new except needed by
+    # any caller. Modal/Buckling/Time History/Response Spectrum all export
+    # through this same function with no static load at all (an eigenvalue
+    # problem needs none) - skip the compiler entirely rather than run it
+    # over empty input on every such export.
+    plan = (
+        compile_loads(model)
+        if model.nodal_loads or model.element_loads or model.point_loads
+        else CompiledLoadPlan()
+    )
+
     lines: list[str] = [
         "import openseespy.opensees as ops",
         "",
@@ -141,15 +162,16 @@ def export_opensees_script(
         lines.append(f"ops.node({node.tag}, {', '.join(_num(v) for v in coordinates)})")
     lines.append("")
 
+    required_subdivisions = frozenset(tag for tag, _count in plan.required_subdivisions)
     _write_boundaries(lines, model)
     _write_springs(lines, model)
     if model.ndm == 3:
         _write_rigid_diaphragms(lines, model)
-    _write_elements(lines, model)
+    _write_elements(lines, model, required_subdivisions)
     _write_shells(lines, model)
     if include_mass:
         _write_mass(lines, model, length_unit)
-    _write_loads(lines, model)
+    _write_loads(lines, plan, model.ndm, model.ndf)
 
     return "\n".join(lines) + "\n"
 
@@ -287,7 +309,9 @@ def _write_rigid_diaphragms(lines: list[str], model: StructuralModel) -> None:
     lines.append("")
 
 
-def _write_elements(lines: list[str], model: StructuralModel) -> None:
+def _write_elements(
+    lines: list[str], model: StructuralModel, required_subdivisions: frozenset[int] = frozenset()
+) -> None:
     ndm = model.ndm
     truss_elements = [
         element
@@ -348,12 +372,8 @@ def _write_elements(lines: list[str], model: StructuralModel) -> None:
         return
 
     lines.append("ops.geomTransf('Linear', 1)")
-    trapezoid_loads = {
-        load.element_tag: load for load in model.element_loads if not load.is_uniform
-    }
     for element in sorted(frame_elements, key=lambda item: item.tag):
-        trapezoid = trapezoid_loads.get(element.tag)
-        if trapezoid is not None:
+        if element.tag in required_subdivisions:
             elastic, area, inertia = _element_properties(element, ndm)
             _write_discretized_member(lines, model, element, area, elastic, inertia)
             continue
@@ -574,76 +594,81 @@ def _write_mass(lines: list[str], model: StructuralModel, length_unit: str) -> N
     lines.append("")
 
 
-def _write_loads(lines: list[str], model: StructuralModel) -> None:
-    if not model.nodal_loads and not model.element_loads and not model.point_loads:
+def _write_loads(lines: list[str], plan: CompiledLoadPlan, ndm: int, ndf: int) -> None:
+    """Text form of ``MaterialFreeStaticsSolver._apply_loads``: consumes the
+    same ``plan`` (already computed by ``compile_loads()`` before elements
+    were written - see ``export_opensees_script``) rather than recomputing
+    load physics here. A truss/cable member's distributed or point load was
+    already converted to an equivalent nodal force by the compiler, so it
+    reaches this function as a plain ``CompiledNodalLoad`` - there is no
+    truss-targeted ``ops.eleLoad`` left to emit here at all, so an exported
+    script can no longer silently drop a truss's distributed load the way
+    OpenSees' own ``Truss::addLoad - load type unknown`` warning did before.
+    """
+    if not plan.nodal_loads and not plan.element_loads:
         return
-    ndm = model.ndm
-    trapezoid_tags = {load.element_tag for load in model.element_loads if not load.is_uniform}
-    if ndm == 3 and trapezoid_tags:
-        # Matches MaterialFreeStaticsSolver._apply_loads exactly: the model
-        # still builds successfully (see _write_3d_frame_elements, which never
-        # discretizes) - only applying the load fails, same order as the
-        # in-process solver.
-        raise ValueError(
-            "3D 모델의 선형 변화(사다리꼴) 분포하중은 아직 지원하지 않습니다. "
-            "등분포하중으로 입력하거나 절점하중으로 변환하세요."
-        )
 
     lines.append("ops.timeSeries('Linear', 1)")
     lines.append("ops.pattern('Plain', 1, 1)")
-    ndf = model.ndf
-    for load in model.nodal_loads:
-        values = tuple(load.values[:ndf]) + (0.0,) * max(0, ndf - len(load.values))
+    for load in plan.nodal_loads:
+        # force/moment are always GLOBAL (Fx,Fy,Fz)/(Mx,My,Mz), 2D included
+        # (2D's moment is (0,0,Mz) - see CompiledNodalLoad's own docstring) -
+        # so a 2D engine call needs (Fx,Fy,Mz), never a blind concatenation-
+        # then-truncate of the two 3-tuples (that would keep the always-zero
+        # Fz/Mx/My and drop the real Mz). Truncating further to the model's
+        # own ndf reproduces the exact same drop ``model.ndf`` always applied
+        # before.
+        full = (
+            (load.force[0], load.force[1], load.moment[2])
+            if ndm == 2
+            else load.force + load.moment
+        )
+        values = full[:ndf] + (0.0,) * max(0, ndf - len(full))
         lines.append(f"ops.load({load.node_tag}, {', '.join(_num(v) for v in values)})")
 
-    for load in model.element_loads:
-        if load.element_tag in trapezoid_tags and not load.is_uniform:
-            _write_trapezoid_eleload(lines, load)
+    for load in plan.element_loads:
+        tag = _resolve_element_load_tag(load.target)
+        wx, wy, wz = load.components
+        if load.kind == "uniform":
+            span_args = (
+                ""
+                if (load.start_ratio, load.end_ratio) == (0.0, 1.0)
+                else f", {_num(load.start_ratio)}, {_num(load.end_ratio)}"
+            )
+            if ndm == 3:
+                # wy/wz are the member's own local transverse axes, wx is
+                # local axial - OpenSeesPy's own 3D -beamUniform argument
+                # order (matches solver.py's _apply_loads exactly).
+                lines.append(
+                    f"ops.eleLoad('-ele', {tag}, '-type', '-beamUniform', "
+                    f"{_num(wy)}, {_num(wz)}, {_num(wx)}{span_args})"
+                )
+            else:
+                lines.append(
+                    f"ops.eleLoad('-ele', {tag}, '-type', '-beamUniform', "
+                    f"{_num(wy)}, {_num(wx)}{span_args})"
+                )
             continue
-        # A partial-span constant load (xL1/xL2 not the (0.0, 1.0) default)
-        # passes those on as -beamUniform's own native trailing arguments -
-        # see solver.py's identical handling for why this is safe (confirmed
-        # against the installed openseespy, both 2D and 3D).
-        span_args = "" if load.is_full_span else f", {_num(load.xL1)}, {_num(load.xL2)}"
-        if ndm == 3:
-            # wy/wz are the member's own local transverse axes (the same ones
-            # _reference_vector already fixed when the element was built),
-            # wx is local axial - OpenSeesPy's own 3D -beamUniform argument
-            # order (solver.py's _apply_loads uses the identical order).
-            lines.append(
-                f"ops.eleLoad('-ele', {load.element_tag}, '-type', '-beamUniform', "
-                f"{_num(load.wy)}, {_num(load.wz)}, {_num(load.wx)}{span_args})"
-            )
-        else:
-            lines.append(
-                f"ops.eleLoad('-ele', {load.element_tag}, '-type', '-beamUniform', "
-                f"{_num(load.wy)}, {_num(load.wx)}{span_args})"
-            )
-    for point_load in model.point_loads:
         if ndm == 3:
             # (Py, Pz, xL, N) - see solver.py's own comment on this same call
             # for how the correct order was confirmed independently.
             lines.append(
-                f"ops.eleLoad('-ele', {point_load.element_tag}, '-type', '-beamPoint', "
-                f"{_num(point_load.py)}, {_num(point_load.pz)}, "
-                f"{_num(point_load.position)}, {_num(point_load.n)})"
+                f"ops.eleLoad('-ele', {tag}, '-type', '-beamPoint', "
+                f"{_num(wy)}, {_num(wz)}, {_num(load.position)}, {_num(wx)})"
             )
         else:
             lines.append(
-                f"ops.eleLoad('-ele', {point_load.element_tag}, '-type', '-beamPoint', "
-                f"{_num(point_load.py)}, {_num(point_load.position)}, {_num(point_load.n)})"
+                f"ops.eleLoad('-ele', {tag}, '-type', '-beamPoint', "
+                f"{_num(wy)}, {_num(load.position)}, {_num(wx)})"
             )
     lines.append("")
 
 
-def _write_trapezoid_eleload(lines: list[str], load: UniformElementLoad) -> None:
-    segments = _TRAPEZOID_SEGMENTS
-    for segment in range(segments):
-        sub_tag = _TRAPEZOID_ELEMENT_TAG_OFFSET + load.element_tag * 1000 + segment
-        midpoint = (segment + 0.5) / segments
-        wy_mid = load.wy + (load.wy_j - load.wy) * midpoint
-        wx_mid = load.wx + (load.wx_j - load.wx) * midpoint
-        lines.append(
-            f"ops.eleLoad('-ele', {sub_tag}, '-type', '-beamUniform', "
-            f"{_num(wy_mid)}, {_num(wx_mid)})"
-        )
+def _resolve_element_load_tag(target: ElementLoadTarget) -> int:
+    """The real engine element tag a compiled load's abstract target maps
+    onto - the source element itself, or the deterministic sub-element tag
+    ``_write_discretized_member`` mints for that (element_tag, segment_index)
+    (same formula, so both functions always agree on what got built)."""
+    if target.segment_index is None:
+        return target.element_tag
+    return _TRAPEZOID_ELEMENT_TAG_OFFSET + target.element_tag * 1000 + target.segment_index

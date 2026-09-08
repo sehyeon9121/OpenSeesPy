@@ -146,7 +146,13 @@ def test_3d_trapezoidal_element_loads_are_still_rejected_with_a_clear_message() 
     one real element) - a linearly-varying one would need the same sub-element
     discretization _build_discretized_member only ever builds in 2D (x, y),
     so this still refuses rather than eleLoad a sub-element tag that was
-    never actually built."""
+    never actually built. The rejection itself now lives in
+    ``compile_loads()`` (``unsupported_beam_trapezoid``, see
+    ``openframe.features.analysis.loads.compiler``) rather than a bespoke
+    Korean string in this solver - solve() surfaces whatever
+    LoadCompileError the compiler raised, so this only pins the still-FAILED
+    outcome and the compiler's own stable error code, not solver-local
+    wording."""
     model = StructuralModel(
         ndm=3,
         nodes={1: Node(1, 0.0, 0.0, 0.0), 2: Node(2, 4.0, 0.0, 0.0)},
@@ -162,7 +168,7 @@ def test_3d_trapezoidal_element_loads_are_still_rejected_with_a_clear_message() 
     result = MaterialFreeStaticsSolver().solve(model)
 
     assert result.status == AnalysisStatus.FAILED
-    assert "사다리꼴" in result.messages[0]
+    assert "unsupported_beam_trapezoid" in result.messages[0]
 
 
 def test_3d_frame_determinacy_matches_the_6m_plus_r_minus_6j_formula() -> None:
