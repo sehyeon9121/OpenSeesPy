@@ -128,7 +128,7 @@ Item {
     property real planeOffset: 0
     signal cameraModeChanged(string mode)
     signal nodePicked(int tag, real screenX, real screenY)
-    signal memberPicked(int tag, real screenX, real screenY)
+    signal memberPicked(int tag, real screenX, real screenY, bool additive)
     signal planePicked(real viewX, real viewY, real viewZ)
     // Hover equivalents of the two signals above, fired continuously (no
     // button held) while planePickingEnabled - drive the free-form 3D draw
@@ -2365,7 +2365,12 @@ Item {
             } else {
                 const memberTag = root.memberTagFromPick(result)
                 if (memberTag >= 0)
-                    root.memberPicked(memberTag, mouse.x, mouse.y)
+                    root.memberPicked(
+                        memberTag,
+                        mouse.x,
+                        mouse.y,
+                        Boolean(mouse.modifiers & Qt.ControlModifier)
+                    )
                 else
                     root.emptySpaceClicked()
             }

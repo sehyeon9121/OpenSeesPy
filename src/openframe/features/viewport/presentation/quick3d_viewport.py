@@ -17,6 +17,7 @@ class Quick3DViewport(QFrame):
     camera_mode_changed = Signal(str)
     node_picked = Signal(int, int, int)
     member_picked = Signal(int, int, int)
+    member_picked_additive = Signal(int, int, int, bool)
     #: A click on the active work plane, as structural (x, y, z) — already
     #: converted out of the QML scene's y-up view coordinates, so callers never
     #: need to know about that mapping.
@@ -133,9 +134,14 @@ class Quick3DViewport(QFrame):
         global_pos = self.quick_widget.mapToGlobal(QPoint(int(x), int(y)))
         self.node_picked.emit(tag, global_pos.x(), global_pos.y())
 
-    def _on_member_picked(self, tag: int, x: float, y: float) -> None:
+    def _on_member_picked(
+        self, tag: int, x: float, y: float, additive: bool = False
+    ) -> None:
         global_pos = self.quick_widget.mapToGlobal(QPoint(int(x), int(y)))
         self.member_picked.emit(tag, global_pos.x(), global_pos.y())
+        self.member_picked_additive.emit(
+            tag, global_pos.x(), global_pos.y(), bool(additive)
+        )
 
     def _on_plane_picked(self, view_x: float, view_y: float, view_z: float) -> None:
         # Inverse of Quick3DSceneBridge._view_coordinates: view = (x, z, -y).

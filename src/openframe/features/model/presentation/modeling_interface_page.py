@@ -244,7 +244,7 @@ class ModelingInterfacePage(
         self.canvas.escape_requested.connect(self._activate_select_tool)
         self.preview_3d.plane_point_picked.connect(self._on_3d_plane_picked)
         self.preview_3d.node_picked.connect(self._on_3d_node_picked)
-        self.preview_3d.member_picked.connect(self._on_3d_member_picked)
+        self.preview_3d.member_picked_additive.connect(self._on_3d_member_picked)
         if self._start_in_3d:
             # The chain-drawing preview line tracks self.canvas's own state
             # (chain_last_node), so any change to it - a point committed, the

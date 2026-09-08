@@ -173,15 +173,24 @@ class _Modeling3DInputMixin:
             self.canvas.selection_changed.emit()
 
 
-    def _on_3d_member_picked(self, tag: int, _screen_x: int, _screen_y: int) -> None:
+    def _on_3d_member_picked(
+        self,
+        tag: int,
+        _screen_x: int,
+        _screen_y: int,
+        additive: bool = False,
+    ) -> None:
         """Select a member with a plain click in the 3D authoring view."""
         if self.canvas.mode != "select" or tag not in self.canvas.elements:
             return
         if self.canvas.selection_filter == "nodes":
             return
-        self.canvas.selected_nodes.clear()
-        self.canvas.selected_elements = {tag}
-        self.canvas.selection_changed.emit()
+        modifiers = (
+            Qt.KeyboardModifier.ControlModifier
+            if additive
+            else Qt.KeyboardModifier.NoModifier
+        )
+        self.canvas._toggle_selection(("element", tag), modifiers)
 
 
     def _on_3d_box_selected(

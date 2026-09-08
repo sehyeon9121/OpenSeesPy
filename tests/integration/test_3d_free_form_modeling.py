@@ -842,6 +842,25 @@ def test_3d_node_click_does_not_replace_element_selection_in_element_mode() -> N
     assert page.canvas.selected_elements == {member}
 
 
+def test_ctrl_click_adds_and_toggles_3d_member_selection() -> None:
+    page = _page(start_in_3d=True)
+    first_node = page.canvas._add_node_at((0.0, 0.0, 0.0))
+    shared_node = page.canvas._add_node_at((4.0, 0.0, 0.0))
+    last_node = page.canvas._add_node_at((8.0, 0.0, 0.0))
+    first_member = page.canvas.add_member(first_node, shared_node)
+    second_member = page.canvas.add_member(shared_node, last_node)
+    page._activate_select_tool()
+
+    page.preview_3d._on_member_picked(first_member, 0.0, 0.0, False)
+    page.preview_3d._on_member_picked(second_member, 0.0, 0.0, True)
+
+    assert page.canvas.selected_elements == {first_member, second_member}
+
+    page.preview_3d._on_member_picked(first_member, 0.0, 0.0, True)
+
+    assert page.canvas.selected_elements == {second_member}
+
+
 def test_delete_and_ctrl_z_reach_the_canvas_while_the_3d_viewport_has_focus() -> None:
     """Delete/Ctrl+Z/Ctrl+Y are scoped to self.canvas, which stays hidden in
     3D mode and can therefore never hold keyboard focus - so a node/member
