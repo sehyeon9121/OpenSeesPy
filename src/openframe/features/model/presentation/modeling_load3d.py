@@ -289,6 +289,22 @@ class _Load3DPanelMixin:
     )
 
 
+    # Truss-family members may receive Uniform / Linear / Partial-span loads
+    # in this panel. OpenSees has no native truss eleLoad; the Load Compiler
+    # converts them to equivalent nodal forces. Blocking Apply or popping a
+    # warning dialog would make that conversion look illegal and send the
+    # user back to hand-entered nodal loads. Beam members need no such note.
+    _TRUSS_DISTRIBUTED_LOAD_HINT = (
+        "이 부재의 분포하중은 해석 시 등가 절점하중으로 자동 환산됩니다."
+    )
+    _CABLE_DISTRIBUTED_LOAD_HINT = (
+        "분포하중은 등가 절점하중으로 변환됩니다. "
+        "단일 2절점 케이블에서는 분포하중에 의한 sag 형상을 직접 재현하지 않습니다."
+    )
+    _DISTRIBUTED_MEMBER_LOAD_COMMANDS = frozenset(
+        {"member_uniform", "member_linear", "member_partial"}
+    )
+
     _LOAD_COMMAND_OPTIONS: ClassVar[
         tuple[tuple[str, tuple[tuple[str, str], ...]], ...]
     ] = (
@@ -438,6 +454,13 @@ class _Load3DPanelMixin:
             lambda _button, _checked: self._on_load_apply_mode_changed()
         )
         context.addLayout(mode_row)
+        self.load_member_handling_hint = QLabel()
+        self.load_member_handling_hint.setObjectName("setupSectionHint")
+        self.load_member_handling_hint.setWordWrap(True)
+        self.load_member_handling_hint.setMaximumWidth(272)
+        self.load_member_handling_hint.hide()
+        context.addWidget(self.load_member_handling_hint)
+        self.canvas.selection_changed.connect(self._refresh_load_member_handling_hint)
         root.addWidget(context_card)
 
         self.canvas.load_state_changed.connect(self._refresh_load_case_combo)
@@ -1749,6 +1772,7 @@ class _Load3DPanelMixin:
                 }[key]
             )
             self._on_load_apply_mode_changed()
+            self._refresh_load_member_handling_hint()
             return
         self.load_command_stack.setCurrentIndex(self.load_command_pages["entry"])
         top_kind = "member" if key.startswith("member_") else key
@@ -1768,6 +1792,7 @@ class _Load3DPanelMixin:
             }.get(key, "Load Settings")
         )
         self._on_load_apply_mode_changed()
+        self._refresh_load_member_handling_hint()
 
 
     def _make_load_case_from_combination(self) -> None:
@@ -2042,6 +2067,7 @@ class _Load3DPanelMixin:
         form.setRowVisible(self.load3d_member_end_position, is_partial)
         form.setRowVisible(self.load3d_member_position_unit, is_point or is_partial)
         self._refresh_load3d_unit_labels()
+        self._refresh_load_member_handling_hint()
 
 
     def _refresh_support_spring_unit_labels(self) -> None:
@@ -2098,6 +2124,53 @@ class _Load3DPanelMixin:
     def _current_load3d_member_subtype(self) -> str:
         return str(self.load3d_member_subtype_combo.currentData())
 
+
+    def _is_distributed_member_load_command(self) -> bool:
+        command = None
+        if hasattr(self, "load_command_combo"):
+            command = self.load_command_combo.currentData()
+        if command in self._DISTRIBUTED_MEMBER_LOAD_COMMANDS:
+            return True
+        if command is not None:
+            return False
+        subtype = getattr(self, "load3d_member_subtype_combo", None)
+        return subtype is not None and subtype.currentData() in self._DISTRIBUTED_MEMBER_LOAD_COMMANDS
+
+    def _selected_distributed_load_handling_hint(self) -> str:
+        """Inline note for truss/cable targets of a distributed member load.
+
+        Matches the compiler's family test (``"truss" in element_type``) and
+        its cable/tension-only sag warning. compression_only is still a
+        two-node truss conversion, not a sag-shape element, so it gets the
+        plain truss sentence. Beams must stay silent: native eleLoad is the
+        intended path and a warning here would look like a modeling error.
+        """
+        if not self._is_distributed_member_load_command():
+            return ""
+        has_truss = False
+        has_cable = False
+        for tag in self.canvas.selected_elements:
+            element = self.canvas.elements.get(tag)
+            if element is None or "truss" not in element.element_type.lower():
+                continue
+            behavior = element.properties.get("behavior", "truss")
+            if behavior in {"cable", "tension_only"}:
+                has_cable = True
+            else:
+                has_truss = True
+        messages: list[str] = []
+        if has_truss:
+            messages.append(self._TRUSS_DISTRIBUTED_LOAD_HINT)
+        if has_cable:
+            messages.append(self._CABLE_DISTRIBUTED_LOAD_HINT)
+        return "\n".join(messages)
+
+    def _refresh_load_member_handling_hint(self) -> None:
+        if not hasattr(self, "load_member_handling_hint"):
+            return
+        text = self._selected_distributed_load_handling_hint()
+        self.load_member_handling_hint.setText(text)
+        self.load_member_handling_hint.setVisible(bool(text))
 
     def _refresh_load3d_target_count(self) -> None:
         if not hasattr(self, "load3d_target_count_label"):
@@ -2278,8 +2351,11 @@ class _Load3DPanelMixin:
             if self._current_load_apply_mode() == "replace":
                 self._remove_matching_load_entries(case_id, kind, targets)
             self.canvas.add_load_entry(case_id, kind, targets, payload)
-            self.load3d_status_label.setText("✓ 적용되었습니다.")
+            applied = "✓ 적용되었습니다."
+            handling = self._selected_distributed_load_handling_hint()
+            self.load3d_status_label.setText(f"{applied}\n{handling}" if handling else applied)
         self._refresh_load3d_viewport()
+        self._refresh_load_member_handling_hint()
 
 
     def _remove_matching_load_entries(

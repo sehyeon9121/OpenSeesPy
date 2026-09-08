@@ -1,6 +1,7 @@
 """End-to-end flow through the MIDAS-style 3D Loads command picker."""
 
 import os
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -93,6 +94,7 @@ def test_member_uniform_load_applies_the_same_start_and_end_value() -> None:
     assert entry.payload.start_value == entry.payload.end_value == -3.0
     assert entry.payload.start_position == 0.0
     assert entry.payload.end_position == 1.0
+    assert not page.load_member_handling_hint.isVisible()
 
 
 def test_member_partial_load_keeps_its_own_start_and_end_position() -> None:
@@ -115,6 +117,7 @@ def test_member_partial_load_keeps_its_own_start_and_end_position() -> None:
     entry = next(iter(page.canvas.load_entries.values()))
     assert (entry.payload.start_value, entry.payload.end_value) == (-1.0, -2.0)
     assert (entry.payload.start_position, entry.payload.end_position) == (0.25, 0.75)
+    assert not page.load_member_handling_hint.isVisible()
 
 
 def test_shared_operation_mode_also_controls_case_based_member_loads() -> None:
@@ -890,3 +893,84 @@ def test_reselecting_an_existing_floor_load_still_uses_plain_selection() -> None
 
     assert page.canvas.mode != "floor_pick"
     assert page.canvas.selected_nodes == {a, b, c}
+
+
+def _add_selected_member(
+    page, *, family: str, behavior: str, start=(0.0, 0.0), end=(4.0, 0.0)
+) -> int:
+    page.canvas.element_family = family
+    page.canvas.element_behavior = behavior
+    node_i = page.canvas.add_node(*start)
+    node_j = page.canvas.add_node(*end)
+    member = page.canvas.add_member(node_i, node_j)
+    assert member is not None
+    page.canvas.selected_elements = {member}
+    page.canvas.selection_changed.emit()
+    return member
+
+
+@patch("openframe.features.model.presentation.modeling_load3d.QMessageBox.warning")
+@patch("openframe.features.model.presentation.modeling_load3d.QMessageBox.information")
+def test_truss_uniform_load_shows_inline_conversion_hint_and_still_applies(
+    information, warning
+) -> None:
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    _add_selected_member(page, family="truss", behavior="truss")
+    page._activate_load_tool()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("member_uniform"))
+
+    assert page.load_member_handling_hint.isVisible()
+    assert page.load_member_handling_hint.text() == (
+        "이 부재의 분포하중은 해석 시 등가 절점하중으로 자동 환산됩니다."
+    )
+
+    page.load_fields["qy"].setValue(-3.0)
+    page.load_apply_button.click()
+
+    warning.assert_not_called()
+    information.assert_not_called()
+    assert len(page.canvas.load_entries) == 1
+    assert next(iter(page.canvas.load_entries.values())).kind == "member_uniform"
+    assert page.load_member_handling_hint.isVisible()
+
+
+@patch("openframe.features.model.presentation.modeling_load3d.QMessageBox.warning")
+def test_cable_partial_load_mentions_sag_without_blocking_apply(warning) -> None:
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    _add_selected_member(page, family="truss", behavior="cable")
+    page._activate_load_tool()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("member_partial"))
+    page.load3d_member_start_value.setValue(-1.0)
+    page.load3d_member_end_value.setValue(-2.0)
+    page.load3d_member_start_position.setValue(0.2)
+    page.load3d_member_end_position.setValue(0.8)
+
+    assert "sag" in page.load_member_handling_hint.text()
+    assert "등가 절점하중" in page.load_member_handling_hint.text()
+
+    page.load3d_apply_button.click()
+
+    warning.assert_not_called()
+    assert len(page.canvas.load_entries) == 1
+    assert "✓ 적용되었습니다." in page.load3d_status_label.text()
+    assert "sag" in page.load3d_status_label.text()
+
+
+def test_tension_only_uses_the_cable_sag_hint_compression_only_does_not() -> None:
+    page = _page()
+    page.canvas.add_load_case("DL", kind=LoadCaseKind.DEAD)
+    page._activate_load_tool()
+    page.load_command_combo.setCurrentIndex(page.load_command_combo.findData("member_uniform"))
+
+    _add_selected_member(page, family="truss", behavior="tension_only")
+    assert "sag" in page.load_member_handling_hint.text()
+
+    _add_selected_member(
+        page, family="truss", behavior="compression_only", start=(0.0, 2.0), end=(4.0, 2.0)
+    )
+    assert page.load_member_handling_hint.text() == (
+        "이 부재의 분포하중은 해석 시 등가 절점하중으로 자동 환산됩니다."
+    )
+    assert "sag" not in page.load_member_handling_hint.text()
