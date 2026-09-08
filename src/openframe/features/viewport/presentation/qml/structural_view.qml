@@ -61,33 +61,38 @@ Item {
     property var cubePaintQscalar: []
     property var _cubeEntryPool: []
     property var _cylinderEntryPool: []
-    // Must include every part's B/H *and* roll, not just members[0].
-    // Drawing a beam onto an already-sectioned frame (columns first, then
-    // the girder) leaves the new member at the end of the list; the first
-    // part's dimensions do not change, so a first-only key never fired and
-    // the new span stayed a hairline until the next add bumped the count.
-    // A 90° local_axis_angle (Create Element 부재 회전각) has the same
-    // shape: tag/B/H/length stay put and only the quaternion (and an H/I
-    // flange's world position) change. Without those in the key the
-    // InstanceList kept the old roll, so the 3D member looked unrotated
-    // even though Python had already swapped strong/weak axes.
-    readonly property string memberSyncKey: {
+    // Method return values are detached from Python Q_PROPERTY sequences.
+    // Read once per revision; camera moves and selections reuse the snapshot.
+    readonly property var sceneData: {
         if (!bridgeReady)
-            return "0"
-        const members = sceneBridge.members
-        let parts = ""
-        for (let index = 0; index < members.length; ++index) {
-            const part = members[index]
-            parts += part.tag + ":" + part.width_b + ":" + part.width_h + ":"
-                + part.length + ":" + part.qscalar + ":" + part.qx + ":"
-                + part.qy + ":" + part.qz + ":" + part.x + ":" + part.y + ":"
-                + part.z + ";"
-        }
-        return sceneBridge.geometryRevision
-            + ":" + sceneBridge.deformationRevision
-            + ":" + sceneBridge.visibilityRevision
-            + ":" + parts
+            return {nodes: [], members: [], revision: "empty"}
+        const revision = sceneBridge.topologyRevision + ":"
+            + sceneBridge.geometryRevision + ":" + sceneBridge.deformationRevision
+        const snapshot = sceneBridge.geometrySnapshot()
+        return {nodes: snapshot.nodes, members: snapshot.members, revision: revision}
     }
+    readonly property var selectionState: {
+        if (!bridgeReady)
+            return {nodes: new Set(), members: new Set(), revision: -1}
+        const revision = sceneBridge.selectionRevision
+        const snapshot = sceneBridge.selectionSnapshot()
+        return {nodes: new Set(snapshot.nodes), members: new Set(snapshot.members),
+                revision: revision}
+    }
+    readonly property var isolateState: {
+        if (!bridgeReady)
+            return {nodes: new Set(), members: new Set()}
+        sceneBridge.visibilityRevision
+        const snapshot = sceneBridge.isolateSnapshot()
+        return {nodes: new Set(snapshot.nodes), members: new Set(snapshot.members)}
+    }
+    // Every dimension/roll edit advances a geometry or topology revision.
+    readonly property string memberSyncKey: sceneData.revision + ":"
+        + (bridgeReady ? sceneBridge.visibilityRevision : 0)
+    property var _memberEntriesByTag: ({})
+    property var _paintedMemberSelection: new Set()
+    // Integration diagnostics are opt-in, avoiding full buffer readback on clicks.
+    property bool captureInstanceDiagnostics: false
     // Selection used to be a same-size red Model stacked on the member.
     // After instancing that overlay sat at identical depth as the instance
     // cube, so z-fighting hid the colour change. Recolour the instance
@@ -98,7 +103,7 @@ Item {
     readonly property int memberSelectionKey: {
         if (!bridgeReady)
             return 0
-        return sceneBridge.selectionRevision
+        return root.selectionState.revision
     }
     property real navigationCursorX: 0
     property real navigationCursorY: 0
@@ -153,8 +158,8 @@ Item {
         if (!bridgeReady)
             return
         hoveredNodeTag = tag
-        for (let index = 0; index < sceneBridge.nodes.length; ++index) {
-            const node = sceneBridge.nodes[index]
+        for (let index = 0; index < root.sceneData.nodes.length; ++index) {
+            const node = root.sceneData.nodes[index]
             if (node.tag !== tag)
                 continue
             const screen = view3d.mapFrom3DScene(Qt.vector3d(node.x, node.y, node.z))
@@ -171,19 +176,12 @@ Item {
     // fake that magnet, but a true-scale section occludes every one of
     // those rays. pickNearestNode now searches projected node positions
     // first (see its own comment) and only then falls through to pick().
-    function tagIsSelected(tagList, tag) {
-        for (let i = 0; i < tagList.length; ++i)
-            if (tagList[i] === tag)
-                return true
-        return false
-    }
-
     function nodeVisible(tag) {
         if (!bridgeReady || !sceneBridge.isolateActive)
             return true
         if (bridgeReady)
             sceneBridge.visibilityRevision
-        return root.tagIsSelected(sceneBridge.isolateNodeTags, tag)
+        return root.isolateState.nodes.has(tag)
     }
 
     function memberVisible(tag) {
@@ -191,7 +189,7 @@ Item {
             return true
         if (bridgeReady)
             sceneBridge.visibilityRevision
-        return root.tagIsSelected(sceneBridge.isolateMemberTags, tag)
+        return root.isolateState.members.has(tag)
     }
 
     function nodeModelVisible(tag) {
@@ -241,8 +239,8 @@ Item {
         if (root.bridgeReady) {
             let bestTag = -1
             let bestDistance = root.nodePickRadiusPixels
-            for (let index = 0; index < sceneBridge.nodes.length; ++index) {
-                const node = sceneBridge.nodes[index]
+            for (let index = 0; index < root.sceneData.nodes.length; ++index) {
+                const node = root.sceneData.nodes[index]
                 if (!root.nodeModelVisible(node.tag))
                     continue
                 if (sceneBridge.timeHistoryDeformationActive
@@ -316,8 +314,8 @@ Item {
         return true
     }
 
-    function _fillInstancePool(listObj, pool, tags, colors, parts) {
-        const selected = bridgeReady ? sceneBridge.selectedMemberTags : []
+    function _fillInstancePool(listObj, pool, tags, colors, parts, entriesByTag) {
+        const selected = root.selectionState.members
         while (pool.length < parts.length)
             pool.push(instanceEntryComponent.createObject(listObj))
         for (let index = 0; index < parts.length; ++index) {
@@ -332,7 +330,10 @@ Item {
             entry.rotation = Qt.quaternion(part.qscalar, part.qx, part.qy, part.qz)
             colors[index] = part.color
             tags[index] = part.tag
-            entry.color = root.tagIsSelected(selected, part.tag)
+            if (!entriesByTag[part.tag])
+                entriesByTag[part.tag] = []
+            entriesByTag[part.tag].push({entry: entry, color: part.color})
+            entry.color = selected.has(part.tag)
                 ? root.selectedMemberColor
                 : part.color
         }
@@ -348,22 +349,26 @@ Item {
     }
 
     function applyMemberSelectionColors() {
-        if (typeof cubeInstanceList === "undefined")
-            return
-        const selected = bridgeReady ? sceneBridge.selectedMemberTags : []
-        function paint(pool, tags, colors) {
-            for (let index = 0; index < tags.length; ++index) {
-                pool[index].color = root.tagIsSelected(selected, tags[index])
-                    ? root.selectedMemberColor
-                    : colors[index]
-            }
+        const selected = root.selectionState.members
+        const previous = _paintedMemberSelection
+        function paint(tag, active) {
+            const records = _memberEntriesByTag[tag] || []
+            for (const record of records)
+                record.entry.color = active ? root.selectedMemberColor : record.color
         }
-        paint(_cubeEntryPool, cubeTags, cubeColors)
-        paint(_cylinderEntryPool, cylinderTags, cylinderColors)
+        for (const tag of previous)
+            if (!selected.has(tag))
+                paint(tag, false)
+        for (const tag of selected)
+            if (!previous.has(tag))
+                paint(tag, true)
+        _paintedMemberSelection = selected
         _refreshPaintHex()
     }
 
     function _refreshPaintHex() {
+        if (!captureInstanceDiagnostics)
+            return
         function hexes(pool, tags) {
             const names = []
             for (let index = 0; index < tags.length; ++index)
@@ -396,20 +401,24 @@ Item {
             cubePaintQscalar = []
             cubeInstanceList.instances = []
             cylinderInstanceList.instances = []
+            _memberEntriesByTag = ({})
+            _paintedMemberSelection = new Set()
             return
         }
         const cubes = []
         const cylinders = []
-        const members = sceneBridge.members
+        const members = root.sceneData.members
         const lineMode = root.lineDisplayActive()
+        const seenTags = new Set()
         for (let index = 0; index < members.length; ++index) {
             const part = members[index]
             if (!root.memberModelVisible(part.tag))
                 continue
             // One stick per member: an H/I's web+flanges would otherwise
             // become three overlapping hairlines after the centerline snap.
-            if (lineMode && !root.isFirstPartForTag(members, index))
+            if (lineMode && seenTags.has(part.tag))
                 continue
+            seenTags.add(part.tag)
             if (part.source === "#Cylinder")
                 cylinders.push(part)
             else
@@ -419,10 +428,15 @@ Item {
         const nextCylinderTags = []
         const nextCubeColors = []
         const nextCylinderColors = []
-        _fillInstancePool(cubeInstanceList, _cubeEntryPool, nextCubeTags, nextCubeColors, cubes)
+        const entriesByTag = ({})
+        _fillInstancePool(cubeInstanceList, _cubeEntryPool, nextCubeTags, nextCubeColors,
+                          cubes, entriesByTag)
         _fillInstancePool(
-            cylinderInstanceList, _cylinderEntryPool, nextCylinderTags, nextCylinderColors, cylinders
+            cylinderInstanceList, _cylinderEntryPool, nextCylinderTags, nextCylinderColors,
+            cylinders, entriesByTag
         )
+        _memberEntriesByTag = entriesByTag
+        _paintedMemberSelection = root.selectionState.members
         cubeTags = nextCubeTags
         cylinderTags = nextCylinderTags
         cubeColors = nextCubeColors
@@ -505,8 +519,8 @@ Item {
         let nodeTags = []
         let memberTags = []
         if (sceneBridge.nodesVisible) {
-            for (let index = 0; index < sceneBridge.nodes.length; ++index) {
-                const node = sceneBridge.nodes[index]
+            for (let index = 0; index < root.sceneData.nodes.length; ++index) {
+                const node = root.sceneData.nodes[index]
                 if (!root.nodeVisible(node.tag))
                     continue
                 const point = view3d.mapFrom3DScene(Qt.vector3d(node.x, node.y, node.z))
@@ -515,10 +529,12 @@ Item {
             }
         }
         if (crossing && sceneBridge.membersVisible) {
-            for (let index = 0; index < sceneBridge.members.length; ++index) {
-                const member = sceneBridge.members[index]
-                if (!root.memberVisible(member.tag))
+            const seenTags = new Set()
+            for (let index = 0; index < root.sceneData.members.length; ++index) {
+                const member = root.sceneData.members[index]
+                if (!root.memberVisible(member.tag) || seenTags.has(member.tag))
                     continue
+                seenTags.add(member.tag)
                 const start = view3d.mapFrom3DScene(
                     Qt.vector3d(member.start_x, member.start_y, member.start_z)
                 )
@@ -865,51 +881,6 @@ Item {
                     PrincipledMaterial {
                         baseColor: modelData.color
                         lighting: PrincipledMaterial.NoLighting
-                    }
-                ]
-                castsShadows: false
-                receivesShadows: false
-                pickable: false
-            }
-        }
-
-        Repeater3D {
-            // A translucent outer sphere makes a selected node unmistakable
-            // even when its solid red core is partly hidden by several
-            // members. It is deliberately non-pickable.
-            model: bridgeReady ? sceneBridge.selectedNodeHalo : []
-            delegate: Model {
-                // The joint is the screen-space yellow point. This 3D
-                // halo used to inflate around the node in model units, so a
-                // selected joint looked like a red balloon sitting on the
-                // section. Selection is the overlay colour instead.
-                visible: false
-                source: "#Sphere"
-                position: {
-                    if (bridgeReady) {
-                        sceneBridge.geometryRevision
-                        sceneBridge.deformationRevision
-                    }
-                    return Qt.vector3d(modelData.x, modelData.y, modelData.z)
-                }
-                scale: {
-                    if (bridgeReady) {
-                        sceneBridge.geometryRevision
-                        sceneBridge.deformationRevision
-                    }
-                    return Qt.vector3d(
-                        modelData.radius * 2.75 / 100,
-                        modelData.radius * 2.75 / 100,
-                        modelData.radius * 2.75 / 100
-                    )
-                }
-                materials: [
-                    PrincipledMaterial {
-                        baseColor: "#ef4444"
-                        opacity: 0.24
-                        metalness: 0.0
-                        roughness: 0.35
-                        cullMode: Material.NoCulling
                     }
                 ]
                 castsShadows: false
@@ -1412,8 +1383,8 @@ Item {
             ? sceneBridge.timeHistoryDeformationActive : false
         property bool trackedTimeHistoryShowDeformed: root.bridgeReady
             ? sceneBridge.timeHistoryShowDeformed : false
-        property var trackedNodes: root.bridgeReady ? sceneBridge.nodes : []
-        property int trackedNodeCount: root.bridgeReady ? sceneBridge.nodes.length : 0
+        property var trackedNodes: root.bridgeReady ? root.sceneData.nodes : []
+        property int trackedNodeCount: root.bridgeReady ? root.sceneData.nodes.length : 0
         property bool trackedNavigation: root.navigationActive
         // Hidden while orbiting so the last projected dots do not drift off
         // the joints. Wheel zoom never sets navigationActive, so camera-driven
@@ -1482,11 +1453,12 @@ Item {
             if (!root.bridgeReady)
                 return
 
-            const selectedTags = sceneBridge.selectedNodeTags
+            const selectedTags = root.selectionState.nodes
             const drawNodeMarkers = sceneBridge.nodesVisible
             const drawNodeNumbers = sceneBridge.nodeNumbersVisible
-            for (let index = 0; index < sceneBridge.nodes.length; ++index) {
-                const node = sceneBridge.nodes[index]
+            for (let index = 0; (drawNodeMarkers || drawNodeNumbers)
+                    && index < root.sceneData.nodes.length; ++index) {
+                const node = root.sceneData.nodes[index]
                 if (!root.nodeVisible(node.tag))
                     continue
                 if (sceneBridge.timeHistoryDeformationActive
@@ -1497,9 +1469,7 @@ Item {
                 )
                 if (!isFinite(point.x) || !isFinite(point.y))
                     continue
-                if (!drawNodeMarkers && !drawNodeNumbers)
-                    continue
-                const selected = root.tagIsSelected(selectedTags, node.tag)
+                const selected = selectedTags.has(node.tag)
                 const radius = selected
                     ? root.selectedNodeMarkerRadiusPixels
                     : root.nodeMarkerRadiusPixels
@@ -1531,8 +1501,8 @@ Item {
                         && !sceneBridge.timeHistoryShowDeformed))
                 return
             const seenTags = ({})
-            for (let partIndex = 0; partIndex < sceneBridge.members.length; ++partIndex) {
-                const member = sceneBridge.members[partIndex]
+            for (let partIndex = 0; partIndex < root.sceneData.members.length; ++partIndex) {
+                const member = root.sceneData.members[partIndex]
                 const key = String(member.tag)
                 if (seenTags[key] || !root.memberVisible(member.tag))
                     continue
@@ -1547,7 +1517,7 @@ Item {
                     key,
                     midpoint.x + 5,
                     midpoint.y - 6,
-                    root.tagIsSelected(sceneBridge.selectedMemberTags, member.tag)
+                    root.selectionState.members.has(member.tag)
                         ? "#b91c1c" : "#334155"
                 )
             }

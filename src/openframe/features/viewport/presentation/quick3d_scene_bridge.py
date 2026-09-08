@@ -4,7 +4,7 @@ import math
 from dataclasses import replace
 from itertools import pairwise
 
-from PySide6.QtCore import Property, QObject, Signal
+from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from openframe.core.domain import (
     AnalysisResult,
@@ -410,6 +410,7 @@ class Quick3DSceneBridge(QObject):
         self._cached_topology_fingerprint: tuple[object, ...] | None = None
         self._cached_geometry_signature: tuple[object, ...] | None = None
         self._geometry_revision = 0
+        self._topology_revision = 0
         self._scene_metrics_revision = 0
         self._visibility_revision = 0
         self._preview_revision = 0
@@ -1204,6 +1205,34 @@ class Quick3DSceneBridge(QObject):
             return
         self._floor_outline_parts = parts
         self._emit_preview_changed()
+
+    @Slot(result="QVariantMap")
+    def geometrySnapshot(self) -> dict[str, object]:
+        """Detached QML input: indexed Q_PROPERTY reads reconvert entire Python lists.
+
+        QML caches this method result until topology, geometry or deformation changes.
+        Qt converts it on return, so later Python edits cannot mutate the snapshot.
+        Keep each part's own dimensions and rotation, including H/I web/flanges.
+        """
+        return {"nodes": self._nodes, "members": self._members}
+
+    @Slot(result="QVariantMap")
+    def selectionSnapshot(self) -> dict[str, list[int]]:
+        return {
+            "nodes": list(self._selected_node_tags),
+            "members": list(self._selected_member_tags),
+        }
+
+    @Slot(result="QVariantMap")
+    def isolateSnapshot(self) -> dict[str, list[int]]:
+        return {
+            "nodes": list(self._isolate_node_tags),
+            "members": list(self._isolate_member_tags),
+        }
+
+    @Property(int, notify=topology_changed)
+    def topologyRevision(self) -> int:
+        return self._topology_revision
 
     @Property("QVariantList", notify=topology_changed)
     def nodes(self) -> list[dict[str, float | int | str]]:
@@ -2154,6 +2183,7 @@ class Quick3DSceneBridge(QObject):
         self._emit_scene_metrics_changed()
 
     def _emit_topology_changed(self) -> None:
+        self._topology_revision += 1
         if perf_enabled():
             counters = perf_recorder().counters
             counters.topology_rebuilds += 1

@@ -1,0 +1,23 @@
+{
+  "note": "Same mixed-section model, Qt offscreen; not a visible GPU FPS measurement. Before uses HEAD QML with current compatible bridge.",
+  "results": [
+    {
+      "version": "before",
+      "members": 100,
+      "nodes": 200,
+      "render_parts": 150,
+      "model_update_ms": 53.0,
+      "box_selection_ms": 2867.5,
+      "select_all_process_events_ms": 1410.8
+    },
+    {
+      "version": "after",
+      "members": 100,
+      "nodes": 200,
+      "render_parts": 150,
+      "model_update_ms": 40.1,
+      "box_selection_ms": 3.3,
+      "select_all_process_events_ms": 15.2
+    }
+  ]
+}

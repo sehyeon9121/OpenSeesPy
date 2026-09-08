@@ -853,13 +853,35 @@ class MainWindow(QMainWindow):
                 "사용자 요청으로 해석을 취소했습니다.",
             )
         else:
+            detail = "\n".join(result.messages) or "알 수 없는 해석 오류"
             self.analysis_progress.show_failed(
                 " ".join(result.messages) or "The solver returned an unknown error."
             )
-            self.statusBar().showMessage("Analysis failed")
-            QMessageBox.critical(
-                self, "해석 실행 실패", "\n".join(result.messages) or "알 수 없는 해석 오류"
+            # A genuinely diagnosed mechanism is not an interruption-worthy
+            # error (same philosophy as ModelingInterfacePage._solve_completed) -
+            # show_result() above already populated the RESULTS tab's
+            # INSTABILITY > Mechanism Shapes section from this same result, so
+            # guide the user there instead of a blocking critical dialog that
+            # reads as "analysis did not run".
+            diagnostic = result.instability_diagnostic
+            has_mechanism = (
+                diagnostic is not None
+                and diagnostic.diagnostic_success
+                and diagnostic.mechanism_count > 0
             )
+            if has_mechanism:
+                self.statusBar().showMessage(
+                    "구조가 불안정합니다 · RESULTS 탭에서 메커니즘을 확인하세요"
+                )
+                QMessageBox.warning(
+                    self,
+                    "구조 불안정 감지",
+                    f"{detail}\n\nRESULTS 탭의 INSTABILITY > Mechanism Shapes에서 "
+                    "어느 절점이 불안정한지 시각적으로 확인할 수 있습니다.",
+                )
+            else:
+                self.statusBar().showMessage("Analysis failed")
+                QMessageBox.critical(self, "해석 실행 실패", detail)
 
     def _cancel_analysis(self) -> None:
         thread = self._analysis_run_thread

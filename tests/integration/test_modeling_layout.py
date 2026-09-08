@@ -92,6 +92,7 @@ def test_2d_uses_the_same_workbench_navigation_as_3d() -> None:
         "properties",
         "element",
         "boundary",
+        "design",
         "story",
         "loads",
         "analysis",
@@ -115,6 +116,12 @@ def test_2d_uses_the_same_workbench_navigation_as_3d() -> None:
     assert page.category_stack.currentIndex() == page.category_pages["support"]
     assert page.selection_filter.currentData() == "nodes"
 
+    page.workbench_buttons["design"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["design"]
+    assert page.left_panel_stack.isVisible()
+    assert page.selection_filter.currentData() == "elements"
+    assert page.design_selector.currentData() == "end_release"
+
     page._activate_workbench_tab("story", show_settings=False)
     assert page.category_stack.currentIndex() == page.category_pages["story"]
     assert page.left_panel_stack.isVisible()
@@ -137,14 +144,15 @@ def test_3d_workspace_hides_the_context_dock_until_a_tool_needs_it() -> None:
 
     assert page.findChild(QFrame, "modelingWorkbenchBar") is not None
     # Tab order mirrors the actual modeling workflow: geometry, then
-    # material/section, then supports, then stories/diaphragms, then loads,
-    # then analysis/results.
+    # material/section, then supports, then member design (end connection),
+    # then stories/diaphragms, then loads, then analysis/results.
     assert list(page.workbench_buttons) == [
         "model",
         "node",
         "properties",
         "element",
         "boundary",
+        "design",
         "story",
         "loads",
         "analysis",
@@ -187,6 +195,13 @@ def test_3d_work_tabs_switch_the_left_editor_and_canvas_tool_together() -> None:
     assert page.category_stack.currentIndex() == page.category_pages["support"]
     assert page.canvas.mode == "select"
     assert page.selection_filter.currentData() == "nodes"
+    assert page.canvas_stack.currentWidget() is viewport
+
+    page.workbench_buttons["design"].click()
+    assert page.category_stack.currentIndex() == page.category_pages["design"]
+    assert page.left_panel_stack.isVisible()
+    assert page.canvas.mode == "select"
+    assert page.selection_filter.currentData() == "elements"
     assert page.canvas_stack.currentWidget() is viewport
 
     page.workbench_buttons["loads"].click()
@@ -1025,11 +1040,11 @@ def test_selecting_a_member_refreshes_the_member_bar_and_the_summary() -> None:
     page.canvas.selection_changed.emit()
 
     assert "부재 1개 선택됨" in page.selection_summary.text()
-    assert page.member_end_i.text() == "N1 쪽 핀 해제 (모멘트 0)"
-    assert page.member_end_j.text() == "N2 쪽 핀 해제 (모멘트 0)"
+    assert page.design_end_i_label.text() == "i단 (N1)"
+    assert page.design_end_j_label.text() == "j단 (N2)"
 
 
-def test_toggling_the_member_end_checkbox_releases_that_end_only() -> None:
+def test_toggling_the_design_end_connection_releases_that_end_only() -> None:
     page = _page()
     first = page.canvas.add_node(0.0, 0.0)
     second = page.canvas.add_node(4.0, 0.0)
@@ -1037,11 +1052,42 @@ def test_toggling_the_member_end_checkbox_releases_that_end_only() -> None:
     page.canvas.selected_elements = {member}
     page.canvas.selection_changed.emit()
 
-    page.member_end_i.setChecked(True)
+    page.design_end_i.setCurrentIndex(page.design_end_i.findData("shear"))
 
     element = page.canvas.elements[member]
     assert element.moment_release_i is True
     assert element.moment_release_j is False
+
+
+def test_design_end_connection_applies_to_every_selected_member() -> None:
+    """Design writes onto selected_elements, not the old Properties
+    _selected_member_tag() gate that ignored a multi-member selection."""
+    page = _page()
+    a = page.canvas.add_node(0.0, 0.0)
+    b = page.canvas.add_node(4.0, 0.0)
+    c = page.canvas.add_node(8.0, 0.0)
+    first = page.canvas.add_member(a, b)
+    second = page.canvas.add_member(b, c)
+    page.canvas.selected_elements = {first, second}
+    page.canvas.selection_changed.emit()
+
+    page.design_end_j.setCurrentIndex(page.design_end_j.findData("shear"))
+
+    assert page.canvas.elements[first].moment_release_i is False
+    assert page.canvas.elements[first].moment_release_j is True
+    assert page.canvas.elements[second].moment_release_i is False
+    assert page.canvas.elements[second].moment_release_j is True
+
+
+def test_design_tab_is_visible_between_supports_and_story() -> None:
+    page_2d = _page()
+    page_3d = _page(start_in_3d=True)
+    for page in (page_2d, page_3d):
+        keys = list(page.workbench_buttons)
+        assert keys[keys.index("boundary") + 1] == "design"
+        assert keys[keys.index("design") + 1] == "story"
+        assert page.workbench_buttons["design"].isHidden() is False
+        assert page.design_selector.itemData(0) == "end_release"
 
 
 def test_inserting_a_member_station_node_from_the_panel_reaches_the_canvas() -> None:

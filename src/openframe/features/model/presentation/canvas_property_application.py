@@ -132,6 +132,35 @@ class _PropertyApplicationMixin:
         )
         self._changed()
 
+    def apply_member_end_releases_to_selection(
+        self,
+        *,
+        release_i: bool | None = None,
+        release_j: bool | None = None,
+    ) -> None:
+        """Assign i/j moment vs shear connection on every selected member.
+
+        ``None`` leaves that end untouched so changing only the i-end
+        dropdown never clobbers j, and the other way around. Both-None is a
+        no-op. One history entry covers the whole selection, matching
+        ``apply_local_axis_angle_to_selection`` rather than recording once
+        per member (that would make Undo peel the assignment off one beam
+        at a time).
+        """
+        if not self.selected_elements or (release_i is None and release_j is None):
+            return
+        self._record_history()
+        for element_tag in self.selected_elements:
+            element = self.elements.get(element_tag)
+            if element is None:
+                continue
+            self.elements[element_tag] = replace(
+                element,
+                moment_release_i=element.moment_release_i if release_i is None else release_i,
+                moment_release_j=element.moment_release_j if release_j is None else release_j,
+            )
+        self._changed()
+
     def apply_local_axis_angle_to_selection(self, angle: float) -> None:
         """Rotate every selected 3D member's local y/z axes about its own
         axis by ``angle`` degrees (``Element.local_axis_angle``) — the escape

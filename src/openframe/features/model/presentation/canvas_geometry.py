@@ -100,10 +100,10 @@ class _GeometryMixin:
         fraction (the interpolated value at the joint becomes the shared
         boundary value), any releases stay on their original outer end (the
         new internal joint is a plain rigid connection unless the user
-        explicitly releases it afterward via the usual N1/N2 쪽 핀 해제
-        checkboxes), and any node already embedded further along the
-        original span is reassigned to whichever new piece now actually
-        contains it, at that piece's own local fraction.
+        explicitly releases it afterward via Design 탭의 단부 접합), and
+        any node already embedded further along the original span is
+        reassigned to whichever new piece now actually contains it, at
+        that piece's own local fraction.
         """
         element = self.elements[element_tag]
         load = self.element_loads.pop(element_tag, None)

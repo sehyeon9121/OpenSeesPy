@@ -467,15 +467,17 @@ class ModelingInterfacePage(
         return controls
 
     #: Tab order mirrors the actual modeling workflow (place geometry → give
-    #: it material/section → support it → load it → analyze → read results)
-    #: instead of an arbitrary grouping, so the top bar itself reads as the
-    #: sequence of steps rather than a menu.
+    #: it material/section → support it → assign member design (end
+    #: connection) → load it → analyze → read results) instead of an
+    #: arbitrary grouping, so the top bar itself reads as the sequence of
+    #: steps rather than a menu.
     _WORKBENCH_TABS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("model", "Model"),
         ("node", "Node"),
         ("properties", "Properties"),
         ("element", "Element"),
         ("boundary", "Supports"),
+        ("design", "Design"),
         ("story", "Story"),
         ("loads", "Loads"),
         ("analysis", "Analysis"),
@@ -495,19 +497,28 @@ class ModelingInterfacePage(
         "properties": ("member",),
         "element": ("element_picker", "move", "rotate", "mirror"),
         "boundary": ("support",),
+        "design": ("design",),
         "story": ("story",),
         "loads": ("load",),
         "analysis": ("analysis",),
         "results": (),
     }
 
+    #: Tools shown in the Design tab's left-dock dropdown. Only 단부 접합
+    #: lives here today; later design assignment tools join this tuple
+    #: instead of growing another workbench tab.
+    _DESIGN_TOOLS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("end_release", "단부 접합"),
+    )
+
     def _build_3d_workbench_bar(self) -> QFrame:
         """The shared 2D/3D row of document-work tabs directly under the
-        application header — Model/Node/Properties/Element/Supports/Story/
-        Loads/Analysis/Results. Order follows how a building model is built:
-        geometry → material/section → supports → stories/diaphragms → loads →
-        analyze → results. A tab click both picks which form the left dock
-        shows (``_activate_workbench_tab``) and switches the canvas tool that
+        application header — Model/Node/Properties/Element/Supports/Design/
+        Story/Loads/Analysis/Results. Order follows how a building model is
+        built: geometry → material/section → supports → member design
+        (end connection) → stories/diaphragms → loads → analyze → results.
+        A tab click both picks which form the left dock shows
+        (``_activate_workbench_tab``) and switches the canvas tool that
         step needs.
         """
         bar = QFrame()
@@ -1341,6 +1352,7 @@ class ModelingInterfacePage(
                 "support": "Supports",
                 "kind": "Node Type",
                 "member": "Properties",
+                "design": "Design",
                 "load": "Loads",
                 "element_picker": "Element",
                 "analysis": "Analysis",
@@ -1359,7 +1371,14 @@ class ModelingInterfacePage(
         # trap ``_load_target_changed`` stopped causing on the load side.
         # Widening here whenever a different category shows keeps 지점's
         # own narrowed filter intact only while its own page is up.
-        if key != "support":
+        # Design is the member analogue of Supports: it assigns an
+        # end-connection onto selected members, so a stray node click
+        # would silently do nothing. Narrow to 부재만 here rather than
+        # in ``_activate_workbench_tab`` so every entry point (tab click,
+        # a later dropdown tool that reuses this category) agrees.
+        if key == "design":
+            self.selection_filter.setCurrentIndex(self.selection_filter.findData("elements"))
+        elif key != "support":
             self.selection_filter.setCurrentIndex(self.selection_filter.findData("all"))
 
     #: Node gets its own translate/rotate/mirror set, mirroring Element's.
@@ -2433,6 +2452,9 @@ class ModelingInterfacePage(
         self.category_pages["story"] = self.category_stack.addWidget(
             self._build_story_category()
         )
+        self.category_pages["design"] = self.category_stack.addWidget(
+            self._build_design_category()
+        )
         # Node and Element keep separate selection scopes, while each
         # Translate page owns its own MIDAS-style Copy/Move mode.
         self.category_pages["translate_node"] = self.category_stack.addWidget(
@@ -2619,6 +2641,108 @@ class ModelingInterfacePage(
         root.addWidget(story_button)
         root.addStretch(1)
         return section
+
+    def _build_design_category(self) -> QWidget:
+        """Design tab left dock: assignment tools that belong on the member
+        as a structural-design decision, not on Properties (material/section)
+        or Supports (boundary conditions).
+
+        i/j 단부 접합 used to sit under Properties next to E/A/I because it
+        is a per-member flag. That buried a connection-type choice inside
+        a material/section form, and the two checkboxes only ever wrote
+        onto ``_selected_member_tag()`` (exactly one member, no nodes
+        also selected). Design is the assignment surface: pick members on
+        the canvas, set i/j, the canvas stores ``moment_release_*``.
+
+        A dropdown at the top names which design tool is showing — Properties
+        already uses this ``setupConfigBar`` pattern — so later design
+        features can join the same tab without adding another workbench
+        button. Only 단부 접합 is wired today.
+        """
+        section, root = self._section("Design", show_title=False)
+
+        design_bar = QFrame()
+        design_bar.setObjectName("setupConfigBar")
+        design_bar_layout = QHBoxLayout(design_bar)
+        design_bar_layout.setContentsMargins(12, 7, 12, 7)
+        design_bar_label = QLabel("DESIGN")
+        design_bar_label.setObjectName("fieldLabel")
+        design_bar_layout.addWidget(design_bar_label)
+        self.design_selector = QComboBox()
+        self.design_selector.setObjectName("designSelector")
+        for key, label in self._DESIGN_TOOLS:
+            self.design_selector.addItem(label, key)
+        self.design_selector.currentIndexChanged.connect(self._design_selector_changed)
+        design_bar_layout.addWidget(self.design_selector, 1)
+        root.addWidget(design_bar)
+
+        self.design_pages = QStackedWidget()
+        self.design_page_keys: list[str] = []
+        builders = {"end_release": self._build_design_end_release_page}
+        for key, _label in self._DESIGN_TOOLS:
+            self.design_page_keys.append(key)
+            self.design_pages.addWidget(builders[key]())
+        root.addWidget(self.design_pages)
+        self._design_selector_changed()
+        root.addStretch(1)
+        return section
+
+    def _build_design_end_release_page(self) -> QWidget:
+        """i단 / j단 connection type: 모멘트 접합 keeps the end continuous,
+        전단 접합 writes ``moment_release_*`` so that end carries no
+        moment (the same flag the solver already honours as a pin).
+        """
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(0, 8, 0, 0)
+        root.setSpacing(8)
+
+        hint = QLabel(
+            "선택한 부재의 i단·j단에 모멘트 접합(연속) 또는 전단 접합(핀, 모멘트 0)을 "
+            "지정합니다. 드롭다운을 바꾸는 즉시 선택 부재에 적용됩니다."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("setupSectionHint")
+        hint.setMaximumWidth(272)
+        root.addWidget(hint)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        self.design_end_i_label = QLabel("i단")
+        self.design_end_i = self._end_connection_combo()
+        self.design_end_i.setObjectName("designEndI")
+        self.design_end_i.currentIndexChanged.connect(
+            lambda _index: self._apply_design_end_release("i")
+        )
+        form.addRow(self.design_end_i_label, self.design_end_i)
+        self.design_end_j_label = QLabel("j단")
+        self.design_end_j = self._end_connection_combo()
+        self.design_end_j.setObjectName("designEndJ")
+        self.design_end_j.currentIndexChanged.connect(
+            lambda _index: self._apply_design_end_release("j")
+        )
+        form.addRow(self.design_end_j_label, self.design_end_j)
+        root.addLayout(form)
+        return page
+
+    @staticmethod
+    def _end_connection_combo() -> QComboBox:
+        combo = QComboBox()
+        combo.addItem("모멘트 접합", "moment")
+        combo.addItem("전단 접합", "shear")
+        return combo
+
+    def _design_selector_changed(self, _index: int = 0) -> None:
+        """Show only the Design tool the dropdown currently names.
+
+        One page today (단부 접합); the stack is here so a later tool can
+        be a new page rather than a second workbench tab.
+        """
+        key = self.design_selector.currentData()
+        try:
+            self.design_pages.setCurrentIndex(self.design_page_keys.index(key))
+        except ValueError:
+            self.design_pages.setCurrentIndex(0)
 
     def _open_story_manager(self) -> None:
         dialog = StoryManagerDialog(self.canvas, unit_system=self._unit_system, parent=self)
@@ -2816,7 +2940,7 @@ class ModelingInterfacePage(
     def _build_support_icon_row(self) -> QWidget:
         """Icon buttons for 지점 조건, one per ``self._support_options`` entry,
         applied the moment you click one — no separate 적용 button, matching
-        the instant-apply feel of the 부재 단부 핀 해제 checkboxes below. Each
+        the instant-apply feel of Design's i/j 단부 접합 dropdowns. Each
         icon mirrors the symbol ``SupportItem`` draws on the canvas so the
         button you clicked and the glyph that appears on the model read as
         the same shape.
@@ -3552,15 +3676,18 @@ class ModelingInterfacePage(
         return section
 
     def _build_member_bar_content(self) -> QWidget:
-        """Section/material plus per-end pin release, for one selected member
-        — the content shown on the 부재 category page. Mid-span node
-        insertion and equal subdivision live on their own 노드 분할 category
-        page instead (``_build_member_edit_section``) — they add
-        nodes/geometry rather than set a property on the member itself.
+        """Section/material for one selected member — the content shown on
+        the 부재 category page. Mid-span node insertion and equal
+        subdivision live on their own 노드 분할 category page instead
+        (``_build_member_edit_section``) — they add nodes/geometry rather
+        than set a property on the member itself.
 
-        A member always has two ends regardless of which node tags they land on, so
-        the checkboxes are labelled with the actual node numbers when the selection
-        changes rather than fixed "start/end" text.
+        i/j 단부 접합 (모멘트 접합 vs 전단 접합) used to live here as two
+        pin-release checkboxes because they are a per-member flag. They
+        belong on Design now: a connection-type assignment is not a
+        section/material property, and Properties' single-member
+        ``_selected_member_tag`` gate silently ignored a multi-member
+        selection. See ``_build_design_category``.
 
         Section input is per member (select one, type its own dimensions or
         pick a Master DB designation), not one global value for the whole
@@ -3568,8 +3695,7 @@ class ModelingInterfacePage(
         member sizes. ``SectionMaterialPanel`` owns everything section/
         material-shaped (see its own module docstring for the Custom/
         Database split); this method only wires its ``apply_requested``
-        signal to the canvas and keeps the two pin-release checkboxes, which
-        are a per-member property but not a section/material one.
+        signal to the canvas.
         """
         content = QWidget()
         root = QVBoxLayout(content)
@@ -3653,17 +3779,6 @@ class ModelingInterfacePage(
         member_behavior_root.addWidget(self.apply_member_behavior_button)
         member_behavior_card.hide()
         root.addWidget(member_behavior_card)
-
-        self.member_end_i = QCheckBox("i단 핀 해제 (모멘트 0)")
-        self.member_end_i.toggled.connect(
-            lambda checked: self._apply_member_end_release("i", checked)
-        )
-        root.addWidget(self.member_end_i)
-        self.member_end_j = QCheckBox("j단 핀 해제 (모멘트 0)")
-        self.member_end_j.toggled.connect(
-            lambda checked: self._apply_member_end_release("j", checked)
-        )
-        root.addWidget(self.member_end_j)
 
         # 3D에서만 의미가 있음 - vecxz 자동선택이 비대칭 단면(Iy != Iz)의 실제
         # 강축/약축과 다를 수 있어서 회전으로 보정하는 용도. 2D/트러스 부재는
@@ -4950,9 +5065,11 @@ class ModelingInterfacePage(
         Which category page is showing never changes here — that is only
         ever up to the category bar buttons. What does need refreshing on
         every selection change is the 부재 page's fields (only meaningful
-        once exactly one member is selected), the 노드 유형/지점 icons'
-        checked state, the create-section hint (its wording depends on how
-        many nodes are selected), and the selection-summary text.
+        once exactly one member is selected), Design's i/j 단부 접합
+        dropdowns (those write onto the whole selection, so they also
+        refresh when several members are selected), the 노드 유형/지점
+        icons' checked state, the create-section hint (its wording depends
+        on how many nodes are selected), and the selection-summary text.
         """
         nodes = len(self.canvas.selected_nodes)
         elements = len(self.canvas.selected_elements)
@@ -4964,6 +5081,7 @@ class ModelingInterfacePage(
             self._refresh_member_section(member_tag)
         elif hasattr(self, "member_behavior_settings_card"):
             self.member_behavior_settings_card.hide()
+        self._refresh_design_end_release_controls()
         if nodes:
             self._refresh_node_type_controls()
         node_summary = self._node_selection_summary()
@@ -5011,14 +5129,6 @@ class ModelingInterfacePage(
 
     def _refresh_member_section(self, member_tag: int) -> None:
         element = self.canvas.elements[member_tag]
-        self.member_end_i.setText(f"N{element.node_i} 쪽 핀 해제 (모멘트 0)")
-        self.member_end_j.setText(f"N{element.node_j} 쪽 핀 해제 (모멘트 0)")
-        self.member_end_i.blockSignals(True)
-        self.member_end_i.setChecked(element.moment_release_i)
-        self.member_end_i.blockSignals(False)
-        self.member_end_j.blockSignals(True)
-        self.member_end_j.setChecked(element.moment_release_j)
-        self.member_end_j.blockSignals(False)
         self.member_local_axis_row.setVisible(self.canvas.ndm == 3)
         self.section_material_panel.set_shear_modulus_visible(self.canvas.ndm == 3)
         self.member_local_axis_angle.blockSignals(True)
@@ -5234,10 +5344,71 @@ class ModelingInterfacePage(
         if section_index >= 0:
             self.element_section_selector.setCurrentIndex(section_index)
 
-    def _apply_member_end_release(self, end: str, released: bool) -> None:
-        member_tag = self._selected_member_tag()
-        if member_tag is not None:
-            self.canvas.set_member_end_release(member_tag, end, released)
+    def _apply_design_end_release(self, end: str) -> None:
+        """Write the i or j connection type currently shown in Design onto
+        every selected member. Instant, like Supports: changing the
+        dropdown *is* the assignment, so a separate 적용 click would
+        only reintroduce the "I changed it but nothing happened" trap
+        the old Properties checkboxes already avoided.
+
+        Unlike those checkboxes, this walks ``selected_elements`` rather
+        than ``_selected_member_tag()`` — a multi-beam portal can be
+        pinned in one gesture, and a leftover node in the selection no
+        longer silently blocks the write.
+        """
+        if not self.canvas.selected_elements:
+            return
+        combo = self.design_end_i if end == "i" else self.design_end_j
+        released = combo.currentData() == "shear"
+        self.canvas.apply_member_end_releases_to_selection(
+            release_i=released if end == "i" else None,
+            release_j=released if end == "j" else None,
+        )
+        self._sync_selection_status()
+
+    def _refresh_design_end_release_controls(self) -> None:
+        """Mirror the current selection into Design's i/j dropdowns.
+
+        One member: labels pick up the actual node tags (N3 쪽, not a
+        generic "start") and each combo shows that member's stored
+        connection. Several members that already agree: show that shared
+        value. Mixed selection: leave the combos alone so we do not
+        pretend a portal with one pinned beam and one continuous beam is
+        uniformly 모멘트 접합 — changing a dropdown afterwards still
+        writes onto every selected member.
+        """
+        if not hasattr(self, "design_end_i"):
+            return
+        selected = [
+            self.canvas.elements[tag]
+            for tag in self.canvas.selected_elements
+            if tag in self.canvas.elements
+        ]
+        if len(selected) == 1:
+            element = selected[0]
+            self.design_end_i_label.setText(f"i단 (N{element.node_i})")
+            self.design_end_j_label.setText(f"j단 (N{element.node_j})")
+        else:
+            self.design_end_i_label.setText("i단")
+            self.design_end_j_label.setText("j단")
+        if not selected:
+            return
+        i_values = {element.moment_release_i for element in selected}
+        j_values = {element.moment_release_j for element in selected}
+        if len(i_values) == 1:
+            self._set_end_connection_combo(self.design_end_i, next(iter(i_values)))
+        if len(j_values) == 1:
+            self._set_end_connection_combo(self.design_end_j, next(iter(j_values)))
+
+    @staticmethod
+    def _set_end_connection_combo(combo: QComboBox, released: bool) -> None:
+        target = "shear" if released else "moment"
+        index = combo.findData(target)
+        if index < 0 or combo.currentIndex() == index:
+            return
+        combo.blockSignals(True)
+        combo.setCurrentIndex(index)
+        combo.blockSignals(False)
 
     def _rotate_member_local_axis_angle(self, delta: float) -> None:
         """Nudge 로컬축 회전각 by ``delta`` degrees (wrapping into [0, 360))

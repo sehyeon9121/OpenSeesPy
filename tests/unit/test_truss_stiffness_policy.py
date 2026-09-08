@@ -349,13 +349,15 @@ def test_mixed_model_missing_stiffness_on_any_element_is_rejected() -> None:
     assert "혼합" in joined
 
 
-def test_kinematically_unstable_mixed_model_fails_as_unstable_not_as_rejected() -> None:
+def test_kinematically_unstable_mixed_model_stabilizes_and_still_reports_instability() -> None:
     """A single cable can only resist force along its own axis - bracing a
     free joint with just one (no second, non-parallel cable, and no frame
     member reaching it either) leaves it a mechanism in every other
-    direction. This must fail as a genuinely unstable structure now that
-    mixed models are actually solved, not with the old blanket "mixed is
-    unsupported" message."""
+    direction. This must be correctly diagnosed as a genuinely unstable
+    structure (never the old blanket "mixed is unsupported" message) - and,
+    since the solver now auto-stabilizes a diagnosed mechanism instead of
+    just refusing to solve, still produce real numbers everywhere else with
+    an obviously oversized displacement flagging exactly the free joint."""
     model = StructuralModel(
         ndm=2,
         nodes={1: Node(1, 0.0, 0.0), 2: Node(2, 4.0, 0.0), 3: Node(3, 4.0, 3.0)},
@@ -370,7 +372,23 @@ def test_kinematically_unstable_mixed_model_fails_as_unstable_not_as_rejected() 
     assert check_determinacy(model).system == "mixed"
     result = MaterialFreeStaticsSolver().solve(model)
 
-    assert result.status == AnalysisStatus.FAILED
+    assert result.status == AnalysisStatus.COMPLETED
     joined = " ".join(result.messages)
+    # The diagnostic's own "불안정" wording must lead - unlike the old
+    # rejection path, "혼합" now legitimately appears too (the same
+    # determinacy-classification line every completed result carries), so
+    # this no longer asserts its absence.
     assert "불안정" in joined
-    assert "혼합" not in joined
+    assert result.instability_diagnostic is not None
+    assert result.instability_diagnostic.mechanism_count > 0
+    assert 3 in result.stabilized_node_tags
+    assert 1 not in result.stabilized_node_tags
+    # Node 1 is genuinely fixed - its displacement stays exactly zero. Node 3
+    # is the free joint the stabilizing spring caught: its displacement must
+    # be many orders larger, the same "this is where the mechanism is" signal
+    # verified against the real steel-roof-truss project file this feature
+    # was built for.
+    fixed_disp = max(abs(value) for value in result.node_results[1].displacement)
+    free_disp = max(abs(value) for value in result.node_results[3].displacement)
+    assert fixed_disp == 0.0
+    assert free_disp > 1.0

@@ -43,14 +43,19 @@ def test_successful_solve_leaves_instability_diagnostic_none() -> None:
 
 
 def test_failed_convergence_runs_diagnostic_against_the_live_domain() -> None:
+    """A genuine 1-DOF mechanism (free sway, no resistance at all) is now
+    auto-stabilized (see solver.py's ``_attempt_stabilized_solve``), so the
+    solve still completes - the diagnostic must still have run and be
+    attached, and the freed node must be flagged as stabilized."""
     result = MaterialFreeStaticsSolver().solve(_single_sway_column())
     ops.wipe()
-    assert result.status == AnalysisStatus.FAILED
+    assert result.status == AnalysisStatus.COMPLETED
     diagnostic = result.instability_diagnostic
     assert diagnostic is not None
     assert diagnostic.diagnostic_success is True
     assert diagnostic.mechanism_count == 1
     assert any("메커니즘" in message or "불안정" in message for message in result.messages)
+    assert result.stabilized_node_tags
 
 
 def test_final_wipe_still_runs_after_a_diagnosed_failure() -> None:

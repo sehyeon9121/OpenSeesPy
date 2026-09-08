@@ -339,6 +339,47 @@ def diagnose_instability(
     return InstabilityDiagnosticService().diagnose(model, tolerance=tolerance)
 
 
+#: A mode's own normalized shape is already scaled so its largest-magnitude
+#: component is 1.0 (see ``normalize_mode_shape``) - a component below this
+#: fraction of that peak is treated as numerical noise from the equilibrated
+#: eigensolve, not genuine participation in the mechanism. Deliberately much
+#: looser than ``_DOMINANT_DOF_DISPLAY_THRESHOLD`` (0.15, a *display* cutoff
+#: for the human-readable dominant_dofs label) - stabilization must catch
+#: every DOF that is actually free, not just the ones worth naming.
+_STABILIZATION_PARTICIPATION_THRESHOLD = 0.01
+
+
+def mechanism_participating_dofs(
+    modes: tuple[MechanismMode, ...],
+    ndm: int,
+    threshold: float = _STABILIZATION_PARTICIPATION_THRESHOLD,
+) -> dict[int, tuple[int, ...]]:
+    """Which (user node tag -> local DOF indices) move in at least one
+    diagnosed mechanism mode, straight from the modes' own ``mode_shape``
+    data - a pure transform, no live OpenSees domain needed (unlike
+    ``diagnose_live``, this never touches ``ops``).
+
+    Local DOF index is 0-based, the same convention
+    ``BoundaryCondition.restraints``/``spring_stiffnesses`` already use:
+    2D is (Ux, Uy, Rz), 3D is (Ux, Uy, Uz, Rx, Ry, Rz) - matching
+    ``_DOF_NAMES_2D``/``_DOF_NAMES_3D`` above.
+
+    Used by ``MaterialFreeStaticsSolver`` to decide exactly where to attach a
+    small stabilizing spring so a linear-static solve can still complete
+    under the applied load despite a diagnosed mechanism - see that solver's
+    own stabilization path for why a *targeted* set of DOFs is used instead
+    of softening every DOF in the model.
+    """
+    dof_count = 3 if ndm == 2 else 6
+    participating: dict[int, set[int]] = {}
+    for mode in modes:
+        for tag, components in mode.mode_shape.items():
+            for index, value in enumerate(components[:dof_count]):
+                if abs(value) > threshold:
+                    participating.setdefault(tag, set()).add(index)
+    return {tag: tuple(sorted(indices)) for tag, indices in participating.items()}
+
+
 # ---------------------------------------------------------------------------
 # JSON codec
 # ---------------------------------------------------------------------------

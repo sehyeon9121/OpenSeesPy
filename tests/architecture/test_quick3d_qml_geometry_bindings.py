@@ -18,7 +18,6 @@ QML = (
 # Repeater blocks that must react to coordinate-only bridge updates.
 _DELEGATES = (
     "sceneBridge.supportSymbols",
-    "sceneBridge.selectedNodeHalo",
     "sceneBridge.loadArrows",
     "sceneBridge.loadEntryGlyphs",
     "sceneBridge.localAxisGizmos",
@@ -86,7 +85,8 @@ def test_nodes_have_a_depth_independent_screen_marker_and_pick_radius() -> None:
     assert "if (listObj.instanceCount !== needed)" in text
     assert "hoverPickTimer.start()" in text
     assert "readonly property string memberSyncKey:" in text
-    assert 'part.tag + ":" + part.width_b' in text
+    assert "sceneBridge.topologyRevision" in text
+    assert "sceneBridge.geometrySnapshot()" in text
     assert "part.qscalar" in text
     assert "return sceneBridge.members.length" not in text
 

@@ -1,0 +1,41 @@
+{
+  "environment": "Qt offscreen; processEvents includes queued UI work, not a visible GPU frame-time guarantee",
+  "results": [
+    {
+      "members": 600,
+      "nodes": 1200,
+      "render_parts": 900,
+      "model_update_ms": 457.2,
+      "box_selection_ms": 54.4,
+      "select_all_process_events_ms": 163.3,
+      "reduce_selection_process_events_ms": 106.2,
+      "legacy_list_reads": 0,
+      "extra_geometry_exports": 0,
+      "box_member_count": 600
+    },
+    {
+      "members": 3000,
+      "nodes": 6000,
+      "render_parts": 4500,
+      "model_update_ms": 3226.2,
+      "box_selection_ms": 547.4,
+      "select_all_process_events_ms": 1025.7,
+      "reduce_selection_process_events_ms": 345.8,
+      "legacy_list_reads": 0,
+      "extra_geometry_exports": 0,
+      "box_member_count": 3000
+    },
+    {
+      "members": 10000,
+      "nodes": 20000,
+      "render_parts": 15000,
+      "model_update_ms": 6154.6,
+      "box_selection_ms": 1477.1,
+      "select_all_process_events_ms": 4340.7,
+      "reduce_selection_process_events_ms": 777.2,
+      "legacy_list_reads": 0,
+      "extra_geometry_exports": 0,
+      "box_member_count": 10000
+    }
+  ]
+}

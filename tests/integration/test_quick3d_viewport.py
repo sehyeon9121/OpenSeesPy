@@ -24,6 +24,7 @@ def _viewport() -> Quick3DViewport:
     # see quick3d_viewport.py - so tests that need the QML root must show()
     # first, same as a real page becoming visible.
     viewport.show()
+    viewport.quick_widget.rootObject().setProperty("captureInstanceDiagnostics", True)
     return viewport
 
 

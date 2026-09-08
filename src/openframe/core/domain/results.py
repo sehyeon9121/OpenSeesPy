@@ -366,3 +366,15 @@ class AnalysisResult:
     #: length units. Other analysis kinds leave this at the default so they
     #: cannot inherit a stale warning from a previous static run.
     displacement_stiffness: DisplacementStiffnessKind = DisplacementStiffnessKind.PHYSICAL
+    #: User-node tags that received an artificial small stabilizing spring
+    #: (see MaterialFreeStaticsSolver's mechanism-stabilization path) so a
+    #: linear-static solve could complete despite a diagnosed mechanism.
+    #: Empty for every ordinary result. When non-empty, ``status`` is still
+    #: COMPLETED and ``node_results``/``element_results`` are populated, but
+    #: the displacement (and any force derived from it) at these specific
+    #: nodes is an artifact of the stabilizing spring, not real structural
+    #: behaviour - a large value there means "this is where the mechanism
+    #: is", not "this is how far the joint actually moves". Always paired
+    #: with a populated ``instability_diagnostic`` describing the same
+    #: mechanism.
+    stabilized_node_tags: tuple[int, ...] = ()

@@ -292,6 +292,23 @@ def test_member_end_release_is_independent_of_node_level_hinges() -> None:
     assert model.elements[member].moment_release_i is True
 
 
+def test_member_end_release_applies_to_the_whole_selection() -> None:
+    canvas = _canvas()
+    left = canvas.add_node(0.0, 0.0)
+    mid = canvas.add_node(4.0, 0.0)
+    right = canvas.add_node(8.0, 0.0)
+    first = canvas.add_member(left, mid)
+    second = canvas.add_member(mid, right)
+    canvas.selected_elements = {first, second}
+
+    canvas.apply_member_end_releases_to_selection(release_i=True)
+
+    assert canvas.elements[first].moment_release_i is True
+    assert canvas.elements[first].moment_release_j is False
+    assert canvas.elements[second].moment_release_i is True
+    assert canvas.elements[second].moment_release_j is False
+
+
 def test_member_end_release_lands_on_the_outer_segment_after_a_station_split() -> None:
     """Splitting a member for a mid-span support must not swallow its end release."""
     canvas = _canvas()
