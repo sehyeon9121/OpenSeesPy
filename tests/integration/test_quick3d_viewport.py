@@ -2,6 +2,7 @@
 used for free-form 3D drawing, and camera-reset control on set_model.
 """
 
+import math
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -234,6 +235,35 @@ def test_shift_pan_follows_screen_horizontal_axis_after_orbiting_behind_model() 
     assert projected_x_after_right_drag(0.0, -1.0) > center_x
     assert projected_x_after_right_drag(180.0, -1.0) > center_x
 
+    viewport.close()
+
+
+@pytest.mark.parametrize("yaw,pitch", [(0, 0), (45, -25), (180, -60), (0, -89), (90, 85)])
+@pytest.mark.parametrize("dy", [-40, 40])
+def test_shift_middle_drag_moves_vertically_in_screen_plane(yaw, pitch, dy) -> None:
+    viewport = _viewport()
+    viewport.setFixedSize(640, 480)
+    root = viewport.quick_widget.rootObject()
+    root.setProperty("cameraYaw", float(yaw))
+    root.setProperty("cameraPitch", float(pitch))
+    root.setProperty("cameraDistance", 10.0)
+    QApplication.processEvents()
+    axes = root.findChild(QObject, "worldOriginAxes")
+    before = axes.structuralPoint(0.0, 0.0, 0.0)
+    target = viewport.quick_widget
+    QTest.mousePress(target, Qt.MiddleButton, Qt.ShiftModifier, QPoint(300, 250))
+    QTest.mouseMove(target, QPoint(300, 250 + dy), delay=1)
+    QTest.mouseRelease(target, Qt.MiddleButton, Qt.ShiftModifier, QPoint(300, 250 + dy))
+    QApplication.processEvents()
+    after = axes.structuralPoint(0.0, 0.0, 0.0)
+
+    assert (after.y() - before.y()) * dy > 0
+    assert after.x() == pytest.approx(before.x(), abs=0.01)
+    # Same screen displacement at every orbit angle, including the top view.
+    expected_dy = dy / 640 * (480 / 2) / math.tan(math.radians(38 / 2))
+    assert after.y() - before.y() == pytest.approx(expected_dy, abs=0.1)
+    assert root.property("cameraYaw") == pytest.approx(yaw)
+    assert root.property("cameraPitch") == pytest.approx(pitch)
     viewport.close()
 
 

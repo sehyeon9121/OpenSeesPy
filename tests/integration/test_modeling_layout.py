@@ -110,7 +110,8 @@ def test_2d_uses_the_same_workbench_navigation_as_3d() -> None:
     page.workbench_buttons["element"].click()
     assert page.category_stack.currentIndex() == page.category_pages["element_picker"]
     assert page.element_subcategory_row.isVisible()
-    assert page.canvas.mode == "draw"
+    assert page.canvas.mode == "select"
+    assert not page.start_element_drawing_button.isEnabled()
 
     page.workbench_buttons["boundary"].click()
     assert page.category_stack.currentIndex() == page.category_pages["support"]
@@ -511,12 +512,22 @@ def test_2d_element_can_optionally_apply_saved_properties_to_new_members() -> No
 
 
 def test_2d_database_h_section_becomes_the_drawing_pen() -> None:
-    """Choosing a Database H-beam on the 2D Element panel must stamp
-    dim_H/B/tw/tf onto the next drawn member. `_load_db_section` used to
-    skip `edited`, so the pen stayed empty (or on the previous Rectangle)
-    while the preview already showed an I-shape."""
+    """A saved database section reaches the unchanged continuous 2D drawing pen."""
     page = _page(start_in_3d=False)
-    _select_database_h_section(page.element_current_property_panel)
+    page.workbench_buttons["properties"].click()
+    panel = page.section_material_panel
+    _select_database_h_section(panel)
+    panel.material_name.setText("2D Steel")
+    panel.section_name.setText("2D H Section")
+    panel.material_save_button.click()
+    panel.section_save_button.click()
+    assert page._active_element_kwargs is None
+    page.workbench_buttons["element"].click()
+    assert page.canvas.mode == "select"
+    assert not page.start_element_drawing_button.isEnabled()
+    page.element_material_selector.setCurrentIndex(1)
+    assert not page.start_element_drawing_button.isEnabled()
+    page.element_section_selector.setCurrentIndex(1)
     assert page._active_element_kwargs is not None
     assert page._active_element_kwargs["shape"] == "H/I Section"
     assert page._active_element_kwargs["dimensions"]["tw"] == pytest.approx(0.01)
@@ -530,7 +541,7 @@ def test_2d_database_h_section_becomes_the_drawing_pen() -> None:
     assert member.properties["dim_tf"] == pytest.approx(0.015)
 
 
-def test_2d_properties_make_direct_apply_primary_and_save_a_pair_in_one_click() -> None:
+def test_2d_properties_save_definitions_separately_from_element_selection() -> None:
     page = _page(start_in_3d=False)
     first = page.canvas.add_node(0.0, 0.0)
     second = page.canvas.add_node(4.0, 0.0)
@@ -539,10 +550,12 @@ def test_2d_properties_make_direct_apply_primary_and_save_a_pair_in_one_click() 
     page.canvas.selection_changed.emit()
 
     panel = page.section_material_panel
-    assert panel.apply_button.text() == "선택 부재에 바로 적용 (저장 불필요)"
-    assert panel.material_save_button.isHidden()
-    assert panel.section_save_button.isHidden()
-    assert panel.property_set_save_button.isHidden() is False
+    assert not page.workbench_buttons["properties"].isHidden()
+    assert not hasattr(page, "element_current_property_panel")
+    assert not page.element_saved_property_picker.isHidden()
+    assert panel.apply_button.text() == "선택 부재에 물성·단면 적용"
+    assert not panel.material_save_button.isHidden()
+    assert not panel.section_save_button.isHidden()
 
     panel.shape_combo.setCurrentText("Rectangle")
     panel.source_custom.setChecked(True)
@@ -556,11 +569,33 @@ def test_2d_properties_make_direct_apply_primary_and_save_a_pair_in_one_click() 
     assert page.canvas.elements[member].properties["E"] == pytest.approx(210_000.0)
     assert page.canvas.elements[member].properties["A"] == pytest.approx(0.1)
 
-    panel.property_set_save_button.click()
+    panel.material_save_button.click()
+    panel.section_save_button.click()
     assert len(page._user_materials) == 1
     assert len(page._user_sections) == 1
-    assert page.element_material_selector.currentData() == "MAT-001"
-    assert page.element_section_selector.currentData() == "SEC-001"
+    assert page.element_material_selector.currentData() is None
+    assert page.element_section_selector.currentData() is None
+    page.workbench_buttons["element"].click()
+    page.element_material_selector.setCurrentIndex(1)
+    page.element_section_selector.setCurrentIndex(1)
+    page.start_element_drawing_button.click()
+    page.canvas.place_point(0.0, 2.0)
+    page.canvas.place_point(4.0, 2.0)
+    page.canvas.place_point(4.0, 5.0)
+    new_members = [item for tag, item in page.canvas.elements.items() if tag != member]
+    assert len(new_members) == 2
+    assert new_members[0].node_j == new_members[1].node_i
+    assert all(item.properties["A"] == pytest.approx(0.1) for item in new_members)
+    page.canvas.undo()
+    assert len(page.canvas.elements) == 2
+    page.canvas.redo()
+    assert len(page.canvas.elements) == 3
+
+    restored = _page(start_in_3d=False)
+    restored.load_project_dict(page.to_project_dict())
+    assert restored._user_materials == page._user_materials
+    assert restored._user_sections == page._user_sections
+    assert len(restored.canvas.elements) == 3
 
 
 def test_3d_properties_can_reassign_material_and_section_to_selected_members() -> None:

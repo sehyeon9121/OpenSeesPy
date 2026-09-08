@@ -602,14 +602,16 @@ Item {
     }
 
     function cameraTargetPosition() {
-        // panX is a screen-horizontal offset, not a world-X offset. Rotate it
-        // with the orbit yaw so a rightward drag keeps moving the model right
-        // after the camera crosses to the opposite side of the structure.
+        // Rotate screen-right and screen-up offsets with the orbit so both
+        // pan directions remain in the screen plane, including the top view.
         const yawRadians = cameraYaw * Math.PI / 180
+        const pitchRadians = cameraPitch * Math.PI / 180
         return Qt.vector3d(
-            bridgeCenterX + panX * Math.cos(yawRadians),
-            bridgeCenterY + panY,
+            bridgeCenterX + panX * Math.cos(yawRadians)
+                + panY * Math.sin(pitchRadians) * Math.sin(yawRadians),
+            bridgeCenterY + panY * Math.cos(pitchRadians),
             bridgeCenterZ - panX * Math.sin(yawRadians)
+                + panY * Math.sin(pitchRadians) * Math.cos(yawRadians)
         )
     }
 
@@ -2247,7 +2249,7 @@ Item {
     Canvas {
         // Gesture-only cursor feedback. The normal pointer remains available
         // for node/member picking; pressing the middle button replaces it
-        // with an orbit glyph, or a horizontal pan glyph when Shift is held.
+        // with an orbit glyph, or a four-direction pan glyph when Shift is held.
         id: navigationCursorFeedback
         objectName: "navigationCursorFeedback"
         z: 30
@@ -2304,6 +2306,14 @@ Item {
             context.moveTo(30, 14)
             context.lineTo(38, 22)
             context.lineTo(30, 30)
+            context.moveTo(22, 7)
+            context.lineTo(22, 37)
+            context.moveTo(16, 13)
+            context.lineTo(22, 7)
+            context.lineTo(28, 13)
+            context.moveTo(16, 31)
+            context.lineTo(22, 37)
+            context.lineTo(28, 31)
             context.stroke()
         }
 
