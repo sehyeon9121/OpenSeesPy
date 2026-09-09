@@ -24,6 +24,7 @@ from openframe.core.domain import (
     SelfWeightEntry,
     Story,
     UniformElementLoad,
+    WallPanel,
 )
 from openframe.features.model.drawing import PlaneKind, WorkPlane
 
@@ -165,6 +166,7 @@ class _SerializationMixin:
                 }
                 for story in self.stories.values()
             ],
+            "walls": [asdict(wall) for wall in self.walls.values()],
         }
 
     def load_dict(self, data: dict[str, object]) -> None:
@@ -301,6 +303,26 @@ class _SerializationMixin:
             )
             for story in data.get("stories", [])
         }
+        stored_walls = data.get("walls", [])
+        walls = {}
+        if isinstance(stored_walls, list):
+            for item in stored_walls:
+                if not isinstance(item, dict):
+                    continue
+                tag = int(item["tag"])
+                walls[tag] = WallPanel(
+                    tag=tag,
+                    node_1=int(item["node_1"]),
+                    node_2=int(item["node_2"]),
+                    node_3=int(item["node_3"]),
+                    node_4=int(item["node_4"]),
+                    thickness=float(item["thickness"]),
+                    nx=int(item.get("nx", 1)),
+                    ny=int(item.get("ny", 1)),
+                    elastic_modulus=float(item["elastic_modulus"]),
+                    poisson_ratio=float(item.get("poisson_ratio", 0.3)),
+                    density=float(item.get("density", 0.0)),
+                )
 
         self._restore(
             {
@@ -318,6 +340,7 @@ class _SerializationMixin:
                 "active_combination_id": data.get("active_combination_id"),
                 "floor_load_types": floor_load_types,
                 "stories": stories,
+                "walls": walls,
             }
         )
         self._next_load_entry_id = max(load_entries.keys(), default=0) + 1

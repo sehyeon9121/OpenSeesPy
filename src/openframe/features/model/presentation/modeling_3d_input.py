@@ -144,6 +144,13 @@ class _Modeling3DInputMixin:
         of silently continuing from the previous member's end node.
         """
         if self.canvas.mode == "draw":
+            if self._is_plate_element_type():
+                # Four existing nodes around a closed ring. continue_chain_
+                # to_node would mint a two-node beam on the second click.
+                if self._active_plate_kwargs is None:
+                    return
+                self.canvas.add_wall_chain_node(tag)
+                return
             if self._active_element_kwargs is None:
                 self.canvas.end_chain()
                 self._activate_draw_tool()
@@ -227,6 +234,7 @@ class _Modeling3DInputMixin:
         point = None if node is None else (node.x, node.y, node.z)
         self._update_3d_draw_preview(point)
         self._update_3d_floor_outline(point)
+        self._update_3d_wall_preview(point)
 
 
     def _on_3d_plane_hovered(self, x: float, y: float, z: float) -> None:
@@ -235,20 +243,51 @@ class _Modeling3DInputMixin:
         active."""
         self._update_3d_draw_preview((x, y, z))
         self._update_3d_floor_outline((x, y, z))
+        self._update_3d_wall_preview((x, y, z))
 
 
     def _on_3d_hover_cleared(self) -> None:
         self.preview_3d.set_preview_segment(None, None)
         self._update_3d_floor_outline(None)
+        self._update_3d_wall_preview(None)
 
 
     def _update_3d_draw_preview(self, end: tuple[float, float, float] | None) -> None:
+        if self._is_plate_element_type():
+            # Plate rubber-band is the green polyline, not the beam cube.
+            self.preview_3d.set_preview_segment(None, None)
+            return
         tag = self.canvas.chain_last_node
         start_node = self.canvas.nodes.get(tag) if tag is not None else None
         if self.canvas.mode != "draw" or start_node is None or end is None:
             self.preview_3d.set_preview_segment(None, None)
             return
         self.preview_3d.set_preview_segment((start_node.x, start_node.y, start_node.z), end)
+
+    def _update_3d_wall_preview(self, hover_point: tuple[float, float, float] | None) -> None:
+        """Thin green ring for the in-progress Plate: 1 click + hover is a
+        line, 2 + hover a triangle, 3 + hover a quad. Closed once three
+        corners exist so the ring reads as a face outline, not an open
+        polyline. Thickness is not extruded here — the committed wall is a
+        flat ``#Rectangle`` (see ``_rectangle_part``).
+        """
+        if self.canvas.mode != "draw" or not self._is_plate_element_type():
+            return
+        chain_points = [
+            (node.x, node.y, node.z)
+            for tag in self.canvas._wall_chain
+            if (node := self.canvas.nodes.get(tag)) is not None
+        ]
+        points = chain_points + ([hover_point] if hover_point is not None else [])
+        self.preview_3d.set_floor_boundary_outline(
+            points,
+            color="#22c55e",
+            closed=len(points) >= 3,
+        )
+
+    def _is_plate_element_type(self) -> bool:
+        selector = getattr(self, "element_type_selector", None)
+        return selector is not None and selector.currentData() == "plate"
 
 
     def _update_3d_floor_outline(self, hover_point: tuple[float, float, float] | None) -> None:
@@ -286,6 +325,10 @@ class _Modeling3DInputMixin:
         redraws it fresh if a chain is still open."""
         if self.canvas.ndm == 3:
             self.preview_3d.set_preview_segment(None, None)
+            if self._is_plate_element_type() and self.canvas.mode == "draw":
+                self._update_3d_wall_preview(None)
+            elif self.canvas.mode != "floor_pick":
+                self.preview_3d.set_floor_boundary_outline([])
 
 
     def _refresh_3d_preview(self) -> None:
@@ -305,8 +348,17 @@ class _Modeling3DInputMixin:
         """
         if self.canvas.ndm != 3:
             return
-        if self.canvas.mode != "floor_pick":
+        if self.canvas.mode not in {"floor_pick", "draw"}:
             self.preview_3d.set_floor_boundary_outline([])
+        if self.canvas.mode == "draw" and self._is_plate_element_type():
+            # Same node+plane hover stream as floor picking, so the green
+            # ring can follow the cursor. Empty-space clicks stay a no-op
+            # (_on_3d_plane_picked) — walls only attach to existing nodes.
+            self.preview_3d.set_plane_picking_mode(True)
+            self.preview_3d.set_picking_mode(True)
+            return
+        if self.canvas.mode != "floor_pick":
+            pass
         if self.canvas.mode == "floor_pick":
             # Wants node-picking (existing nodes only - a plane click stays a
             # no-op, see _on_3d_plane_picked) WITH the crosshair cursor as a

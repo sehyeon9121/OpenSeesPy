@@ -219,3 +219,71 @@ def test_required_subdivision_plan_is_compiled_once_per_adapter_and_applied_once
         script = export_opensees_script(deepcopy(model))
     assert exporter_compile.call_count == 1
     assert script.count("ops.eleLoad(") == 40
+
+
+def _mixed_frame_truss_portal() -> StructuralModel:
+    """A 3D portal (two "frame"-typed columns + a "frame" beam) braced by one
+    diagonal "truss" member - the exact element_type naming
+    (``"frame"``/``"truss"``, not ``"elasticBeamColumn"``) the 3D canvas
+    (``canvas_geometry.py``'s ``add_member``) actually stamps on a drawn
+    member, unlike ``_mixed_model()`` above which uses the raw OpenSees
+    element name and also carries a wall. Regression coverage for a report
+    that a canvas-drawn truss+frame mix with self-weight or a UDL on the
+    frame member failed to solve at all - reproduction attempts (real
+    exported project file, several hand-built ``StructuralModel`` variants,
+    and canvas-drawn variants with a mid-span node on the frame member (see
+    ``test_3d_free_form_modeling.py``'s
+    ``test_mixed_truss_and_frame_3d_model_with_a_mid_span_node_solves_under_self_weight``
+    / ``..._under_a_udl``) all completed successfully against this branch's
+    load compiler, so these two tests pin that down as a regression guard.
+    """
+    return StructuralModel(
+        ndm=3,
+        ndf=6,
+        nodes={
+            1: Node(1, 0.0, 0.0, 0.0),
+            2: Node(2, 5.0, 0.0, 0.0),
+            3: Node(3, 5.0, 0.0, 4.0),
+            4: Node(4, 0.0, 0.0, 4.0),
+        },
+        elements={
+            1: Element(1, 1, 4, "frame", properties=dict(_BEAM_PROPERTIES)),  # column
+            2: Element(2, 2, 3, "frame", properties=dict(_BEAM_PROPERTIES)),  # column
+            3: Element(3, 4, 3, "frame", properties=dict(_BEAM_PROPERTIES)),  # beam
+            4: Element(4, 1, 3, "truss", properties=dict(_TRUSS_PROPERTIES)),  # brace
+        },
+        boundaries=[
+            BoundaryCondition(1, (True, True, True, True, True, True)),
+            BoundaryCondition(2, (True, True, True, True, True, True)),
+        ],
+    )
+
+
+def test_mixed_truss_and_frame_3d_model_solves_with_self_weight_enabled():
+    model = _mixed_frame_truss_portal()
+
+    result = MaterialFreeStaticsSolver().solve(
+        model, self_weight=SelfWeightEntry(), gravity_acceleration=_G
+    )
+
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+    # Total upward reaction must balance the model's own self-weight - beam
+    # unit weight (density * A) is already a force/length, so no extra g.
+    column_weight = 2 * _BEAM_PROPERTIES["density"] * _BEAM_PROPERTIES["A"] * 4.0
+    beam_weight = _BEAM_PROPERTIES["density"] * _BEAM_PROPERTIES["A"] * 5.0
+    brace_length = math.dist((0.0, 0.0, 0.0), (5.0, 0.0, 4.0))
+    brace_weight = _TRUSS_PROPERTIES["density"] * _TRUSS_PROPERTIES["A"] * brace_length
+    expected_total_weight = column_weight + beam_weight + brace_weight
+    total_reaction_z = sum(result.node_results[tag].reaction[2] for tag in (1, 2))
+    assert total_reaction_z == pytest.approx(expected_total_weight, rel=1.0e-9)
+
+
+def test_mixed_truss_and_frame_3d_model_solves_with_a_udl_on_the_frame_member():
+    model = _mixed_frame_truss_portal()
+    model.element_loads = [UniformElementLoad(3, wz=-5.0, wz_j=-5.0)]  # UDL on the beam
+
+    result = MaterialFreeStaticsSolver().solve(model)
+
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+    total_reaction_z = sum(result.node_results[tag].reaction[2] for tag in (1, 2))
+    assert total_reaction_z == pytest.approx(5.0 * 5.0, rel=1.0e-9)  # w * span

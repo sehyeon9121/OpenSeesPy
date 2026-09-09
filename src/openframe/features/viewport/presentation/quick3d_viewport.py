@@ -195,10 +195,16 @@ class Quick3DViewport(QFrame):
         (both structural x/y/z), or clear it if either is ``None``."""
         self.bridge.set_preview_segment(start, end)
 
-    def set_floor_boundary_outline(self, points: list[tuple[float, float, float]]) -> None:
-        """Trace the in-progress floor boundary's yellow outline - see
+    def set_floor_boundary_outline(
+        self,
+        points: list[tuple[float, float, float]],
+        *,
+        color: str | None = None,
+        closed: bool = False,
+    ) -> None:
+        """Trace an in-progress floor or wall outline - see
         ``Quick3DSceneBridge.set_floor_boundary_outline``."""
-        self.bridge.set_floor_boundary_outline(points)
+        self.bridge.set_floor_boundary_outline(points, color=color, closed=closed)
 
     def set_picking_mode(self, enabled: bool) -> None:
         self._pending_picking = enabled

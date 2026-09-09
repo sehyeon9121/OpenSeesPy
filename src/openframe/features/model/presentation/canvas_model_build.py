@@ -14,6 +14,7 @@ from openframe.core.domain import (
     MemberPointLoadEntry,
     Node,
     NodalLoad,
+    NodalLoadEntry,
     PointElementLoad,
     RigidDiaphragm,
     SelfWeightEntry,
@@ -279,6 +280,52 @@ class _ModelBuildMixin:
                 )
         return total_wx, total_wy, total_wz
 
+    def _case_uniform_local(
+        self,
+        entries: list,
+        axes: tuple[
+            tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
+        ]
+        | None,
+    ) -> tuple[float, float, float, float, float, float] | None:
+        """Full-span (wx0, wy0, wz0, wx1, wy1, wz1) contribution, in the
+        member's own local axes, from the active load case's own
+        "member_uniform"/"member_linear" LoadEntry items - the Direct Loads
+        counterpart to ``_case_self_weight_local``.
+
+        Needed because build_model()'s live read of the active case (see its
+        own docstring above) only ever covered member_point/member_partial/
+        member_moment/self_weight/floor - member_uniform and member_linear
+        were exclusively projected into ``self.element_loads`` by
+        ``_activate_generated_case_for_analysis`` (the combination-bridge
+        path), so a Direct Loads "Mem Uniform"/"Mem Linear" entry applied to
+        the case actually being solved - never routed through a load
+        combination - was silently dropped from the analysis. Multiple
+        applicable entries sum onto each other, same as every other kind
+        here."""
+        if not entries or axes is None:
+            return None
+        total = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        applied = False
+        for entry in entries:
+            payload = entry.payload
+            if not isinstance(payload, MemberDistributedLoadEntry):
+                continue
+            n0, py0, pz0 = _resolve_local_load_components(
+                payload.direction, payload.coordinate_system, payload.start_value, *axes
+            )
+            n1, py1, pz1 = _resolve_local_load_components(
+                payload.direction, payload.coordinate_system, payload.end_value, *axes
+            )
+            total[0] += n0
+            total[1] += py0
+            total[2] += pz0
+            total[3] += n1
+            total[4] += py1
+            total[5] += pz1
+            applied = True
+        return tuple(total) if applied else None
+
     def _apply_moment_nodal_load(
         self,
         moment_entry,
@@ -333,7 +380,7 @@ class _ModelBuildMixin:
         )
         model.metadata["hinge_nodes"] = ",".join(str(tag) for tag in sorted(self.hinge_nodes))
         model.metadata["logical_member_count"] = str(len(self.elements))
-        return model
+        return self._with_authored_walls(model)
 
     def build_model(self) -> StructuralModel:
         analysis_elements: dict[int, Element] = {}
@@ -346,17 +393,23 @@ class _ModelBuildMixin:
 
         # Everything below reads the *active* load case's LoadEntry store
         # directly, live, at solve time - Apply on Direct Loads' Point/
-        # Partial/Moment/Self Weight/Floor commands writes straight into
-        # ``self.load_entries`` (``_commit_load3d_entry``), so whatever is in
-        # the active case here is exactly what gets analyzed, no separate
-        # "activate for analysis" step needed. Deliberately excludes nodal/
-        # member_uniform/member_linear/floor's own combination-bridge path
-        # (``_activate_generated_case_for_analysis``) - those already reach
-        # ``self.nodal_loads``/``self.element_loads`` their own way and must
-        # not be double-counted here.
+        # Partial/Uniform/Linear/Moment/Self Weight/Floor commands writes
+        # straight into ``self.load_entries`` (``_commit_load3d_entry``), so
+        # whatever is in the active case here is exactly what gets analyzed,
+        # no separate "activate for analysis" step needed. nodal/
+        # member_uniform/member_linear ALSO still reach
+        # ``self.nodal_loads``/``self.element_loads`` via
+        # ``_activate_generated_case_for_analysis`` when a load combination
+        # gets materialized into a case and activated for analysis - that
+        # path writes into those dicts once, up front, well before this
+        # method ever runs, not per-solve, so reading both here does not
+        # double-count: this only adds what a *directly* case-scoped
+        # nodal/member_uniform/member_linear entry itself contributes.
         point_entries: dict[int, list] = {}
         partial_entries: dict[int, list] = {}
+        uniform_entries: dict[int, list] = {}
         moment_entries: dict[int, list] = {}
+        nodal_entries: list = []
         self_weight_entries: list = []
         floor_entries: list = []
         for entry in self.load_entries.values():
@@ -366,12 +419,26 @@ class _ModelBuildMixin:
                 point_entries.setdefault(entry.target[0], []).append(entry)
             elif entry.kind == "member_partial" and isinstance(entry.payload, MemberDistributedLoadEntry):
                 partial_entries.setdefault(entry.target[0], []).append(entry)
+            elif entry.kind in ("member_uniform", "member_linear") and isinstance(
+                entry.payload, MemberDistributedLoadEntry
+            ):
+                for target_tag in entry.target:
+                    uniform_entries.setdefault(target_tag, []).append(entry)
             elif entry.kind == "member_moment" and isinstance(entry.payload, MemberPointLoadEntry):
                 moment_entries.setdefault(entry.target[0], []).append(entry)
+            elif entry.kind == "nodal" and isinstance(entry.payload, NodalLoadEntry):
+                nodal_entries.append(entry)
             elif entry.kind == "self_weight" and isinstance(entry.payload, SelfWeightEntry):
                 self_weight_entries.append(entry)
             elif entry.kind == "floor":
                 floor_entries.append(entry)
+
+        for entry in nodal_entries:
+            payload = entry.payload
+            values6 = (payload.fx, payload.fy, payload.fz, payload.mx, payload.my, payload.mz)
+            values = values6 if self.ndm == 3 else (values6[0], values6[1], values6[5])
+            for node_tag in entry.target:
+                analysis_nodal_loads.append(NodalLoad(node_tag, values, case_type=LoadCaseKind.OTHER))
 
         for element_tag, element in self.elements.items():
             stations = sorted(
@@ -402,6 +469,11 @@ class _ModelBuildMixin:
             case_self_weight = self._case_self_weight_local(element, self_weight_entries)
             member_length = _member_length(element, self.nodes, self.ndm)
             axes = _local_axes(element, self.nodes, self.ndm)
+            # Direct Loads' "Mem Uniform"/"Mem Linear" entries for this member,
+            # same full-span (0..1) convention as self-weight above - see
+            # ``_case_uniform_local``'s own docstring for why this needs to be
+            # read here instead of via ``self.element_loads``.
+            case_uniform = self._case_uniform_local(uniform_entries.get(element_tag, ()), axes)
             element_points = point_entries.get(element_tag, ())
             element_partials = partial_entries.get(element_tag, ())
             element_moments = list(moment_entries.get(element_tag, ()))
@@ -466,12 +538,21 @@ class _ModelBuildMixin:
                         wx += case_self_weight[0]
                         wy += case_self_weight[1]
                         wz += case_self_weight[2]
+                    if case_uniform is not None:
+                        wx += _lerp(case_uniform[0], case_uniform[3], fraction)
+                        wy += _lerp(case_uniform[1], case_uniform[4], fraction)
+                        wz += _lerp(case_uniform[2], case_uniform[5], fraction)
                     return wx, wy, wz
 
                 def _append_uniform(tag: int, start: float, end: float) -> None:
                     wx0, wy0, wz0 = _uniform_at(start)
                     wx1, wy1, wz1 = _uniform_at(end)
-                    if load is None and self_weight is None and case_self_weight is None:
+                    if (
+                        load is None
+                        and self_weight is None
+                        and case_self_weight is None
+                        and case_uniform is None
+                    ):
                         return
                     analysis_loads.append(
                         UniformElementLoad(
@@ -686,7 +767,20 @@ class _ModelBuildMixin:
             f"{node_tag}:{host_tag}:{position:g}"
             for node_tag, (host_tag, position) in sorted(self.embedded_nodes.items())
         )
-        return model
+        return self._with_authored_walls(model)
+
+    def _with_authored_walls(self, model: StructuralModel) -> StructuralModel:
+        """Attach user-authored ``WallPanel``s and rebuild the analysis mesh.
+
+        Thickness stays on the panel for the solver; the viewport draws
+        each quad as a face (``scale_z`` 1), not an extruded solid.
+        """
+        if not self.walls:
+            return model
+        model.walls = dict(self.walls)
+        from openframe.features.model.surfaces import assemble_wall_meshes
+
+        return assemble_wall_meshes(model)
 
     def _build_rigid_diaphragms(self) -> list[RigidDiaphragm]:
         """One ``RigidDiaphragm`` per Story with its checkbox on - see
@@ -785,6 +879,12 @@ class _ModelBuildMixin:
                 self.embedded_nodes.pop(node_tag, None)
             self.elements.pop(tag, None)
             self.element_loads.pop(tag, None)
+        if self.walls:
+            self.walls = {
+                tag: wall
+                for tag, wall in self.walls.items()
+                if not deleted_node_tags.intersection(wall.corner_tags())
+            }
         self._prune_load_entries_for_deleted(deleted_node_tags, element_tags)
         self._selected = None
         self.selected_nodes.clear()

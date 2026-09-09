@@ -285,6 +285,7 @@ def test_create_element_type_picker_precedes_properties_and_controls_new_member_
         "tension_only",
         "compression_only",
         "cable",
+        "plate",
     ]
     assert page.element_type_selector.currentData() == "general_beam"
     assert page.canvas.element_family == "frame"
@@ -312,6 +313,61 @@ def test_create_element_type_picker_precedes_properties_and_controls_new_member_
     node_c = page.canvas._add_node_at((4.0, 3.0, 0.0))
     beam_member = page.canvas.add_member(node_b, node_c)
     assert page.canvas.elements[beam_member].element_type == "frame"
+
+
+def test_create_element_plate_uses_thickness_not_section() -> None:
+    """Plate is a wall/surface type. It must not collapse onto the truss
+    family (``behavior != general_beam`` used to mean axial-only) and it
+    swaps the Section picker for the Thickness library instead of drawing
+    a two-node beam with a dummy H/B.
+    """
+    page = _page(start_in_3d=True)
+    page.workbench_buttons["element"].click()
+
+    page.element_type_selector.setCurrentIndex(
+        page.element_type_selector.findData("plate")
+    )
+    assert page.element_type_selector.currentText() == "Plate"
+    assert page.canvas.element_behavior == "plate"
+    assert page.canvas.element_family == "frame"
+    assert page.element_property_form.isRowVisible(page.element_section_selector) is False
+    assert page.element_property_form.isRowVisible(page.element_thickness_selector) is True
+    assert page.element_properties_title.text() == "Material & Thickness"
+    assert page.element_local_axis_card.isHidden()
+    assert page.start_element_drawing_button.isEnabled() is False
+
+    page._save_user_material(
+        {
+            "name": "Wall-Concrete",
+            "category": "Concrete",
+            "grade": None,
+            "elastic": 2.5e7,
+            "density": 24.0,
+            "fy": 0.0,
+        }
+    )
+    page._save_user_thickness({"name": "W200", "thickness_mm": 200.0})
+    page.element_material_selector.setCurrentIndex(1)
+    page.element_thickness_selector.setCurrentIndex(1)
+    assert page.start_element_drawing_button.isEnabled() is True
+    assert page._active_element_kwargs is None
+    assert page._active_plate_kwargs is not None
+    assert page.canvas.wall_pen is not None
+    assert page.canvas.wall_pen["thickness"] == pytest.approx(0.2)
+    assert page.canvas.wall_pen["elastic"] == pytest.approx(2.5e7)
+    assert "기존 노드 네 개" in page.active_element_status.text()
+    assert "아직 연결" not in page.active_element_status.text()
+
+    page.start_element_drawing_button.click()
+    assert page.canvas.mode == "draw"
+
+    saved = page.to_project_dict()
+    assert saved["element_behavior"] == "plate"
+    restored = _page(start_in_3d=True)
+    restored.load_project_dict(saved)
+    assert restored.element_type_selector.currentData() == "plate"
+    assert restored.canvas.element_family == "frame"
+    assert restored.element_property_form.isRowVisible(restored.element_thickness_selector)
 
 
 def test_directional_member_settings_card_appears_for_tension_compression_cable() -> None:
@@ -669,41 +725,65 @@ def test_3d_property_editor_orders_material_before_section_and_properties() -> N
 
     assert panel._root_layout.indexOf(panel.material_group) == 0
     assert panel._root_layout.indexOf(panel.section_group) == 1
-    assert panel._root_layout.indexOf(panel.properties_group) == 2
+    assert panel._root_layout.indexOf(panel.thickness_group) == 2
+    assert panel._root_layout.indexOf(panel.properties_group) == 3
     assert panel.material_group.title_label.text() == "MATERIAL"
     assert panel.section_group.title_label.text() == "SECTION"
+    assert panel.thickness_group.title_label.text() == "THICKNESS"
     assert panel.properties_group.title_label.text() == "SECTION PROPERTIES"
     # The "PROPERTIES" dropdown (see test_3d_properties_selector_switches_
     # which_card_is_shown below) defaults to its first item, MATERIAL, so
-    # only that card's whole frame is shown - the other two are hidden
+    # only that card's whole frame is shown - the other cards are hidden
     # entirely, not just their body (a hidden body alone would still leave
     # an empty bordered card strip behind).
     assert panel.material_group.isHidden() is False
     assert panel.section_group.isHidden() is True
+    assert panel.thickness_group.isHidden() is True
     assert panel.properties_group.isHidden() is True
     assert panel.apply_button.isHidden() is False
 
 
 def test_3d_properties_selector_switches_which_card_is_shown() -> None:
-    """The Properties tab replaces each MATERIAL/SECTION/SECTION PROPERTIES
-    card's own clickable header with one "PROPERTIES" dropdown (same
-    setupConfigBar/fieldLabel look as the Analysis tab's "ANALYSIS TYPE"
+    """The Properties tab replaces each MATERIAL/SECTION/THICKNESS/SECTION
+    PROPERTIES card's own clickable header with one "PROPERTIES" dropdown
+    (same setupConfigBar/fieldLabel look as the Analysis tab's "ANALYSIS TYPE"
     bar) - selecting an item shows only that card's whole frame, hiding the
-    other two outright (not just collapsing their body, which would leave
+    others outright (not just collapsing their body, which would leave
     an empty bordered strip for each). The 2D Properties tab now uses this
     same interaction and visual hierarchy."""
     page = _page(start_in_3d=True)
     panel = page.section_material_panel
 
+    assert [page.properties_selector.itemText(i) for i in range(page.properties_selector.count())] == [
+        "MATERIAL",
+        "SECTION",
+        "THICKNESS",
+        "SECTION PROPERTIES",
+    ]
     assert page.properties_selector.currentData() == "material"
-    for group in (panel.material_group, panel.section_group, panel.properties_group):
+    for group in (
+        panel.material_group,
+        panel.section_group,
+        panel.thickness_group,
+        panel.properties_group,
+    ):
         assert group._header.isHidden() is True
 
     page.properties_selector.setCurrentIndex(page.properties_selector.findData("section"))
 
     assert panel.material_group.isHidden() is True
     assert panel.section_group.isHidden() is False
+    assert panel.thickness_group.isHidden() is True
     assert panel.properties_group.isHidden() is True
+    assert panel.apply_button.isHidden() is False
+
+    page.properties_selector.setCurrentIndex(page.properties_selector.findData("thickness"))
+
+    assert panel.material_group.isHidden() is True
+    assert panel.section_group.isHidden() is True
+    assert panel.thickness_group.isHidden() is False
+    assert panel.properties_group.isHidden() is True
+    assert panel.apply_button.isHidden() is True
 
     page.properties_selector.setCurrentIndex(
         page.properties_selector.findData("section_properties")
@@ -711,7 +791,9 @@ def test_3d_properties_selector_switches_which_card_is_shown() -> None:
 
     assert panel.material_group.isHidden() is True
     assert panel.section_group.isHidden() is True
+    assert panel.thickness_group.isHidden() is True
     assert panel.properties_group.isHidden() is False
+    assert panel.apply_button.isHidden() is False
 
 
 def test_2d_properties_panel_uses_the_same_single_card_selector_as_3d() -> None:
@@ -719,10 +801,16 @@ def test_2d_properties_panel_uses_the_same_single_card_selector_as_3d() -> None:
     panel = page.section_material_panel
 
     assert page.properties_selector.currentData() == "material"
-    for group in (panel.material_group, panel.section_group, panel.properties_group):
+    for group in (
+        panel.material_group,
+        panel.section_group,
+        panel.thickness_group,
+        panel.properties_group,
+    ):
         assert group._header.isHidden()
     assert panel.material_group.isHidden() is False
     assert panel.section_group.isHidden()
+    assert panel.thickness_group.isHidden()
     assert panel.properties_group.isHidden()
 
 
@@ -784,12 +872,23 @@ def test_saved_user_material_and_section_appear_in_the_work_tree_and_round_trip(
     assert page.work_tree_sections.child(0).text(0) == "C1-기둥"
     assert page.work_tree_sections.child(0).text(1) == "SEC-001"
 
+    section_panel.thickness_name.setText("W200")
+    section_panel.thickness_spin.setValue(0.2)
+    section_panel.thickness_save_button.click()
+    assert page.work_tree_thicknesses.childCount() == 1
+    assert page.work_tree_thicknesses.child(0).text(0) == "W200"
+    assert page.work_tree_thicknesses.child(0).text(1) == "THK-001"
+    assert page._user_thicknesses[0]["thickness_mm"] == pytest.approx(200.0)
+
     restored = _page(start_in_3d=True)
     restored.load_project_dict(page.to_project_dict())
     assert restored.work_tree_materials.childCount() == 1
     assert restored.work_tree_materials.child(0).text(0) == "사용자 강재 SM355"
     assert restored.work_tree_sections.childCount() == 1
     assert restored.work_tree_sections.child(0).text(0) == "C1-기둥"
+    assert restored.work_tree_thicknesses.childCount() == 1
+    assert restored.work_tree_thicknesses.child(0).text(0) == "W200"
+    assert restored._user_thicknesses == page._user_thicknesses
     assert restored.element_material_selector.itemData(1) == "MAT-001"
     assert restored.element_section_selector.itemData(1) == "SEC-001"
 

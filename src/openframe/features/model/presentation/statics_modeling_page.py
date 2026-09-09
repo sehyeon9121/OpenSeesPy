@@ -23,6 +23,7 @@ from openframe.core.domain import (
     Node,
     Story,
     UniformElementLoad,
+    WallPanel,
 )
 from openframe.features.model.drawing import SnapOptions, WorkPlane
 from openframe.features.model.presentation.canvas_drawing_mode import _DrawingModeMixin
@@ -40,6 +41,7 @@ from openframe.features.model.presentation.canvas_serialization import _Serializ
 from openframe.features.model.presentation.canvas_stories import _StoryMixin
 from openframe.features.model.presentation.canvas_transforms import _TransformMixin
 from openframe.features.model.presentation.canvas_units import _UnitConversionMixin
+from openframe.features.model.presentation.canvas_walls import _WallMixin
 from openframe.features.model.presentation.canvas_work_planes import _WorkPlaneMixin
 
 
@@ -63,6 +65,7 @@ class StaticsDrawingCanvas(
     _LoadEntryMixin,
     _StoryMixin,
     _UnitConversionMixin,
+    _WallMixin,
     QGraphicsView,
 ):
     model_changed = Signal()
@@ -194,6 +197,14 @@ class StaticsDrawingCanvas(
         #: accumulator from ``_chain`` since a floor boundary is a closed
         #: polygon of already-existing nodes, not a member-drawing path.
         self._floor_chain: list[int] = []
+        #: Four-corner wall being click-picked in Create Element / Plate.
+        #: Separate from ``_chain`` so a wall click can never mint a beam.
+        self._wall_chain: list[int] = []
+        self.walls: dict[int, WallPanel] = {}
+        #: Create Element pen for the next wall: thickness/E/ν/density in
+        #: the model's current length/stress units. None until both Material
+        #: and Thickness are chosen.
+        self.wall_pen: dict[str, float] | None = None
         self._snap = None
         self._undo_stack: list[dict[str, object]] = []
         self._redo_stack: list[dict[str, object]] = []

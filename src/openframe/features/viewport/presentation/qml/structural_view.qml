@@ -853,17 +853,12 @@ Item {
         }
 
         Repeater3D {
-            // Floor-boundary click-picking's live yellow outline - one edge
-            // per picked pair of boundary nodes plus a trailing edge that
-            // follows the cursor, see Quick3DSceneBridge.
-            // set_floor_boundary_outline. This replaced a single Model bound
-            // to a custom filled-face geometry: that was a real mesh
-            // (vertex buffer rebuilt and re-uploaded to the GPU on every
-            // mouse-move) for what is really just a handful of line
-            // segments, which made the whole viewport lag. A Repeater3D over
-            // plain #Cylinder parts - the same pattern every other glyph
-            // list here already uses - is far cheaper to rebuild every move.
-            // Never pickable, so it can never shadow the nodes it connects.
+            // Live click-picking outline (floor yellow, wall green) - one
+            // edge per consecutive pair plus an optional closing edge.
+            // Plate drawing reuses this list rather than a second Repeater
+            // so the rubber-band never fights the floor picker for GPU
+            // uploads. This replaced a custom filled-face mesh rebuilt on
+            // every mouse-move. Never pickable, so it cannot shadow nodes.
             model: bridgeReady ? sceneBridge.floorBoundaryOutline : []
             delegate: Model {
                 source: modelData.shape

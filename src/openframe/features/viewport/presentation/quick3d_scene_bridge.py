@@ -1172,19 +1172,24 @@ class Quick3DSceneBridge(QObject):
         self._preview_segment_key = segment_key
         self._emit_preview_changed()
 
-    def set_floor_boundary_outline(self, points: list[tuple[float, float, float]]) -> None:
-        """Trace the in-progress floor boundary as a yellow outline: one edge
-        per already-picked pair of boundary nodes, in click order, plus a
-        trailing edge to the cursor if it is included as the last point.
+    def set_floor_boundary_outline(
+        self,
+        points: list[tuple[float, float, float]],
+        *,
+        color: str | None = None,
+        closed: bool = False,
+    ) -> None:
+        """Trace an in-progress polyline as thin cylinder edges.
 
-        ``points`` are structural x/y/z - the already-picked chain nodes' own
-        coordinates plus, while the mouse is moving, the current cursor
-        position as a trailing point (see
-        ``modeling_interface_page._update_3d_floor_outline`` for the caller
-        side). Closing the loop (clicking back on the boundary's first node)
-        ends picking outright rather than appending a point, so this never
-        needs to draw a closing edge itself - fewer than 2 points has no edge
-        to draw at all, so the outline is simply emptied.
+        Floor picking keeps this yellow and *open* (the closing click
+        commits the load instead of drawing a last-to-first edge). Plate
+        wall picking reuses the same list in green and *closed* once three
+        corners exist, so the rubber-band reads as a triangle then a
+        quad rather than an open polyline. Thickness is never extruded
+        here — the committed wall is a flat ``#Rectangle``.
+
+        ``points`` are structural x/y/z. Fewer than 2 points has no edge
+        to draw, so the outline is emptied.
 
         Rebuilding these thin edge segments on every mouse-move is cheap -
         unlike the filled ghost face this replaced, a custom triangle-fan
@@ -1192,6 +1197,8 @@ class Quick3DSceneBridge(QObject):
         the whole viewport lag.
         """
         view_points = [self._view_coordinates(*point) for point in points]
+        if closed and len(view_points) >= 3:
+            view_points = [*view_points, view_points[0]]
         parts: list[dict[str, float | int | str]] = []
         if len(view_points) >= 2:
             # Thicker than the committed floor glyph's own boundary loop
@@ -1199,7 +1206,7 @@ class Quick3DSceneBridge(QObject):
             # readable when it runs along an already-applied floor's edge.
             thickness = max(self._default_thickness * 0.45, 0.008)
             parts = self._connector_segments(
-                view_points, thickness, {"color": _FLOOR_OUTLINE_COLOR}
+                view_points, thickness, {"color": color or _FLOOR_OUTLINE_COLOR}
             )
         if parts == self._floor_outline_parts:
             return

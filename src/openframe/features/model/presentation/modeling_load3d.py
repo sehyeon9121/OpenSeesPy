@@ -2654,7 +2654,7 @@ class _Load3DPanelMixin:
     def _show_definition_tree_context_menu(
         self, tree: QTreeWidget, position, definition: tuple[str, str]
     ) -> None:
-        """Right-click menu for a Work Tree 물성/섹션 row. Deleting a
+        """Right-click menu for a Work Tree 물성/섹션/두께 row. Deleting a
         definition only removes it from this picker list - members that
         already had it applied keep their own copied E/A/I/... values (see
         ``apply_full_section_to_selection``), so nothing already built breaks.
@@ -2669,9 +2669,13 @@ class _Load3DPanelMixin:
             self._user_materials[:] = [
                 entry for entry in self._user_materials if entry.get("id") != definition_id
             ]
-        else:
+        elif kind == "section":
             self._user_sections[:] = [
                 entry for entry in self._user_sections if entry.get("id") != definition_id
+            ]
+        elif kind == "thickness":
+            self._user_thicknesses[:] = [
+                entry for entry in self._user_thicknesses if entry.get("id") != definition_id
             ]
         self._refresh_work_tree()
 

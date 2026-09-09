@@ -318,6 +318,16 @@ class MaterialFreeStaticsSolver:
                 messages=["3D 모델의 P-Delta(기하비선형) 해석은 아직 지원하지 않습니다."],
             )
         check = check_determinacy(model)
+        if model.ndm == 2 and check.system == "truss":
+            from openframe.features.analysis.statics.truss_2d_validation import validate_truss
+
+            try:
+                validate_truss(model)
+            except ValueError as error:
+                return AnalysisResult(
+                    status=AnalysisStatus.FAILED,
+                    messages=[str(error), *self._truss_stiffness_gaps(model)],
+                )
         needs_material = not check.can_solve_without_materials or geometric_nonlinearity != "Linear"
         truss_unit_stiffness = False
         displacement_stiffness = DisplacementStiffnessKind.PHYSICAL
@@ -471,6 +481,10 @@ class MaterialFreeStaticsSolver:
                 self_weight=self_weight,
                 gravity_acceleration=gravity_acceleration,
             )
+            if model.ndm == 2 and check.system == "truss" and any(
+                load.moment[2] != 0 for load in plan.nodal_loads
+            ):
+                raise ValueError("트러스 절점은 모멘트를 전달할 수 없습니다. 절점 모멘트를 제거하세요.")
             self._build(
                 model,
                 check.system,
@@ -516,7 +530,7 @@ class MaterialFreeStaticsSolver:
                 and diagnostic.diagnostic_success
                 and diagnostic.mechanism_count > 0
             )
-            if has_mechanism:
+            if has_mechanism and not (model.ndm == 2 and check.system == "truss"):
                 # A diagnosed mechanism does not have to mean "no numbers at
                 # all" - try once more with a small stabilizing spring at
                 # exactly the free DOFs the diagnostic just found, so the
@@ -1795,6 +1809,18 @@ class MaterialFreeStaticsSolver:
             )
             for tag in model.nodes
         }
+        if model.ndm == 2 and system == "truss":
+            ground_tags = set(ops.getNodeTags())
+            for boundary in model.boundaries:
+                ground_tag = _SPRING_TAG_OFFSET + boundary.node_tag
+                if ground_tag in ground_tags and any(boundary.spring_stiffnesses):
+                    previous = node_results[boundary.node_tag]
+                    spring_reaction = ops.nodeReaction(ground_tag)
+                    node_results[boundary.node_tag] = NodeResult(
+                        node_tag=previous.node_tag,
+                        displacement=previous.displacement,
+                        reaction=tuple(a+b for a, b in zip(previous.reaction, spring_reaction)),
+                    )
         uniform_loads = {
             load.element_tag: (load.wx, load.wy, load.wx_j, load.wy_j)
             for load in model.element_loads

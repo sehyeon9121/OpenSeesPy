@@ -85,6 +85,7 @@ class _HistoryMixin:
             "active_combination_id": self.active_combination_id,
             "floor_load_types": dict(self.floor_load_types),
             "stories": dict(self.stories),
+            "walls": dict(self.walls),
         }
 
     def _restore(self, snapshot: dict[str, object]) -> None:
@@ -102,12 +103,14 @@ class _HistoryMixin:
         self.active_combination_id = snapshot["active_combination_id"]
         self.floor_load_types = dict(snapshot.get("floor_load_types", {}))
         self.stories = dict(snapshot.get("stories", {}))
+        self.walls = dict(snapshot.get("walls", {}))
         self.selected_nodes.clear()
         self.selected_elements.clear()
         self._selected = None
         self._member_start = None
         self._preview_point = None
         self._chain.clear()
+        self._wall_chain.clear()
         self._snap = None
         self._changed()
         self.draw_state_changed.emit()

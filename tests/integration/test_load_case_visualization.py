@@ -175,10 +175,34 @@ def test_floor_boundary_outline_draws_an_open_polyline_between_picked_points() -
     segments = bridge.floorBoundaryOutline
     assert len(segments) == 2  # two points picked so far -> two edges, not a closed triangle
     assert sum(part["length"] for part in segments) == pytest.approx(7.0)  # 4 + 3, not +5 closing
+    assert all(part["color"] == "#facc15" for part in segments)
 
 
-def test_floor_boundary_outline_clears_below_two_points() -> None:
+@pytest.mark.parametrize(
+    ("point_count", "edge_count", "total_length"),
+    [(2, 1, 4.0), (3, 3, 12.0), (4, 4, 14.0)],
+)
+def test_floor_boundary_outline_supports_closed_green_wall_preview(
+    point_count: int, edge_count: int, total_length: float,
+) -> None:
     bridge = Quick3DSceneBridge()
-    bridge.set_floor_boundary_outline([(0.0, 0.0, 0.0)])
+    points = [(0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (4.0, 0.0, 3.0), (0.0, 0.0, 3.0)]
+
+    bridge.set_floor_boundary_outline(points[:point_count], color="#22c55e", closed=True)
+
+    segments = bridge.floorBoundaryOutline
+    assert len(segments) == edge_count
+    assert sum(part["length"] for part in segments) == pytest.approx(total_length)
+    assert all(part["color"] == "#22c55e" for part in segments)
+    assert all(part["shape"] == "#Cylinder" for part in segments)
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_floor_boundary_outline_clears_below_two_points(closed: bool) -> None:
+    bridge = Quick3DSceneBridge()
+    bridge.set_floor_boundary_outline([(0.0, 0.0, 0.0), (4.0, 0.0, 0.0)], closed=closed)
+    assert len(bridge.floorBoundaryOutline) == 1
+
+    bridge.set_floor_boundary_outline([(0.0, 0.0, 0.0)], closed=closed)
 
     assert bridge.floorBoundaryOutline == []

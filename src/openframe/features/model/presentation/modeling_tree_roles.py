@@ -19,10 +19,10 @@ from openframe.features.model.presentation.canvas_input_events import PROPERTY_D
 #: handler serve both without having to guess which kind of row it got.
 _TREE_ENTITY_ROLE = Qt.ItemDataRole.UserRole + 1
 
-#: Item-data role carrying a Work Tree 물성/섹션 row's ``("material" | "section",
-#: id)`` pair, so its context menu can look the definition up without
-#: colliding with ``_TREE_ENTITY_ROLE`` (canvas node/element/support rows) or
-#: plain ``UserRole`` (load-entry rows).
+#: Item-data role carrying a Work Tree 물성/섹션/두께 row's
+#: ``("material" | "section" | "thickness", id)`` pair, so its context menu
+#: can look the definition up without colliding with ``_TREE_ENTITY_ROLE``
+#: (canvas node/element/support rows) or plain ``UserRole`` (load-entry rows).
 _TREE_DEFINITION_ROLE = Qt.ItemDataRole.UserRole + 2
 
 

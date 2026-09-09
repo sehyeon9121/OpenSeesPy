@@ -80,6 +80,7 @@ from openframe.core.domain import (
     design_spectral_accelerations,
     equivalent_lateral_force,
     lumped_node_weights,
+    mm_to_length_unit,
     mpa_to_stress_unit,
     seismic_response_coefficient,
     unit_conversion_factors,
@@ -112,6 +113,9 @@ from openframe.features.model.presentation.canvas_glyphs import (
     _render_dof_icon,
     _render_glyph_icon,
     _render_load_diagram,
+)
+from openframe.features.model.presentation.canvas_property_application import (
+    DEFAULT_POISSON_RATIO,
 )
 from openframe.features.model.presentation.current_page_only_stack import _CurrentPageOnlyStack
 from openframe.features.model.presentation.modeling_3d_input import _Modeling3DInputMixin
@@ -182,10 +186,16 @@ class ModelingInterfacePage(
         self._gravity_acceleration = 9.81
         self._user_materials: list[dict[str, object]] = []
         self._user_sections: list[dict[str, object]] = []
+        self._user_thicknesses: list[dict[str, object]] = []
         # The Element tab's "what the next drawn member gets" pick. It stays
         # None until both a saved material and section are selected; 2D may
         # keep drawing with its defaults while 3D requires an explicit pair.
         self._active_element_kwargs: dict[str, object] | None = None
+        # Plate pen is separate from beam kwargs on purpose: arming
+        # ``_active_element_kwargs`` for a wall would let Create Element mint
+        # two-node beams (see ``_element_subcategory_clicked``). Mirror lives
+        # on ``canvas.wall_pen`` for ``add_wall``.
+        self._active_plate_kwargs: dict[str, float] | None = None
         self._known_2d_element_tags: set[int] = set()
         self._applying_2d_active_properties = False
         self._solver = MaterialFreeStaticsSolver()
@@ -631,6 +641,10 @@ class ModelingInterfacePage(
 
     def _save_user_material(self, definition: dict[str, object]) -> None:
         material = dict(definition)
+        if not self._start_in_3d:
+            material["strain_hardening_ratio"] = (
+                self.section_material_panel.material_hardening_ratio.value()
+            )
         name = str(material.get("name", "")).strip()
         if not name:
             return
@@ -649,6 +663,9 @@ class ModelingInterfacePage(
 
     def _save_user_section(self, definition: dict[str, object]) -> None:
         section = dict(definition)
+        if not self._start_in_3d:
+            current = self.section_material_panel.current_application_kwargs()
+            section.update({key: current.get(key) for key in ("zy", "zz")})
         name = str(section.get("name", "")).strip()
         if not name:
             return
@@ -665,11 +682,30 @@ class ModelingInterfacePage(
         self._refresh_work_tree()
         self.determinacy_status.setText(f"섹션 '{name}'을 워크트리에 저장했습니다.")
 
+    def _save_user_thickness(self, definition: dict[str, object]) -> None:
+        thickness = dict(definition)
+        name = str(thickness.get("name", "")).strip()
+        if not name:
+            return
+        existing = next(
+            (entry for entry in self._user_thicknesses if entry.get("name") == name), None
+        )
+        if existing is None:
+            thickness["id"] = f"THK-{len(self._user_thicknesses) + 1:03d}"
+            self._user_thicknesses.append(thickness)
+        else:
+            thickness["id"] = existing["id"]
+            existing.clear()
+            existing.update(thickness)
+        self._refresh_work_tree()
+        self.determinacy_status.setText(f"두께 '{name}'을 워크트리에 저장했습니다.")
+
     def _refresh_element_property_selectors(self) -> None:
         if not hasattr(self, "element_material_selector"):
             return
         previous_material = self.element_material_selector.currentData()
         previous_section = self.element_section_selector.currentData()
+        previous_thickness = self.element_thickness_selector.currentData()
         for combo, placeholder, definitions, previous in (
             (
                 self.element_material_selector,
@@ -682,6 +718,12 @@ class ModelingInterfacePage(
                 "Section 선택…",
                 self._user_sections,
                 previous_section,
+            ),
+            (
+                self.element_thickness_selector,
+                "Thickness 선택…",
+                self._user_thicknesses,
+                previous_thickness,
             ),
         ):
             combo.blockSignals(True)
@@ -1412,6 +1454,14 @@ class ModelingInterfacePage(
         ("tension_only", "Tension-only"),
         ("compression_only", "Compression-only"),
         ("cable", "Cable"),
+        ("plate", "Plate"),
+    )
+    #: Tension-only / compression-only / cable collapse onto the truss
+    #: family (pinned ends, axial law). Plate is a surface, not an axial
+    #: line member - treating ``behavior != general_beam`` as truss would
+    #: stamp a two-node truss the moment someone picked Plate.
+    _AXIAL_ELEMENT_BEHAVIORS: ClassVar[frozenset[str]] = frozenset(
+        {"truss", "tension_only", "compression_only", "cable"}
     )
 
     #: Only "add" (클릭으로 새 노드/부재를 그림) needs draw mode - the other
@@ -1491,7 +1541,10 @@ class ModelingInterfacePage(
         if (
             key == "element_picker"
             and self._start_in_3d
-            and self._active_element_kwargs is not None
+            and (
+                self._active_element_kwargs is not None
+                or self._active_plate_kwargs is not None
+            )
         ):
             self._activate_draw_tool()
         else:
@@ -1544,11 +1597,14 @@ class ModelingInterfacePage(
         self.element_type_selector = QComboBox()
         self.element_type_selector.setObjectName("elementTypeSelector")
         for key, label in self._ELEMENT_TYPE_OPTIONS:
+            if key == "plate" and not self._start_in_3d:
+                continue
             self.element_type_selector.addItem(label, key)
         self.element_type_selector.setToolTip(
             "다음에 그릴 부재의 구조 형식을 선택합니다. Tension-only / "
             "Compression-only / Cable은 축력만 전달하며, 아래 거동 설정에서 "
-            "갭·프리스트레스를 지정합니다."
+            "갭·프리스트레스를 지정합니다. Plate는 벽체(면요소)이며 "
+            "Properties의 Thickness를 씁니다."
         )
         self.element_type_selector.currentIndexChanged.connect(
             self._element_type_selection_changed
@@ -1596,9 +1652,11 @@ class ModelingInterfacePage(
 
         properties_card, properties_root = self._section("Material & Section")
         self.element_properties_card = properties_card
+        self.element_properties_title = properties_root.itemAt(0).widget()
         property_hint = QLabel("Properties에서 저장한 Material과 Section을 모두 선택하세요.")
         property_hint.setWordWrap(True)
         property_hint.setObjectName("setupSectionHint")
+        self.element_property_hint = property_hint
         properties_root.addWidget(property_hint)
 
         saved_property_picker = QWidget() if not self._start_in_3d else None
@@ -1622,6 +1680,13 @@ class ModelingInterfacePage(
             self._element_property_selection_changed
         )
         property_form.addRow("Section", self.element_section_selector)
+        self.element_thickness_selector = QComboBox()
+        self.element_thickness_selector.setObjectName("elementThicknessSelector")
+        self.element_thickness_selector.currentIndexChanged.connect(
+            self._element_property_selection_changed
+        )
+        property_form.addRow("Thickness", self.element_thickness_selector)
+        self.element_property_form.setRowVisible(self.element_thickness_selector, False)
         if saved_property_picker is None:
             properties_root.addLayout(property_form)
         else:
@@ -1703,7 +1768,7 @@ class ModelingInterfacePage(
     def _element_type_selection_changed(self, _index: int | None = None) -> None:
         """Make the Create Element type the pen used for subsequent members."""
         behavior = self.element_type_selector.currentData()
-        axial_only = behavior != "general_beam"
+        axial_only = behavior in self._AXIAL_ELEMENT_BEHAVIORS
         self.canvas.element_family = "truss" if axial_only else "frame"
         self.canvas.element_behavior = behavior
 
@@ -1720,8 +1785,33 @@ class ModelingInterfacePage(
                 self.model_type_selector.setCurrentIndex(model_index)
                 self.model_type_selector.blockSignals(False)
 
+        self._refresh_create_element_property_rows()
         self._element_property_selection_changed()
         self._refresh_directional_pen_card()
+
+    def _refresh_create_element_property_rows(self) -> None:
+        """Plate uses a thickness library, not a beam SECTION.
+
+        The same Material combo stays; only the second row swaps. Line-member
+        rotation (beta) is hidden too - a wall is a surface, not a stick
+        whose Iy/Iz swap on 90°.
+        """
+        if not hasattr(self, "element_property_form"):
+            return
+        plate = self.element_type_selector.currentData() == "plate"
+        self.element_property_form.setRowVisible(self.element_section_selector, not plate)
+        self.element_property_form.setRowVisible(self.element_thickness_selector, plate)
+        if self.element_properties_title is not None:
+            self.element_properties_title.setText(
+                "Material & Thickness" if plate else "Material & Section"
+            )
+        self.element_property_hint.setText(
+            "Properties에서 저장한 Material과 Thickness를 모두 선택하세요."
+            if plate
+            else "Properties에서 저장한 Material과 Section을 모두 선택하세요."
+        )
+        if hasattr(self, "element_local_axis_card"):
+            self.element_local_axis_card.setVisible(self._start_in_3d and not plate)
 
     _DIRECTIONAL_BEHAVIOR_HINTS: ClassVar[dict[str, str]] = {
         "tension_only": (
@@ -2082,11 +2172,37 @@ class ModelingInterfacePage(
 
     def _element_property_selection_changed(self, _index: int | None = None) -> None:
         material_id = self.element_material_selector.currentData()
-        section_id = self.element_section_selector.currentData()
         material = next(
             (item for item in self._user_materials if item.get("id") == material_id),
             None,
         )
+        if self.element_type_selector.currentData() == "plate":
+            # Surfaces are authored in 3D only. Keep the beam pen cleared so
+            # Create Element never stamps a dummy H/B onto a two-node stick.
+            self._active_element_kwargs = None
+            thickness_id = self.element_thickness_selector.currentData()
+            thickness = next(
+                (item for item in self._user_thicknesses if item.get("id") == thickness_id),
+                None,
+            )
+            if material is None or thickness is None:
+                self._clear_active_plate_pen()
+                self.start_element_drawing_button.setEnabled(False)
+                self.active_element_status.setText(
+                    "Properties에서 저장한 Material과 Thickness를 모두 선택하세요."
+                )
+                return
+            self._set_active_plate_pen(
+                material,
+                thickness,
+                material_id=str(material_id),
+                thickness_id=str(thickness_id),
+            )
+            # 2D page shares this form but has no surface authoring path.
+            self.start_element_drawing_button.setEnabled(bool(self._start_in_3d))
+            return
+        self._clear_active_plate_pen()
+        section_id = self.element_section_selector.currentData()
         section = next(
             (item for item in self._user_sections if item.get("id") == section_id),
             None,
@@ -2113,6 +2229,12 @@ class ModelingInterfacePage(
                 "material_id": material_id,
                 "material_category": material.get("category"),
                 "material_grade": material.get("grade"),
+                **({
+                    "fy": float(material.get("fy", 0.0)),
+                    "strain_hardening_ratio": float(material.get("strain_hardening_ratio", 0.02)),
+                    "zy": section.get("zy"),
+                    "zz": section.get("zz"),
+                } if not self._start_in_3d else {}),
             },
             material_label=str(material.get("name") or material_id),
             section_label=str(section.get("name") or section_id),
@@ -2139,6 +2261,51 @@ class ModelingInterfacePage(
             "✓ 새 부재에 자동 적용됩니다."
         )
         self.start_element_drawing_button.setEnabled(True)
+
+    def _clear_active_plate_pen(self) -> None:
+        self._active_plate_kwargs = None
+        self.canvas.wall_pen = None
+
+    def _set_active_plate_pen(
+        self,
+        material: dict[str, object],
+        thickness: dict[str, object],
+        *,
+        material_id: str,
+        thickness_id: str,
+    ) -> None:
+        """Arm the wall draw pen from Create Element Material + Thickness.
+
+        Thickness library values live in mm; ``WallPanel.thickness`` and the
+        viewport use the model's length unit, so convert once here. Poisson
+        is not on saved materials yet — ``DEFAULT_POISSON_RATIO`` matches
+        beam section application.
+        """
+        try:
+            thickness_mm = float(thickness.get("thickness_mm", 0.0))
+        except (TypeError, ValueError):
+            thickness_mm = 0.0
+        shown = mm_to_length_unit(thickness_mm, self._unit_system.length)
+        pen = {
+            "thickness": float(shown),
+            "elastic": float(material["elastic"]),
+            "poisson_ratio": float(DEFAULT_POISSON_RATIO),
+            "density": float(material.get("density", 0.0)),
+        }
+        self._active_plate_kwargs = dict(pen)
+        self.canvas.wall_pen = dict(pen)
+        material_label = str(material.get("name") or material_id)
+        thickness_label = str(thickness.get("name") or thickness_id)
+        if self._start_in_3d:
+            ready = "✓ 기존 노드 네 개를 클릭하면 벽체가 생성됩니다."
+        else:
+            ready = "벽체(Plate)는 3D 모델링에서만 그릴 수 있습니다."
+        self.active_element_status.setText(
+            f"현재 설정: {material_label} / {thickness_label}\n"
+            f"t {shown:g} {self._unit_system.length} · "
+            f"E {pen['elastic']:g} {self._unit_system.stress}\n"
+            f"{ready}"
+        )
 
     def _apply_active_element_to_new_members(self, new_element_tags: set[int]) -> None:
         """Give a just-drawn member the Element tab's selected definitions.
@@ -3534,6 +3701,7 @@ class ModelingInterfacePage(
         self.section_material_panel.set_visible_groups(material=True, section=True)
         self.section_material_panel.material_saved.connect(self._save_user_material)
         self.section_material_panel.section_saved.connect(self._save_user_section)
+        self.section_material_panel.thickness_saved.connect(self._save_user_thickness)
         self.section_material_panel.property_set_saved.connect(
             self._activate_saved_property_set
         )
@@ -3552,6 +3720,8 @@ class ModelingInterfacePage(
         self.properties_selector = QComboBox()
         self.properties_selector.addItem("MATERIAL", "material")
         self.properties_selector.addItem("SECTION", "section")
+        if self._start_in_3d:
+            self.properties_selector.addItem("THICKNESS", "thickness")
         self.properties_selector.addItem("SECTION PROPERTIES", "section_properties")
         self.properties_selector.currentIndexChanged.connect(
             self._properties_selector_changed
@@ -3561,6 +3731,7 @@ class ModelingInterfacePage(
         for group in (
             self.section_material_panel.material_group,
             self.section_material_panel.section_group,
+            self.section_material_panel.thickness_group,
             self.section_material_panel.properties_group,
         ):
             group.set_header_visible(False)
@@ -4245,6 +4416,7 @@ class ModelingInterfacePage(
             data["user_materials"] = [dict(material) for material in self._user_materials]
             data["user_sections"] = [dict(section) for section in self._user_sections]
             data["load_generator_settings"] = self._load_generator_settings()
+        data["user_thicknesses"] = [dict(item) for item in self._user_thicknesses]
         return data
 
     def load_project_dict(self, data: dict[str, object]) -> None:
@@ -4306,9 +4478,10 @@ class ModelingInterfacePage(
         self.element_type_selector.setCurrentIndex(behavior_index)
         self.element_type_selector.blockSignals(False)
         self.canvas.element_family = (
-            "frame" if element_behavior == "general_beam" else "truss"
+            "truss" if element_behavior in self._AXIAL_ELEMENT_BEHAVIORS else "frame"
         )
         self.canvas.element_behavior = element_behavior
+        self._refresh_create_element_property_rows()
         self._element_property_selection_changed()
         self.truss_mode_toggle.blockSignals(True)
         self.truss_mode_toggle.setChecked(self.canvas.element_family == "truss")
@@ -4331,6 +4504,12 @@ class ModelingInterfacePage(
         self._sync_property_panel()
         self._refresh_status()
         self._refresh_model_settings_summary()
+        stored_thicknesses = data.get("user_thicknesses", [])
+        self._user_thicknesses = (
+            [dict(item) for item in stored_thicknesses if isinstance(item, dict)]
+            if isinstance(stored_thicknesses, list)
+            else []
+        )
         self._refresh_work_tree()
         if self._start_in_3d:
             self._restore_load_generator_settings(data.get("load_generator_settings"))
@@ -4368,10 +4547,13 @@ class ModelingInterfacePage(
             return
         if self._analysis_run_thread is not None and self._analysis_run_thread.isRunning():
             return
-        if self._start_in_3d and hasattr(self, "analysis_method_selector"):
+        if hasattr(self, "analysis_method_selector"):
             _label, kind, _dialog_cls = self._current_analysis_method_option()
             if kind == AnalysisKind.NONLINEAR_STATIC:
-                self._solve_nonlinear_static()
+                if self._start_in_3d:
+                    self._solve_nonlinear_static()
+                else:
+                    self._run_full_analysis(kind)
                 return
             if kind in self._FULL_ANALYSIS_KINDS:
                 self._run_full_analysis(kind)
@@ -4535,9 +4717,12 @@ class ModelingInterfacePage(
             self.determinacy_status.setText(f"모델 빌드 실패: {error}")
             return
         try:
-            script = export_opensees_script(
-                model, include_mass=True, length_unit=self._unit_system.length
-            )
+            if not self._start_in_3d and kind == AnalysisKind.NONLINEAR_STATIC:
+                script = export_opensees_script(model, nonlinear_2d=True)
+            else:
+                script = export_opensees_script(
+                    model, include_mass=True, length_unit=self._unit_system.length
+                )
         except ValueError as error:
             self.determinacy_status.setText(f"보내기 실패: {error}")
             return
@@ -4776,27 +4961,70 @@ class ModelingInterfacePage(
         self._sync_property_panel()
 
     def _activate_draw_tool(self) -> None:
-        if self._start_in_3d and self._active_element_kwargs is None:
+        plate = (
+            hasattr(self, "element_type_selector")
+            and self.element_type_selector.currentData() == "plate"
+        )
+        if not self._start_in_3d and plate:
+            # Surface authoring is 3D-only (architecture: 2D stays line members).
             self.select_tool.setChecked(True)
             self._set_mode(
                 "select",
-                "Create Element를 시작하려면 Material과 Section을 모두 선택하세요.",
+                "벽체(Plate)는 3D 모델링에서만 그릴 수 있습니다.",
             )
-            self.workbench_buttons["element"].setChecked(True)
-            self.node_subcategory_row.hide()
-            self.element_subcategory_row.show()
-            index = self.element_subcategory_combo.findData("element_picker")
-            self.element_subcategory_combo.blockSignals(True)
-            self.element_subcategory_combo.setCurrentIndex(index)
-            self.element_subcategory_combo.blockSignals(False)
-            self._active_element_subcategory = "element_picker"
-            self._show_category("element_picker", sync_workbench=False)
             self.active_element_status.setText(
-                "⚠ 물성·단면이 설정되지 않아 부재를 그릴 수 없습니다. "
-                "Material과 Section을 모두 선택하세요."
+                "벽체(Plate)는 3D 모델링에서만 그릴 수 있습니다."
             )
-            self.selection_summary.setText("⚠ Create Element에 필요한 물성·단면이 없습니다.")
             return
+        if self._start_in_3d:
+            plate_ready = self._active_plate_kwargs is not None
+            beam_ready = self._active_element_kwargs is not None
+            if plate and not plate_ready:
+                self.select_tool.setChecked(True)
+                self._set_mode(
+                    "select",
+                    "Create Element를 시작하려면 Material과 Thickness를 모두 선택하세요.",
+                )
+                self.workbench_buttons["element"].setChecked(True)
+                self.node_subcategory_row.hide()
+                self.element_subcategory_row.show()
+                index = self.element_subcategory_combo.findData("element_picker")
+                self.element_subcategory_combo.blockSignals(True)
+                self.element_subcategory_combo.setCurrentIndex(index)
+                self.element_subcategory_combo.blockSignals(False)
+                self._active_element_subcategory = "element_picker"
+                self._show_category("element_picker", sync_workbench=False)
+                self.active_element_status.setText(
+                    "⚠ 물성·두께가 설정되지 않아 벽체를 그릴 수 없습니다. "
+                    "Material과 Thickness를 모두 선택하세요."
+                )
+                self.selection_summary.setText(
+                    "⚠ Create Element에 필요한 물성·두께가 없습니다."
+                )
+                return
+            if not plate and not beam_ready:
+                self.select_tool.setChecked(True)
+                self._set_mode(
+                    "select",
+                    "Create Element를 시작하려면 Material과 Section을 모두 선택하세요.",
+                )
+                self.workbench_buttons["element"].setChecked(True)
+                self.node_subcategory_row.hide()
+                self.element_subcategory_row.show()
+                index = self.element_subcategory_combo.findData("element_picker")
+                self.element_subcategory_combo.blockSignals(True)
+                self.element_subcategory_combo.setCurrentIndex(index)
+                self.element_subcategory_combo.blockSignals(False)
+                self._active_element_subcategory = "element_picker"
+                self._show_category("element_picker", sync_workbench=False)
+                self.active_element_status.setText(
+                    "⚠ 물성·단면이 설정되지 않아 부재를 그릴 수 없습니다. "
+                    "Material과 Section을 모두 선택하세요."
+                )
+                self.selection_summary.setText(
+                    "⚠ Create Element에 필요한 물성·단면이 없습니다."
+                )
+                return
         self.draw_tool.setChecked(True)
         if hasattr(self, "workbench_buttons"):
             self.workbench_buttons["element"].setChecked(True)
@@ -4807,14 +5035,23 @@ class ModelingInterfacePage(
             self.element_subcategory_combo.setCurrentIndex(index)
             self.element_subcategory_combo.blockSignals(False)
             self._active_element_subcategory = "element_picker"
-        description = (
-            "그리기 · 시작 노드와 끝 노드를 차례로 클릭합니다. "
-            "부재가 완성되면 다음 클릭은 새 부재의 시작 노드가 됩니다. "
-            "Esc로 그리기를 종료합니다."
-            if self.canvas.ndm == 3
-            else "그리기 · 연속 클릭으로 노드와 부재를 함께 만듭니다. "
-            "아래 입력칸에 길이·각도를 쳐도 됩니다. Esc로 그리기를 종료합니다."
-        )
+        if plate:
+            description = (
+                "그리기 · 기존 노드 네 개를 순서대로 클릭해 폐쇄된 벽체를 만듭니다. "
+                "두께는 해석 값만 쓰고 캔버스에는 면으로 표시됩니다. "
+                "Esc로 그리기를 종료합니다."
+            )
+        elif self.canvas.ndm == 3:
+            description = (
+                "그리기 · 시작 노드와 끝 노드를 차례로 클릭합니다. "
+                "부재가 완성되면 다음 클릭은 새 부재의 시작 노드가 됩니다. "
+                "Esc로 그리기를 종료합니다."
+            )
+        else:
+            description = (
+                "그리기 · 연속 클릭으로 노드와 부재를 함께 만듭니다. "
+                "아래 입력칸에 길이·각도를 쳐도 됩니다. Esc로 그리기를 종료합니다."
+            )
         self._set_mode("draw", description)
         self.draw_entry.setFocus()
         self._sync_property_panel()
@@ -5031,8 +5268,8 @@ class ModelingInterfacePage(
         self._sync_selection_status()
 
     def _properties_selector_changed(self, _index: int = 0) -> None:
-        """Show only the MATERIAL/SECTION/SECTION PROPERTIES card the
-        "PROPERTIES" dropdown currently names, hiding the other two - see
+        """Show only the MATERIAL/SECTION/THICKNESS/SECTION PROPERTIES card
+        the "PROPERTIES" dropdown currently names, hiding the others - see
         _build_member_bar_content for why this replaced each card's own
         clickable header in the 3D Properties tab."""
         key = self.properties_selector.currentData()
@@ -5040,6 +5277,7 @@ class ModelingInterfacePage(
         for group, group_key in (
             (panel.material_group, "material"),
             (panel.section_group, "section"),
+            (panel.thickness_group, "thickness"),
             (panel.properties_group, "section_properties"),
         ):
             active = key == group_key
@@ -5049,6 +5287,10 @@ class ModelingInterfacePage(
             # a thin blank strip for each. Hide the whole card instead, so
             # only the one actually-selected card's frame ever shows.
             group.setVisible(active)
+        # Thickness is a library of t values for walls, not a beam
+        # section+material pair, so "선택 부재에 물성·단면 적용" has nothing
+        # to do until plate assignment is wired.
+        panel.apply_button.setVisible(key != "thickness")
 
     @staticmethod
     def _section_kwargs_from_properties(properties: dict[str, float | str]) -> dict[str, object]:
@@ -5136,6 +5378,11 @@ class ModelingInterfacePage(
                 section_id=section.get("database_id"),
             )
             label = str(section.get("name", "섹션"))
+        elif kind == "thickness":
+            # Thickness is a wall/plate library entry. Beam members have no
+            # t to overlay, and plate assignment is not wired yet, so a drop
+            # is a no-op rather than being misread as a section.
+            return
         else:
             return
         self._select_entity_from_tree("element", element_tag)
@@ -5280,6 +5527,7 @@ class ModelingInterfacePage(
 
     def _commit_draw_entry(self) -> None:
         if self._start_in_3d and self._active_element_kwargs is None:
+            # Plate uses node picking, not typed length/angle entry.
             self._activate_draw_tool()
             return
         before = set(self.canvas.elements)

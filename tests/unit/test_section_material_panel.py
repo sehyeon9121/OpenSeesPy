@@ -374,3 +374,30 @@ def test_reselecting_a_member_with_no_fy_shows_zero_not_a_stale_value() -> None:
 
     assert fresh_panel.material_fy.value() == 0.0
     assert fresh_panel.material_hardening_ratio.value() == 0.02
+
+
+def test_thickness_save_emits_name_and_millimetre_value() -> None:
+    """THICKNESS is a wall/plate t library, stored in mm like section
+    dimensions so a unit-system change cannot silently rewrite the value."""
+    panel = _panel()
+    panel.set_unit_system(UnitSystem(force="kN", length="m"))
+    panel.thickness_name.setText("W200")
+    panel.thickness_spin.setValue(0.25)
+
+    payloads: list[dict[str, object]] = []
+    panel.thickness_saved.connect(payloads.append)
+    panel.thickness_save_button.click()
+
+    assert len(payloads) == 1
+    assert payloads[0]["name"] == "W200"
+    assert payloads[0]["thickness_mm"] == pytest.approx(250.0)
+
+
+def test_thickness_save_requires_a_name() -> None:
+    panel = _panel()
+    payloads: list[dict[str, object]] = []
+    panel.thickness_saved.connect(payloads.append)
+    panel.thickness_save_button.click()
+
+    assert payloads == []
+    assert "이름을 입력" in panel.thickness_save_status.text()

@@ -1274,3 +1274,95 @@ def test_node_translate_copy_mode_accepts_repeat_count_and_a_dz_offset() -> None
         round(node.z, 6) for tag, node in page.canvas.nodes.items() if tag not in (left, right)
     )
     assert heights == [3.0, 3.0]
+
+
+def _build_mixed_truss_frame_model_with_embedded_node(page: ModelingInterfacePage) -> dict:
+    """A truss+frame mixed 3D model with a mid-span node on the frame member
+    (``add_member_midpoint_node`` splits it immediately into two real
+    elements - see ``canvas_geometry.py``'s ``_insert_station_node``; a node
+    dropped later that merely lands on an existing member's line instead
+    uses the deferred ``self.embedded_nodes`` mechanism ``build_model()``
+    splits at analysis time, exercised directly against ``StructuralModel``/
+    ``compile_loads`` in ``test_load_compiler_mixed_shell_e2e.py``) - the
+    same overall shape as a real exported project (a frame beam with a node
+    at its midpoint, braced by a diagonal truss/cable) that was reported to
+    fail to solve once self-weight or a UDL was added on top of it.
+    """
+    canvas = page.canvas
+    canvas.element_family = "frame"
+    n1 = canvas._add_node_at((0.0, 0.0, 0.0))
+    n2 = canvas._add_node_at((10.0, 0.0, 0.0))
+    n3 = canvas._add_node_at((10.0, 0.0, -3.0))
+    beam = canvas.add_member(n1, n2)
+    canvas.selected_elements = {beam}
+    canvas.apply_full_section_to_selection(
+        shape="Rectangle",
+        source="custom",
+        dimensions={"b": 0.3, "h": 0.3},
+        area=0.09,
+        iy=0.000675,
+        iz=0.000675,
+        j=0.00114075,
+        elastic=2.0e8,
+        density=76.982202,
+        shear_modulus=76923076.92307693,
+    )
+    canvas.element_family = "truss"
+    brace = canvas.add_member(n2, n3)
+    canvas.selected_elements = {brace}
+    canvas.apply_full_section_to_selection(
+        shape="Circle",
+        source="custom",
+        dimensions={"D": 0.019},
+        area=0.0002835287369864788,
+        iy=6.397117128257429e-09,
+        iz=6.397117128257429e-09,
+        j=1.2794234256514858e-08,
+        elastic=2.0e8,
+        density=76.982202,
+        shear_modulus=76923076.92307693,
+    )
+    mid = canvas.add_member_midpoint_node(beam)
+    canvas.set_support(n1, (True, True, True, True, True, True))
+    canvas.set_support(n3, (True, True, True, True, True, True))
+    return {"n1": n1, "n2": n2, "n3": n3, "beam": beam, "brace": brace, "mid": mid}
+
+
+def test_mixed_truss_and_frame_3d_model_with_a_mid_span_node_solves_under_self_weight() -> None:
+    """Regression test for a reported bug: enabling self-weight on a 3D
+    canvas model that mixes truss and frame members was said to make the
+    analysis fail outright with no results. Reproduction against this
+    branch's load compiler (the real exported project file, several
+    hand-built StructuralModel variants, and this canvas-drawn mid-span-node
+    variant) all solve successfully - this pins that down."""
+    page = _page(start_in_3d=True)
+    _build_mixed_truss_frame_model_with_embedded_node(page)
+    page.canvas.include_self_weight = True
+
+    from openframe.features.analysis.statics import MaterialFreeStaticsSolver
+    from openframe.core.domain.results import AnalysisStatus
+
+    result = MaterialFreeStaticsSolver().solve(page.canvas.build_model())
+
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+    assert result.node_results  # a real result set, not an empty/failed one
+
+
+def test_mixed_truss_and_frame_3d_model_with_a_mid_span_node_solves_under_a_udl() -> None:
+    """Same reported failure mode, triggered by a UDL on the frame member
+    (the split host of the embedded mid-span node) instead of self-weight."""
+    page = _page(start_in_3d=True)
+    tags = _build_mixed_truss_frame_model_with_embedded_node(page)
+
+    from openframe.core.domain import UniformElementLoad
+    from openframe.features.analysis.statics import MaterialFreeStaticsSolver
+    from openframe.core.domain.results import AnalysisStatus
+
+    page.canvas.element_loads[tags["beam"]] = UniformElementLoad(
+        tags["beam"], wz=-5.0, wz_j=-5.0
+    )
+
+    result = MaterialFreeStaticsSolver().solve(page.canvas.build_model())
+
+    assert result.status == AnalysisStatus.COMPLETED, result.messages
+    assert result.node_results

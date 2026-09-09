@@ -82,6 +82,7 @@ def export_opensees_script(
     length_unit: str = "m",
     self_weight: SelfWeightEntry | None = None,
     gravity_acceleration: float | None = None,
+    nonlinear_2d: bool = False,
 ) -> str:
     """Return a runnable OpenSeesPy script text for ``model``.
 
@@ -99,6 +100,8 @@ def export_opensees_script(
     """
     if model.ndm not in (2, 3):
         raise ValueError("현재 2D 또는 3D 모델만 OpenSeesPy 스크립트로 내보낼 수 있습니다.")
+    if nonlinear_2d and model.ndm != 2:
+        raise ValueError("2D Pushover 내보내기는 2D 모델만 지원합니다.")
     if not model.nodes or (not model.elements and not model.walls):
         raise ValueError("절점과 부재를 먼저 작성하세요.")
 
@@ -176,7 +179,7 @@ def export_opensees_script(
     _write_springs(lines, model)
     if model.ndm == 3:
         _write_rigid_diaphragms(lines, model)
-    _write_elements(lines, model, required_subdivisions)
+    _write_elements(lines, model, required_subdivisions, nonlinear_2d=nonlinear_2d)
     _write_shells(lines, model)
     if include_mass:
         _write_mass(lines, model, length_unit)
@@ -319,7 +322,8 @@ def _write_rigid_diaphragms(lines: list[str], model: StructuralModel) -> None:
 
 
 def _write_elements(
-    lines: list[str], model: StructuralModel, required_subdivisions: frozenset[int] = frozenset()
+    lines: list[str], model: StructuralModel, required_subdivisions: frozenset[int] = frozenset(),
+    *, nonlinear_2d: bool = False,
 ) -> None:
     ndm = model.ndm
     truss_elements = [
@@ -345,6 +349,14 @@ def _write_elements(
             lines.append(
                 f"ops.uniaxialMaterial('ElasticPPGap', {base_tag}, {_num(elastic)}, "
                 f"{_num(huge_fy)}, {_num(gap_strain)})"
+            )
+        elif nonlinear_2d and float(element.properties.get("Fy", 0.0)) > 0:
+            fy = float(element.properties["Fy"])
+            hardening = float(element.properties.get("StrainHardeningRatio", 0.02))
+            if not math.isfinite(fy) or not math.isfinite(hardening) or not 0 <= hardening <= 1:
+                raise ValueError(f"부재 {element.tag}: 유효한 fy와 0≤b≤1이 필요합니다.")
+            lines.append(
+                f"ops.uniaxialMaterial('Steel01', {base_tag}, {fy!r}, {elastic!r}, {hardening!r})"
             )
         else:
             lines.append(f"ops.uniaxialMaterial('Elastic', {base_tag}, {_num(elastic)})")
@@ -381,10 +393,22 @@ def _write_elements(
         return
 
     lines.append("ops.geomTransf('Linear', 1)")
+    if nonlinear_2d:
+        from openframe.features.analysis.statics.solver import _mixed_orphan_rotation_nodes
+
+        for node_tag in _mixed_orphan_rotation_nodes(model):
+            lines.append(f"ops.fix({node_tag}, 0, 0, 1)")
     for element in sorted(frame_elements, key=lambda item: item.tag):
         if element.tag in required_subdivisions:
             elastic, area, inertia = _element_properties(element, ndm)
-            _write_discretized_member(lines, model, element, area, elastic, inertia)
+            _write_discretized_member(
+                lines, model, element, area, elastic, inertia, nonlinear_2d=nonlinear_2d
+            )
+            continue
+        if nonlinear_2d:
+            from openframe.features.analysis.statics.pushover_2d import write_frame
+
+            write_frame(lines, model, element)
             continue
         elastic, area, inertia = _element_properties(element, ndm)
         release_code = int(element.moment_release_i) + 2 * int(element.moment_release_j)
@@ -523,6 +547,7 @@ def _write_discretized_member(
     area: float,
     elastic: float,
     inertia: float,
+    *, nonlinear_2d: bool = False,
 ) -> None:
     """Text form of ``MaterialFreeStaticsSolver._build_discretized_member``:
     OpenSeesPy's ``eleLoad`` has no linearly-varying transverse load, so a
@@ -551,6 +576,16 @@ def _write_discretized_member(
         lines.append(f"ops.node({node_tags[segment]}, {_num(x)}, {_num(y)})")
     for segment in range(segments):
         sub_tag = _TRAPEZOID_ELEMENT_TAG_OFFSET + element.tag * 1000 + segment
+        if nonlinear_2d:
+            from openframe.features.analysis.statics.pushover_2d import write_frame
+
+            write_frame(
+                lines, model, element, tag=sub_tag,
+                node_i=node_tags[segment], node_j=node_tags[segment + 1],
+                release_i=element.moment_release_i and segment == 0,
+                release_j=element.moment_release_j and segment == segments - 1,
+            )
+            continue
         call = (
             f"ops.element('elasticBeamColumn', {sub_tag}, {node_tags[segment]}, "
             f"{node_tags[segment + 1]}, {_num(area)}, {_num(elastic)}, {_num(inertia)}, 1"

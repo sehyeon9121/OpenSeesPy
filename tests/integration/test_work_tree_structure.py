@@ -147,6 +147,21 @@ def test_material_and_section_rows_carry_definition_role_data() -> None:
     )
 
 
+def test_thickness_rows_carry_definition_role_data() -> None:
+    from openframe.features.model.presentation.modeling_interface_page import (
+        _TREE_DEFINITION_ROLE,
+    )
+
+    page = _page()
+    page._save_user_thickness({"name": "W200", "thickness_mm": 200.0})
+
+    assert page.work_tree_thicknesses.child(0).data(0, _TREE_DEFINITION_ROLE) == (
+        "thickness",
+        "THK-001",
+    )
+    assert page.work_tree_thicknesses.child(0).text(0) == "W200"
+
+
 def test_deleting_a_material_definition_removes_it_from_the_tree() -> None:
     page = _page()
     page._save_user_material(

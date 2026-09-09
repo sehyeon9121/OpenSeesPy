@@ -21,6 +21,7 @@ class _DrawingModeMixin:
         self._preview_midpoint = None
         self._chain.clear()
         self._floor_chain.clear()
+        self._wall_chain.clear()
         self._snap = None
         self.setDragMode(
             QGraphicsView.DragMode.ScrollHandDrag
@@ -139,10 +140,14 @@ class _DrawingModeMixin:
         return True
 
     def end_chain(self) -> None:
-        if not self._chain and self._preview_point is None:
+        # Wall picking uses `_wall_chain` and never `_chain`. Returning
+        # early on an empty beam chain used to leave a half-clicked wall
+        # ring on the canvas after Esc / tool-switch helpers called this.
+        if not self._chain and self._preview_point is None and not self._wall_chain:
             return
         self._chain.clear()
         self._preview_point = None
+        self._wall_chain.clear()
         self._redraw()
         self.draw_state_changed.emit()
 

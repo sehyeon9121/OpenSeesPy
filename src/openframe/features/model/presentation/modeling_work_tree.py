@@ -1,7 +1,7 @@
 """Work Tree / Selection Status inspector for ModelingInterfacePage.
 
 Mixin, not a standalone widget: it reads ``self.canvas`` and the page-owned
-``_user_materials`` / ``_user_sections`` lists. Split out of the page so a
+``_user_materials`` / ``_user_sections`` / ``_user_thicknesses`` lists. Split out of the page so a
 command that only touches the tree does not have to load 3D picking or the
 Loads tab. See ``canvas_work_planes.py`` for the same mixin pattern.
 """
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from openframe.core.domain import mm_to_length_unit
 from openframe.features.model.presentation.current_page_only_stack import _CurrentPageOnlyStack
 from openframe.features.model.presentation.modeling_tree_roles import (
     _TREE_DEFINITION_ROLE,
@@ -120,12 +121,14 @@ class _WorkTreeMixin:
         self.work_tree_supports = QTreeWidgetItem(["지점", "0"])
         self.work_tree_materials = QTreeWidgetItem(["물성", "0"])
         self.work_tree_sections = QTreeWidgetItem(["섹션", "0"])
+        self.work_tree_thicknesses = QTreeWidgetItem(["두께", "0"])
         self.work_tree_load_combinations = QTreeWidgetItem(["하중조합", "0"])
         self.work_tree.addTopLevelItem(self.work_tree_nodes)
         self.work_tree.addTopLevelItem(self.work_tree_members)
         self.work_tree.addTopLevelItem(self.work_tree_supports)
         self.work_tree.addTopLevelItem(self.work_tree_materials)
         self.work_tree.addTopLevelItem(self.work_tree_sections)
+        self.work_tree.addTopLevelItem(self.work_tree_thicknesses)
         self.work_tree.addTopLevelItem(self.work_tree_load_combinations)
         # Populate a geometry group the moment it is opened - _refresh_
         # structure_tree only fills groups that are already expanded.
@@ -262,8 +265,23 @@ class _WorkTreeMixin:
             item.setData(0, _TREE_DEFINITION_ROLE, ("section", section.get("id")))
             self.work_tree_sections.addChild(item)
         self.work_tree_sections.setText(1, str(len(self._user_sections)))
+        self.work_tree_thicknesses.takeChildren()
+        for thickness in self._user_thicknesses:
+            item = QTreeWidgetItem(
+                [str(thickness.get("name", "사용자 두께")), str(thickness.get("id", ""))]
+            )
+            try:
+                thickness_mm = float(thickness.get("thickness_mm", 0.0))
+            except (TypeError, ValueError):
+                thickness_mm = 0.0
+            shown = mm_to_length_unit(thickness_mm, self._unit_system.length)
+            item.setToolTip(0, f"t = {shown:g} {self._unit_system.length}")
+            item.setData(0, _TREE_DEFINITION_ROLE, ("thickness", thickness.get("id")))
+            self.work_tree_thicknesses.addChild(item)
+        self.work_tree_thicknesses.setText(1, str(len(self._user_thicknesses)))
         self.work_tree_materials.setExpanded(True)
         self.work_tree_sections.setExpanded(True)
+        self.work_tree_thicknesses.setExpanded(True)
         self._refresh_structure_tree()
         self._refresh_element_property_selectors()
 

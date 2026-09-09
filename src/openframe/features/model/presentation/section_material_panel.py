@@ -537,6 +537,7 @@ class SectionMaterialPanel(QWidget):
     apply_requested = Signal()
     material_saved = Signal(dict)
     section_saved = Signal(dict)
+    thickness_saved = Signal(dict)
     property_set_saved = Signal(str, str)
     #: Fires whenever any field that feeds ``current_application_kwargs()``
     #: changes *by the user's own typing* - never while ``load_from_element``
@@ -561,6 +562,10 @@ class SectionMaterialPanel(QWidget):
         self._selected_material: MaterialRecord | None = None
         self._updating = False  # guards against feedback loops while repopulating fields
         self._loading_element = False  # True only while load_from_element() runs
+        # Wall/plate thickness lives in mm like section dimensions, not as a
+        # beam SECTION shape. Default 200 mm (0.2 m) matches the wall-shell
+        # tests; the spinbox only ever shows the current length unit.
+        self._thickness_mm = 200.0
 
         root = QVBoxLayout(self)
         self._root_layout = root
@@ -649,6 +654,52 @@ class SectionMaterialPanel(QWidget):
         section_group.add_widget(self.section_save_status)
 
         root.addWidget(section_group)
+
+        # -- THICKNESS ----------------------------------------------------
+        # Wall/plate thickness is not a beam SECTION. A section carries
+        # H/B/tw and derived A/Iy/Iz/J; a wall only needs a single t that
+        # later becomes ElasticMembranePlateSection. Putting that field
+        # under SECTION would force a dummy shape onto every wall, which
+        # is why this is its own library card (name + t, nothing else).
+        thickness_group = CollapsibleSection("THICKNESS")
+        self.thickness_group = thickness_group
+        self.thickness_name_row = QWidget()
+        thickness_name_layout = QHBoxLayout(self.thickness_name_row)
+        thickness_name_layout.setContentsMargins(0, 0, 0, 0)
+        thickness_name_layout.addWidget(QLabel("Name"))
+        self.thickness_name = QLineEdit()
+        self.thickness_name.setPlaceholderText("예: W200")
+        thickness_name_layout.addWidget(self.thickness_name, 1)
+        thickness_group.add_widget(self.thickness_name_row)
+
+        thickness_hint = QLabel(
+            "벽체(plate)에 쓸 두께만 정의합니다. 단면 형상(H/B/tw)은 필요 없습니다."
+        )
+        thickness_hint.setObjectName("setupSectionHint")
+        thickness_hint.setWordWrap(True)
+        thickness_group.add_widget(thickness_hint)
+
+        thickness_form = QFormLayout()
+        thickness_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.thickness_spin = SafeDoubleSpinBox()
+        self.thickness_spin.setDecimals(6)
+        self.thickness_spin.setRange(0.000001, 1.0e9)
+        self.thickness_spin.setMaximumWidth(_NUMBER_WIDTH)
+        self.thickness_spin.valueChanged.connect(self._thickness_changed)
+        self._thickness_label = QLabel("Thickness")
+        thickness_form.addRow(self._thickness_label, self.thickness_spin)
+        thickness_group.add_layout(thickness_form)
+
+        self.thickness_save_button = QPushButton("두께 저장")
+        self.thickness_save_button.setObjectName("thicknessLibrarySaveButton")
+        self.thickness_save_button.clicked.connect(self._save_thickness_clicked)
+        thickness_group.add_widget(self.thickness_save_button)
+        self.thickness_save_status = QLabel()
+        self.thickness_save_status.setObjectName("setupSectionHint")
+        self.thickness_save_status.setWordWrap(True)
+        thickness_group.add_widget(self.thickness_save_status)
+        root.addWidget(thickness_group)
+        self._apply_thickness_to_spinbox()
 
         # -- SECTION PROPERTIES -------------------------------------------
         properties_group = CollapsibleSection("SECTION PROPERTIES")
@@ -807,6 +858,17 @@ class SectionMaterialPanel(QWidget):
         self.section_name_row.hide()
         self.section_save_button.hide()
         self.section_save_status.hide()
+        self.thickness_name_row.hide()
+        self.thickness_save_button.hide()
+        self.thickness_save_status.hide()
+
+    def _property_cards(self) -> tuple[CollapsibleSection, ...]:
+        return (
+            self.material_group,
+            self.section_group,
+            self.thickness_group,
+            self.properties_group,
+        )
 
     def set_compact_mode(self, compact: bool = True) -> None:
         """Use a quieter initial state in narrow docked editors.
@@ -818,40 +880,40 @@ class SectionMaterialPanel(QWidget):
         collapsible cards.
         """
         self.section_preview.setFixedSize((148 if compact else 184), (126 if compact else 164))
+        for group in self._property_cards():
+            self._root_layout.removeWidget(group)
         if compact:
-            for group in (self.section_group, self.properties_group, self.material_group):
-                self._root_layout.removeWidget(group)
             self._root_layout.insertWidget(0, self.material_group)
             self._root_layout.insertWidget(1, self.section_group)
-            self._root_layout.insertWidget(2, self.properties_group)
-            self.material_group.set_title("MATERIAL")
-            self.section_group.set_title("SECTION")
-            self.properties_group.set_title("SECTION PROPERTIES")
+            self._root_layout.insertWidget(2, self.thickness_group)
+            self._root_layout.insertWidget(3, self.properties_group)
         else:
-            for group in (self.section_group, self.properties_group, self.material_group):
-                self._root_layout.removeWidget(group)
             self._root_layout.insertWidget(0, self.section_group)
-            self._root_layout.insertWidget(1, self.properties_group)
-            self._root_layout.insertWidget(2, self.material_group)
-            self.material_group.set_title("MATERIAL")
-            self.section_group.set_title("SECTION")
-            self.properties_group.set_title("SECTION PROPERTIES")
+            self._root_layout.insertWidget(1, self.thickness_group)
+            self._root_layout.insertWidget(2, self.properties_group)
+            self._root_layout.insertWidget(3, self.material_group)
+        self.material_group.set_title("MATERIAL")
+        self.section_group.set_title("SECTION")
+        self.thickness_group.set_title("THICKNESS")
+        self.properties_group.set_title("SECTION PROPERTIES")
         self.material_name_row.setVisible(compact)
         self.material_save_button.setVisible(compact)
         self.material_save_status.setVisible(compact)
         self.section_name_row.setVisible(compact)
         self.section_save_button.setVisible(compact)
         self.section_save_status.setVisible(compact)
+        self.thickness_name_row.setVisible(compact)
+        self.thickness_save_button.setVisible(compact)
+        self.thickness_save_status.setVisible(compact)
         self.apply_button.setVisible(not compact)
-        # Compact (3D) mode nests these three cards under the Properties tab's
+        # Compact (3D) mode nests these cards under the Properties tab's
         # own outer accordion (see modeling_interface_page.py's
-        # _build_member_bar_content) - all three start collapsed so opening
-        # Properties shows a plain MATERIAL/SECTION/SECTION PROPERTIES list,
-        # each one still a click away from its own fields, rather than
-        # immediately dumping one of the three's whole field set on screen.
-        self.material_group.set_expanded(not compact)
-        self.section_group.set_expanded(not compact)
-        self.properties_group.set_expanded(not compact)
+        # _build_member_bar_content) - they start collapsed so opening
+        # Properties shows a plain MATERIAL/SECTION/THICKNESS/SECTION
+        # PROPERTIES list, each one still a click away from its own fields,
+        # rather than immediately dumping one card's whole field set.
+        for group in self._property_cards():
+            group.set_expanded(not compact)
 
     def set_streamlined_assignment_mode(self, enabled: bool = True) -> None:
         """Make direct assignment the obvious 2D workflow.
@@ -881,7 +943,7 @@ class SectionMaterialPanel(QWidget):
 
     def set_visible_groups(self, *, material: bool = True, section: bool = True) -> None:
         """Hide whichever whole card(s) a narrower-purpose caller has no use
-        for, rather than showing all three of MATERIAL/SECTION/SECTION
+        for, rather than showing MATERIAL/SECTION/THICKNESS/SECTION
         PROPERTIES every time this panel is embedded somewhere.
 
         The 3D workbench's Element tab only ever picks a section for members
@@ -894,6 +956,7 @@ class SectionMaterialPanel(QWidget):
         through ``current_application_kwargs()`` unchanged. Section and
         Section Properties always show/hide together - one is derived from
         the other, so there is no caller that wants just one of them.
+        THICKNESS is not part of that pair: the Properties dropdown owns it.
 
         Each group's own "save to library" row (name field + save button +
         status label - normally only shown in compact mode, see
@@ -910,6 +973,29 @@ class SectionMaterialPanel(QWidget):
         self.section_name_row.setVisible(section)
         self.section_save_button.setVisible(section)
         self.section_save_status.setVisible(section)
+
+    def _save_thickness_clicked(self) -> None:
+        name = self.thickness_name.text().strip()
+        if not name:
+            self.thickness_save_status.setText("두께 이름을 입력하세요.")
+            return
+        if self._thickness_mm <= 0.0:
+            self.thickness_save_status.setText("두께는 0보다 커야 합니다.")
+            return
+        self.thickness_saved.emit({"name": name, "thickness_mm": self._thickness_mm})
+        self.thickness_save_status.setText(f"{name} 두께를 워크트리에 저장했습니다.")
+
+    def _thickness_changed(self, value: float) -> None:
+        if self._updating:
+            return
+        self._thickness_mm = length_unit_to_mm(value, self._unit_system.length)
+
+    def _apply_thickness_to_spinbox(self) -> None:
+        self.thickness_spin.blockSignals(True)
+        self.thickness_spin.setValue(
+            mm_to_length_unit(self._thickness_mm, self._unit_system.length)
+        )
+        self.thickness_spin.blockSignals(False)
 
     def _save_material_clicked(self) -> None:
         name = self.material_name.text().strip() or self.material_grade_combo.currentText().strip()
@@ -988,6 +1074,7 @@ class SectionMaterialPanel(QWidget):
         already-stored mm/DB state, not reinterpreted."""
         self._unit_system = unit_system
         self._refresh_dimension_field_labels()
+        self._apply_thickness_to_spinbox()
         self._refresh_property_display()
         self._refresh_material_display()
         self._refresh_unit_suffixes()
@@ -1009,6 +1096,7 @@ class SectionMaterialPanel(QWidget):
             self._property_labels["Iz"].setText(f"Iz ({length}⁴)")
         if "J" in self._property_labels:
             self._property_labels["J"].setText(f"J ({length}⁴)")
+        self._thickness_label.setText(f"Thickness ({length})")
         stress = self._unit_system.stress
         self._material_e_label.setText(f"E ({stress})")
         self._material_fy_label.setText(f"fy ({stress})")
