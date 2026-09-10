@@ -130,12 +130,22 @@ Item {
     signal nodePicked(int tag, real screenX, real screenY)
     signal memberPicked(int tag, real screenX, real screenY, bool additive)
     signal planePicked(real viewX, real viewY, real viewZ)
-    // Hover equivalents of the two signals above, fired continuously (no
+    // MIDAS-style "snap onto a member's midpoint while drawing" - a click
+    // that lands on an existing member's line (not close enough to either
+    // endpoint node to count as a node hit) while planePickingEnabled, so the
+    // Python side can split that member and connect the new member to the
+    // resulting joint. Position is deliberately not carried here: the join
+    // always lands at the member's exact midpoint (a 50/50 split), never
+    // wherever along its length the cursor happened to be - see
+    // ``_on_3d_member_midpoint_picked``.
+    signal memberMidpointPicked(int tag)
+    // Hover equivalents of the signals above, fired continuously (no
     // button held) while planePickingEnabled - drive the free-form 3D draw
     // mode's live rubber-band preview and node-snap. hoverCleared covers the
-    // pointer landing on neither a node nor the active plane, or leaving the
-    // viewport outright.
+    // pointer landing on neither a node, a member nor the active plane, or
+    // leaving the viewport outright.
     signal nodeHovered(int tag)
+    signal memberMidpointHovered(int tag)
     signal planeHovered(real viewX, real viewY, real viewZ)
     signal hoverCleared()
     signal selectionBoxFinished(string nodeTags, string memberTags, bool additive)
@@ -455,6 +465,12 @@ Item {
         if (hover.objectHit && hover.objectHit.nodeTag !== undefined) {
             root.showSnapFeedback(hover.objectHit.nodeTag)
             root.nodeHovered(hover.objectHit.nodeTag)
+            return
+        }
+        const hoverMemberTag = root.memberTagFromPick(hover)
+        if (hoverMemberTag >= 0) {
+            root.clearSnapFeedback()
+            root.memberMidpointHovered(hoverMemberTag)
         } else if (hover.objectHit === activePlaneModel) {
             root.clearSnapFeedback()
             root.planeHovered(hover.scenePosition.x, hover.scenePosition.y, hover.scenePosition.z)
@@ -2357,6 +2373,13 @@ Item {
                     // Clicked an existing node — continue the chain to it
                     // rather than dropping a new point on top of it.
                     root.nodePicked(result.objectHit.nodeTag, mouse.x, mouse.y)
+                    return
+                }
+                const clickedMemberTag = root.memberTagFromPick(result)
+                if (clickedMemberTag >= 0) {
+                    // Clicked an existing member's line — split it at its
+                    // midpoint and connect there (see memberMidpointPicked).
+                    root.memberMidpointPicked(clickedMemberTag)
                 } else if (result.objectHit === activePlaneModel) {
                     root.planePicked(result.scenePosition.x, result.scenePosition.y, result.scenePosition.z)
                 }

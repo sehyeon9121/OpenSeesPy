@@ -255,6 +255,7 @@ class ModelingInterfacePage(
         self.preview_3d.plane_point_picked.connect(self._on_3d_plane_picked)
         self.preview_3d.node_picked.connect(self._on_3d_node_picked)
         self.preview_3d.member_picked_additive.connect(self._on_3d_member_picked)
+        self.preview_3d.member_midpoint_picked.connect(self._on_3d_member_midpoint_picked)
         if self._start_in_3d:
             # The chain-drawing preview line tracks self.canvas's own state
             # (chain_last_node), so any change to it - a point committed, the
@@ -264,6 +265,7 @@ class ModelingInterfacePage(
             # still open.
             self.canvas.draw_state_changed.connect(self._on_3d_draw_state_changed)
             self.preview_3d.node_hovered.connect(self._on_3d_node_hovered)
+            self.preview_3d.member_midpoint_hovered.connect(self._on_3d_member_midpoint_hovered)
             self.preview_3d.plane_point_hovered.connect(self._on_3d_plane_hovered)
             self.preview_3d.hover_cleared.connect(self._on_3d_hover_cleared)
             self.preview_3d.selection_box_finished.connect(self._on_3d_box_selected)

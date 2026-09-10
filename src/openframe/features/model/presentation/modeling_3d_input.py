@@ -180,6 +180,62 @@ class _Modeling3DInputMixin:
             self.canvas.selection_changed.emit()
 
 
+    def _on_3d_member_midpoint_picked(self, tag: int) -> None:
+        """A member's line (not either endpoint node) was clicked while
+        drawing in 3D - split it at its exact midpoint (MIDAS-style: the
+        join is always the 50/50 point, never wherever on the line the
+        cursor actually landed) and continue the chain to the new joint.
+
+        Mirrors ``_on_3d_node_picked``'s ``mode == "draw"`` branch exactly,
+        just minting a brand-new node via ``add_member_midpoint_node``
+        first instead of reusing an existing one. Plates/walls only ever
+        attach to existing nodes (see ``_on_3d_plane_picked``), so a member
+        hit is a no-op there rather than splitting a member no wall corner
+        was meant to land on.
+        """
+        if self.canvas.mode != "draw" or tag not in self.canvas.elements:
+            return
+        if self._is_plate_element_type():
+            return
+        if self._active_element_kwargs is None:
+            self.canvas.end_chain()
+            self._activate_draw_tool()
+            return
+        start_tag = self.canvas.chain_last_node
+        before = set(self.canvas.elements)
+        node = self.canvas.add_member_midpoint_node(tag)
+        self.canvas.continue_chain_to_node(node)
+        self._apply_active_element_to_new_members(set(self.canvas.elements) - before)
+        if start_tag is not None and start_tag != node:
+            self.canvas.end_chain()
+
+    def _on_3d_member_midpoint_hovered(self, tag: int) -> None:
+        """Cursor is over an existing member's line while drawing - preview
+        the connection landing at its exact midpoint, the same point
+        ``_on_3d_member_midpoint_picked`` would actually split at.
+
+        ``planePickingEnabled`` is also on during floor/wall picking (see
+        ``_sync_picking_mode``), where a member hit is meaningless - those
+        two only ever chain through existing nodes - so this falls through
+        to the same three updates ``_on_3d_hover_cleared`` would run in that
+        case, each already a no-op outside its own relevant mode.
+        """
+        if self.canvas.mode != "draw" or self._is_plate_element_type():
+            self._on_3d_hover_cleared()
+            return
+        element = self.canvas.elements.get(tag)
+        start = None if element is None else self.canvas.nodes.get(element.node_i)
+        end = None if element is None else self.canvas.nodes.get(element.node_j)
+        if start is None or end is None:
+            self._on_3d_hover_cleared()
+            return
+        midpoint = (
+            (start.x + end.x) / 2.0,
+            (start.y + end.y) / 2.0,
+            (start.z + end.z) / 2.0,
+        )
+        self._update_3d_draw_preview(midpoint)
+
     def _on_3d_member_picked(
         self,
         tag: int,

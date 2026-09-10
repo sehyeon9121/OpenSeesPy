@@ -73,6 +73,57 @@ def test_one_undo_removes_a_drawn_member_instead_of_leaving_a_thin_stick() -> No
     assert set(page.canvas.nodes) == {start, end}
 
 
+def test_3d_draw_snap_to_member_midpoint_splits_it_and_connects_the_chain() -> None:
+    """MIDAS-style click-to-connect: dragging a new member's endpoint onto an
+    existing member's line (not either of its own end nodes) in the 3D
+    orbit viewport should split that member at its exact midpoint and
+    continue the chain to the freshly created joint - see
+    ``_on_3d_member_midpoint_picked``. The join always lands at the 50/50
+    point, never wherever on the line the cursor actually was.
+    """
+    page = _page(start_in_3d=True)
+    _enable_element_drawing(page)
+    left = page.canvas.place_point(0.0, 0.0)
+    page.canvas.end_chain()
+    right = page.canvas.place_point(10.0, 0.0)
+    page.canvas.end_chain()
+    page.canvas.set_mode("draw")
+    page.canvas.continue_chain_to_node(left)
+    page.canvas.continue_chain_to_node(right)
+    beam = next(iter(page.canvas.elements.values())).tag
+    page.canvas.end_chain()
+    left_node, right_node = page.canvas.nodes[left], page.canvas.nodes[right]
+    expected_midpoint = (
+        (left_node.x + right_node.x) / 2.0,
+        (left_node.y + right_node.y) / 2.0,
+        (left_node.z + right_node.z) / 2.0,
+    )
+
+    anchor = page.canvas.place_point(5.0, 5.0)
+    page.canvas.set_mode("draw")
+    page.canvas.continue_chain_to_node(anchor)
+    page._on_3d_member_midpoint_picked(beam)
+
+    assert len(page.canvas.elements) == 3
+    joint = next(tag for tag in page.canvas.nodes if tag not in (left, right, anchor))
+    joint_node = page.canvas.nodes[joint]
+    assert (joint_node.x, joint_node.y, joint_node.z) == pytest.approx(expected_midpoint)
+    touching = [
+        element
+        for element in page.canvas.elements.values()
+        if joint in (element.node_i, element.node_j)
+    ]
+    assert len(touching) == 3  # both original-beam halves plus the new connector
+    assert any(
+        {element.node_i, element.node_j} == {anchor, joint}
+        for element in page.canvas.elements.values()
+    )
+    # Matches _on_3d_node_picked's own draw-mode behavior: the completed
+    # member's start node is cleared so the next click begins a fresh one,
+    # rather than silently continuing the chain from the just-placed joint.
+    assert page.canvas.chain_last_node is None
+
+
 def test_2d_auto_applied_section_undoes_with_the_member() -> None:
     page = _page()
     _enable_element_drawing(page)

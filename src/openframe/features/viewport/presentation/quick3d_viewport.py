@@ -18,6 +18,11 @@ class Quick3DViewport(QFrame):
     node_picked = Signal(int, int, int)
     member_picked = Signal(int, int, int)
     member_picked_additive = Signal(int, int, int, bool)
+    #: A click that landed on an existing member's line while drawing - the
+    #: member should split at its exact midpoint and the new joint becomes
+    #: part of the chain. See structural_view.qml's memberMidpointPicked.
+    member_midpoint_picked = Signal(int)
+    member_midpoint_hovered = Signal(int)
     #: A click on the active work plane, as structural (x, y, z) — already
     #: converted out of the QML scene's y-up view coordinates, so callers never
     #: need to know about that mapping.
@@ -101,8 +106,10 @@ class Quick3DViewport(QFrame):
             root.cameraModeChanged.connect(self.camera_mode_changed.emit)
             root.nodePicked.connect(self._on_node_picked)
             root.memberPicked.connect(self._on_member_picked)
+            root.memberMidpointPicked.connect(self.member_midpoint_picked.emit)
             root.planePicked.connect(self._on_plane_picked)
             root.nodeHovered.connect(self.node_hovered.emit)
+            root.memberMidpointHovered.connect(self.member_midpoint_hovered.emit)
             root.planeHovered.connect(self._on_plane_hovered)
             root.hoverCleared.connect(self.hover_cleared.emit)
             root.selectionBoxFinished.connect(self._on_selection_box_finished)
