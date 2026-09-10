@@ -123,6 +123,10 @@ _SUPPORT_COLORS = {
     SupportKind.CUSTOM: "#f59e0b",
 }
 _SPRING_SUPPORT_COLOR = "#a855f7"
+#: Same purple as the spring-support glyph, reused here for an unrelated
+#: purpose (see ``set_member_midpoint_preview``) - no semantic link between
+#: the two, just a palette pick that already reads as "not a real node yet."
+_MEMBER_MIDPOINT_PREVIEW_COLOR = "#a855f7"
 #: Supports are annotation glyphs rather than physical member geometry.  A
 #: small air gap keeps the complete socket/cone/roller silhouette readable
 #: instead of letting the node sphere hide its mechanically useful top half.
@@ -345,6 +349,7 @@ class Quick3DSceneBridge(QObject):
         self._ground_depth = 1.0
         self._points: dict[int, tuple[float, float, float]] = {}
         self._preview_member: dict[str, float | int | str] | None = None
+        self._member_midpoint_preview: dict[str, float | int | str] | None = None
         self._floor_outline_parts: list[dict[str, float | int | str]] = []
         #: Result-viewport N/V/M overlay (cylinders + fill cubes). Empty outside
         #: a force-diagram result type so the modeling canvas never inherits it.
@@ -1172,6 +1177,44 @@ class Quick3DSceneBridge(QObject):
         self._preview_segment_key = segment_key
         self._emit_preview_changed()
 
+    def set_member_midpoint_preview(
+        self, position: tuple[float, float, float] | None
+    ) -> None:
+        """Show (or clear, on ``None``) a purple ghost node at ``position``
+        (structural x/y/z) - the exact spot ``add_member_midpoint_node``
+        would actually split a member at, given the same hover.
+
+        Snapping to a member's midpoint gave no visual feedback at all: a
+        member's rendered cross-section is usually several times wider than
+        the pick tolerance, so a user aiming for the midpoint had no way to
+        tell whether the hover had actually registered before clicking. This
+        mirrors the real node's own size (``_node_radius`` - same fallback
+        every real node never shrinks below) so it reads as "a node is about
+        to appear here," not a generic cursor decoration; the real node that
+        replaces it on the actual split renders in the ordinary node color,
+        never purple - see ``_on_3d_member_midpoint_picked``'s callers, which
+        clear this the moment the split actually happens.
+        """
+        if position is None:
+            if self._member_midpoint_preview is not None:
+                self._member_midpoint_preview = None
+                self._emit_preview_changed()
+            return
+        view_position = self._view_coordinates(*position)
+        preview = {
+            "x": view_position[0],
+            "y": view_position[1],
+            "z": view_position[2],
+            "radius": self._node_radius,
+            "color": _MEMBER_MIDPOINT_PREVIEW_COLOR,
+            "opacity": 1.0,
+        }
+        if self._member_midpoint_preview is None:
+            self._member_midpoint_preview = preview
+        else:
+            self._member_midpoint_preview.update(preview)
+        self._emit_preview_changed()
+
     def set_floor_boundary_outline(
         self,
         points: list[tuple[float, float, float]],
@@ -1316,6 +1359,10 @@ class Quick3DSceneBridge(QObject):
     @Property("QVariantList", notify=preview_changed)
     def previewMembers(self) -> list[dict[str, float | int | str]]:
         return [] if self._preview_member is None else [self._preview_member]
+
+    @Property("QVariantList", notify=preview_changed)
+    def memberMidpointPreview(self) -> list[dict[str, float | int | str]]:
+        return [] if self._member_midpoint_preview is None else [self._member_midpoint_preview]
 
     @Property("QVariantList", notify=preview_changed)
     def floorBoundaryOutline(self) -> list[dict[str, float | int | str]]:
@@ -2257,6 +2304,7 @@ class Quick3DSceneBridge(QObject):
                 "localAxisGizmos": len(self._local_axis_gizmos),
                 "loadEntryGlyphs": len(self._load_entry_parts),
                 "previewMembers": 0 if self._preview_member is None else 1,
+                "memberMidpointPreview": 0 if self._member_midpoint_preview is None else 1,
                 "floorBoundaryOutline": len(self._floor_outline_parts),
                 "forceDiagrams": len(self._force_diagram_parts),
                 "resultLabels": len(self._result_labels),

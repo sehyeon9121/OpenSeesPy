@@ -10,6 +10,16 @@ htmlcov/
 
 .venv/
 venv/
+# Portable dev environment (python.org embeddable + deps installed with
+# --target) meant to live on the external SSD itself and move between
+# computers unmodified - see the "venv 새로 만들어줘" 2026-09-10 request.
+# Still gitignored like .venv/: it's a few hundred MB of binaries, not
+# something that belongs in the repo history.
+.venv-portable/
+# The old machine-specific venv, renamed aside (not deleted) on 2026-09-10
+# after its pyvenv.cfg turned out to point at a different computer's Python
+# install - kept only so nothing pointed at it gets silently lost.
+.venv-old-broken-DO-NOT-USE/
 
 build/
 dist/

@@ -28,9 +28,49 @@ Item {
             sceneBridge.sceneMetricsRevision
         return bridgeReady ? sceneBridge.center_z : 0.0
     }
+    // Only ticks when extent/center actually moved (see Quick3DSceneBridge.
+    // _emit_scene_metrics_changed's own metrics_changed gate) - a genuinely
+    // empty canvas never fires this at all, which is exactly what makes
+    // "has it fired yet" below a reliable "did real content just appear"
+    // signal, not just "did anything change."
+    readonly property int sceneMetricsRevision: bridgeReady ? sceneBridge.sceneMetricsRevision : 0
     property real cameraYaw: 45
     property real cameraPitch: -25
-    property real cameraDistance: Math.max(bridgeExtent * 2.8, 4.0)
+    // Plain defaults, not live bindings to bridgeExtent/bridgeCenter* - see
+    // onSceneMetricsRevisionChanged below for why. These starting values
+    // only matter for the instant before that first fires (nothing to see
+    // yet on a genuinely empty canvas); setPreset re-seeds them on every
+    // later explicit reframe.
+    property real cameraDistance: 10
+    property real cameraPivotX: 0
+    property real cameraPivotY: 0
+    property real cameraPivotZ: 0
+    // Whether the camera has ever auto-framed real content yet. The very
+    // first thing drawn on an empty canvas still needs one genuine auto-fit
+    // - a hardcoded starting distance/pivot could easily land the first
+    // member off-screen or absurdly tiny/huge depending on what units the
+    // model happens to use - but every node/member added *after* that must
+    // leave the camera exactly where the user left it (reset_camera=False -
+    // see quick3d_viewport.py's set_model docstring): a live binding to
+    // bridgeExtent/bridgeCenter* here used to zoom out and pan to refit the
+    // *entire* model on every single click, even one drawn far from
+    // whatever was already on screen.
+    property bool cameraEverAutoFramed: false
+    onSceneMetricsRevisionChanged: {
+        // sceneMetricsRevision can tick before any real content exists at
+        // all (the bridge's own placeholder metrics settling on first
+        // load), and again after just the chain's *first* clicked point -
+        // one bare node, not yet a real span to fit. Gate on an actual
+        // member existing, or cameraEverAutoFramed would latch onto that
+        // single point's near-zero extent instead of the first real shape.
+        if (cameraEverAutoFramed || !bridgeReady || sceneBridge.members.length === 0)
+            return
+        cameraEverAutoFramed = true
+        cameraPivotX = bridgeCenterX
+        cameraPivotY = bridgeCenterY
+        cameraPivotZ = bridgeCenterZ
+        cameraDistance = Math.max(bridgeExtent * 2.8, 4.0)
+    }
     // Member boxes use the model-unit B/H from Python as-is. A presentation
     // scale used to shrink them under the node spheres; that fought the
     // drawing scale and made every assigned section look fatter or thinner
@@ -584,6 +624,9 @@ Item {
         panX = 0
         panY = 0
         cameraDistance = Math.max(bridgeExtent * 2.8, 4.0)
+        cameraPivotX = bridgeCenterX
+        cameraPivotY = bridgeCenterY
+        cameraPivotZ = bridgeCenterZ
         cameraModeChanged(preset)
     }
 
@@ -623,10 +666,10 @@ Item {
         const yawRadians = cameraYaw * Math.PI / 180
         const pitchRadians = cameraPitch * Math.PI / 180
         return Qt.vector3d(
-            bridgeCenterX + panX * Math.cos(yawRadians)
+            cameraPivotX + panX * Math.cos(yawRadians)
                 + panY * Math.sin(pitchRadians) * Math.sin(yawRadians),
-            bridgeCenterY + panY * Math.cos(pitchRadians),
-            bridgeCenterZ - panX * Math.sin(yawRadians)
+            cameraPivotY + panY * Math.cos(pitchRadians),
+            cameraPivotZ - panX * Math.sin(yawRadians)
                 + panY * Math.sin(pitchRadians) * Math.cos(yawRadians)
         )
     }
@@ -788,7 +831,14 @@ Item {
             materials: [memberInstanceMaterial]
             castsShadows: false
             receivesShadows: false
-            pickable: root.pickingEnabled && !root.navigationActive
+            // planePickingEnabled also needs a member hit target: free-form
+            // 3D drawing's memberMidpointPicked/-Hovered (see
+            // _on_3d_member_midpoint_picked) rely on view3d.pick() landing on
+            // this model while drawing, when pickingEnabled itself is off
+            // (set_picking_mode(not drawing) in _sync_picking_mode) - without
+            // this, no member ever registers as the pick target during draw
+            // mode and hovering a member's line silently does nothing.
+            pickable: (root.pickingEnabled || root.planePickingEnabled) && !root.navigationActive
         }
         Model {
             id: cylinderMemberModel
@@ -798,7 +848,7 @@ Item {
             materials: [memberInstanceMaterial]
             castsShadows: false
             receivesShadows: false
-            pickable: root.pickingEnabled && !root.navigationActive
+            pickable: (root.pickingEnabled || root.planePickingEnabled) && !root.navigationActive
         }
 
         Repeater3D {
@@ -831,6 +881,37 @@ Item {
                 ]
                 castsShadows: false
                 receivesShadows: false
+            }
+        }
+
+        Repeater3D {
+            // Purple ghost node at a member's midpoint while hovering it in
+            // draw mode - see Quick3DSceneBridge.set_member_midpoint_preview.
+            // Same size/shape as a real node (only the color differs), so it
+            // reads as "a node will appear exactly here," not a generic
+            // cursor decoration. Never pickable: it isn't a real node yet,
+            // and must never shadow the member underneath it for the same
+            // hover's own member-vs-node pick test.
+            model: bridgeReady ? sceneBridge.memberMidpointPreview : []
+            delegate: Model {
+                source: "#Sphere"
+                position: Qt.vector3d(modelData.x, modelData.y, modelData.z)
+                scale: Qt.vector3d(
+                    modelData.radius * 2 / 100,
+                    modelData.radius * 2 / 100,
+                    modelData.radius * 2 / 100
+                )
+                materials: [
+                    PrincipledMaterial {
+                        baseColor: modelData.color
+                        opacity: modelData.opacity
+                        metalness: 0.0
+                        roughness: 0.55
+                    }
+                ]
+                castsShadows: false
+                receivesShadows: false
+                pickable: false
             }
         }
 

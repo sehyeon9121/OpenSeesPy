@@ -124,6 +124,63 @@ def test_3d_draw_snap_to_member_midpoint_splits_it_and_connects_the_chain() -> N
     assert page.canvas.chain_last_node is None
 
 
+def test_hovering_a_member_midpoint_shows_a_purple_preview_node() -> None:
+    """Before the click that actually splits a member, hovering its line
+    has to give *some* feedback that the snap registered - the member's
+    rendered cross-section is usually much wider than the pick tolerance,
+    so a hover with no visual cue at all leaves the user unsure whether
+    aiming at the midpoint actually landed. See
+    Quick3DSceneBridge.set_member_midpoint_preview.
+    """
+    page = _page(start_in_3d=True)
+    _enable_element_drawing(page)
+    left = page.canvas.place_point(0.0, 0.0)
+    page.canvas.end_chain()
+    right = page.canvas.place_point(10.0, 0.0)
+    page.canvas.end_chain()
+    page.canvas.set_mode("draw")
+    page.canvas.continue_chain_to_node(left)
+    page.canvas.continue_chain_to_node(right)
+    beam = next(iter(page.canvas.elements.values())).tag
+    page.canvas.end_chain()
+    bridge = page.preview_3d.bridge
+
+    anchor = page.canvas.place_point(5.0, 5.0)
+    page.canvas.set_mode("draw")
+    page.canvas.continue_chain_to_node(anchor)
+    assert bridge.memberMidpointPreview == []
+
+    page._on_3d_member_midpoint_hovered(beam)
+
+    assert len(bridge.memberMidpointPreview) == 1
+    preview = bridge.memberMidpointPreview[0]
+    # Same on-screen size a real node at this spot would get - only the
+    # color marks it as "not real yet."
+    assert preview["radius"] == pytest.approx(bridge._node_radius)
+    assert preview["color"] != bridge.nodes[0]["color"]
+
+    # Hovering an existing node instead must drop the member-midpoint
+    # ghost - it is specific to a *member* hit, not a generic "something
+    # is hovered" indicator.
+    page._on_3d_node_hovered(left)
+    assert bridge.memberMidpointPreview == []
+
+    page._on_3d_member_midpoint_hovered(beam)
+    assert bridge.memberMidpointPreview != []
+    preview_color = bridge.memberMidpointPreview[0]["color"]
+
+    page._on_3d_member_midpoint_picked(beam)
+
+    # The real split's own new node must never render in the preview's
+    # ghost color, and the ghost itself must not linger once a real node
+    # sits where it was.
+    assert bridge.memberMidpointPreview == []
+    joint = next(tag for tag in page.canvas.nodes if tag not in (left, right, anchor))
+    joint_entry = next(node for node in bridge.nodes if node["tag"] == joint)
+    assert joint_entry["color"] != preview_color
+    assert joint_entry["color"] == bridge.nodes[0]["color"]
+
+
 def test_2d_auto_applied_section_undoes_with_the_member() -> None:
     page = _page()
     _enable_element_drawing(page)

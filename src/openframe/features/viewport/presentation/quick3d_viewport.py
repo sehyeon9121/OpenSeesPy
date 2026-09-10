@@ -202,6 +202,14 @@ class Quick3DViewport(QFrame):
         (both structural x/y/z), or clear it if either is ``None``."""
         self.bridge.set_preview_segment(start, end)
 
+    def set_member_midpoint_preview(
+        self, position: tuple[float, float, float] | None
+    ) -> None:
+        """Show (or clear, on ``None``) a purple ghost node at the member
+        midpoint ``position`` (structural x/y/z) the cursor is about to
+        snap to - see ``Quick3DSceneBridge.set_member_midpoint_preview``."""
+        self.bridge.set_member_midpoint_preview(position)
+
     def set_floor_boundary_outline(
         self,
         points: list[tuple[float, float, float]],

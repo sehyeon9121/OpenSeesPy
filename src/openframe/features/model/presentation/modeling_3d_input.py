@@ -208,6 +208,11 @@ class _Modeling3DInputMixin:
         self._apply_active_element_to_new_members(set(self.canvas.elements) - before)
         if start_tag is not None and start_tag != node:
             self.canvas.end_chain()
+        # The purple ghost at the old hover position must not linger now
+        # that a real node sits there in the ordinary node color - the next
+        # hover event (if the cursor hasn't moved) will re-show it if it's
+        # still actually over a member.
+        self.preview_3d.set_member_midpoint_preview(None)
 
     def _on_3d_member_midpoint_hovered(self, tag: int) -> None:
         """Cursor is over an existing member's line while drawing - preview
@@ -235,6 +240,7 @@ class _Modeling3DInputMixin:
             (start.z + end.z) / 2.0,
         )
         self._update_3d_draw_preview(midpoint)
+        self.preview_3d.set_member_midpoint_preview(midpoint)
 
     def _on_3d_member_picked(
         self,
@@ -291,6 +297,11 @@ class _Modeling3DInputMixin:
         self._update_3d_draw_preview(point)
         self._update_3d_floor_outline(point)
         self._update_3d_wall_preview(point)
+        # An existing node's own hover-highlight is enough feedback on its
+        # own (see structural_view.qml's snapTarget) - the purple midpoint
+        # ghost is specifically for a *member* hit and must not linger from
+        # whatever the cursor was over a moment ago.
+        self.preview_3d.set_member_midpoint_preview(None)
 
 
     def _on_3d_plane_hovered(self, x: float, y: float, z: float) -> None:
@@ -300,10 +311,12 @@ class _Modeling3DInputMixin:
         self._update_3d_draw_preview((x, y, z))
         self._update_3d_floor_outline((x, y, z))
         self._update_3d_wall_preview((x, y, z))
+        self.preview_3d.set_member_midpoint_preview(None)
 
 
     def _on_3d_hover_cleared(self) -> None:
         self.preview_3d.set_preview_segment(None, None)
+        self.preview_3d.set_member_midpoint_preview(None)
         self._update_3d_floor_outline(None)
         self._update_3d_wall_preview(None)
 
