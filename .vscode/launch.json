@@ -5,6 +5,7 @@
       "name": "OpenFrame Studio 실행",
       "type": "debugpy",
       "request": "launch",
+      "python": "${workspaceFolder}/.venv-portable/python.exe",
       "module": "openframe",
       "console": "integratedTerminal",
       "justMyCode": true,
