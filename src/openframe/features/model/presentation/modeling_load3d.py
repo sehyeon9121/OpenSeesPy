@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 
 from openframe.core.domain import (
     FloorLoadEntry,
+    LoadCaseKind,
     MemberDistributedLoadEntry,
     MemberPointLoadEntry,
     NodalLoadEntry,
@@ -79,6 +80,43 @@ from openframe.features.model.presentation.safe_spinbox import (
 
 
 class _Load3DPanelMixin:
+
+    #: The four global directions offered by both generators' direction
+    #: combos (``seismic_direction_combo`` / ``wind_direction_combo``), in
+    #: display order for the "방향별 일괄 생성" batch table.
+    _DIRECTION_BATCH_ROWS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("x", "+X"),
+        ("-x", "−X"),
+        ("y", "+Y"),
+        ("-y", "−Y"),
+    )
+
+    #: Wires ``_build_direction_batch_card``/``_generate_direction_batch`` to
+    #: each generator's already-existing widgets so the batch table stays a
+    #: thin driver over the ordinary single-direction "생성" flow instead of
+    #: a second copy of the load-computation logic.
+    _GENERATOR_BATCH_CONFIG: ClassVar[dict[str, dict[str, object]]] = {
+        "seismic": {
+            "direction_combo": "seismic_direction_combo",
+            "case_combo": "seismic_case_combo",
+            "description_field": "seismic_description",
+            "generate_method": "_generate_seismic_load",
+            "result_label": "seismic_result_label",
+            "refresh_case_combo": "_refresh_seismic_case_combo",
+            "kind": LoadCaseKind.SEISMIC,
+            "default_prefix": "지진하중",
+        },
+        "wind": {
+            "direction_combo": "wind_direction_combo",
+            "case_combo": "wind_case_combo",
+            "description_field": "wind_description",
+            "generate_method": "_generate_wind_load",
+            "result_label": "wind_result_label",
+            "refresh_case_combo": "_refresh_wind_case_combo",
+            "kind": LoadCaseKind.WIND,
+            "default_prefix": "풍하중",
+        },
+    }
 
     def _build_load_task_bar(self) -> QFrame:
         """Viewport-only load display controls.
@@ -406,6 +444,159 @@ class _Load3DPanelMixin:
         heading.setObjectName("loadGroupTitle")
         layout.addWidget(heading)
         return card, layout
+
+
+    def _build_direction_batch_card(self, prefix: str) -> QFrame:
+        """방향별 케이스 일괄 생성 - a small table over the ordinary
+        single-direction generator (``_generate_seismic_load`` /
+        ``_generate_wind_load``) so a user does not have to reopen this
+        dialog, flip the direction combo, and click 생성 by hand for every
+        one of +X/-X/+Y/-Y. Every checked row reuses whatever the rest of
+        this dialog's fields are currently set to (Ss/S1/... or q0/Gf/Cp/Kz);
+        only the direction and target load case vary per row - see
+        ``_generate_direction_batch``.
+        """
+        config = self._GENERATOR_BATCH_CONFIG[prefix]
+        card, content = self._load_group_card("방향별 케이스 일괄 생성")
+        hint = QLabel(
+            "체크한 방향마다 이름의 하중케이스를 만들거나 재사용해서, 위 설정을 "
+            "그대로 방향만 바꿔 한 번에 생성합니다."
+        )
+        hint.setObjectName("loadModeHint")
+        hint.setWordWrap(True)
+        hint.setMaximumWidth(272)
+        content.addWidget(hint)
+
+        table = QTableWidget(len(self._DIRECTION_BATCH_ROWS), 2)
+        table.setHorizontalHeaderLabels(["방향", "하중케이스 이름"])
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setMaximumWidth(272)
+        table.setMaximumHeight(150)
+        default_base = (
+            getattr(self, config["description_field"]).text().strip()
+            or config["default_prefix"]
+        )
+        for row, (direction_key, direction_label) in enumerate(self._DIRECTION_BATCH_ROWS):
+            direction_item = QTableWidgetItem(direction_label)
+            direction_item.setFlags(
+                (direction_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                & ~Qt.ItemFlag.ItemIsEditable
+            )
+            # Only the two "positive" directions default on - ± is usually
+            # handled by load-combination factors, not a second physical case.
+            direction_item.setCheckState(
+                Qt.CheckState.Checked
+                if direction_key in ("x", "y")
+                else Qt.CheckState.Unchecked
+            )
+            direction_item.setData(Qt.ItemDataRole.UserRole, direction_key)
+            table.setItem(row, 0, direction_item)
+            table.setItem(row, 1, QTableWidgetItem(f"{default_base}_{direction_label}"))
+        setattr(self, f"{prefix}_batch_table", table)
+        content.addWidget(table)
+
+        generate_button = QPushButton("선택 방향 일괄 생성")
+        generate_button.clicked.connect(lambda: self._generate_direction_batch(prefix))
+        content.addWidget(generate_button)
+        content.addStretch(1)
+        return card
+
+
+    def _generate_direction_batch(self, prefix: str) -> None:
+        config = self._GENERATOR_BATCH_CONFIG[prefix]
+        table: QTableWidget = getattr(self, f"{prefix}_batch_table")
+        direction_combo: QComboBox = getattr(self, config["direction_combo"])
+        case_combo: QComboBox = getattr(self, config["case_combo"])
+        result_label: QLabel = getattr(self, config["result_label"])
+        generate = getattr(self, config["generate_method"])
+        refresh_case_combo = getattr(self, config["refresh_case_combo"])
+
+        previous_direction = direction_combo.currentData()
+        previous_case = case_combo.currentData()
+
+        lines: list[str] = []
+        for row in range(table.rowCount()):
+            direction_item = table.item(row, 0)
+            name_item = table.item(row, 1)
+            if direction_item is None or name_item is None:
+                continue
+            if direction_item.checkState() != Qt.CheckState.Checked:
+                continue
+            direction_label = direction_item.text()
+            case_name = name_item.text().strip()
+            if not case_name:
+                lines.append(f"{direction_label}: 케이스 이름을 입력하세요.")
+                continue
+            if case_name not in self.canvas.load_cases:
+                created = self.canvas.add_load_case(case_name, kind=config["kind"])
+                if created is None:
+                    lines.append(f"{direction_label}: '{case_name}' 케이스를 만들 수 없습니다.")
+                    continue
+            refresh_case_combo()
+            case_index = case_combo.findData(case_name)
+            if case_index < 0:
+                lines.append(f"{direction_label}: '{case_name}' 케이스를 찾을 수 없습니다.")
+                continue
+            case_combo.setCurrentIndex(case_index)
+            direction_key = str(direction_item.data(Qt.ItemDataRole.UserRole))
+            direction_index = direction_combo.findData(direction_key)
+            if direction_index >= 0:
+                direction_combo.setCurrentIndex(direction_index)
+            generate()
+            lines.append(f"{direction_label}: {result_label.text()}")
+
+        if previous_direction is not None:
+            index = direction_combo.findData(previous_direction)
+            if index >= 0:
+                direction_combo.setCurrentIndex(index)
+        if previous_case is not None:
+            index = case_combo.findData(previous_case)
+            if index >= 0:
+                case_combo.setCurrentIndex(index)
+
+        result_label.setText("\n".join(lines) if lines else "체크된 방향이 없습니다.")
+
+
+    @staticmethod
+    def _serialize_batch_table(table: QTableWidget) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for row in range(table.rowCount()):
+            direction_item = table.item(row, 0)
+            name_item = table.item(row, 1)
+            if direction_item is None or name_item is None:
+                continue
+            rows.append(
+                {
+                    "direction": direction_item.data(Qt.ItemDataRole.UserRole),
+                    "checked": direction_item.checkState() == Qt.CheckState.Checked,
+                    "case_name": name_item.text(),
+                }
+            )
+        return rows
+
+
+    @staticmethod
+    def _restore_batch_table(table: QTableWidget, rows: object) -> None:
+        if not isinstance(rows, list):
+            return
+        by_direction = {
+            str(entry.get("direction")): entry for entry in rows if isinstance(entry, dict)
+        }
+        for row in range(table.rowCount()):
+            direction_item = table.item(row, 0)
+            name_item = table.item(row, 1)
+            if direction_item is None or name_item is None:
+                continue
+            entry = by_direction.get(str(direction_item.data(Qt.ItemDataRole.UserRole)))
+            if entry is None:
+                continue
+            direction_item.setCheckState(
+                Qt.CheckState.Checked if entry.get("checked") else Qt.CheckState.Unchecked
+            )
+            case_name = entry.get("case_name")
+            if isinstance(case_name, str):
+                name_item.setText(case_name)
 
 
     def _build_load_definitions_page(self) -> QWidget:
@@ -839,6 +1030,7 @@ class _Load3DPanelMixin:
 
         self.canvas.load_state_changed.connect(self._refresh_seismic_case_combo)
         self._refresh_seismic_case_combo()
+        add_settings_tab(self._build_direction_batch_card("seismic"), "일괄 생성")
 
         dialog_buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -1109,17 +1301,36 @@ class _Load3DPanelMixin:
 
 
     def _build_wind_load_generator_page(self) -> QWidget:
-        """Readable wind-load specification plus real story-load generation.
-
-        Kz/Gf/Cp remain visible engineer inputs. A separate velocity mode can
-        convert 1/2*rho*V0^2 and user-entered modifiers to the model stress
-        unit, but is clearly labelled as a reference-pressure conversion,
-        not an embedded replacement for the selected KDS edition's tables.
+        """Compact launcher for a tabbed wind-load setup, mirroring the
+        seismic generator's small modal window (``_build_seismic_load_
+        generator_page``) instead of stacking four card sections straight
+        into the Loads sidebar.
         """
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 0)
         layout.setSpacing(8)
+
+        self.wind_settings_dialog = QDialog(self)
+        self.wind_settings_dialog.setObjectName("windSettingsDialog")
+        self.wind_settings_dialog.setWindowTitle("풍하중 설정")
+        self.wind_settings_dialog.resize(460, 720)
+        dialog_layout = QVBoxLayout(self.wind_settings_dialog)
+        dialog_layout.setContentsMargins(10, 10, 10, 10)
+        dialog_layout.setSpacing(8)
+        self.wind_settings_tabs = QTabWidget()
+        self.wind_settings_tabs.setObjectName("windSettingsTabs")
+        dialog_layout.addWidget(self.wind_settings_tabs, 1)
+
+        def add_settings_tab(card_widget: QWidget, label: str) -> None:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setAlignment(
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+            )
+            scroll.setWidget(card_widget)
+            self.wind_settings_tabs.addTab(scroll, label)
 
         card, content = self._load_group_card("기본 설정")
         self.wind_code_combo = SafeComboBox()
@@ -1144,7 +1355,8 @@ class _Load3DPanelMixin:
             self._generator_row(self.wind_case_combo, wind_case_manage_button),
             "풍하중 전용 케이스를 권장합니다.",
         )
-        layout.addWidget(card)
+        content.addStretch(1)
+        add_settings_tab(card, "기본")
 
         pressure_card, pressure = self._load_group_card("기준 속도압")
         hint = QLabel(
@@ -1239,7 +1451,8 @@ class _Load3DPanelMixin:
         self.wind_pressure_summary.setObjectName("loadDerivedValue")
         self.wind_pressure_summary.setWordWrap(True)
         pressure.addWidget(self.wind_pressure_summary)
-        layout.addWidget(pressure_card)
+        pressure.addStretch(1)
+        add_settings_tab(pressure_card, "속도압")
 
         response_card, response = self._load_group_card("풍하중 계수와 수풍면")
         self.wind_structure_type = SafeComboBox()
@@ -1279,7 +1492,8 @@ class _Load3DPanelMixin:
             self.wind_exposed_width,
             "층 수풍면적 = B × 층 분담높이로 계산합니다.",
         )
-        layout.addWidget(response_card)
+        response.addStretch(1)
+        add_settings_tab(response_card, "계수·수풍면")
 
         direction_card, direction = self._load_group_card("가력 방향과 층별 노출계수")
         self.wind_direction_combo = SafeComboBox()
@@ -1317,15 +1531,37 @@ class _Load3DPanelMixin:
         direction.addWidget(self.wind_kz_table)
         self.canvas.story_state_changed.connect(self._refresh_wind_kz_table)
         self._refresh_wind_kz_table()
-        layout.addWidget(direction_card)
+        direction.addStretch(1)
+        add_settings_tab(direction_card, "방향·Kz")
 
         self.canvas.load_state_changed.connect(self._refresh_wind_case_combo)
         self._refresh_wind_case_combo()
+        add_settings_tab(self._build_direction_batch_card("wind"), "일괄 생성")
+
+        dialog_buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        dialog_buttons.accepted.connect(self.wind_settings_dialog.accept)
+        dialog_buttons.rejected.connect(self.wind_settings_dialog.reject)
+        dialog_layout.addWidget(dialog_buttons)
+
+        summary_card, summary_layout = self._load_group_card("풍하중")
+        self.wind_compact_summary = QLabel()
+        self.wind_compact_summary.setObjectName("windCompactSummary")
+        self.wind_compact_summary.setWordWrap(True)
+        summary_layout.addWidget(self.wind_compact_summary)
+
+        self.wind_settings_button = QPushButton("설정 열기...")
+        self.wind_settings_button.setObjectName("windSettingsButton")
+        self.wind_settings_button.clicked.connect(self._open_wind_settings_dialog)
+        summary_layout.addWidget(self.wind_settings_button)
 
         generate_button = QPushButton("풍하중 생성")
         generate_button.setObjectName("loadPrimaryButton")
         generate_button.clicked.connect(self._generate_wind_load)
-        layout.addWidget(generate_button)
+        summary_layout.addWidget(generate_button)
+        layout.addWidget(summary_card)
 
         self.wind_result_label = QLabel()
         self.wind_result_label.setWordWrap(True)
@@ -1347,10 +1583,31 @@ class _Load3DPanelMixin:
             self.wind_scale_factor,
         ):
             field.valueChanged.connect(self._refresh_wind_parameter_summary)
+        for combo in (
+            self.wind_code_combo,
+            self.wind_case_combo,
+            self.wind_calculation_method,
+            self.wind_exposure_category,
+            self.wind_structure_type,
+            self.wind_direction_combo,
+        ):
+            combo.currentIndexChanged.connect(self._refresh_wind_parameter_summary)
         self._on_wind_calculation_method_changed()
 
         layout.addStretch(1)
         return page
+
+
+    def _open_wind_settings_dialog(self) -> None:
+        """Edit the sidebar's wind specification without making the sidebar
+        itself carry the full engineering form — same OK/Cancel-with-live-
+        preview contract as ``_open_seismic_settings_dialog``."""
+        self._refresh_wind_case_combo()
+        snapshot = dict(self._load_generator_settings()["wind"])
+        if self.wind_settings_dialog.exec() == QDialog.DialogCode.Accepted:
+            self._refresh_wind_parameter_summary()
+            return
+        self._restore_load_generator_settings({"wind": snapshot})
 
 
     def _on_wind_calculation_method_changed(self, _index: int | None = None) -> None:
@@ -1390,6 +1647,18 @@ class _Load3DPanelMixin:
             f"{self._unit_system.stress}\n"
             "실제 층별 값은 이 풍압에 각 층 Kz를 곱합니다."
         )
+        self._refresh_wind_compact_summary(design_pressure)
+
+
+    def _refresh_wind_compact_summary(self, design_pressure: float) -> None:
+        if not hasattr(self, "wind_compact_summary"):
+            return
+        case_name = self.wind_case_combo.currentText().strip() or "선택 안 함"
+        self.wind_compact_summary.setText(
+            f"하중케이스 · {case_name}\n"
+            f"가력방향 · {self.wind_direction_combo.currentText()}\n"
+            f"Kz=1.0 기준 풍압 p {design_pressure:.4f} {self._unit_system.stress}"
+        )
 
 
     def _load_generator_settings(self) -> dict[str, object]:
@@ -1426,6 +1695,7 @@ class _Load3DPanelMixin:
                 "direction": self.wind_direction_combo.currentData(),
                 "scale_factor": self.wind_scale_factor.value(),
                 "story_kz": story_kz,
+                "batch_rows": self._serialize_batch_table(self.wind_batch_table),
             },
             "seismic": {
                 "code": self.seismic_code_combo.currentData(),
@@ -1445,6 +1715,7 @@ class _Load3DPanelMixin:
                 "scale_factor": self.seismic_scale_factor.value(),
                 "eccentricity_sign": self.seismic_eccentricity_sign.currentData(),
                 "eccentricity": self.seismic_eccentricity.value(),
+                "batch_rows": self._serialize_batch_table(self.seismic_batch_table),
             },
         }
 
@@ -1498,6 +1769,7 @@ class _Load3DPanelMixin:
             self._refresh_wind_case_combo()
             self._restore_combo_data(self.wind_case_combo, wind.get("case_id"))
             self._on_wind_calculation_method_changed()
+            self._restore_batch_table(self.wind_batch_table, wind.get("batch_rows"))
 
         seismic = raw.get("seismic")
         if isinstance(seismic, dict):
@@ -1529,6 +1801,7 @@ class _Load3DPanelMixin:
             self._refresh_seismic_case_combo()
             self._restore_combo_data(self.seismic_case_combo, seismic.get("case_id"))
             self._refresh_seismic_parameter_summary()
+            self._restore_batch_table(self.seismic_batch_table, seismic.get("batch_rows"))
 
 
     def _refresh_wind_kz_table(self) -> None:
@@ -2050,7 +2323,6 @@ class _Load3DPanelMixin:
 
     def _on_load3d_type_changed(self, _index: int | None = None) -> None:
         key = self.load3d_type_combo.currentData()
-        self.load3d_member_subtype_row.setVisible(key == "member")
         self.load3d_form_stack.setCurrentIndex(self.load3d_form_pages[key])
         if key == "self_weight":
             self._refresh_load3d_self_weight_case_label()
