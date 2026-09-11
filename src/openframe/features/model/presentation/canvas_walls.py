@@ -60,6 +60,7 @@ class _WallMixin:
             elastic_modulus=float(pen["elastic"]),
             poisson_ratio=float(pen.get("poisson_ratio", DEFAULT_POISSON_RATIO)),
             density=float(pen.get("density", 0.0)),
+            rc_material=dict(pen.get("rc_material") or {}),
         )
         if panel.validate():
             return None

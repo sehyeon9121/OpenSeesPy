@@ -558,6 +558,34 @@ def test_the_3d_preview_gets_camera_chrome_matching_the_imported_model_viewer() 
     page._fit_3d_preview()  # must not raise even with an empty model
 
 
+@pytest.mark.parametrize(
+    "key_sequence,preset,yaw,pitch",
+    [
+        ("Ctrl+F", "front", 0.0, 0.0),
+        ("Ctrl+R", "right", 90.0, 0.0),
+        ("Ctrl+L", "left", -90.0, 0.0),
+        ("Ctrl+B", "back", 180.0, 0.0),
+        ("Ctrl+T", "top", 0.0, -90.0),
+    ],
+)
+def test_ctrl_direction_shortcuts_select_orthographic_views(
+    key_sequence, preset, yaw, pitch
+) -> None:
+    from PySide6.QtGui import QKeySequence
+
+    page = _page(start_in_3d=True)
+    root = page.preview_3d.quick_widget.rootObject()
+    shortcut = page.view_shortcuts_3d[preset]
+
+    shortcut.activated.emit()
+    QApplication.processEvents()
+
+    assert shortcut.parent() is page
+    assert shortcut.key() == QKeySequence(key_sequence)
+    assert root.property("cameraYaw") == pytest.approx(yaw)
+    assert root.property("cameraPitch") == pytest.approx(pitch)
+
+
 def test_continue_chain_to_node_connects_even_when_the_node_is_off_the_active_plane() -> None:
     """A 3D-viewport click on an existing node from another storey must reconnect
     to that exact node — going through the active plane's (u, v) math would

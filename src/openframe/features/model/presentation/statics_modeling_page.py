@@ -204,7 +204,7 @@ class StaticsDrawingCanvas(
         #: Create Element pen for the next wall: thickness/E/ν/density in
         #: the model's current length/stress units. None until both Material
         #: and Thickness are chosen.
-        self.wall_pen: dict[str, float] | None = None
+        self.wall_pen: dict[str, object] | None = None
         self._snap = None
         self._undo_stack: list[dict[str, object]] = []
         self._redo_stack: list[dict[str, object]] = []

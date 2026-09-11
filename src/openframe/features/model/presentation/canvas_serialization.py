@@ -322,6 +322,7 @@ class _SerializationMixin:
                     elastic_modulus=float(item["elastic_modulus"]),
                     poisson_ratio=float(item.get("poisson_ratio", 0.3)),
                     density=float(item.get("density", 0.0)),
+                    rc_material=dict(item.get("rc_material") or {}),
                 )
 
         self._restore(

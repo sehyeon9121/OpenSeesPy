@@ -69,7 +69,7 @@ Item {
         cameraPivotX = bridgeCenterX
         cameraPivotY = bridgeCenterY
         cameraPivotZ = bridgeCenterZ
-        cameraDistance = Math.max(bridgeExtent * 2.8, 4.0)
+        cameraDistance = Math.max(bridgeExtent * 1.8, 4.0)
     }
     // Member boxes use the model-unit B/H from Python as-is. A presentation
     // scale used to shrink them under the node spheres; that fought the
@@ -608,14 +608,23 @@ Item {
     }
 
     function setPreset(preset) {
-        if (preset === "xy") {
+        if (preset === "top") {
+            cameraYaw = 0
+            cameraPitch = -90
+        } else if (preset === "xy") {
             cameraYaw = 0
             cameraPitch = -89
-        } else if (preset === "xz") {
+        } else if (preset === "xz" || preset === "front") {
             cameraYaw = 0
             cameraPitch = 0
-        } else if (preset === "yz") {
+        } else if (preset === "yz" || preset === "right") {
             cameraYaw = 90
+            cameraPitch = 0
+        } else if (preset === "left") {
+            cameraYaw = -90
+            cameraPitch = 0
+        } else if (preset === "back") {
+            cameraYaw = 180
             cameraPitch = 0
         } else {
             cameraYaw = 45
@@ -623,7 +632,11 @@ Item {
         }
         panX = 0
         panY = 0
-        cameraDistance = Math.max(bridgeExtent * 2.8, 4.0)
+        // Axis-aligned elevations need only a small drafting margin.  ISO can
+        // project more than one model axis onto the same screen direction, so
+        // keep a wider fit there to avoid clipping the corners of a box frame.
+        const fitMargin = preset === "iso" ? 1.8 : 1.15
+        cameraDistance = Math.max(bridgeExtent * fitMargin, 4.0)
         cameraPivotX = bridgeCenterX
         cameraPivotY = bridgeCenterY
         cameraPivotZ = bridgeCenterZ
@@ -688,13 +701,21 @@ Item {
             antialiasingQuality: SceneEnvironment.Medium
         }
 
-        PerspectiveCamera {
+        OrthographicCamera {
             id: camera
+            objectName: "orthographicCamera"
             parent: cameraPitchNode
-            position: Qt.vector3d(0, 0, root.cameraDistance)
+            // Orthographic scale is independent of camera depth. Keep the
+            // camera safely outside the model and use equal X/Y magnification
+            // so structural dimensions are not distorted by the viewport's
+            // aspect ratio. cameraDistance remains the visible span/zoom state.
+            position: Qt.vector3d(0, 0, Math.max(bridgeExtent * 4.0, 10.0))
             clipNear: Math.max(bridgeExtent * 0.001, 0.001)
-            clipFar: Math.max(bridgeExtent * 30, 100)
-            fieldOfView: 38
+            clipFar: Math.max(bridgeExtent * 10, 100)
+            horizontalMagnification: Math.max(
+                0.001, Math.min(root.width, root.height) / root.cameraDistance
+            )
+            verticalMagnification: horizontalMagnification
         }
 
         Node {

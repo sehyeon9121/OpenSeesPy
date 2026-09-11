@@ -2,7 +2,6 @@
 used for free-form 3D drawing, and camera-reset control on set_model.
 """
 
-import math
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -211,6 +210,55 @@ def test_set_model_resets_the_camera_by_default_but_can_be_told_not_to() -> None
     assert root.property("cameraPitch") == pytest.approx(-25.0), "default still reframes to iso"
 
 
+def test_quick3d_uses_an_orthographic_camera() -> None:
+    viewport = _viewport()
+    root = viewport.quick_widget.rootObject()
+    camera = root.findChild(QObject, "orthographicCamera")
+
+    assert camera is not None
+    assert "OrthographicCamera" in camera.metaObject().className()
+
+
+@pytest.mark.parametrize(
+    "preset,yaw,pitch",
+    [
+        ("front", 0.0, 0.0),
+        ("right", 90.0, 0.0),
+        ("left", -90.0, 0.0),
+        ("back", 180.0, 0.0),
+        ("top", 0.0, -90.0),
+    ],
+)
+def test_directional_camera_presets_are_axis_aligned_and_refit_model(
+    preset, yaw, pitch
+) -> None:
+    viewport = _viewport()
+    viewport.setFixedSize(640, 480)
+    model = StructuralModel(
+        nodes={1: Node(1, 10.0, 20.0, 30.0), 2: Node(2, 14.0, 26.0, 38.0)},
+        elements={1: Element(1, 1, 2, "frame")},
+        ndm=3,
+    )
+    _set_model(viewport, model, reset_camera=False)
+    root = viewport.quick_widget.rootObject()
+    root.setProperty("panX", 3.0)
+    root.setProperty("panY", -2.0)
+
+    viewport.set_camera_preset(preset)
+
+    assert root.property("cameraYaw") == pytest.approx(yaw)
+    assert root.property("cameraPitch") == pytest.approx(pitch)
+    assert root.property("panX") == pytest.approx(0.0)
+    assert root.property("panY") == pytest.approx(0.0)
+    assert root.property("cameraPivotX") == pytest.approx(viewport.bridge.center_x)
+    assert root.property("cameraPivotY") == pytest.approx(viewport.bridge.center_y)
+    assert root.property("cameraPivotZ") == pytest.approx(viewport.bridge.center_z)
+    axes = root.findChild(QObject, "worldOriginAxes")
+    projected_center = axes.structuralPoint(12.0, 23.0, 34.0)
+    assert projected_center.x() == pytest.approx(root.width() / 2, abs=1.0)
+    assert projected_center.y() == pytest.approx(root.height() / 2, abs=1.0)
+
+
 def test_shift_pan_follows_screen_horizontal_axis_after_orbiting_behind_model() -> None:
     """Dragging right must move the model right from either side of the orbit."""
     viewport = _viewport()
@@ -260,7 +308,9 @@ def test_shift_middle_drag_moves_vertically_in_screen_plane(yaw, pitch, dy) -> N
     assert (after.y() - before.y()) * dy > 0
     assert after.x() == pytest.approx(before.x(), abs=0.01)
     # Same screen displacement at every orbit angle, including the top view.
-    expected_dy = dy / 640 * (480 / 2) / math.tan(math.radians(38 / 2))
+    # Orthographic magnification uses the shorter viewport edge while pan
+    # sensitivity uses the longer edge, preserving a stable drafting scale.
+    expected_dy = dy * min(640, 480) / max(640, 480)
     assert after.y() - before.y() == pytest.approx(expected_dy, abs=0.1)
     assert root.property("cameraYaw") == pytest.approx(yaw)
     assert root.property("cameraPitch") == pytest.approx(pitch)

@@ -20,7 +20,7 @@ stresses do not stretch that tuple; they get their own result shape later.
 This module stays Qt-free and OpenSees-free.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +53,7 @@ class WallPanel:
     elastic_modulus: float
     poisson_ratio: float
     density: float = 0.0
+    rc_material: dict[str, float | str] = field(default_factory=dict)
 
     def corner_tags(self) -> tuple[int, int, int, int]:
         return (self.node_1, self.node_2, self.node_3, self.node_4)

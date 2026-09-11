@@ -86,6 +86,7 @@ from openframe.core.domain import (
     unit_conversion_factors,
     wind_force_by_story,
 )
+from openframe.core.domain.materials import RC_MATERIAL_KEYS
 from openframe.features.analysis.application.run_analysis import RunAnalysisService
 from openframe.features.analysis.presentation.analysis_run_thread import AnalysisRunThread
 from openframe.features.analysis.presentation.analysis_settings_panel import AnalysisSettingsPanel
@@ -195,7 +196,7 @@ class ModelingInterfacePage(
         # ``_active_element_kwargs`` for a wall would let Create Element mint
         # two-node beams (see ``_element_subcategory_clicked``). Mirror lives
         # on ``canvas.wall_pen`` for ``add_wall``.
-        self._active_plate_kwargs: dict[str, float] | None = None
+        self._active_plate_kwargs: dict[str, object] | None = None
         self._known_2d_element_tags: set[int] = set()
         self._applying_2d_active_properties = False
         self._solver = MaterialFreeStaticsSolver()
@@ -348,6 +349,22 @@ class ModelingInterfacePage(
                 Qt.ShortcutContext.WidgetWithChildrenShortcut
             )
             self.line_display_shortcut_3d.activated.connect(self._toggle_line_display_3d)
+            # Orthographic drafting views. Page-wide scope keeps them working
+            # while the 3D surface or a draw-entry field owns keyboard focus.
+            self.view_shortcuts_3d = {}
+            for key, preset in (
+                ("Ctrl+F", "front"),
+                ("Ctrl+R", "right"),
+                ("Ctrl+L", "left"),
+                ("Ctrl+B", "back"),
+                ("Ctrl+T", "top"),
+            ):
+                shortcut = QShortcut(QKeySequence(key), self)
+                shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+                shortcut.activated.connect(
+                    lambda preset=preset: self.preview_3d.set_camera_preset(preset)
+                )
+                self.view_shortcuts_3d[preset] = shortcut
         self.fit_shortcut = QShortcut(QKeySequence("F"), self.canvas)
         self.fit_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.fit_shortcut.activated.connect(self.canvas.fit_model)
@@ -1120,7 +1137,9 @@ class ModelingInterfacePage(
         header_layout.setContentsMargins(10, 5, 10, 5)
         header_layout.setSpacing(6)
         header_layout.addWidget(QLabel("3D 뷰"))
-        hint = QLabel("가운데 버튼 회전 · Shift+가운데 버튼 이동 · 휠 확대")
+        hint = QLabel(
+            "가운데 버튼 회전 · Shift+가운데 버튼 이동 · 휠 확대 · Ctrl+F/R/L/B/T 시점"
+        )
         hint.setObjectName("setupSectionHint")
         header_layout.addWidget(hint)
         header_layout.addStretch(1)
@@ -2231,6 +2250,11 @@ class ModelingInterfacePage(
                 "material_id": material_id,
                 "material_category": material.get("category"),
                 "material_grade": material.get("grade"),
+                "rc_material": dict(material.get("rc_material") or {}),
+                "shear_modulus": (
+                    float(material["elastic"]) / (2 * (1 + float(material["poisson_ratio"])))
+                    if "poisson_ratio" in material else None
+                ),
                 **({
                     "fy": float(material.get("fy", 0.0)),
                     "strain_hardening_ratio": float(material.get("strain_hardening_ratio", 0.02)),
@@ -2279,9 +2303,7 @@ class ModelingInterfacePage(
         """Arm the wall draw pen from Create Element Material + Thickness.
 
         Thickness library values live in mm; ``WallPanel.thickness`` and the
-        viewport use the model's length unit, so convert once here. Poisson
-        is not on saved materials yet — ``DEFAULT_POISSON_RATIO`` matches
-        beam section application.
+        viewport use the model's length unit, so convert once here.
         """
         try:
             thickness_mm = float(thickness.get("thickness_mm", 0.0))
@@ -2291,8 +2313,9 @@ class ModelingInterfacePage(
         pen = {
             "thickness": float(shown),
             "elastic": float(material["elastic"]),
-            "poisson_ratio": float(DEFAULT_POISSON_RATIO),
+            "poisson_ratio": float(material.get("poisson_ratio", DEFAULT_POISSON_RATIO)),
             "density": float(material.get("density", 0.0)),
+            "rc_material": dict(material.get("rc_material") or {}),
         }
         self._active_plate_kwargs = dict(pen)
         self.canvas.wall_pen = dict(pen)
@@ -5329,6 +5352,7 @@ class ModelingInterfacePage(
             "material_id": properties.get("material_id"),
             "material_category": properties.get("material_category"),
             "material_grade": properties.get("material_grade"),
+            "rc_material": {k: properties[k] for k in RC_MATERIAL_KEYS if k in properties},
             "fy": number("Fy"),
             "strain_hardening_ratio": number("StrainHardeningRatio", 0.02),
             "zy": properties.get("Zy"),
@@ -5358,7 +5382,12 @@ class ModelingInterfacePage(
                 fy=float(material.get("fy", kwargs["fy"]) or 0.0),
                 # None, not the member's old G - a changed E must re-derive
                 # the shear modulus, not keep the previous material's.
-                shear_modulus=None,
+                shear_modulus=(
+                    float(material["elastic"]) / (2 * (1 + float(material["poisson_ratio"])))
+                    if "poisson_ratio" in material else None
+                ),
+                rc_material=dict(material.get("rc_material") or {}),
+                material_id=definition_id,
                 material_category=material.get("category"),
                 material_grade=material.get("grade"),
             )

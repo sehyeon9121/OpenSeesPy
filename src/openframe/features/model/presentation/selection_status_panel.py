@@ -62,6 +62,7 @@ _LOAD_ENTRY_KIND_LABELS: dict[str, str] = {
     "floor": "바닥하중",
     "self_weight": "자중",
 }
+from openframe.core.domain.materials import RC_MATERIAL_KEYS
 from openframe.features.model.presentation.model_inspector_panel import SUPPORT_LABELS
 from openframe.features.model.presentation.section_material_panel import _load_database_safely
 
@@ -87,6 +88,7 @@ class _SectionSnapshot:
     material_id: str | None
     material_category: str | None
     material_grade: str | None
+    rc_material: dict[str, float | str]
 
 
 class SelectionStatusPanel(QWidget):
@@ -533,6 +535,7 @@ class SelectionStatusPanel(QWidget):
             material_id=_text("material_id"),
             material_category=_text("material_category"),
             material_grade=_text("material_grade"),
+            rc_material={k: props[k] for k in RC_MATERIAL_KEYS if k in props},
         )
 
     @staticmethod
@@ -565,6 +568,7 @@ class SelectionStatusPanel(QWidget):
             return False
         snapshot = self._section_snapshot(element)
         checks = [
+            snapshot.rc_material == (pending_edit.get("rc_material") or {}),
             snapshot.shape == pending_edit["shape"],
             snapshot.source == pending_edit["source"],
             self._close(snapshot.area, pending_edit["area"]),
@@ -632,6 +636,12 @@ class SelectionStatusPanel(QWidget):
         material_form = self._form_in(material_layout)
         material_form.addRow("Category", self._value_label(snapshot.material_category or "—"))
         material_form.addRow("Grade", self._value_label(snapshot.material_grade or "—"))
+        if snapshot.rc_material:
+            rc = snapshot.rc_material
+            material_form.addRow("fck", self._value_label(f"{rc.get('rc_fck_mpa', '—')} MPa"))
+            material_form.addRow("주철근", self._value_label(str(rc.get("rc_rebar_grade", "—"))))
+            material_form.addRow("띠철근", self._value_label(str(rc.get("rc_stirrup_grade", "—"))))
+            material_form.addRow("해석", self._value_label("비균열 전단면 탄성 · 배근 미반영"))
         material_form.addRow("E", self._value_label(self._format_or_dash(snapshot.elastic, unit.stress)))
         material_form.addRow(
             "Unit Weight", self._value_label(self._format_or_dash(snapshot.density, unit.volumetric_force))

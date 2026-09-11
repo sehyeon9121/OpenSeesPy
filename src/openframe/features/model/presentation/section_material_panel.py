@@ -63,6 +63,7 @@ from openframe.core.domain import (
     mm_to_length_unit,
     mpa_to_stress_unit,
 )
+from openframe.core.domain.materials import RC_MATERIAL_KEYS
 from openframe.features.model.presentation.canvas_property_application import (
     DEFAULT_POISSON_RATIO,
 )
@@ -560,6 +561,7 @@ class SectionMaterialPanel(QWidget):
         self._dimension_spinboxes: dict[str, SafeDoubleSpinBox] = {}
         self._dimension_labels: dict[str, QLabel] = {}
         self._selected_material: MaterialRecord | None = None
+        self._rc_assigned_material_id: str | None = None
         self._updating = False  # guards against feedback loops while repopulating fields
         self._loading_element = False  # True only while load_from_element() runs
         # Wall/plate thickness lives in mm like section dimensions, not as a
@@ -752,6 +754,34 @@ class SectionMaterialPanel(QWidget):
         self.material_grade_combo.setMaximumWidth(_COMBO_WIDTH)
         self.material_grade_combo.currentIndexChanged.connect(self._material_grade_changed)
         material_form.addRow("Grade", self.material_grade_combo)
+        self.rc_fields = QWidget()
+        rc_form = QFormLayout(self.rc_fields)
+        rc_form.setContentsMargins(0, 0, 0, 0)
+        rc_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.rc_fck = QLineEdit()
+        self.rc_fck.setReadOnly(True)
+        self.rc_fck.setMaximumWidth(_NUMBER_WIDTH)
+        rc_form.addRow("fck (MPa)", self.rc_fck)
+        self.rc_rebar_combo = SafeComboBox()
+        self.rc_stirrup_combo = SafeComboBox()
+        for label, combo in (("주철근", self.rc_rebar_combo), ("띠철근·스터럽", self.rc_stirrup_combo)):
+            combo.setMaximumWidth(_COMBO_WIDTH)
+            if self._database is not None:
+                for record in self._database.get_materials_by_category("Reinforcing Steel"):
+                    if record.fy_MPa is not None:
+                        combo.addItem(f"{record.grade} · fy {record.fy_MPa:g} MPa", record.material_id)
+            combo.currentIndexChanged.connect(self._notify_edited)
+            rc_form.addRow(label, combo)
+        self.rc_hint = QLabel(
+            "배근 미정: 콘크리트 비균열 전단면 탄성강성으로 해석합니다. "
+            "철근은 재료 정보로 저장하며 강성·항복내력에 반영하지 않습니다. "
+            "철근 DB의 미검증 공칭값은 참고용입니다."
+        )
+        self.rc_hint.setWordWrap(True)
+        self.rc_hint.setObjectName("setupSectionHint")
+        rc_form.addRow(self.rc_hint)
+        material_form.addRow(self.rc_fields)
+        self.rc_fields.hide()
         self.material_e = SafeDoubleSpinBox()
         self.material_e.setRange(0.0, 1.0e12)
         self.material_e.setDecimals(3)
@@ -1011,7 +1041,10 @@ class SectionMaterialPanel(QWidget):
             "grade": self.material_grade_combo.currentText() or None,
             "elastic": self.material_e.value(),
             "density": self.material_unit_weight.value(),
-            "fy": self.material_fy.value(),
+            "fy": 0.0 if self._is_rc() else self.material_fy.value(),
+            "poisson_ratio": self.material_poisson_ratio.value(),
+            "strain_hardening_ratio": self.material_hardening_ratio.value(),
+            "rc_material": self._rc_material_values(),
         }
         self.material_saved.emit(definition)
         self.material_save_status.setText(f"{name} 물성을 워크트리에 저장했습니다.")
@@ -1391,19 +1424,55 @@ class SectionMaterialPanel(QWidget):
             self.material_grade_combo.setEnabled(False)
             return
         self.material_category_combo.addItems(self._database.get_material_categories())
+        self.material_category_combo.addItem("RC")
+
+    def _is_rc(self) -> bool:
+        return self.material_category_combo.currentText() == "RC"
+
+    def _rc_material_values(self) -> dict[str, float | str]:
+        if not self._is_rc() or self._selected_material is None:
+            return {}
+        values: dict[str, float | str] = {
+            "rc_analysis_model": "gross_elastic",
+            "rc_concrete_id": self._selected_material.material_id,
+            "rc_fck_mpa": self._selected_material.fck_MPa,
+        }
+        for kind, combo in (("rebar", self.rc_rebar_combo), ("stirrup", self.rc_stirrup_combo)):
+            if combo.currentData() is None:
+                continue
+            record = self._database.get_material(combo.currentData())
+            values.update({
+                f"rc_{kind}_id": record.material_id,
+                f"rc_{kind}_grade": record.grade,
+                f"rc_{kind}_fy_mpa": record.fy_MPa,
+                f"rc_{kind}_status": record.data_status.value,
+            })
+        return values
 
     def _material_category_changed(self, category: str) -> None:
         if self._database is None:
             return
+        rc = category == "RC"
+        self.rc_fields.setVisible(rc)
+        self._material_form.setRowVisible(self.material_fy, not rc)
+        self._material_form.setRowVisible(self.material_hardening_ratio, not rc)
+        self._material_form.labelForField(self.material_grade_combo).setText(
+            "콘크리트 강도" if rc else "Grade"
+        )
+        # A previous steel selection must not leak its Fy into concrete/RC.
+        self.material_fy.setValue(0.0)
         self.material_grade_combo.blockSignals(True)
         self.material_grade_combo.clear()
-        for material in self._database.get_materials_by_category(category):
+        for material in self._database.get_materials_by_category("Concrete" if rc else category):
+            if rc and material.fck_MPa is None:
+                continue
             self.material_grade_combo.addItem(material.grade, material.material_id)
         self.material_grade_combo.blockSignals(False)
         if self.material_grade_combo.count():
             self._material_grade_changed(0)
 
     def _material_grade_changed(self, index: int) -> None:
+        self._rc_assigned_material_id = None
         if self._database is None or index < 0:
             self._selected_material = None
             return
@@ -1419,6 +1488,8 @@ class SectionMaterialPanel(QWidget):
         if self._database is None or self._selected_material is None:
             return
         material_id = self._selected_material.material_id
+        if self._is_rc():
+            self.rc_fck.setText(f"{self._selected_material.fck_MPa:g}")
         thickness_key = _GOVERNING_THICKNESS_KEY.get(self.shape_combo.currentText())
         context = None
         if thickness_key is not None and thickness_key in self._dimensions_mm:
@@ -1536,7 +1607,12 @@ class SectionMaterialPanel(QWidget):
             self._properties = self._safe_compute(shape, dimensions_mm) if dimensions_mm else None
             self._refresh_property_display()
 
-        material_id = element.properties.get("material_id")
+        rc_values = {k: element.properties[k] for k in RC_MATERIAL_KEYS if k in element.properties}
+        category = str(element.properties.get("material_category", ""))
+        if not rc_values and self._is_rc() and not category:
+            category = "Concrete"
+        self.material_category_combo.setCurrentText(category)
+        material_id = rc_values.get("rc_concrete_id") or element.properties.get("material_id")
         if material_id and self._database is not None:
             category_index = self.material_category_combo.findText(
                 str(element.properties.get("material_category", ""))
@@ -1546,6 +1622,10 @@ class SectionMaterialPanel(QWidget):
             grade_index = self.material_grade_combo.findData(str(material_id))
             if grade_index >= 0:
                 self.material_grade_combo.setCurrentIndex(grade_index)
+        for key, combo in (("rc_rebar_id", self.rc_rebar_combo), ("rc_stirrup_id", self.rc_stirrup_combo)):
+            if key in rc_values:
+                combo.setCurrentIndex(combo.findData(rc_values[key]))
+        self._rc_assigned_material_id = element.properties.get("material_id") if rc_values else None
         elastic = element.properties.get("E")
         density = element.properties.get("density")
         if elastic is not None:
@@ -1610,10 +1690,14 @@ class SectionMaterialPanel(QWidget):
             "shear_modulus": self._computed_shear_modulus(),
             "density": self.material_unit_weight.value(),
             "section_id": self._db_section.section_id if is_database and self._db_section else None,
-            "material_id": self._selected_material.material_id if self._selected_material else None,
+            "material_id": (
+                self._rc_assigned_material_id if self._is_rc() and self._rc_assigned_material_id
+                else self._selected_material.material_id if self._selected_material else None
+            ),
             "material_category": self.material_category_combo.currentText() or None,
             "material_grade": self.material_grade_combo.currentText() or None,
-            "fy": self.material_fy.value(),
+            "fy": 0.0 if self._is_rc() else self.material_fy.value(),
+            "rc_material": self._rc_material_values(),
             "strain_hardening_ratio": self.material_hardening_ratio.value(),
             "zy": (
                 mm3_to_length_unit(self._properties.Zy_mm3, length)

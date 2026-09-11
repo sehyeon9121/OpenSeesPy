@@ -3,6 +3,14 @@
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
+# RC strengths are catalog metadata in MPa, independent of the model units.
+# They must never be interpreted as the homogeneous steel hinge's Fy.
+RC_MATERIAL_KEYS = frozenset({
+    "rc_analysis_model", "rc_concrete_id", "rc_fck_mpa",
+    "rc_rebar_id", "rc_rebar_grade", "rc_rebar_fy_mpa", "rc_rebar_status",
+    "rc_stirrup_id", "rc_stirrup_grade", "rc_stirrup_fy_mpa", "rc_stirrup_status",
+})
+
 
 class MaterialSource(StrEnum):
     KDS_DATABASE = "kds_database"

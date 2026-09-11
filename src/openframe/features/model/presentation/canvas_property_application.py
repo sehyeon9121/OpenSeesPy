@@ -8,6 +8,7 @@ import math
 from dataclasses import replace
 
 from openframe.core.domain import BoundaryCondition, NodalLoad, UniformElementLoad
+from openframe.core.domain.materials import RC_MATERIAL_KEYS
 
 #: Every key apply_full_section_to_selection ever writes - cleared before
 #: writing a fresh set so a shape switch (e.g. H/I Section, which has tw/tf,
@@ -35,6 +36,7 @@ _SECTION_PROPERTY_KEYS = frozenset(
         "StrainHardeningRatio",
         "Zy",
         "Zz",
+        *RC_MATERIAL_KEYS,
     }
 )
 
@@ -269,6 +271,7 @@ class _PropertyApplicationMixin:
         strain_hardening_ratio: float = 0.02,
         zy: float | None = None,
         zz: float | None = None,
+        rc_material: dict[str, float | str] | None = None,
     ) -> None:
         """General section+material application - any of the seven supported
         shapes (Rectangle/Circle/H-I/Box/Pipe/Channel/Angle) or a fully
@@ -330,7 +333,10 @@ class _PropertyApplicationMixin:
             "section_shape": shape,
             "section_source": source,
         }
-        if fy > 0.0:
+        if rc_material:
+            new_properties.update({k: v for k, v in rc_material.items() if k in RC_MATERIAL_KEYS})
+            new_properties["rc_analysis_model"] = "gross_elastic"
+        if fy > 0.0 and not rc_material and material_category != "RC":
             new_properties["Fy"] = fy
             new_properties["StrainHardeningRatio"] = strain_hardening_ratio
         if zy is not None:

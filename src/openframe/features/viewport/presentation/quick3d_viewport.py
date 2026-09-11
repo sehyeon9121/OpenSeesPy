@@ -443,7 +443,9 @@ class Quick3DViewport(QFrame):
         return self.bridge.lineDisplayActive
 
     def set_camera_preset(self, preset: str) -> None:
-        if preset not in {"iso", "xy", "xz", "yz"}:
+        if preset not in {
+            "iso", "xy", "xz", "yz", "front", "right", "left", "back", "top"
+        }:
             return
         self._pending_camera_preset = preset
         root = self.quick_widget.rootObject()
